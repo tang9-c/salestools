@@ -248,6 +248,7 @@ describe('CompanyProfileService', () => {
     ['qcc-real-contact-explanation.json', 'get_contact_info'],
     ['qcc-real-risk-explanation.json', 'get_company_risk_scan'],
     ['qcc-real-risk-item-explanation.json', 'get_company_risk_scan'],
+    ['qcc-real-risk-tool-only.json', 'get_company_risk_scan'],
   ] as const)('fails without caching when %s violates the %s contract', async (invalidFile, invalidTool) => {
     const service = new CompanyProfileService({
       call: async (_server: string, tool: string) => {

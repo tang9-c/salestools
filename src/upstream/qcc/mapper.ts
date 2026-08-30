@@ -85,12 +85,17 @@ const ChineseContactSchema = z.object({
   record.联系方式信息.邮箱,
 ].some(values => Array.isArray(values) && values.length > 0));
 
+const CanonicalNonNegativeIntegerSchema = z.union([
+  z.number().int().nonnegative(),
+  z.string().regex(/^(?:0|[1-9]\d*)$/u),
+]);
+
 const ChineseRiskFactorSchema = z.object({
   风险类型: OptionalChineseStringSchema,
   风险名称: OptionalChineseStringSchema,
   风险因子: OptionalChineseStringSchema,
-  数量: z.union([z.number().finite(), RequiredChineseStringSchema]).optional(),
-  条目数: z.union([z.number().finite(), RequiredChineseStringSchema]).optional(),
+  数量: CanonicalNonNegativeIntegerSchema.optional(),
+  条目数: CanonicalNonNegativeIntegerSchema.optional(),
   风险等级: OptionalChineseStringSchema,
   描述: OptionalChineseStringSchema,
   明细工具: OptionalChineseStringSchema,
@@ -101,10 +106,8 @@ const ChineseRiskFactorSchema = z.object({
   record.风险等级,
   record.描述,
 ].some(nonBlank)
-  || typeof record.数量 === 'number'
-  || nonBlank(record.数量)
-  || typeof record.条目数 === 'number'
-  || nonBlank(record.条目数));
+  || record.数量 !== undefined
+  || record.条目数 !== undefined);
 
 const ChineseRiskSchema = z.object({
   企业名称: RequiredChineseStringSchema,
@@ -959,7 +962,7 @@ function formalRecords(
   if (tool === 'get_company_risk_scan') {
     const parsed = parseChineseFormalRoot(ChineseRiskSchema, root, tool);
     return [{
-      RiskCount: parsed.有记录因子数 ?? parsed.风险因子扫描?.length ?? null,
+      RiskCount: parsed.有记录因子数 ?? null,
       Summary: chineseRiskSummary(parsed),
     }];
   }

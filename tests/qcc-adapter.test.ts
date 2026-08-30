@@ -298,9 +298,88 @@ describe('QCC mapping and formal collection', () => {
 
     expect(mapped.items).toHaveLength(1);
     expect(JSON.parse(mapped.items[0].content ?? '{}')).toMatchObject({
-      riskCount: 1,
+      riskCount: null,
       summary: expect.stringContaining('脱敏风险项'),
     });
+  });
+
+  it.each([
+    ['数量', -1],
+    ['数量', 1.5],
+    ['数量', '-1'],
+    ['数量', '1.5'],
+    ['数量', ' 1 '],
+    ['数量', '00'],
+    ['数量', '01'],
+    ['数量', ''],
+    ['数量', ' '],
+    ['数量', null],
+    ['条目数', -1],
+    ['条目数', 1.5],
+    ['条目数', '-1'],
+    ['条目数', '1.5'],
+    ['条目数', ' 1 '],
+    ['条目数', '00'],
+    ['条目数', '01'],
+    ['条目数', ''],
+    ['条目数', ' '],
+    ['条目数', null],
+  ])('rejects invalid Chinese risk count %s=%j', (field, value) => {
+    expect(() => mapQccToolResult('risk', 'get_company_risk_scan', {
+      企业名称: identity.legalName,
+      风险因子扫描: [{ 风险因子: '经营异常', [field]: value }],
+    }, identity, new Date('2026-08-29T12:00:00.000Z')))
+      .toThrow(expect.objectContaining({ code: 'INVALID_RESPONSE' }));
+  });
+
+  it.each([
+    ['数量', 0],
+    ['数量', 2],
+    ['数量', '0'],
+    ['数量', '2'],
+    ['条目数', 0],
+    ['条目数', 2],
+    ['条目数', '0'],
+    ['条目数', '2'],
+  ])('accepts canonical non-negative Chinese risk count %s=%j without inventing RiskCount', (field, value) => {
+    const mapped = mapQccToolResult('risk', 'get_company_risk_scan', {
+      企业名称: identity.legalName,
+      风险因子扫描: [{ [field]: value }],
+    }, identity, new Date('2026-08-29T12:00:00.000Z'));
+
+    expect(JSON.parse(mapped.items[0].content ?? '{}')).toEqual({
+      riskCount: null,
+      exceptionCount: null,
+      penaltyCount: null,
+      judicialCount: null,
+      summary: expect.stringContaining(`${field}：${String(value)}`),
+    });
+  });
+
+  it.each([
+    { 说明: '仅有说明' },
+    { 明细工具: 'get_abnormal_operation' },
+  ])('rejects a non-substantive Chinese risk factor %j', factor => {
+    expect(() => mapQccToolResult('risk', 'get_company_risk_scan', {
+      企业名称: identity.legalName,
+      风险因子扫描: [factor],
+    }, identity, new Date('2026-08-29T12:00:00.000Z')))
+      .toThrow(expect.objectContaining({ code: 'INVALID_RESPONSE' }));
+  });
+
+  it('lists explicit per-factor entry counts in the mapped risk summary', () => {
+    const mapped = mapQccToolResult('risk', 'get_company_risk_scan', {
+      企业名称: identity.legalName,
+      风险因子扫描: [
+        { 风险因子: '经营异常', 条目数: 0 },
+        { 风险因子: '司法案件', 条目数: '2' },
+      ],
+    }, identity, new Date('2026-08-29T12:00:00.000Z'));
+    const content = JSON.parse(mapped.items[0].content ?? '{}') as { riskCount: unknown; summary: string };
+
+    expect(content.riskCount).toBeNull();
+    expect(content.summary).toContain('经营异常，条目数：0');
+    expect(content.summary).toContain('司法案件，条目数：2');
   });
 
   it('maps the sanitized real QCC risk-factor field combination into a consumable summary', () => {
