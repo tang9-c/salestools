@@ -12,6 +12,7 @@
   - `cd73348 fix: require directional replacement evidence`
   - `4408900 fix: reject negated directional migrations`
   - `4de4350 fix: conservatively classify migration polarity`
+  - `c6c90e1 fix: reject suspended product migrations`
 - 新增 `PRODUCT_RULES`，覆盖 Windchill、Feigenbaum QMS、Creo、CATIA、Abaqus、CST 和 SolidWorks 的固定产品词、工程方法、竞品词和阻碍词。
 - 新增 `evaluateProduct` 与 `evaluateOpportunities`，仅使用 `EvidenceBundle` 和显式 `now`，按固定四档顺序返回七产品结果。
 - 融资只在已有产品场景且来源归属已确认时增强预算/时机；不创建场景，不单独产生“高”。
@@ -47,11 +48,12 @@
 18. 已识别的 replacement 方向 pair 还必须通过有限上下文否定检查；`尚未从 NX 迁移到 Creo`、`不会将 NX 替换为 Creo`、`并未用 Creo 替换 NX`、`不考虑从 NX 迁移到 Creo` 和方向后的 `尚未完成` 均不能解除 blocker，正向方向不受影响。
 19. `ProductRule` 显式区分强目标产品词和通用品类词。竞品与 `PLM/QMS` 同句时不能建立 Windchill/Feigenbaum 场景；同一事实明确出现 `Windchill` 等强目标词时仍可建立场景并参与方向判断。
 20. replacement 的三套重叠否定白名单已删除，统一为有限方向短句极性分类器。仅移除“不得不、不久后计划/决定、未雨绸缪后计划/决定”三类明确肯定例外自身的标记；剩余任意 `不/未/无/拒绝/放弃/未完成` 都保守拒绝解除 blocker。
+21. 统一方向负向标记补齐 `取消/暂停/停止/终止/否决/暂缓`，六组表驱动反例确保这些动作不会解除竞品 blocker；原正向迁移和三类明确肯定例外保持不变。
 
 ## 验证
 
-- Focused: `tests/opportunity.test.ts` + `tests/recruitment-signals.test.ts` 共 `210 passed`。
-- Full suite: `15` test files, `353 passed`。
+- Focused: `tests/opportunity.test.ts` + `tests/recruitment-signals.test.ts` 共 `216 passed`。
+- Full suite: `15` test files, `359 passed`。
 - Typecheck: `tsc --noEmit` 退出码 `0`。
 - Diff check: `git diff --check` 与提交前 `git diff --cached --check` 退出码均为 `0`。
 - 禁用输出/非确定性扫描：机会模块中无分数、星级、模型调用、`Math.random` 或隐式 `new Date()`。
