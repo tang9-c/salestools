@@ -247,6 +247,7 @@ describe('CompanyProfileService', () => {
     ['qcc-real-company-profile-explanation.json', 'get_company_profile'],
     ['qcc-real-contact-explanation.json', 'get_contact_info'],
     ['qcc-real-risk-explanation.json', 'get_company_risk_scan'],
+    ['qcc-real-risk-item-explanation.json', 'get_company_risk_scan'],
   ] as const)('fails without caching when %s violates the %s contract', async (invalidFile, invalidTool) => {
     const service = new CompanyProfileService({
       call: async (_server: string, tool: string) => {
@@ -264,5 +265,26 @@ describe('CompanyProfileService', () => {
 
     expect(result).toMatchObject({ sourceStatus: 'failed', candidates: [], basicProfile: null, cacheHit: false });
     expect(profiles.findFreshByNormalizedName(normalizeLegalName(candidate.Name), now, 30)).toEqual([]);
+  });
+
+  it('maps and caches a substantive Chinese risk factor instead of treating its presence as evidence', async () => {
+    const service = new CompanyProfileService({
+      call: async (_server: string, tool: string) => {
+        if (tool === 'get_company_by_query') return fixture('qcc-real-company-search.json');
+        if (tool === 'get_company_registration_info') return fixture('qcc-real-company-registration.json');
+        if (tool === 'get_company_profile') return fixture('qcc-real-company-profile.json');
+        if (tool === 'get_contact_info') return { Data: { Website: 'https://www.example.cn' } };
+        if (tool === 'get_company_risk_scan') return fixture('qcc-real-risk-valid.json');
+        throw new Error(`unexpected tool ${tool}`);
+      },
+    }, profiles, { profileCacheTtlDays: 30, maxQccCalls: 8, maxTotalCalls: 18, now: () => now });
+
+    const result = await service.get(candidate.Name);
+
+    expect(result).toMatchObject({
+      sourceStatus: 'completed',
+      basicProfile: { riskSummary: expect.stringContaining('脱敏风险项') },
+    });
+    expect(profiles.findFreshByNormalizedName(normalizeLegalName(candidate.Name), now, 30)).toHaveLength(1);
   });
 });

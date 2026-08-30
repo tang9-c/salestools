@@ -85,13 +85,26 @@ const ChineseContactSchema = z.object({
   record.联系方式信息.邮箱,
 ].some(values => Array.isArray(values) && values.length > 0));
 
+const ChineseRiskFactorSchema = z.object({
+  风险类型: OptionalChineseStringSchema,
+  风险名称: OptionalChineseStringSchema,
+  数量: z.union([z.number().finite(), RequiredChineseStringSchema]).optional(),
+  风险等级: OptionalChineseStringSchema,
+  描述: OptionalChineseStringSchema,
+}).passthrough().refine(record => [
+  record.风险类型,
+  record.风险名称,
+  record.风险等级,
+  record.描述,
+].some(nonBlank) || typeof record.数量 === 'number' || nonBlank(record.数量));
+
 const ChineseRiskSchema = z.object({
   企业名称: RequiredChineseStringSchema,
   统一社会信用代码: OptionalChineseStringSchema,
   摘要: OptionalChineseStringSchema,
   有记录因子数: z.number().finite().optional(),
   无记录因子数: z.number().finite().optional(),
-  风险因子扫描: z.array(z.unknown()).optional(),
+  风险因子扫描: z.array(ChineseRiskFactorSchema).optional(),
 }).passthrough().refine(record => nonBlank(record.摘要)
   || typeof record.有记录因子数 === 'number'
   || typeof record.无记录因子数 === 'number'
@@ -480,6 +493,29 @@ function numberValue(record: Record<string, unknown>, key: string): number | nul
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function chineseRiskSummary(record: Record<string, unknown>): string | null {
+  const direct = stringValueFrom(record, ['Summary', '摘要']);
+  if (direct !== null) return direct;
+  const parsed = ChineseRiskSchema.safeParse(record);
+  if (!parsed.success) return null;
+  const parts: string[] = [];
+  if (typeof parsed.data.有记录因子数 === 'number') parts.push(`有记录因子数：${parsed.data.有记录因子数}`);
+  if (typeof parsed.data.无记录因子数 === 'number') parts.push(`无记录因子数：${parsed.data.无记录因子数}`);
+  for (const factor of parsed.data.风险因子扫描 ?? []) {
+    const fields = [
+      ['风险类型', factor.风险类型],
+      ['风险名称', factor.风险名称],
+      ['数量', factor.数量],
+      ['风险等级', factor.风险等级],
+      ['描述', factor.描述],
+    ].filter((entry): entry is [string, string | number] => (
+      typeof entry[1] === 'number' || nonBlank(entry[1])
+    ));
+    parts.push(fields.map(([label, value]) => `${label}：${String(value)}`).join('，'));
+  }
+  return parts.filter(nonBlank).join('；') || null;
+}
+
 function dateTimestamp(value: unknown): string | null {
   if (typeof value !== 'string' || value.trim().length === 0) return null;
   const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -622,7 +658,7 @@ export function mapCompanyDetails(
     website,
     employee_range: stringValueFrom(profile, ['EmployeeRange', '人员规模'])
       ?? stringValueFrom(registration, ['人员规模']),
-    risk_summary: stringValueFrom(risk, ['Summary', '摘要']),
+    risk_summary: chineseRiskSummary(risk),
     collected_at: collectedAt.toISOString(),
   });
   return { identity, basicProfile };
@@ -847,7 +883,15 @@ function normalizedStatusText(value: string): string {
 
 function chineseFinancingRecords(root: Record<string, unknown>): Record<string, unknown>[] {
   const structured = root['融资信息'];
+  const searchResult = stringValue(root, '搜索结果');
   if (Array.isArray(structured)) {
+    if (structured.length === 0) {
+      if (searchResult === null || EXPLICIT_EMPTY_FINANCING_RESULTS.has(normalizedStatusText(searchResult))) return [];
+      throw unmappableDataset('QCC empty financing records conflict with an unverifiable search result');
+    }
+    if (searchResult !== null) {
+      throw unmappableDataset('QCC financing records conflict with an unverifiable search result');
+    }
     const parsed = z.array(ChineseFinancingRecordSchema).safeParse(structured);
     if (!parsed.success) throw unmappableDataset('QCC financing records have an unsupported shape');
     return parsed.data.map(record => ({
@@ -860,7 +904,6 @@ function chineseFinancingRecords(root: Record<string, unknown>): Record<string, 
     }));
   }
 
-  const searchResult = stringValue(root, '搜索结果');
   if (searchResult !== null && EXPLICIT_EMPTY_FINANCING_RESULTS.has(normalizedStatusText(searchResult))) {
     return [];
   }
@@ -906,8 +949,8 @@ function formalRecords(
   if (tool === 'get_company_risk_scan') {
     const parsed = parseChineseFormalRoot(ChineseRiskSchema, root, tool);
     return [{
-      RiskCount: parsed.有记录因子数 ?? null,
-      Summary: parsed.摘要 ?? null,
+      RiskCount: parsed.有记录因子数 ?? parsed.风险因子扫描?.length ?? null,
+      Summary: chineseRiskSummary(parsed),
     }];
   }
   if (tool === 'get_patent_info') {

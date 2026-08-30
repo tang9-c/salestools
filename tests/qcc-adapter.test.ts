@@ -259,6 +259,7 @@ describe('QCC mapping and formal collection', () => {
     'qcc-real-financing-permission.json',
     'qcc-real-financing-candidates.json',
     'qcc-real-financing-structured-invalid.json',
+    'qcc-real-financing-conflict.json',
   ])('rejects an unstructured financing dataset from %s instead of reporting a verified empty result', file => {
     expect(() => mapQccToolResult(
       'operation',
@@ -269,9 +270,43 @@ describe('QCC mapping and formal collection', () => {
     )).toThrow(expect.objectContaining({ code: 'UNMAPPABLE_DATASET' }));
   });
 
+  it('accepts only structurally verified empty and substantive Chinese financing arrays', () => {
+    const now = new Date('2026-08-29T12:00:00.000Z');
+    const empty = mapQccToolResult(
+      'operation', 'get_financing_records', fixture('qcc-real-financing-structured-empty.json'), identity, now,
+    );
+    const valid = mapQccToolResult(
+      'operation', 'get_financing_records', fixture('qcc-real-financing-structured-valid.json'), identity, now,
+    );
+
+    expect(empty.items).toEqual([]);
+    expect(empty.gaps).toContain('get_financing_records未查到或未披露数据');
+    expect(valid.items).toHaveLength(1);
+    expect(JSON.parse(valid.items[0].content ?? '{}')).toEqual({
+      occurredAt: '2026-06-15T00:00:00.000Z',
+      typeOrRound: 'A轮',
+      disclosedAmount: '未披露',
+      investors: ['脱敏投资方'],
+    });
+  });
+
+  it('maps a substantive Chinese risk factor into a consumable summary', () => {
+    const mapped = mapQccToolResult(
+      'risk', 'get_company_risk_scan', fixture('qcc-real-risk-valid.json'), identity,
+      new Date('2026-08-29T12:00:00.000Z'),
+    );
+
+    expect(mapped.items).toHaveLength(1);
+    expect(JSON.parse(mapped.items[0].content ?? '{}')).toMatchObject({
+      riskCount: 1,
+      summary: expect.stringContaining('脱敏风险项'),
+    });
+  });
+
   it.each([
     ['qcc-real-financing-permission.json', 'partial', true],
     ['qcc-real-financing-candidates.json', 'partial', true],
+    ['qcc-real-financing-conflict.json', 'partial', true],
     ['qcc-real-financing-empty.json', 'completed', false],
   ] as const)('classifies collector financing dataset %s as %s', async (file, expectedStatus, adapterGap) => {
     const byTool: Record<string, string> = {
