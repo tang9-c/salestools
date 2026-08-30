@@ -1,0 +1,48 @@
+{
+  "identity": {
+    "legalName": "测试制造有限公司",
+    "creditCode": "91310000TEST000001",
+    "formerNames": [],
+    "aliases": ["测试制造"],
+    "englishNames": [],
+    "brands": [],
+    "officialDomains": ["example.cn"],
+    "registeredAddress": "上海市浦东新区测试路1号",
+    "parentLegalName": null,
+    "subsidiaryLegalNames": []
+  },
+  "industryClassification": "P1",
+  "industryEvidenceIds": ["web-1"],
+  "evidence": [
+    {
+      "evidenceId": "web-1",
+      "title": "测试制造有限公司招聘 Creo 机械设计工程师",
+      "url": "https://jobs.example.cn/positions/creo-engineer",
+      "originalPublisher": "测试制造招聘官网",
+      "originalDomain": "jobs.example.cn",
+      "publishedAt": "2026-08-28T09:30:00.000Z",
+      "collectedAt": "2026-08-29T12:00:00.000Z",
+      "mentionedName": "测试制造有限公司",
+      "entityScope": "legal_entity",
+      "entityMatch": "confirmed",
+      "matchBasis": ["网页内容提及已确认法定名称"]
+    }
+  ],
+  "facts": [
+    {
+      "factId": "fact-recruitment-1",
+      "statement": "公司正在招聘需要 Creo 技能的机械设计工程师。",
+      "kind": "recruitment",
+      "productTags": ["creo"],
+      "strength": "direct",
+      "evidenceIds": ["web-1"],
+      "entityScope": "legal_entity",
+      "entityMatch": "confirmed",
+      "matchBasis": ["网页内容提及已确认法定名称"]
+    }
+  ],
+  "financingRecords": [],
+  "conflicts": [],
+  "gaps": [],
+  "collectedAt": "2026-08-29T12:00:00.000Z"
+}

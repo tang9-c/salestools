@@ -1,0 +1,108 @@
+import {
+  EvidenceBundleSchema,
+  ResearchBundleSchema,
+  validateEvidenceProvenance,
+  type EvidenceBundle,
+  type ResearchBundle,
+} from '../../contracts/index.js';
+
+export class ArkEvidenceValidationError extends Error {
+  override readonly name = 'ArkEvidenceValidationError';
+}
+
+function invalid(message: string, cause?: unknown): never {
+  throw new ArkEvidenceValidationError(message, cause === undefined ? undefined : { cause });
+}
+
+function isCompleteText(value: string): boolean {
+  return value.trim().length > 0;
+}
+
+function requireCompleteAttribution(
+  label: string,
+  mentionedName: string,
+  matchBasis: readonly string[],
+): void {
+  if (!isCompleteText(mentionedName)) invalid(`${label} is missing mentionedName`);
+  if (matchBasis.length === 0 || matchBasis.some(basis => !isCompleteText(basis))) {
+    invalid(`${label} is missing matchBasis`);
+  }
+}
+
+function requireMatchBasis(label: string, matchBasis: readonly string[]): void {
+  if (matchBasis.length === 0 || matchBasis.some(basis => !isCompleteText(basis))) {
+    invalid(`${label} is missing matchBasis`);
+  }
+}
+
+export function validateArkEvidence(researchInput: ResearchBundle, candidate: unknown): EvidenceBundle {
+  let research: ResearchBundle;
+  let evidence: EvidenceBundle;
+  try {
+    research = ResearchBundleSchema.parse(researchInput);
+    evidence = EvidenceBundleSchema.parse(candidate);
+  } catch (error) {
+    invalid('Ark output does not match the EvidenceBundle contract', error);
+  }
+
+  if (JSON.stringify(evidence.identity) !== JSON.stringify(research.identity)) {
+    invalid('Ark output changed the confirmed identity profile');
+  }
+
+  try {
+    validateEvidenceProvenance(research, evidence);
+  } catch (error) {
+    invalid('Ark output contains invalid evidence provenance', error);
+  }
+
+  for (const item of research.items) {
+    requireCompleteAttribution(`Research item ${item.evidenceId}`, item.mentionedName, item.matchBasis);
+  }
+  for (const reference of evidence.evidence) {
+    requireCompleteAttribution(`Evidence reference ${reference.evidenceId}`, reference.mentionedName, reference.matchBasis);
+  }
+
+  if (evidence.industryClassification !== 'unverified' && evidence.industryEvidenceIds.length === 0) {
+    invalid('A verified industry classification requires evidence');
+  }
+
+  const referenceById = new Map(evidence.evidence.map(reference => [reference.evidenceId, reference]));
+  if (evidence.industryClassification !== 'unverified') {
+    const industryReferences = evidence.industryEvidenceIds
+      .map(evidenceId => referenceById.get(evidenceId))
+      .filter(reference => reference !== undefined);
+    if (industryReferences.every(reference => reference.entityMatch === 'unverified')) {
+      invalid('A verified industry classification requires attributed entity evidence');
+    }
+  }
+
+  for (const fact of evidence.facts) {
+    if (fact.evidenceIds.length === 0) invalid(`Fact ${fact.factId} requires evidence`);
+    requireMatchBasis(`Fact ${fact.factId}`, fact.matchBasis);
+    const matchingReferences = fact.evidenceIds
+      .map(evidenceId => referenceById.get(evidenceId))
+      .filter(reference => reference !== undefined)
+      .filter(reference => reference.entityScope === fact.entityScope && reference.entityMatch === fact.entityMatch);
+    if (matchingReferences.length === 0) {
+      invalid(`Fact ${fact.factId} promotes or changes source attribution`);
+    }
+    const sourceMatchBasis = new Set(matchingReferences.flatMap(reference => reference.matchBasis));
+    if (fact.matchBasis.some(basis => !sourceMatchBasis.has(basis))) {
+      invalid(`Fact ${fact.factId} contains invented matchBasis`);
+    }
+  }
+  for (const [index, record] of evidence.financingRecords.entries()) {
+    if (record.evidenceIds.length === 0) invalid(`Financing record ${index} requires evidence`);
+  }
+
+  if (research.items.length === 0) {
+    const hasClaimedEvidence = evidence.industryClassification !== 'unverified'
+      || evidence.industryEvidenceIds.length > 0
+      || evidence.evidence.length > 0
+      || evidence.facts.length > 0
+      || evidence.financingRecords.length > 0;
+    if (hasClaimedEvidence) invalid('An empty ResearchBundle only permits an unverified fact-free result');
+  }
+
+  return evidence;
+}
