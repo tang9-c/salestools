@@ -203,6 +203,9 @@ describe('evaluateOpportunities', () => {
 
   it.each([
     { label: 'explicit recent confirmed migration', statement: '公司正在将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
+    { label: 'soon planned migration', statement: '公司不久后计划迁移替换 Siemens NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
+    { label: 'proactive decided migration', statement: '公司未雨绸缪后决定迁移替换 Siemens NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
+    { label: 'necessary migration', statement: '公司不得不迁移替换 Siemens NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
     { label: 'explicit recent probable migration', statement: '公司正在将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'probable' as const, expected: '低' },
     { label: 'generic procurement', statement: '公司发布软件采购招标', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
     { label: 'negated migration', statement: '公司暂无迁移替换计划', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
@@ -253,6 +256,27 @@ describe('evaluateOpportunities', () => {
     const row = evaluateOpportunities(input, NOW).products.find(candidate => candidate.product === product);
     expect(row?.level).toBe('低');
     expect(row?.blockers.join('')).toContain('已知系统阻碍');
+  });
+
+  it('does not mistake a corrected double-negative budget statement for a blocker', () => {
+    const input = completeHighCase(cases[0]!);
+    input.evidence.push(reference('budget-correction', 'company.example'));
+    input.facts.push(fact('budget-correction', 'windchill', '公司并非没有预算', 'budget', ['budget-correction']));
+    const row = evaluateOpportunities(input, NOW).products.find(product => product.product === 'windchill');
+    expect(row?.level).toBe('高');
+    expect(row?.blockers.join('')).not.toContain('预算');
+  });
+
+  it('accepts explicit sufficient funds after saying there is no budget problem', () => {
+    const input = completeHighCase(cases[0]!);
+    input.financingRecords = [];
+    input.evidence.push(reference('budget-correction', 'company.example'));
+    input.facts.push(fact(
+      'budget-correction', 'windchill', '公司没有预算问题，资金充足', 'budget', ['budget-correction'],
+    ));
+    const row = evaluateOpportunities(input, NOW).products.find(product => product.product === 'windchill');
+    expect(row?.level).toBe('高');
+    expect(row?.blockers.join('')).not.toContain('预算');
   });
 
   it.each([

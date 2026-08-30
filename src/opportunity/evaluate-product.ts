@@ -8,14 +8,15 @@ import {
   type ProductOpportunity,
 } from '../contracts/index.js';
 import {
+  BUDGET_NEGATION_CORRECTION_PATTERN,
   CRITICAL_CONFLICT_KEYWORDS,
   GENERAL_BLOCKER_KEYWORDS,
   NEGATED_REPLACEMENT_PATTERN,
   NEGATIVE_BUDGET_PATTERN,
   NEGATIVE_DECISION_PATTERN,
-  NEGATIVE_PRODUCT_SIGNAL_AFTER_PATTERN,
-  NEGATIVE_PRODUCT_SIGNAL_BEFORE_PATTERN,
-  PRODUCT_SIGNAL_CLAUSE_SEPARATOR,
+  NEGATIVE_PRODUCT_ACTION_AFTER_PATTERN,
+  NEGATIVE_PRODUCT_ACTION_PATTERN,
+  POSITIVE_PRODUCT_ACTION_PATTERN,
   REPLACEMENT_KEYWORDS,
   type ProductRule,
 } from './product-rules.js';
@@ -75,17 +76,65 @@ function keywordOccurrences(text: string, keyword: string): number[] {
   return starts;
 }
 
-function containsAffirmativeKeyword(statement: string, keywords: readonly string[]): boolean {
-  const clauses = normalized(statement).split(PRODUCT_SIGNAL_CLAUSE_SEPARATOR);
-  return clauses.some(clause => keywords.some(keyword => {
-    const term = normalized(keyword);
-    return term.length > 0 && keywordOccurrences(clause, term).some(index => {
-      const before = clause.slice(Math.max(0, index - 24), index);
-      const after = clause.slice(index + term.length, index + term.length + 32);
-      return !NEGATIVE_PRODUCT_SIGNAL_BEFORE_PATTERN.test(before)
-        && !NEGATIVE_PRODUCT_SIGNAL_AFTER_PATTERN.test(after);
-    });
+type ActionOccurrence = Readonly<{ start: number; end: number }>;
+
+function actionOccurrences(text: string, pattern: RegExp): ActionOccurrence[] {
+  return [...text.matchAll(new RegExp(pattern.source, pattern.flags))].map(match => ({
+    start: match.index,
+    end: match.index + match[0].length,
   }));
+}
+
+function precedingActionNegates(
+  text: string,
+  keywordStart: number,
+  relevantOccurrences: readonly ActionOccurrence[],
+): boolean {
+  const prefix = text.slice(0, keywordStart);
+  const boundary = Math.max(
+    prefix.lastIndexOf('，'), prefix.lastIndexOf(','), prefix.lastIndexOf('。'),
+    prefix.lastIndexOf('；'), prefix.lastIndexOf(';'), prefix.lastIndexOf('！'),
+    prefix.lastIndexOf('!'), prefix.lastIndexOf('？'), prefix.lastIndexOf('?'), prefix.lastIndexOf('\n'),
+  );
+  const clause = prefix.slice(boundary + 1);
+  const negativeActions = actionOccurrences(clause, NEGATIVE_PRODUCT_ACTION_PATTERN);
+  const lastNegative = negativeActions.at(-1);
+  if (lastNegative === undefined) return false;
+  const positiveActions = actionOccurrences(clause, POSITIVE_PRODUCT_ACTION_PATTERN)
+    .filter(positive => !negativeActions.some(negative =>
+      positive.start >= negative.start && positive.end <= negative.end));
+  if (positiveActions.some(positive => positive.start >= lastNegative.end)) return false;
+  const clauseOffset = boundary + 1;
+  const firstRelevantStart = relevantOccurrences
+    .map(occurrence => occurrence.start)
+    .filter(start => start >= clauseOffset + lastNegative.end && start <= keywordStart)
+    .sort((left, right) => left - right)[0];
+  if (firstRelevantStart === undefined) return false;
+  const gap = text.slice(clauseOffset + lastNegative.end, firstRelevantStart);
+  return /^[\s：:]*$/u.test(gap);
+}
+
+function containsAffirmativeKeyword(statement: string, keywords: readonly string[]): boolean {
+  const text = normalized(statement);
+  const occurrences = keywords.flatMap(keyword => {
+    const term = normalized(keyword);
+    return term.length === 0 ? [] : keywordOccurrences(text, term)
+      .map(start => ({ start, end: start + term.length }));
+  });
+  const maximalOccurrences = occurrences.filter(candidate => !occurrences.some(other =>
+    other.start <= candidate.start && other.end >= candidate.end
+      && other.end - other.start > candidate.end - candidate.start));
+  return maximalOccurrences.some(({ start, end }) =>
+    !precedingActionNegates(text, start, maximalOccurrences)
+      && !NEGATIVE_PRODUCT_ACTION_AFTER_PATTERN.test(text.slice(end)));
+}
+
+function withoutBudgetNegationCorrections(statement: string): string {
+  return normalized(statement).replace(BUDGET_NEGATION_CORRECTION_PATTERN, '');
+}
+
+function hasNegativeBudgetStatement(statement: string): boolean {
+  return NEGATIVE_BUDGET_PATTERN.test(withoutBudgetNegationCorrections(statement));
 }
 
 function citedReferences(
@@ -192,21 +241,22 @@ function positiveBudgetFact(
   referencesById: ReadonlyMap<string, EvidenceReference>,
 ): boolean {
   if (fact.kind !== 'budget' || !isReliableConfirmedFact(fact, referencesById)) return false;
-  return !NEGATIVE_BUDGET_PATTERN.test(normalized(fact.statement))
-    && !containsAny(fact.statement, [...GENERAL_BLOCKER_KEYWORDS, ...UNKNOWN_SIGNAL_KEYWORDS])
-    && containsAny(fact.statement, POSITIVE_BUDGET_KEYWORDS);
+  const correctedStatement = withoutBudgetNegationCorrections(fact.statement);
+  return !NEGATIVE_BUDGET_PATTERN.test(correctedStatement)
+    && !containsAny(correctedStatement, [...GENERAL_BLOCKER_KEYWORDS, ...UNKNOWN_SIGNAL_KEYWORDS])
+    && containsAny(correctedStatement, POSITIVE_BUDGET_KEYWORDS);
 }
 
 function negativeSupportKind(fact: EvidenceFact): 'budget' | 'decision' | null {
   const statement = normalized(fact.statement);
-  if (fact.kind === 'budget' && NEGATIVE_BUDGET_PATTERN.test(statement)) return 'budget';
+  if (fact.kind === 'budget' && hasNegativeBudgetStatement(statement)) return 'budget';
   if (fact.kind === 'decision_power' && NEGATIVE_DECISION_PATTERN.test(statement)) return 'decision';
   return null;
 }
 
 function explicitReplacement(statement: string): boolean {
   const text = normalized(statement);
-  return !NEGATED_REPLACEMENT_PATTERN.test(text) && containsAny(text, REPLACEMENT_KEYWORDS);
+  return containsAny(text, REPLACEMENT_KEYWORDS) && !NEGATED_REPLACEMENT_PATTERN.test(text);
 }
 
 function hasReplacementSignal(
@@ -231,7 +281,10 @@ function blockerDescriptions(
   const blockers: string[] = [];
   for (const fact of facts) {
     if (!isReliableTargetFact(fact, referencesById)) continue;
-    const general = GENERAL_BLOCKER_KEYWORDS.find(keyword => containsKeyword(fact.statement, keyword));
+    const blockerStatement = fact.kind === 'budget'
+      ? withoutBudgetNegationCorrections(fact.statement)
+      : fact.statement;
+    const general = GENERAL_BLOCKER_KEYWORDS.find(keyword => containsKeyword(blockerStatement, keyword));
     const negativeKind = negativeSupportKind(fact);
     const productBlocker = rule.blockerKeywords.find(keyword => containsKeyword(fact.statement, keyword));
     const competitor = rule.competitorKeywords.find(keyword =>

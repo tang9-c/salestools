@@ -73,6 +73,26 @@ describe('招聘信号', () => {
       .find(product => product.product === entry.product)?.level).toBe('中');
   });
 
+  it.each([
+    { product: 'creo' as const, statement: 'Creo无需出差' },
+    { product: 'catia' as const, statement: 'CATIA不需要五年经验' },
+    { product: 'creo' as const, statement: '停用旧系统后部署Creo' },
+    { product: 'creo' as const, statement: '未开展旧项目后招聘Creo' },
+  ])('$product: unrelated negation does not cancel an affirmative target-product signal', ({ product, statement }) => {
+    const entry = products.find(candidate => candidate.product === product)!;
+    const row = evaluateOpportunities(recruitmentBundle(entry, statement, recent), NOW)
+      .products.find(candidate => candidate.product === product);
+    expect(row?.level).toBe('中');
+  });
+
+  it('treats Siemens NX as an affirmative competitor when only night shifts are unnecessary', () => {
+    const entry = products.find(product => product.product === 'creo')!;
+    const row = evaluateOpportunities(recruitmentBundle(entry, 'Siemens NX无需夜班', recent), NOW)
+      .products.find(product => product.product === entry.product);
+    expect(row?.level).toBe('低');
+    expect(row?.blockers.join('')).toMatch(/siemens nx/i);
+  });
+
   it.each(products)('$product: recent direct product naming is a strong scene signal but one publisher is only 中', entry => {
     const result = evaluateOpportunities(recruitmentBundle(entry, `${entry.named}，${entry.method}`, recent), NOW);
     const row = result.products.find(product => product.product === entry.product);
