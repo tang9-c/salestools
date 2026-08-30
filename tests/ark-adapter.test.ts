@@ -1,12 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import type { EvidenceBundle, ResearchBundle } from '../src/contracts/index.js';
+import type { EvidenceBundle, ResearchBundle, ResearchItem } from '../src/contracts/index.js';
 import {
   ArkEvidenceService,
   ArkInvalidOutputError,
   ArkUnavailableError,
 } from '../src/upstream/ark/client.js';
 import { ARK_SYSTEM_PROMPT } from '../src/upstream/ark/prompt.js';
+import { buildSearchPlan } from '../src/upstream/search/search-plan.js';
+
+const ARK_INPUT_BUDGET_GAP = '方舟输入受网关容量限制，仅选取4条代表证据，未选数据不代表不存在';
 
 function fixture(): EvidenceBundle {
   return JSON.parse(readFileSync(new URL('./fixtures/ark-evidence.json', import.meta.url), 'utf8'));
@@ -39,6 +42,84 @@ function responseWithContent(content: string): Response {
   return new Response(JSON.stringify({
     choices: [{ message: { role: 'assistant', content } }],
   }), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
+function factFreeEvidence(research: ResearchBundle): EvidenceBundle {
+  return {
+    ...fixture(),
+    identity: research.identity,
+    industryClassification: 'unverified',
+    industryEvidenceIds: [],
+    evidence: [],
+    facts: [],
+    financingRecords: [],
+    conflicts: [],
+    gaps: [ARK_INPUT_BUDGET_GAP],
+    collectedAt: research.collectedAt,
+  };
+}
+
+function budgetResearchBundle(): ResearchBundle {
+  const research = researchBundle();
+  const base = research.items[0];
+  const plan = buildSearchPlan(research.identity);
+  const searchQuery = (purpose: 'official_products' | 'recruitment' | 'software_ecosystem' | 'expansion_financing'): string => (
+    plan.find(query => query.purpose === purpose)?.Query ?? ''
+  );
+  const item = (overrides: Partial<ResearchItem>): ResearchItem => ({
+    ...base,
+    title: '标题'.repeat(60),
+    summary: '摘要'.repeat(70),
+    content: '正文'.repeat(200),
+    ...overrides,
+  });
+  return {
+    ...research,
+    items: [
+      item({
+        evidenceId: 'qcc-risk-get_company_risk_scan-1', source: 'qcc', sourceKind: 'risk',
+        url: 'https://www.qcc.com/risk', query: null, position: null, logId: null,
+      }),
+      item({
+        evidenceId: 'qcc-ipr-get_patent_info-1', source: 'qcc', sourceKind: 'ipr',
+        url: 'https://www.qcc.com/ipr', query: null, position: null, logId: null,
+      }),
+      item({
+        evidenceId: 'qcc-operation-get_bidding_info-1', source: 'qcc', sourceKind: 'operation',
+        url: 'https://www.qcc.com/bidding', query: null, position: null, logId: null,
+      }),
+      item({
+        evidenceId: 'search-software-1', query: searchQuery('software_ecosystem'),
+        url: 'https://software.example.cn/item',
+      }),
+      item({
+        evidenceId: 'search-financing-1', query: searchQuery('expansion_financing'),
+        url: 'https://finance.example.cn/item',
+      }),
+      item({
+        evidenceId: 'qcc-company-get_company_profile-1', source: 'qcc', sourceKind: 'company',
+        url: 'https://www.qcc.com/profile', query: null, position: null, logId: null,
+      }),
+      item({
+        evidenceId: 'qcc-operation-get_recruitment_info-1', source: 'qcc', sourceKind: 'operation',
+        url: 'https://www.qcc.com/recruitment', query: null, position: null, logId: null,
+      }),
+      item({
+        evidenceId: 'search-official-1', query: searchQuery('official_products'),
+        url: 'https://official.example.cn/item',
+      }),
+      item({
+        evidenceId: 'search-recruitment-1', query: searchQuery('recruitment'),
+        url: 'https://jobs.example.cn/item',
+      }),
+    ],
+  };
+}
+
+function requestResearch(fetchFn: ReturnType<typeof vi.fn<typeof fetch>>): ResearchBundle {
+  const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
+  const userMessage = body.messages.find((message: { role: string }) => message.role === 'user');
+  return JSON.parse(userMessage.content);
 }
 
 function client(fetchFn: typeof fetch): ArkEvidenceService {
@@ -126,12 +207,105 @@ describe('ArkEvidenceService', () => {
       model: 'ep-test',
       messages: [
         { role: 'system', content: ARK_SYSTEM_PROMPT },
-        { role: 'user', content: JSON.stringify(research) },
+        { role: 'user', content: expect.any(String) },
       ],
       response_format: { type: 'json_object' },
       temperature: 0,
     });
+    expect(JSON.parse(body.messages[1].content)).toEqual({
+      ...research,
+      items: [{ ...research.items[0], content: null }],
+    });
     expect(service.extract.length).toBe(1);
+  });
+
+  it('sends four deterministic representative items under the fixed Ark input budget', async () => {
+    const research = budgetResearchBundle();
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
+      responseWithContent(JSON.stringify(factFreeEvidence(research))),
+    );
+
+    await expect(client(fetchFn).extract(research)).resolves.toEqual(factFreeEvidence(research));
+
+    const sent = requestResearch(fetchFn);
+    expect(sent.items.map(item => item.evidenceId)).toEqual([
+      'qcc-company-get_company_profile-1',
+      'qcc-operation-get_recruitment_info-1',
+      'search-official-1',
+      'search-recruitment-1',
+    ]);
+    expect(sent.items).toHaveLength(4);
+    for (const item of sent.items) {
+      expect(item.title.length).toBeLessThanOrEqual(80);
+      expect(item.summary?.length ?? 0).toBeLessThanOrEqual(100);
+      expect(item.content).toBeNull();
+    }
+    const original = research.items.find(item => item.evidenceId === sent.items[0].evidenceId);
+    expect(sent.items[0]).toMatchObject({
+      evidenceId: original?.evidenceId,
+      url: original?.url,
+      originalPublisher: original?.originalPublisher,
+      originalDomain: original?.originalDomain,
+      publishedAt: original?.publishedAt,
+      collectedAt: original?.collectedAt,
+      mentionedName: original?.mentionedName,
+      entityScope: original?.entityScope,
+      entityMatch: original?.entityMatch,
+    });
+    expect(sent.gaps).toContain(ARK_INPUT_BUDGET_GAP);
+  });
+
+  it('fills missing primary categories in the fixed QCC-first fallback order', async () => {
+    const full = budgetResearchBundle();
+    const research = {
+      ...full,
+      items: full.items.filter(item => [
+        'qcc-company-get_company_profile-1',
+        'qcc-risk-get_company_risk_scan-1',
+        'qcc-ipr-get_patent_info-1',
+        'qcc-operation-get_bidding_info-1',
+        'search-software-1',
+        'search-financing-1',
+      ].includes(item.evidenceId)),
+    };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
+      responseWithContent(JSON.stringify(factFreeEvidence(research))),
+    );
+
+    await client(fetchFn).extract(research);
+
+    expect(requestResearch(fetchFn).items.map(item => item.evidenceId)).toEqual([
+      'qcc-company-get_company_profile-1',
+      'qcc-risk-get_company_risk_scan-1',
+      'qcc-ipr-get_patent_info-1',
+      'qcc-operation-get_bidding_info-1',
+    ]);
+  });
+
+  it('validates model provenance against the compact bundle rather than omitted research items', async () => {
+    const research = budgetResearchBundle();
+    const omitted = research.items.find(item => item.evidenceId === 'qcc-risk-get_company_risk_scan-1')!;
+    const invalid: EvidenceBundle = {
+      ...factFreeEvidence(research),
+      evidence: [{
+        evidenceId: omitted.evidenceId,
+        title: omitted.title,
+        url: omitted.url,
+        originalPublisher: omitted.originalPublisher,
+        originalDomain: omitted.originalDomain,
+        publishedAt: omitted.publishedAt,
+        collectedAt: omitted.collectedAt,
+        mentionedName: omitted.mentionedName,
+        entityScope: omitted.entityScope,
+        entityMatch: omitted.entityMatch,
+        matchBasis: omitted.matchBasis,
+      }],
+    };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(responseWithContent(JSON.stringify(invalid)));
+
+    await expect(client(fetchFn).extract(research)).rejects.toMatchObject({
+      name: 'ArkInvalidOutputError', source: 'ark', code: 'INVALID_EVIDENCE',
+    });
   });
 
   it('accepts one outer JSON code fence without weakening validation', async () => {

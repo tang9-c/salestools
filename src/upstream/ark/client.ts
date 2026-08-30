@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { EvidenceBundle, ResearchBundle } from '../../contracts/index.js';
 import { UpstreamError } from '../../orchestration/retry.js';
 import { ArkEvidenceValidationError, validateArkEvidence } from './evidence-validator.js';
+import { compactResearchBundleForArk } from './payload-budget.js';
 import { buildArkMessages } from './prompt.js';
 
 const ArkResponseSchema = z.object({
@@ -57,6 +58,7 @@ export class ArkEvidenceService {
   }
 
   async extract(bundle: ResearchBundle): Promise<EvidenceBundle> {
+    const compactBundle = compactResearchBundleForArk(bundle);
     let response: Response;
     try {
       response = await this.fetchFn(this.options.url, {
@@ -68,7 +70,7 @@ export class ArkEvidenceService {
         },
         body: JSON.stringify({
           model: this.options.model,
-          messages: buildArkMessages(bundle),
+          messages: buildArkMessages(compactBundle),
           response_format: { type: 'json_object' },
           temperature: 0,
         }),
@@ -98,7 +100,7 @@ export class ArkEvidenceService {
 
     const candidate = jsonContent(parsed.data.choices[0].message.content);
     try {
-      return validateArkEvidence(bundle, candidate);
+      return validateArkEvidence(compactBundle, candidate);
     } catch (error) {
       if (error instanceof ArkEvidenceValidationError) {
         throw new ArkInvalidOutputError('INVALID_EVIDENCE', error.message, { cause: error });
