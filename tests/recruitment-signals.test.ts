@@ -114,6 +114,18 @@ describe('招聘信号', () => {
     expect(row?.level).toBe('低');
   });
 
+  it.each([
+    { product: 'creo' as const, statement: '不使用Creo和Pro/E' },
+    { product: 'catia' as const, statement: '无需CATIA及3DEXPERIENCE经验' },
+    { product: 'cst' as const, statement: '未开展射频或天线仿真' },
+    { product: 'windchill' as const, statement: '暂不建设PLM、Windchill以及BOM管理系统' },
+  ])('$product: a controlled enumeration keeps all listed product signals negated', ({ product, statement }) => {
+    const entry = products.find(candidate => candidate.product === product)!;
+    const row = evaluateOpportunities(recruitmentBundle(entry, statement, recent), NOW)
+      .products.find(candidate => candidate.product === product);
+    expect(row?.level).toBe('低');
+  });
+
   it.each(products)('$product: recent direct product naming is a strong scene signal but one publisher is only 中', entry => {
     const result = evaluateOpportunities(recruitmentBundle(entry, `${entry.named}，${entry.method}`, recent), NOW);
     const row = result.products.find(product => product.product === entry.product);

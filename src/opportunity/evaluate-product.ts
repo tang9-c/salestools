@@ -18,6 +18,7 @@ import {
   NEGATIVE_DECISION_PATTERN,
   NEGATIVE_PRODUCT_ACTION_AFTER_PATTERN,
   NEGATIVE_PRODUCT_ACTION_BEFORE_PATTERN,
+  PRODUCT_ENUMERATION_CONNECTOR_PATTERN,
   REPLACEMENT_KEYWORDS,
   type ProductRule,
 } from './product-rules.js';
@@ -86,10 +87,19 @@ function containsAffirmativeKeyword(statement: string, keywords: readonly string
   });
   const maximalOccurrences = occurrences.filter(candidate => !occurrences.some(other =>
     other.start <= candidate.start && other.end >= candidate.end
-      && other.end - other.start > candidate.end - candidate.start));
-  return maximalOccurrences.some(({ start, end }) =>
-    !NEGATIVE_PRODUCT_ACTION_BEFORE_PATTERN.test(text.slice(0, start))
-      && !NEGATIVE_PRODUCT_ACTION_AFTER_PATTERN.test(text.slice(end)));
+      && other.end - other.start > candidate.end - candidate.start))
+    .sort((left, right) => left.start - right.start || right.end - left.end);
+  let previous: Readonly<{ start: number; end: number; negated: boolean }> | undefined;
+  for (const occurrence of maximalOccurrences) {
+    const directlyNegated = NEGATIVE_PRODUCT_ACTION_BEFORE_PATTERN.test(text.slice(0, occurrence.start))
+      || NEGATIVE_PRODUCT_ACTION_AFTER_PATTERN.test(text.slice(occurrence.end));
+    const inheritedNegation = previous?.negated === true
+      && PRODUCT_ENUMERATION_CONNECTOR_PATTERN.test(text.slice(previous.end, occurrence.start));
+    const negated = directlyNegated || inheritedNegation;
+    if (!negated) return true;
+    previous = { ...occurrence, negated };
+  }
+  return false;
 }
 
 function withoutBudgetNegationCorrections(statement: string): string {
@@ -294,7 +304,9 @@ export function evaluateProduct(
   const targetNamed = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(fact.statement, rule.positiveKeywords);
   const methodNamed = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(fact.statement, rule.engineeringMethods);
   const competitorNamed = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(fact.statement, rule.competitorKeywords);
-  const hasProductSignal = (fact: EvidenceFact): boolean => targetNamed(fact) || methodNamed(fact);
+  const hasProductSignal = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(
+    fact.statement, [...rule.positiveKeywords, ...rule.engineeringMethods],
+  );
   const isPositiveProductFact = (fact: EvidenceFact): boolean => {
     if (!['product_scene', 'recruitment', 'software_ecosystem', 'procurement'].includes(fact.kind)) return false;
     return hasProductSignal(fact) && !competitorNamed(fact);

@@ -71,6 +71,9 @@ export const NEGATIVE_PRODUCT_ACTION_BEFORE_PATTERN =
 export const NEGATIVE_PRODUCT_ACTION_AFTER_PATTERN =
   /^[\s，,：:]*(?:(?:停用|已停用|停止使用|不再使用)|(?:计划|后续|拟)(?:停用|停止使用|不再使用))(?:\s|$)/u;
 
+export const PRODUCT_ENUMERATION_CONNECTOR_PATTERN =
+  /^(?:\s*(?:以及|和|及|或|、|，|,)\s*)+$/u;
+
 export const NEGATIVE_BUDGET_PATTERN =
   /(?:(?:无|没有|并无|并非|不具备|不具有|缺少|暂无|未有|未获).{0,8}(?:预算|资金))|(?:(?:预算|资金).{0,6}(?:不足|不充足|未落实|未批准|冻结))/u;
 
@@ -84,7 +87,7 @@ export const NEGATED_REPLACEMENT_PLAN_PATTERN =
   /(?:(?:暂无|尚无|没有).{0,8}(?:替换|替代|迁移|重新选型|重选|换型).{0,4}计划|无(?:替换|替代|迁移|重新选型|重选|换型).{0,4}计划|(?:不计划|未计划|尚未计划|未决定|尚未决定|暂无计划).{0,12}(?:替换|替代|迁移|重新选型|重选|换型))/u;
 
 export const NEGATED_REPLACEMENT_PREFIX_PATTERN =
-  /(?:(?:并未|尚未|暂不)(?:开始|启动|实施|进行|完成|考虑)?|(?:未|不再|(?<!得)不))(?:替换|替代|迁移|重新选型|重选|换型)/u;
+  /(?:(?:并未|尚未|暂不|未|(?<!得)不)(?:开始|启动|实施|进行|完成|考虑)?|不再)(?:替换|替代|迁移|重新选型|重选|换型)/u;
 
 export const NEGATED_REPLACEMENT_COMPLETION_PATTERN =
   /(?:替换|替代|迁移|重新选型|重选|换型)(?:工作|项目|实施)?(?:尚未|并未|暂未)(?:开始|启动|实施|进行|完成|考虑)/u;
