@@ -93,6 +93,27 @@ describe('招聘信号', () => {
     expect(row?.blockers.join('')).toMatch(/siemens nx/i);
   });
 
+  it.each([
+    { product: 'creo' as const, statement: '无需Pro/E但要求Creo' },
+    { product: 'windchill' as const, statement: '不使用旧版PLM但招聘Windchill管理员' },
+  ])('$product: a negative alias does not contaminate a later affirmative alias', ({ product, statement }) => {
+    const entry = products.find(candidate => candidate.product === product)!;
+    const row = evaluateOpportunities(recruitmentBundle(entry, statement, recent), NOW)
+      .products.find(candidate => candidate.product === product);
+    expect(row?.level).toBe('中');
+  });
+
+  it.each([
+    { product: 'creo' as const, statement: '停止使用Creo' },
+    { product: 'creo' as const, statement: 'Creo计划停用' },
+    { product: 'catia' as const, statement: 'CATIA后续不再使用' },
+  ])('$product: controlled pre/post action explicitly stops product use', ({ product, statement }) => {
+    const entry = products.find(candidate => candidate.product === product)!;
+    const row = evaluateOpportunities(recruitmentBundle(entry, statement, recent), NOW)
+      .products.find(candidate => candidate.product === product);
+    expect(row?.level).toBe('低');
+  });
+
   it.each(products)('$product: recent direct product naming is a strong scene signal but one publisher is only 中', entry => {
     const result = evaluateOpportunities(recruitmentBundle(entry, `${entry.named}，${entry.method}`, recent), NOW);
     const row = result.products.find(product => product.product === entry.product);

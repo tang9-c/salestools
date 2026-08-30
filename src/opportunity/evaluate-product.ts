@@ -11,12 +11,13 @@ import {
   BUDGET_NEGATION_CORRECTION_PATTERN,
   CRITICAL_CONFLICT_KEYWORDS,
   GENERAL_BLOCKER_KEYWORDS,
-  NEGATED_REPLACEMENT_PATTERN,
+  NEGATED_REPLACEMENT_COMPLETION_PATTERN,
+  NEGATED_REPLACEMENT_PLAN_PATTERN,
+  NEGATED_REPLACEMENT_PREFIX_PATTERN,
   NEGATIVE_BUDGET_PATTERN,
   NEGATIVE_DECISION_PATTERN,
   NEGATIVE_PRODUCT_ACTION_AFTER_PATTERN,
-  NEGATIVE_PRODUCT_ACTION_PATTERN,
-  POSITIVE_PRODUCT_ACTION_PATTERN,
+  NEGATIVE_PRODUCT_ACTION_BEFORE_PATTERN,
   REPLACEMENT_KEYWORDS,
   type ProductRule,
 } from './product-rules.js';
@@ -76,44 +77,6 @@ function keywordOccurrences(text: string, keyword: string): number[] {
   return starts;
 }
 
-type ActionOccurrence = Readonly<{ start: number; end: number }>;
-
-function actionOccurrences(text: string, pattern: RegExp): ActionOccurrence[] {
-  return [...text.matchAll(new RegExp(pattern.source, pattern.flags))].map(match => ({
-    start: match.index,
-    end: match.index + match[0].length,
-  }));
-}
-
-function precedingActionNegates(
-  text: string,
-  keywordStart: number,
-  relevantOccurrences: readonly ActionOccurrence[],
-): boolean {
-  const prefix = text.slice(0, keywordStart);
-  const boundary = Math.max(
-    prefix.lastIndexOf('，'), prefix.lastIndexOf(','), prefix.lastIndexOf('。'),
-    prefix.lastIndexOf('；'), prefix.lastIndexOf(';'), prefix.lastIndexOf('！'),
-    prefix.lastIndexOf('!'), prefix.lastIndexOf('？'), prefix.lastIndexOf('?'), prefix.lastIndexOf('\n'),
-  );
-  const clause = prefix.slice(boundary + 1);
-  const negativeActions = actionOccurrences(clause, NEGATIVE_PRODUCT_ACTION_PATTERN);
-  const lastNegative = negativeActions.at(-1);
-  if (lastNegative === undefined) return false;
-  const positiveActions = actionOccurrences(clause, POSITIVE_PRODUCT_ACTION_PATTERN)
-    .filter(positive => !negativeActions.some(negative =>
-      positive.start >= negative.start && positive.end <= negative.end));
-  if (positiveActions.some(positive => positive.start >= lastNegative.end)) return false;
-  const clauseOffset = boundary + 1;
-  const firstRelevantStart = relevantOccurrences
-    .map(occurrence => occurrence.start)
-    .filter(start => start >= clauseOffset + lastNegative.end && start <= keywordStart)
-    .sort((left, right) => left - right)[0];
-  if (firstRelevantStart === undefined) return false;
-  const gap = text.slice(clauseOffset + lastNegative.end, firstRelevantStart);
-  return /^[\s：:]*$/u.test(gap);
-}
-
 function containsAffirmativeKeyword(statement: string, keywords: readonly string[]): boolean {
   const text = normalized(statement);
   const occurrences = keywords.flatMap(keyword => {
@@ -125,7 +88,7 @@ function containsAffirmativeKeyword(statement: string, keywords: readonly string
     other.start <= candidate.start && other.end >= candidate.end
       && other.end - other.start > candidate.end - candidate.start));
   return maximalOccurrences.some(({ start, end }) =>
-    !precedingActionNegates(text, start, maximalOccurrences)
+    !NEGATIVE_PRODUCT_ACTION_BEFORE_PATTERN.test(text.slice(0, start))
       && !NEGATIVE_PRODUCT_ACTION_AFTER_PATTERN.test(text.slice(end)));
 }
 
@@ -256,7 +219,10 @@ function negativeSupportKind(fact: EvidenceFact): 'budget' | 'decision' | null {
 
 function explicitReplacement(statement: string): boolean {
   const text = normalized(statement);
-  return containsAny(text, REPLACEMENT_KEYWORDS) && !NEGATED_REPLACEMENT_PATTERN.test(text);
+  const negated = NEGATED_REPLACEMENT_PLAN_PATTERN.test(text)
+    || NEGATED_REPLACEMENT_PREFIX_PATTERN.test(text)
+    || NEGATED_REPLACEMENT_COMPLETION_PATTERN.test(text);
+  return containsAny(text, REPLACEMENT_KEYWORDS) && !negated;
 }
 
 function hasReplacementSignal(

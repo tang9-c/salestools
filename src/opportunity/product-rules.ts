@@ -13,14 +13,14 @@ export const PRODUCT_RULES: readonly ProductRule[] = [
   {
     product: 'windchill', displayName: 'PTC Windchill',
     positiveKeywords: ['ptc windchill', 'windchill', 'plm'],
-    engineeringMethods: ['bom', 'ebom', 'mbom', '变更管理', '配置管理', '产品生命周期', 'plm/erp'],
+    engineeringMethods: ['bom 变更和配置管理', 'bom', 'ebom', 'mbom', '变更管理', '配置管理', '产品生命周期', 'plm/erp'],
     competitorKeywords: ['teamcenter', 'enovia', 'ar・as innovator', 'aras innovator'],
     blockerKeywords: ['集团统一 plm', '长期许可锁定'],
   },
   {
     product: 'feigenbaum_qms', displayName: 'Feigenbaum QMS',
     positiveKeywords: ['feigenbaum qms', 'feigenbaum', 'qms', '质量管理系统'],
-    engineeringMethods: ['capa', '质量追溯', '供应商质量', '质量审计', 'iatf 16949', 'as9100', 'iso 13485'],
+    engineeringMethods: ['capa 与质量追溯', 'capa', '质量追溯', '供应商质量', '质量审计', 'iatf 16949', 'as9100', 'iso 13485'],
     competitorKeywords: ['sap qm', 'mastercontrol', 'etq reliance', 'iqs qms'],
     blockerKeywords: ['集团统一 qms', '长期许可锁定'],
   },
@@ -34,7 +34,7 @@ export const PRODUCT_RULES: readonly ProductRule[] = [
   {
     product: 'catia', displayName: 'Dassault Systèmes CATIA',
     positiveKeywords: ['dassault systèmes catia', 'catia', '3dexperience'],
-    engineeringMethods: ['复杂曲面', '大型装配', '整车建模', '航空建模'],
+    engineeringMethods: ['复杂曲面与大型装配', '复杂曲面', '大型装配', '整车建模', '航空建模'],
     competitorKeywords: ['siemens nx', 'ug nx', 'solid edge'],
     blockerKeywords: ['集团统一 cad', '长期许可锁定'],
   },
@@ -48,7 +48,7 @@ export const PRODUCT_RULES: readonly ProductRule[] = [
   {
     product: 'cst', displayName: 'CST Studio Suite',
     positiveKeywords: ['cst studio suite', 'cst studio', 'cst'],
-    engineeringMethods: ['电磁仿真', '射频', '天线', '雷达', '微波', 'emc', 'emi'],
+    engineeringMethods: ['射频天线 emc/emi 仿真', '电磁仿真', '射频', '天线', '雷达', '微波', 'emc', 'emi'],
     competitorKeywords: ['hfss', 'altair feko', 'keysight ads'],
     blockerKeywords: ['集团统一电磁仿真', '长期许可锁定'],
   },
@@ -65,14 +65,11 @@ export const REPLACEMENT_KEYWORDS = [
   '替换', '替代', '迁移', '重新选型', '重选', '换型',
 ] as const;
 
-export const NEGATIVE_PRODUCT_ACTION_PATTERN =
-  /(?:不使用|未使用|无需|不需要|未开展|没有开展|暂不开展|暂不建设|不建设|未建设|尚未建设|停用|已停用|不再使用)/gu;
-
-export const POSITIVE_PRODUCT_ACTION_PATTERN =
-  /(?:使用|采用|部署|实施|建设|开展|改用|转用|迁移到)/gu;
+export const NEGATIVE_PRODUCT_ACTION_BEFORE_PATTERN =
+  /(?:不使用|未使用|无需|不需要|未开展|没有开展|暂不开展|暂不建设|不建设|未建设|尚未建设|停用|已停用|停止使用|不再使用)[\s：:]*(?:旧版|老版|原有|现有|当前)?[\s：:]*$/u;
 
 export const NEGATIVE_PRODUCT_ACTION_AFTER_PATTERN =
-  /^[\s，,：:]*(?:停用|已停用|不再使用)(?:\s|$)/u;
+  /^[\s，,：:]*(?:(?:停用|已停用|停止使用|不再使用)|(?:计划|后续|拟)(?:停用|停止使用|不再使用))(?:\s|$)/u;
 
 export const NEGATIVE_BUDGET_PATTERN =
   /(?:(?:无|没有|并无|并非|不具备|不具有|缺少|暂无|未有|未获).{0,8}(?:预算|资金))|(?:(?:预算|资金).{0,6}(?:不足|不充足|未落实|未批准|冻结))/u;
@@ -83,8 +80,14 @@ export const BUDGET_NEGATION_CORRECTION_PATTERN =
 export const NEGATIVE_DECISION_PATTERN =
   /(?:无|没有|并无|并非|并不|不具备|不具有|缺少|暂无|未有|未获).{0,12}(?:独立|自主)?.{0,8}(?:采购|决策|审批)(?:权)?/u;
 
-export const NEGATED_REPLACEMENT_PATTERN =
-  /(?:(?:暂无|尚无|没有).{0,8}(?:替换|替代|迁移|重新选型|重选|换型).{0,4}计划|无(?:替换|替代|迁移|重新选型|重选|换型).{0,4}计划|(?:不计划|未计划|尚未计划|未决定|尚未决定|暂无计划).{0,12}(?:替换|替代|迁移|重新选型|重选|换型)|(?:并未|尚未|未|不再|(?<!得)不)(?:替换|替代|迁移|重新选型|重选|换型))/u;
+export const NEGATED_REPLACEMENT_PLAN_PATTERN =
+  /(?:(?:暂无|尚无|没有).{0,8}(?:替换|替代|迁移|重新选型|重选|换型).{0,4}计划|无(?:替换|替代|迁移|重新选型|重选|换型).{0,4}计划|(?:不计划|未计划|尚未计划|未决定|尚未决定|暂无计划).{0,12}(?:替换|替代|迁移|重新选型|重选|换型))/u;
+
+export const NEGATED_REPLACEMENT_PREFIX_PATTERN =
+  /(?:(?:并未|尚未|暂不)(?:开始|启动|实施|进行|完成|考虑)?|(?:未|不再|(?<!得)不))(?:替换|替代|迁移|重新选型|重选|换型)/u;
+
+export const NEGATED_REPLACEMENT_COMPLETION_PATTERN =
+  /(?:替换|替代|迁移|重新选型|重选|换型)(?:工作|项目|实施)?(?:尚未|并未|暂未)(?:开始|启动|实施|进行|完成|考虑)/u;
 
 export const GENERAL_BLOCKER_KEYWORDS = [
   '无预算', '没有预算', '预算冻结', '暂停采购', '暂无采购计划', '无采购计划',
