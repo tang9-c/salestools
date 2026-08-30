@@ -5,6 +5,7 @@ import { OpportunityLevelSchema } from './opportunity.js';
 import { ResearchSourceStatusSchema } from './research.js';
 
 export * from './identity.js';
+export * from './gaps.js';
 export * from './research.js';
 export * from './evidence.js';
 export * from './opportunity.js';

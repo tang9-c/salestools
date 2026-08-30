@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ProductKeySchema,
+  qccUnavailableLinkAuditGap,
   ReportModelSchema,
   type EvidenceBundle,
   type EvidenceFact,
@@ -416,7 +417,7 @@ describe('assessment report', () => {
       )],
       financingRecords: [],
       conflicts: [],
-      gaps: ['企查查来源链接不可用：qcc-only'],
+      gaps: [qccUnavailableLinkAuditGap('qcc-only')],
     });
     const result = assessment();
     result.products = result.products.map(row => ({ ...row, evidenceIds: ['qcc-only'] }));
@@ -461,7 +462,7 @@ describe('assessment report', () => {
       )],
       financingRecords: [],
       conflicts: [],
-      gaps: ['企查查来源链接不可用：industry-without-link'],
+      gaps: [qccUnavailableLinkAuditGap('industry-without-link')],
     });
     const result = assessment();
     result.products = result.products.map(row => ({

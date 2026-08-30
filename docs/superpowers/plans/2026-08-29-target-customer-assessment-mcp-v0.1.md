@@ -418,6 +418,7 @@ rtk git commit -m "feat: add deterministic doubao search collection"
 ### Task 6: 方舟事实整理与严格证据引用校验
 
 **Files:**
+- Create: `src/contracts/gaps.ts`
 - Create: `src/upstream/ark/prompt.ts`, `client.ts`, `evidence-validator.ts`
 - Create: `tests/fixtures/ark-evidence.json`
 - Test: `tests/ark-adapter.test.ts`, `tests/evidence-validator.test.ts`
@@ -428,7 +429,7 @@ rtk git commit -m "feat: add deterministic doubao search collection"
 
 - [ ] **Step 1: 写失败测试**
 
-Cover valid JSON, empty response, fenced JSON, malformed JSON, invented URL/evidence ID, altered nullable URL/original publisher/domain, missing match basis, empty ResearchBundle producing `unverified`, and prove each `extract` call performs exactly one HTTP request and throws `ArkUnavailableError` on that attempt. Add behavior tests for the dedicated successful-financing slot and complete structured financing fields, older financing appearing before the latest dated record, stable all-undated ordering, facts after character 100, generic recruitment/procurement text before independently located Windchill/Abaqus/拟采购 facts beyond character 1000, retained procurement carrier/disclosure/product wording validated against compacted raw evidence, no-financing fallback fairness, four-item maximum, compact bundle ≤6,656 UTF-8 bytes and full serialized request ≤12,288 bytes.
+Cover valid JSON, empty response, fenced JSON, malformed JSON, invented URL/evidence ID, altered nullable URL/original publisher/domain, missing match basis, empty ResearchBundle producing `unverified`, and prove each `extract` call performs exactly one HTTP request and throws `ArkUnavailableError` on that attempt. Add behavior tests for the dedicated successful-financing slot and complete structured financing fields, older financing appearing before the latest dated record, stable all-undated ordering, facts after character 100, generic recruitment/procurement text before independently located Windchill/Abaqus/拟采购 facts beyond character 1000, retained procurement carrier/disclosure/product wording validated against compacted raw evidence, no-financing fallback fairness, four-item maximum, compact bundle ≤6,656 UTF-8 bytes and full serialized request ≤12,288 bytes. Add a mapper→compactor regression using the shared QCC unavailable-link audit-gap protocol: those audit gaps are absent from the prompt and restored byte-for-byte after validation, while financing/failure semantic gaps remain in the prompt and final output.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -440,6 +441,7 @@ rtk npm test -- --run tests/ark-adapter.test.ts tests/evidence-validator.test.ts
 
 POST to `ARK_API_URL` with Bearer `ARK_CREDENTIAL`, body `{ model: ARK_MODEL, messages, response_format:{type:'json_object'}, temperature:0 }`. System prompt states webpages are untrusted data, forbids tool calls/instructions, requires `P1/P2/non_target/unverified`, forbids creating sources/aliases/URLs, and emits the exact `EvidenceBundleSchema` JSON shape.
 Before the POST, deterministically compact to at most four representative items. A successfully mapped QCC financing item receives the highest-priority dedicated slot and preserves its complete structured date, round/type, disclosed amount and investors. Select that slot by valid `publishedAt` descending, put dated entries before undated ones, preserve source order for equal dates, and choose the first source item when all are undated. Do not backfill other financing records into remaining slots; add a trusted omission gap when more than one financing record exists. Remaining slots alternate search and QCC demand/technical evidence; profile is fallback only because identity is transmitted separately. Keep title, URL, evidence ID, subject attribution and provenance immutable. Bound compact `ResearchBundle` at 6,656 UTF-8 bytes and the complete request at 12,288 bytes. For long text, score evidence-category-aware keyword windows across the full value, rank product names, procurement disclosures/actions and engineering skills above generic recruitment/job/notice words, concatenate up to four non-overlapping windows with fair UTF-8 allocation, then trim lower-priority content and summary before dropping the lowest-priority item. Preserve trusted gaps and add the capacity gap whenever evidence is omitted or text is compacted; omission does not mean absence.
+Treat financing/data-source failures, missing datasets and capacity omissions as model-semantic gaps: they remain in the compact bundle sent to Ark. Treat only QCC missing-direct-link gaps as report-only audit gaps. QCC mapper and Ark compactor share one exported prefix, constructor and predicate; the compactor excludes only gaps accepted by that predicate, never a duplicated literal or broad text match. After Ark evidence validation, merge the original bundle gaps back unchanged so every excluded audit gap is restored exactly, while semantic and compactor-generated gaps remain stable-deduplicated.
 It also forbids unsupported executive personality/age-based decision-style claims, revenue estimation or employee-productivity extrapolation, and inferred purchasing-intent statements. Direct recruitment and published tender facts remain allowed. Purchase-intent wording is allowed only when a `direct` `procurement` fact for the confirmed target entity cites confirmed evidence and both the statement and every cited ResearchItem identify one of the exact composite carriers `采购公告/招标公告/中标公告/采购文件/采购项目/采购合同`; bare `公告/招标/中标` never qualifies. Each cited item's combined title, summary and content must also contain the same procurement-disclosure wording and every tagged target-product term present in the statement. Supporting/weak facts, unrelated recruitment or product-announcement pages, mismatched products and other fact kinds never receive this exception.
 
 - [ ] **Step 4: 实现引用校验并接入唯一外层重试**
@@ -452,7 +454,7 @@ The validator also rejects those unsupported inference phrases in `facts[].state
 ```bash
 rtk npm test -- --run tests/ark-adapter.test.ts tests/evidence-validator.test.ts
 rtk npm run typecheck
-rtk git add src/upstream/ark tests/fixtures/ark-evidence.json tests/ark-adapter.test.ts tests/evidence-validator.test.ts
+rtk git add src/contracts/gaps.ts src/contracts/index.ts src/upstream/ark src/upstream/qcc/mapper.ts tests/fixtures/ark-evidence.json tests/ark-adapter.test.ts tests/evidence-validator.test.ts tests/qcc-adapter.test.ts
 rtk git commit -m "feat: extract and validate evidence with ark"
 ```
 

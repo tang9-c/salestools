@@ -1,4 +1,9 @@
-import { ResearchBundleSchema, type ResearchBundle, type ResearchItem } from '../../contracts/index.js';
+import {
+  isQccUnavailableLinkAuditGap,
+  ResearchBundleSchema,
+  type ResearchBundle,
+  type ResearchItem,
+} from '../../contracts/index.js';
 import { buildSearchPlan, type SearchQuery } from '../search/search-plan.js';
 
 export const ARK_INPUT_BUDGET_GAP = '方舟输入受网关容量限制，仅选取4条代表证据，未选数据不代表不存在';
@@ -13,7 +18,6 @@ const INITIAL_SUPPORT_CONTENT_BYTES = 1_024;
 const SHRINK_STEP_BYTES = 256;
 const MAX_EXCERPT_WINDOWS = 4;
 const MIN_WINDOW_BYTES = 256;
-const QCC_UNAVAILABLE_LINK_GAP_PREFIX = '企查查来源链接不可用：';
 
 type EvidenceTextCategory = 'financing' | 'procurement' | 'recruitment' | 'technical' | 'support';
 
@@ -351,7 +355,7 @@ function materialize(
     ...bundle,
     items: states.map(state => state.item),
     gaps: [...new Set([
-      ...bundle.gaps.filter(gap => !gap.startsWith(QCC_UNAVAILABLE_LINK_GAP_PREFIX)),
+      ...bundle.gaps.filter(gap => !isQccUnavailableLinkAuditGap(gap)),
       ...(includeCapacityGap ? [ARK_INPUT_BUDGET_GAP] : []),
       ...(includeHistoricalFinancingGap ? [ARK_HISTORICAL_FINANCING_GAP] : []),
     ])],

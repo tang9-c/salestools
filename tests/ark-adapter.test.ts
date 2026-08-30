@@ -1,6 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import type { EvidenceBundle, ResearchBundle, ResearchItem } from '../src/contracts/index.js';
+import {
+  isQccUnavailableLinkAuditGap,
+  QCC_UNAVAILABLE_LINK_AUDIT_GAP_PREFIX,
+  qccUnavailableLinkAuditGap,
+  type EvidenceBundle,
+  type ResearchBundle,
+  type ResearchItem,
+} from '../src/contracts/index.js';
 import {
   ArkEvidenceService,
   ArkInvalidOutputError,
@@ -12,6 +19,7 @@ import {
   ARK_REQUEST_MAX_BYTES,
 } from '../src/upstream/ark/payload-budget.js';
 import { ARK_SYSTEM_PROMPT } from '../src/upstream/ark/prompt.js';
+import { mapQccToolResult } from '../src/upstream/qcc/mapper.js';
 import { buildSearchPlan } from '../src/upstream/search/search-plan.js';
 
 const ARK_INPUT_BUDGET_GAP = '方舟输入受网关容量限制，仅选取4条代表证据，未选数据不代表不存在';
@@ -539,14 +547,28 @@ describe('ArkEvidenceService', () => {
     expect(sent.items.every(item => !item.title.endsWith('\uFFFD'))).toBe(true);
   });
 
-  it('keeps repetitive unavailable-link audit gaps out of the prompt budget but returns them unchanged', async () => {
+  it('uses the shared mapper-to-compactor audit-gap protocol and restores exact gaps after validation', async () => {
     const research = budgetResearchBundle();
-    const unavailableLinkGaps = Array.from(
-      { length: 120 },
-      (_, index) => `企查查来源链接不可用：qcc-evidence-${index}`,
+    const mapped = mapQccToolResult(
+      'risk',
+      'get_company_risk_scan',
+      {
+        Data: Array.from({ length: 120 }, (_, index) => ({
+          RiskCount: index + 1,
+          Summary: `第 ${index + 1} 条待复核风险`,
+        })),
+      },
+      research.identity,
+      new Date(research.collectedAt),
     );
     const financingGap = '融资结果无法结构化验证（适配器契约缺口）';
-    research.gaps = [financingGap, ...unavailableLinkGaps];
+    const sourceFailureGap = 'get_annual_reports调用失败：REMOTE_PROTOCOL_ERROR';
+    expect(QCC_UNAVAILABLE_LINK_AUDIT_GAP_PREFIX).toBeTypeOf('string');
+    expect(qccUnavailableLinkAuditGap(mapped.items[0]!.evidenceId)).toBe(mapped.gaps[0]);
+    expect(mapped.gaps).toHaveLength(120);
+    expect(mapped.gaps.every(isQccUnavailableLinkAuditGap)).toBe(true);
+    research.items = mapped.items;
+    research.gaps = [financingGap, sourceFailureGap, ...mapped.gaps];
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
       responseWithContent(JSON.stringify(factFreeEvidence(research))),
     );
@@ -556,8 +578,9 @@ describe('ArkEvidenceService', () => {
     const sent = requestResearch(fetchFn);
     expect(Buffer.byteLength(JSON.stringify(sent), 'utf8')).toBeLessThanOrEqual(ARK_COMPACT_BUNDLE_MAX_BYTES);
     expect(sent.gaps).toContain(financingGap);
-    expect(sent.gaps).not.toContain(unavailableLinkGaps[0]);
-    expect(output.gaps).toEqual(expect.arrayContaining([financingGap, ...unavailableLinkGaps]));
+    expect(sent.gaps).toContain(sourceFailureGap);
+    expect(sent.gaps.some(isQccUnavailableLinkAuditGap)).toBe(false);
+    expect(output.gaps).toEqual(expect.arrayContaining([financingGap, sourceFailureGap, ...mapped.gaps]));
   });
 
   it.each([

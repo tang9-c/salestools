@@ -6,7 +6,11 @@ import {
   UnauthorizedError,
 } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
-import type { IdentityProfile } from '../src/contracts/index.js';
+import {
+  isQccUnavailableLinkAuditGap,
+  qccUnavailableLinkAuditGap,
+  type IdentityProfile,
+} from '../src/contracts/index.js';
 import { CallBudget } from '../src/orchestration/call-budget.js';
 import { UpstreamError } from '../src/orchestration/retry.js';
 import {
@@ -204,7 +208,7 @@ describe('QCC mapping and formal collection', () => {
     });
     expect(financing.items[0].url).toBe('https://www.qcc.com/example/financing-1');
     expect(financing.items[1].url).toBeNull();
-    expect(financing.gaps).toContain('企查查来源链接不可用：qcc-operation-get_financing_records-2');
+    expect(financing.gaps).toContain(qccUnavailableLinkAuditGap('qcc-operation-get_financing_records-2'));
   });
 
   it('normalizes the real QCC Chinese formal-response shapes conservatively', () => {
@@ -255,7 +259,7 @@ describe('QCC mapping and formal collection', () => {
     });
     for (const mapped of [profile, risk, patent, recruitment, bidding]) {
       expect(mapped.items.every(item => item.url === null)).toBe(true);
-      expect(mapped.gaps.some(gap => gap.includes('来源链接不可用'))).toBe(true);
+      expect(mapped.gaps.some(isQccUnavailableLinkAuditGap)).toBe(true);
     }
     expect(financing.items).toEqual([]);
     expect(financing.gaps).toContain('get_financing_records未查到或未披露数据');
@@ -286,7 +290,7 @@ describe('QCC mapping and formal collection', () => {
     }, identity, new Date('2026-08-29T12:00:00.000Z'));
 
     expect(mapped.items[0]?.url).toBeNull();
-    expect(mapped.gaps).toContain('企查查来源链接不可用：qcc-risk-get_company_risk_scan-1');
+    expect(mapped.gaps).toContain(qccUnavailableLinkAuditGap('qcc-risk-get_company_risk_scan-1'));
   });
 
   it('maps the sanitized real Chinese shareholder response', () => {

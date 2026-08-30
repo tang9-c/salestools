@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   BasicProfileSchema,
   IdentityProfileSchema,
+  qccUnavailableLinkAuditGap,
   ResearchItemSchema,
   type BasicProfile,
   type IdentityProfile,
@@ -1069,6 +1070,6 @@ export function mapQccToolResult(
     items,
     gaps: items
       .filter(item => item.url === null)
-      .map(item => `企查查来源链接不可用：${item.evidenceId}`),
+      .map(item => qccUnavailableLinkAuditGap(item.evidenceId)),
   };
 }
