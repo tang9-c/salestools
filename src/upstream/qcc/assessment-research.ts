@@ -1,6 +1,6 @@
 import type { IdentityProfile, ResearchItem, ResearchSourceStatus } from '../../contracts/index.js';
 import type { CallBudget } from '../../orchestration/call-budget.js';
-import { retryOnce, type RetryResult } from '../../orchestration/retry.js';
+import { retryOnce, type RetryOptions, type RetryResult } from '../../orchestration/retry.js';
 import { mapQccToolResult, type MappedQccResult } from './mapper.js';
 import type { QccServer } from './tool-allowlist.js';
 
@@ -50,7 +50,11 @@ export class QccResearchCollector {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async collectQccResearch(identity: IdentityProfile, budget: CallBudget): Promise<SourceCollection> {
+  async collectQccResearch(
+    identity: IdentityProfile,
+    budget: CallBudget,
+    retryOptions: RetryOptions = {},
+  ): Promise<SourceCollection> {
     const items: ResearchItem[] = [];
     const gaps: string[] = [];
     const errors: string[] = [];
@@ -69,6 +73,7 @@ export class QccResearchCollector {
         identity,
         this.now(),
       ),
+      retryOptions,
     );
 
     const accept = (call: PlannedCall, result: RetryResult<MappedQccResult>): void => {

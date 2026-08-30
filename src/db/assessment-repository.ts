@@ -61,6 +61,7 @@ export interface AssessmentRecord {
 
 export interface AssessmentReuseResult {
   record: AssessmentRecord;
+  created: boolean;
   cacheHit: boolean;
   cachedAt: string | null;
 }
@@ -130,7 +131,7 @@ export class AssessmentRepository {
       `).get(input.creditCode) as unknown as AssessmentRow | undefined;
       if (processing !== undefined) {
         this.database.exec('COMMIT');
-        return { record: toRecord(processing), cacheHit: false, cachedAt: null };
+        return { record: toRecord(processing), created: false, cacheHit: false, cachedAt: null };
       }
 
       if (!forceRefresh) {
@@ -144,7 +145,7 @@ export class AssessmentRepository {
         if (completed !== undefined) {
           const record = toRecord(completed);
           this.database.exec('COMMIT');
-          return { record, cacheHit: true, cachedAt: record.completedAt };
+          return { record, created: false, cacheHit: true, cachedAt: record.completedAt };
         }
       }
 
@@ -156,7 +157,7 @@ export class AssessmentRepository {
       `).run(assessmentId, input.creditCode, input.requestedBy, input.legalName, input.creditCode, createdAt);
       const record = this.getRequired(assessmentId);
       this.database.exec('COMMIT');
-      return { record, cacheHit: false, cachedAt: null };
+      return { record, created: true, cacheHit: false, cachedAt: null };
     } catch (error) {
       this.database.exec('ROLLBACK');
       throw error;
