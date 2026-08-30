@@ -85,7 +85,9 @@ export class QccResearchCollector {
       if (result.status === 'failed') {
         failedCalls += 1;
         if (result.error.code === 'BUDGET_EXHAUSTED') stoppedByBudget = true;
-        gaps.push(call.failureGap);
+        gaps.push(call.tool === 'get_financing_records' && result.error.code === 'UNMAPPABLE_DATASET'
+          ? '融资结果无法结构化验证（适配器契约缺口）'
+          : call.failureGap);
         errors.push(safeUpstreamErrorMessage('qcc', result.error.code));
         return;
       }

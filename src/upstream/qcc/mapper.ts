@@ -12,10 +12,177 @@ import type { QccServer } from './tool-allowlist.js';
 
 const RawRootSchema = z.object({ Data: z.unknown() }).passthrough();
 const RawRecordSchema = z.record(z.string(), z.unknown());
+const RequiredChineseStringSchema = z.string().trim().min(1);
+const OptionalChineseStringSchema = RequiredChineseStringSchema.optional();
 
 function nonBlank(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
+
+export function normalizeQccLegalName(value: string): string {
+  return value
+    .trim()
+    .normalize('NFKC')
+    .replace(/\s+/gu, '')
+    .replace(/[A-Z]/g, character => character.toLowerCase());
+}
+
+const ChineseRegistrationSchema = z.object({
+  企业名称: RequiredChineseStringSchema,
+  统一社会信用代码: RequiredChineseStringSchema,
+  登记状态: OptionalChineseStringSchema,
+  注册地址: OptionalChineseStringSchema,
+  所属地区: OptionalChineseStringSchema,
+  企业类型: OptionalChineseStringSchema,
+  成立日期: OptionalChineseStringSchema,
+  注册资本: OptionalChineseStringSchema,
+  法定代表人: OptionalChineseStringSchema,
+  国标行业: OptionalChineseStringSchema,
+  人员规模: OptionalChineseStringSchema,
+}).passthrough().refine(record => [
+  record.登记状态,
+  record.注册地址,
+  record.所属地区,
+  record.企业类型,
+  record.成立日期,
+  record.注册资本,
+  record.法定代表人,
+  record.国标行业,
+  record.人员规模,
+].some(nonBlank));
+
+const ChineseProfileSchema = z.object({
+  企业名称: RequiredChineseStringSchema,
+  统一社会信用代码: OptionalChineseStringSchema,
+  企查查行业: OptionalChineseStringSchema,
+  简介: OptionalChineseStringSchema,
+  产业链概览: OptionalChineseStringSchema,
+  人员规模: OptionalChineseStringSchema,
+  网址: OptionalChineseStringSchema,
+}).passthrough().refine(record => [
+  record.企查查行业,
+  record.简介,
+  record.产业链概览,
+  record.人员规模,
+  record.网址,
+].some(nonBlank));
+
+const ChinesePhoneSchema = z.object({ 电话号码: RequiredChineseStringSchema }).passthrough();
+const ChineseWebsiteSchema = z.object({ 网址: RequiredChineseStringSchema }).passthrough();
+const ChineseEmailSchema = z.object({ 邮箱: RequiredChineseStringSchema }).passthrough();
+
+const ChineseContactSchema = z.object({
+  企业名称: RequiredChineseStringSchema,
+  统一社会信用代码: OptionalChineseStringSchema,
+  联系方式信息: z.object({
+    电话: z.array(ChinesePhoneSchema).optional(),
+    网址: z.array(ChineseWebsiteSchema).optional(),
+    邮箱: z.array(ChineseEmailSchema).optional(),
+  }).passthrough(),
+}).passthrough().refine(record => [
+  record.联系方式信息.电话,
+  record.联系方式信息.网址,
+  record.联系方式信息.邮箱,
+].some(values => Array.isArray(values) && values.length > 0));
+
+const ChineseRiskSchema = z.object({
+  企业名称: RequiredChineseStringSchema,
+  统一社会信用代码: OptionalChineseStringSchema,
+  摘要: OptionalChineseStringSchema,
+  有记录因子数: z.number().finite().optional(),
+  无记录因子数: z.number().finite().optional(),
+  风险因子扫描: z.array(z.unknown()).optional(),
+}).passthrough().refine(record => nonBlank(record.摘要)
+  || typeof record.有记录因子数 === 'number'
+  || typeof record.无记录因子数 === 'number'
+  || (record.风险因子扫描?.length ?? 0) > 0);
+
+const ChinesePatentRecordSchema = z.object({
+  发明名称: OptionalChineseStringSchema,
+  专利类型: OptionalChineseStringSchema,
+  申请号: OptionalChineseStringSchema,
+  申请日期: OptionalChineseStringSchema,
+  法律状态: OptionalChineseStringSchema,
+}).passthrough().refine(record => nonBlank(record.发明名称) || nonBlank(record.申请号));
+
+const ChinesePatentSchema = z.object({
+  企业名称: RequiredChineseStringSchema,
+  统一社会信用代码: OptionalChineseStringSchema,
+  专利信息: z.array(ChinesePatentRecordSchema),
+}).passthrough();
+
+const ChineseRecruitmentRecordSchema = z.object({
+  招聘职位: RequiredChineseStringSchema,
+  发布日期: OptionalChineseStringSchema,
+  月薪: OptionalChineseStringSchema,
+  学历: OptionalChineseStringSchema,
+  经验: OptionalChineseStringSchema,
+  办公地点: OptionalChineseStringSchema,
+}).passthrough();
+
+const ChineseRecruitmentSchema = z.object({
+  企业名称: RequiredChineseStringSchema,
+  统一社会信用代码: OptionalChineseStringSchema,
+  招聘信息: z.array(ChineseRecruitmentRecordSchema),
+}).passthrough();
+
+const ChineseBiddingRecordSchema = z.object({
+  项目名称: RequiredChineseStringSchema,
+  发布日期: OptionalChineseStringSchema,
+  中标金额: OptionalChineseStringSchema,
+  招采单位: z.array(z.string()).optional(),
+  中标单位: z.array(z.string()).optional(),
+}).passthrough();
+
+const ChineseBiddingSchema = z.object({
+  企业名称: RequiredChineseStringSchema,
+  统一社会信用代码: OptionalChineseStringSchema,
+  招投标信息: z.array(ChineseBiddingRecordSchema),
+}).passthrough();
+
+const ChineseFinancingRecordSchema = z.object({
+  融资日期: OptionalChineseStringSchema,
+  日期: OptionalChineseStringSchema,
+  融资轮次: OptionalChineseStringSchema,
+  轮次: OptionalChineseStringSchema,
+  融资类型: OptionalChineseStringSchema,
+  类型: OptionalChineseStringSchema,
+  融资金额: OptionalChineseStringSchema,
+  金额: OptionalChineseStringSchema,
+  投资方: z.array(z.string()).optional(),
+  来源链接: OptionalChineseStringSchema,
+  链接: OptionalChineseStringSchema,
+}).passthrough().refine(record => [
+  record.融资日期,
+  record.日期,
+  record.融资轮次,
+  record.轮次,
+  record.融资类型,
+  record.类型,
+  record.融资金额,
+  record.金额,
+].some(nonBlank) || (record.投资方?.some(nonBlank) ?? false));
+
+const ChineseFinancingSchema = z.object({
+  企业名称: RequiredChineseStringSchema,
+  统一社会信用代码: OptionalChineseStringSchema,
+  融资信息: z.array(RawRecordSchema).optional(),
+  搜索结果: OptionalChineseStringSchema,
+}).passthrough().refine(record => Array.isArray(record.融资信息) || nonBlank(record.搜索结果));
+
+const ChineseCandidateSchema = z.object({
+  企业名称: RequiredChineseStringSchema,
+  统一社会信用代码: RequiredChineseStringSchema,
+  登记状态: OptionalChineseStringSchema,
+  注册地址: OptionalChineseStringSchema,
+}).passthrough();
+
+const ChineseCompanySearchSchema = z.object({
+  企业信息: z.union([ChineseCandidateSchema, z.array(ChineseCandidateSchema)]),
+  匹配结果: OptionalChineseStringSchema,
+  摘要: OptionalChineseStringSchema,
+  检索关键字: OptionalChineseStringSchema,
+}).passthrough();
 
 const OptionalStringSchema = z.string().nullable().optional();
 const OptionalNumberSchema = z.number().nullable().optional();
@@ -24,6 +191,38 @@ const OptionalDateSchema = OptionalStringSchema.refine(
   value => value == null || !nonBlank(value) || dateTimestamp(value) !== null,
 );
 
+const RegistrationRecordSchema = z.object({
+  Name: z.string().trim().min(1),
+  CreditCode: z.string().trim().min(1),
+  Status: OptionalStringSchema,
+  Address: OptionalStringSchema,
+  Province: OptionalStringSchema,
+  EconKind: OptionalStringSchema,
+  StartDate: OptionalStringSchema,
+  RegistCapi: OptionalStringSchema,
+  OperName: OptionalStringSchema,
+  Industry: OptionalStringSchema,
+  EmployeeRange: OptionalStringSchema,
+}).passthrough().refine(record => [
+  record.Status,
+  record.Address,
+  record.Province,
+  record.EconKind,
+  record.StartDate,
+  record.RegistCapi,
+  record.OperName,
+  record.Industry,
+  record.EmployeeRange,
+].some(nonBlank));
+
+const ContactRecordSchema = z.object({
+  Name: OptionalStringSchema,
+  CreditCode: OptionalStringSchema,
+  Website: OptionalStringSchema,
+  Phone: OptionalStringSchema,
+  Email: OptionalStringSchema,
+}).passthrough().refine(record => [record.Website, record.Phone, record.Email].some(nonBlank));
+
 const FormalProfileRecordSchema = z.object({
   Name: OptionalStringSchema,
   Industry: OptionalStringSchema,
@@ -31,7 +230,9 @@ const FormalProfileRecordSchema = z.object({
   EmployeeRange: OptionalStringSchema,
   Website: OptionalStringSchema,
   Url: OptionalUrlSchema,
-}).passthrough().refine(record => [record.Name, record.Industry, record.Introduction].some(nonBlank));
+}).passthrough().refine(record => [
+  record.Industry, record.Introduction, record.EmployeeRange, record.Website,
+].some(nonBlank));
 
 const FinancingRecordSchema = z.object({
   Date: OptionalDateSchema,
@@ -138,6 +339,10 @@ function invalidResponse(message: string, cause?: unknown): UpstreamError {
   return new UpstreamError('qcc', 'INVALID_RESPONSE', message, cause === undefined ? undefined : { cause });
 }
 
+function unmappableDataset(message: string): UpstreamError {
+  return new UpstreamError('qcc', 'UNMAPPABLE_DATASET', message);
+}
+
 function unwrapPayload(payload: unknown): unknown {
   if (typeof payload === 'object' && payload !== null && 'structuredContent' in payload) {
     return (payload as { structuredContent?: unknown }).structuredContent;
@@ -175,16 +380,69 @@ function recordsOf(payload: unknown): Record<string, unknown>[] {
   return parsed.data;
 }
 
-export function validateQccPayload(payload: unknown): unknown {
+interface ExpectedQccSubject {
+  legalName: string;
+  creditCode: string;
+}
+
+function assertExpectedSubject(record: Record<string, unknown>, expected: ExpectedQccSubject): void {
+  const legalName = stringValueFrom(record, ['Name', '企业名称']);
+  if (legalName !== null && normalizeQccLegalName(legalName) !== normalizeQccLegalName(expected.legalName)) {
+    throw new UpstreamError('qcc', 'SUBJECT_MISMATCH', 'QCC legal name does not match the confirmed subject');
+  }
+  const creditCode = stringValueFrom(record, ['CreditCode', '统一社会信用代码']);
+  if (creditCode !== null && creditCode.trim().toUpperCase() !== expected.creditCode.trim().toUpperCase()) {
+    throw new UpstreamError('qcc', 'SUBJECT_MISMATCH', 'QCC credit code does not match the confirmed subject');
+  }
+}
+
+function validateStandardProfileDetail(tool: string, record: Record<string, unknown>): void {
+  const schema = tool === 'get_company_registration_info'
+    ? RegistrationRecordSchema
+    : tool === 'get_company_profile'
+      ? FormalProfileRecordSchema
+      : tool === 'get_contact_info'
+        ? ContactRecordSchema
+        : tool === 'get_company_risk_scan'
+          ? RiskRecordSchema
+          : null;
+  if (schema === null || !schema.safeParse(record).success) {
+    throw invalidResponse(`QCC ${tool} profile detail has an unsupported shape`);
+  }
+}
+
+function validateChineseProfileDetail(tool: string, record: Record<string, unknown>): void {
+  const schema = tool === 'get_company_registration_info'
+    ? ChineseRegistrationSchema
+    : tool === 'get_company_profile'
+      ? ChineseProfileSchema
+      : tool === 'get_contact_info'
+        ? ChineseContactSchema
+        : tool === 'get_company_risk_scan'
+          ? ChineseRiskSchema
+          : null;
+  if (schema === null || !schema.safeParse(record).success) {
+    throw invalidResponse(`QCC ${tool} Chinese profile detail has an unsupported shape`);
+  }
+}
+
+export function validateQccPayload(
+  tool: string,
+  payload: unknown,
+  expected: ExpectedQccSubject,
+): unknown {
   const unwrapped = unwrapPayload(payload);
   if (RawRootSchema.safeParse(unwrapped).success) {
-    recordsOf(payload);
+    const records = recordsOf(payload);
+    if (records.length !== 1) throw invalidResponse(`QCC ${tool} must return one profile detail`);
+    validateStandardProfileDetail(tool, records[0]);
+    assertExpectedSubject(records[0], expected);
     return payload;
   }
   const chinese = RawRecordSchema.safeParse(unwrapped);
-  if (!chinese.success || (!Object.hasOwn(chinese.data, '企业名称') && !Object.hasOwn(chinese.data, '企业信息'))) {
-    throw invalidResponse('QCC result has an unsupported shape');
-  }
+  if (!chinese.success) throw invalidResponse('QCC result has an unsupported shape');
+  validateChineseProfileDetail(tool, chinese.data);
+  assertExpectedSubject(chinese.data, expected);
   return payload;
 }
 
@@ -254,24 +512,20 @@ function safeUrl(value: string | null): string {
 
 export function mapCompanyCandidates(payload: unknown): MappedCandidate[] {
   const unwrapped = unwrapPayload(payload);
-  const chinese = RawRecordSchema.safeParse(unwrapped);
-  if (chinese.success && Object.hasOwn(chinese.data, '企业信息')) {
-    const rawInformation = chinese.data['企业信息'];
-    const information = Array.isArray(rawInformation) ? rawInformation : [rawInformation];
-    const parsed = z.array(RawRecordSchema).safeParse(information);
-    if (!parsed.success) throw invalidResponse('QCC company information has an unsupported shape');
-    const matchReason = stringValue(chinese.data, '匹配结果') ?? '企查查名称查询匹配';
-    return parsed.data.map(record => {
-      const legalName = stringValue(record, '企业名称');
-      const creditCode = stringValue(record, '统一社会信用代码');
-      if (legalName === null || creditCode === null) {
-        throw invalidResponse('QCC candidate is missing legal name or credit code');
-      }
+  const rawChinese = RawRecordSchema.safeParse(unwrapped);
+  if (rawChinese.success && Object.hasOwn(rawChinese.data, '企业信息')) {
+    const chinese = ChineseCompanySearchSchema.safeParse(unwrapped);
+    if (!chinese.success) throw invalidResponse('QCC company search has an unsupported shape');
+    const information = Array.isArray(chinese.data.企业信息)
+      ? chinese.data.企业信息
+      : [chinese.data.企业信息];
+    const matchReason = chinese.data.匹配结果 ?? '企查查名称查询匹配';
+    return information.map(record => {
       return {
-        legalName,
-        creditCode,
-        status: stringValue(record, '登记状态'),
-        registeredAddress: stringValue(record, '注册地址'),
+        legalName: record.企业名称,
+        creditCode: record.统一社会信用代码,
+        status: record.登记状态 ?? null,
+        registeredAddress: record.注册地址 ?? null,
         matchReason,
       };
     });
@@ -318,6 +572,16 @@ export function mapCompanyDetails(
   riskPayload: unknown | null,
   collectedAt: Date,
 ): MappedCompanyDetails {
+  const details = [
+    ['get_company_registration_info', registrationPayload],
+    ['get_company_profile', profilePayload],
+    ['get_contact_info', contactPayload],
+    ['get_company_risk_scan', riskPayload],
+  ] as const;
+  for (const [tool, payload] of details) {
+    if (payload === null) throw invalidResponse(`QCC ${tool} profile detail is unavailable`);
+    validateQccPayload(tool, payload, candidate);
+  }
   const registration = firstRecord(registrationPayload);
   const profile = firstRecord(profilePayload);
   const contact = firstRecord(contactPayload);
@@ -564,72 +828,123 @@ function safeMappedRecord(tool: string, record: Record<string, unknown>): {
   throw invalidResponse(`QCC tool has no v0.1 mapper: ${tool}`);
 }
 
-function recordArray(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
-  const value = record[key];
-  if (!Array.isArray(value)) return [];
-  const parsed = z.array(RawRecordSchema).safeParse(value);
-  if (!parsed.success) throw invalidResponse(`QCC ${key} has an unsupported shape`);
+const EXPLICIT_EMPTY_FINANCING_RESULTS = new Set([
+  '未查询到融资记录',
+  '未查询到相关融资记录',
+  '未查询到融资信息',
+  '未查询到相关融资信息',
+  '未查到融资记录',
+  '未找到融资记录',
+  '暂无融资记录',
+  '暂无相关融资记录',
+  '没有融资记录',
+  '无融资记录',
+]);
+
+function normalizedStatusText(value: string): string {
+  return value.replace(/[\s。！!，,；;：:]/gu, '');
+}
+
+function chineseFinancingRecords(root: Record<string, unknown>): Record<string, unknown>[] {
+  const structured = root['融资信息'];
+  if (Array.isArray(structured)) {
+    const parsed = z.array(ChineseFinancingRecordSchema).safeParse(structured);
+    if (!parsed.success) throw unmappableDataset('QCC financing records have an unsupported shape');
+    return parsed.data.map(record => ({
+      Date: stringValueFrom(record, ['融资日期', '日期']),
+      Round: stringValueFrom(record, ['融资轮次', '轮次']),
+      Type: stringValueFrom(record, ['融资类型', '类型']),
+      Amount: stringValueFrom(record, ['融资金额', '金额']),
+      Investors: stringArray(record, '投资方'),
+      Url: stringValueFrom(record, ['来源链接', '链接']),
+    }));
+  }
+
+  const searchResult = stringValue(root, '搜索结果');
+  if (searchResult !== null && EXPLICIT_EMPTY_FINANCING_RESULTS.has(normalizedStatusText(searchResult))) {
+    return [];
+  }
+  throw unmappableDataset('QCC financing result cannot be structurally verified');
+}
+
+function parseChineseFormalRoot<T extends z.ZodType>(
+  schema: T,
+  root: Record<string, unknown>,
+  tool: string,
+): z.output<T> {
+  const parsed = schema.safeParse(root);
+  if (!parsed.success) throw invalidResponse(`QCC ${tool} Chinese result has an unsupported shape`);
   return parsed.data;
 }
 
-function joinedStringArray(record: Record<string, unknown>, key: string): string | null {
-  const values = stringArray(record, key);
-  return values.length === 0 ? null : values.join('、');
-}
-
-function formalRecords(tool: string, payload: unknown): Record<string, unknown>[] {
+function formalRecords(
+  tool: string,
+  payload: unknown,
+  expected: ExpectedQccSubject,
+): Record<string, unknown>[] {
   const unwrapped = unwrapPayload(payload);
-  if (RawRootSchema.safeParse(unwrapped).success) return recordsOf(payload);
+  if (RawRootSchema.safeParse(unwrapped).success) {
+    const records = recordsOf(payload);
+    for (const record of records) assertExpectedSubject(record, expected);
+    return records;
+  }
   const chinese = RawRecordSchema.safeParse(unwrapped);
-  if (!chinese.success || !Object.hasOwn(chinese.data, '企业名称')) return recordsOf(payload);
+  if (!chinese.success) throw invalidResponse(`QCC ${tool} result has an unsupported shape`);
   const root = chinese.data;
+  assertExpectedSubject(root, expected);
 
   if (tool === 'get_company_profile') {
+    const parsed = parseChineseFormalRoot(ChineseProfileSchema, root, tool);
     return [{
-      Name: stringValue(root, '企业名称'),
-      Industry: stringValue(root, '企查查行业'),
-      Introduction: stringValue(root, '简介'),
-      EmployeeRange: stringValue(root, '人员规模'),
-      Website: stringValue(root, '网址'),
+      Name: parsed.企业名称,
+      Industry: parsed.企查查行业 ?? null,
+      Introduction: parsed.简介 ?? parsed.产业链概览 ?? null,
+      EmployeeRange: parsed.人员规模 ?? null,
+      Website: parsed.网址 ?? null,
     }];
   }
   if (tool === 'get_company_risk_scan') {
+    const parsed = parseChineseFormalRoot(ChineseRiskSchema, root, tool);
     return [{
-      RiskCount: numberValue(root, '有记录因子数'),
-      Summary: stringValue(root, '摘要'),
+      RiskCount: parsed.有记录因子数 ?? null,
+      Summary: parsed.摘要 ?? null,
     }];
   }
   if (tool === 'get_patent_info') {
-    return recordArray(root, '专利信息').map(record => ({
-      PatentName: stringValue(record, '发明名称'),
-      PatentType: stringValue(record, '专利类型'),
-      ApplicationNumber: stringValue(record, '申请号'),
-      ApplicationDate: stringValue(record, '申请日期'),
-      Status: stringValue(record, '法律状态'),
+    const parsed = parseChineseFormalRoot(ChinesePatentSchema, root, tool);
+    return parsed.专利信息.map(record => ({
+      PatentName: record.发明名称 ?? null,
+      PatentType: record.专利类型 ?? null,
+      ApplicationNumber: record.申请号 ?? null,
+      ApplicationDate: record.申请日期 ?? null,
+      Status: record.法律状态 ?? null,
     }));
   }
   if (tool === 'get_recruitment_info') {
-    return recordArray(root, '招聘信息').map(record => ({
-      PublishDate: stringValue(record, '发布日期'),
-      JobName: stringValue(record, '招聘职位'),
-      Salary: stringValue(record, '月薪'),
-      Education: stringValue(record, '学历'),
-      Experience: stringValue(record, '经验'),
-      Location: stringValue(record, '办公地点'),
+    const parsed = parseChineseFormalRoot(ChineseRecruitmentSchema, root, tool);
+    return parsed.招聘信息.map(record => ({
+      PublishDate: record.发布日期 ?? null,
+      JobName: record.招聘职位,
+      Salary: record.月薪 ?? null,
+      Education: record.学历 ?? null,
+      Experience: record.经验 ?? null,
+      Location: record.办公地点 ?? null,
     }));
   }
   if (tool === 'get_bidding_info') {
-    return recordArray(root, '招投标信息').map(record => ({
-      Title: stringValue(record, '项目名称'),
-      PublishDate: stringValue(record, '发布日期'),
-      Amount: stringValue(record, '中标金额'),
-      Purchaser: joinedStringArray(record, '招采单位'),
+    const parsed = parseChineseFormalRoot(ChineseBiddingSchema, root, tool);
+    return parsed.招投标信息.map(record => ({
+      Title: record.项目名称,
+      PublishDate: record.发布日期 ?? null,
+      Amount: record.中标金额 ?? null,
+      Purchaser: record.招采单位?.filter(nonBlank).join('、') || null,
     }));
   }
-  if (tool === 'get_financing_records' && Object.hasOwn(root, '搜索结果')) {
-    return [];
+  if (tool === 'get_financing_records') {
+    const parsed = parseChineseFormalRoot(ChineseFinancingSchema, root, tool);
+    return chineseFinancingRecords(parsed);
   }
-  return recordsOf(payload);
+  throw invalidResponse(`QCC ${tool} has no Chinese response contract`);
 }
 
 export function mapQccToolResult(
@@ -639,7 +954,7 @@ export function mapQccToolResult(
   identity: IdentityProfile,
   collectedAt: Date,
 ): MappedQccResult {
-  const records = formalRecords(tool, payload);
+  const records = formalRecords(tool, payload, identity);
   if (records.length === 0) return { items: [], gaps: [`${tool}未查到或未披露数据`] };
   const sourceKind = server === 'company' ? 'company' : server === 'risk' ? 'risk' : server === 'ipr' ? 'ipr' : 'operation';
   const items = records.map((record, index) => {

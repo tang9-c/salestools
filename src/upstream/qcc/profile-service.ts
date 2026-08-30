@@ -4,6 +4,7 @@ import { retryOnce } from '../../orchestration/retry.js';
 import {
   mapCompanyCandidates,
   mapCompanyDetails,
+  normalizeQccLegalName,
   validateQccPayload,
   type MappedCandidate,
   type MappedCompanyDetails,
@@ -56,11 +57,7 @@ export type CompanyProfileResult = {
 };
 
 export function normalizeLegalName(value: string): string {
-  return value
-    .trim()
-    .normalize('NFKC')
-    .replace(/\s+/gu, '')
-    .replace(/[A-Z]/g, character => character.toLowerCase());
+  return normalizeQccLegalName(value);
 }
 
 function candidateFromIdentity(identity: {
@@ -180,19 +177,23 @@ export class CompanyProfileService {
     const detailPayloads: Array<unknown | null> = [];
     for (const [server, tool] of detailRequests) {
       if (!budget.canConsume('qcc')) {
-        detailPayloads.push(null);
-        continue;
-      }
-      const result = await retryOnce('qcc', budget, async () => validateQccPayload(
-        await this.gateway.call(server, tool, input),
-      ));
-      if (tool === 'get_company_registration_info' && result.status === 'failed') {
         return {
           sourceStatus: 'failed', candidates: [], basicProfile: null, cacheHit: false,
           message: '企查查暂不可用，请稍后重试',
         };
       }
-      detailPayloads.push(result.status === 'completed' ? result.value : null);
+      const result = await retryOnce('qcc', budget, async () => validateQccPayload(
+        tool,
+        await this.gateway.call(server, tool, input),
+        selected,
+      ));
+      if (result.status === 'failed') {
+        return {
+          sourceStatus: 'failed', candidates: [], basicProfile: null, cacheHit: false,
+          message: '企查查暂不可用，请稍后重试',
+        };
+      }
+      detailPayloads.push(result.value);
     }
 
     let mapped: MappedCompanyDetails;

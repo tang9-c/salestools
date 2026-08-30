@@ -63,7 +63,7 @@ function profilePayload(tool: string, identity = FIRST): unknown {
     EmployeeRange: null, Website: `https://${identity.officialDomains[0]}`,
   } };
   if (tool === 'get_contact_info') return { Data: { Website: `https://${identity.officialDomains[0]}` } };
-  if (tool === 'get_company_risk_scan') return { Data: { Summary: null } };
+  if (tool === 'get_company_risk_scan') return { Data: { Summary: '未发现明显经营异常' } };
   return { Data: [] };
 }
 

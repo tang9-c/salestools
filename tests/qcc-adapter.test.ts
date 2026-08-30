@@ -234,9 +234,9 @@ describe('QCC mapping and formal collection', () => {
         招采单位: [identity.legalName], 中标单位: ['测试供应商有限公司'],
       }],
     }, identity, now);
-    const financing = mapQccToolResult('operation', 'get_financing_records', {
-      企业名称: identity.legalName, 搜索结果: '未返回结构化融资记录',
-    }, identity, now);
+    const financing = mapQccToolResult(
+      'operation', 'get_financing_records', fixture('qcc-real-financing-empty.json'), identity, now,
+    );
 
     expect(JSON.parse(profile.items[0].content ?? '{}')).toMatchObject({
       name: identity.legalName, industry: '专用设备制造业', introduction: '测试简介',
@@ -253,6 +253,78 @@ describe('QCC mapping and formal collection', () => {
     });
     expect(financing.items).toEqual([]);
     expect(financing.gaps).toContain('get_financing_records未查到或未披露数据');
+  });
+
+  it.each([
+    'qcc-real-financing-permission.json',
+    'qcc-real-financing-candidates.json',
+    'qcc-real-financing-structured-invalid.json',
+  ])('rejects an unstructured financing dataset from %s instead of reporting a verified empty result', file => {
+    expect(() => mapQccToolResult(
+      'operation',
+      'get_financing_records',
+      fixture(file),
+      identity,
+      new Date('2026-08-29T12:00:00.000Z'),
+    )).toThrow(expect.objectContaining({ code: 'UNMAPPABLE_DATASET' }));
+  });
+
+  it.each([
+    ['qcc-real-financing-permission.json', 'partial', true],
+    ['qcc-real-financing-candidates.json', 'partial', true],
+    ['qcc-real-financing-empty.json', 'completed', false],
+  ] as const)('classifies collector financing dataset %s as %s', async (file, expectedStatus, adapterGap) => {
+    const byTool: Record<string, string> = {
+      get_recruitment_info: 'qcc-recruitment.json',
+      get_company_profile: 'qcc-company-profile.json',
+      get_company_risk_scan: 'qcc-risk.json',
+      get_patent_info: 'qcc-patent.json',
+      get_annual_reports: 'qcc-annual-report.json',
+      get_bidding_info: 'qcc-bidding.json',
+      get_shareholder_info: 'qcc-shareholder.json',
+    };
+    const collector = new QccResearchCollector({
+      call: async (_server, tool) => tool === 'get_financing_records'
+        ? fixture(file)
+        : fixture(byTool[tool]),
+    }, () => new Date('2026-08-29T12:00:00.000Z'));
+
+    const result = await collector.collectQccResearch(
+      identity,
+      new CallBudget({ qcc: 8, doubaoSearch: 1, ark: 1, total: 8 }),
+    );
+
+    expect(result.sourceStatus.status).toBe(expectedStatus);
+    expect(result.gaps.includes('融资结果无法结构化验证（适配器契约缺口）')).toBe(adapterGap);
+  });
+
+  it.each([
+    ['company', 'get_company_profile', 'qcc-real-company-profile-explanation.json'],
+    ['risk', 'get_company_risk_scan', 'qcc-real-risk-explanation.json'],
+    ['ipr', 'get_patent_info', 'qcc-real-patent-explanation.json'],
+    ['operation', 'get_recruitment_info', 'qcc-real-recruitment-explanation.json'],
+    ['operation', 'get_bidding_info', 'qcc-real-bidding-explanation.json'],
+  ] as const)('rejects explanation-only %s/%s responses from %s', (server, tool, file) => {
+    expect(() => mapQccToolResult(
+      server,
+      tool,
+      fixture(file),
+      identity,
+      new Date('2026-08-29T12:00:00.000Z'),
+    )).toThrow(expect.objectContaining({ code: 'INVALID_RESPONSE' }));
+  });
+
+  it.each([
+    'qcc-real-recruitment-mismatch.json',
+    'qcc-real-recruitment-code-mismatch.json',
+  ])('rejects formal QCC subject mismatch from %s', file => {
+    expect(() => mapQccToolResult(
+      'operation',
+      'get_recruitment_info',
+      fixture(file),
+      identity,
+      new Date('2026-08-29T12:00:00.000Z'),
+    )).toThrow(expect.objectContaining({ code: 'SUBJECT_MISMATCH' }));
   });
 
   it.each([
@@ -353,6 +425,37 @@ describe('QCC mapping and formal collection', () => {
     expect(result.gaps).toContain('融资信息获取失败');
     expect(result.items.length).toBeGreaterThan(0);
     expect(result).not.toHaveProperty('financingStatus');
+  });
+
+  it('marks a missing operation get_annual_reports tool as an annual-report gap and QCC partial', async () => {
+    let annualAttempts = 0;
+    const byTool: Record<string, string> = {
+      get_financing_records: 'qcc-financing.json',
+      get_recruitment_info: 'qcc-recruitment.json',
+      get_company_profile: 'qcc-company-profile.json',
+      get_company_risk_scan: 'qcc-risk.json',
+      get_patent_info: 'qcc-patent.json',
+      get_bidding_info: 'qcc-bidding.json',
+    };
+    const collector = new QccResearchCollector({
+      call: async (_server, tool) => {
+        if (tool === 'get_annual_reports') {
+          annualAttempts += 1;
+          throw new UpstreamError('qcc', 'REMOTE_TOOL_ERROR', 'tool is not available');
+        }
+        return fixture(byTool[tool]);
+      },
+    }, () => new Date('2026-08-29T12:00:00.000Z'));
+
+    const result = await collector.collectQccResearch(
+      identity,
+      new CallBudget({ qcc: 8, doubaoSearch: 1, ark: 1, total: 8 }),
+    );
+
+    expect(annualAttempts).toBe(2);
+    expect(result.sourceStatus.status).toBe('partial');
+    expect(result.gaps).toContain('年报信息获取失败');
+    expect(result.items.length).toBeGreaterThan(0);
   });
 
   it('never places raw upstream error text in QCC source status', async () => {

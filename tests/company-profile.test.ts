@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import { openDatabase } from '../src/db/database.js';
 import { ProfileRepository } from '../src/db/profile-repository.js';
@@ -19,6 +20,10 @@ const cachedProfile = {
   registered_capital: '5000万元人民币', legal_representative: '张三', website: 'https://www.example.cn',
   employee_range: '100-499', risk_summary: null, collected_at: now.toISOString(),
 };
+
+function fixture(name: string): unknown {
+  return JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
+}
 
 describe('CompanyProfileService', () => {
   let database: DatabaseSync;
@@ -234,5 +239,30 @@ describe('CompanyProfileService', () => {
         website: 'https://www.example.cn', riskSummary: '未发现明显经营异常',
       },
     });
+  });
+
+  it.each([
+    ['qcc-real-company-registration-mismatch.json', 'get_company_registration_info'],
+    ['qcc-real-company-registration-identity-only.json', 'get_company_registration_info'],
+    ['qcc-real-company-profile-explanation.json', 'get_company_profile'],
+    ['qcc-real-contact-explanation.json', 'get_contact_info'],
+    ['qcc-real-risk-explanation.json', 'get_company_risk_scan'],
+  ] as const)('fails without caching when %s violates the %s contract', async (invalidFile, invalidTool) => {
+    const service = new CompanyProfileService({
+      call: async (_server: string, tool: string) => {
+        if (tool === 'get_company_by_query') return fixture('qcc-real-company-search.json');
+        if (tool === invalidTool) return fixture(invalidFile);
+        if (tool === 'get_company_registration_info') return fixture('qcc-real-company-registration.json');
+        if (tool === 'get_company_profile') return fixture('qcc-real-company-profile.json');
+        if (tool === 'get_contact_info') return { Data: { Website: 'https://www.example.cn' } };
+        if (tool === 'get_company_risk_scan') return { Data: { Summary: '未发现明显经营异常' } };
+        throw new Error(`unexpected tool ${tool}`);
+      },
+    }, profiles, { profileCacheTtlDays: 30, maxQccCalls: 8, maxTotalCalls: 18, now: () => now });
+
+    const result = await service.get(candidate.Name);
+
+    expect(result).toMatchObject({ sourceStatus: 'failed', candidates: [], basicProfile: null, cacheHit: false });
+    expect(profiles.findFreshByNormalizedName(normalizeLegalName(candidate.Name), now, 30)).toEqual([]);
   });
 });
