@@ -12,6 +12,7 @@ import { ProfileRepository } from '../src/db/profile-repository.js';
 import { JsonlLogger } from '../src/logging/logger.js';
 import { AssessmentRunner, AssessmentWorkerError } from '../src/orchestration/assessment-runner.js';
 import { retryOnce, UpstreamError } from '../src/orchestration/retry.js';
+import { ArkEvidenceService } from '../src/upstream/ark/client.js';
 import { QccResearchCollector, type SourceCollection } from '../src/upstream/qcc/assessment-research.js';
 
 const NOW = new Date('2026-08-30T00:00:00.000Z');
@@ -146,6 +147,59 @@ describe('AssessmentRunner', () => {
     expect(stored).toMatchObject({ status: 'completed', overallOpportunity: '待核实', recommendedProduct: null });
     expect(stored.reportMarkdown).toContain('未获得可用证据，不能形成销售判断');
     expect(stored.reportMarkdown).not.toMatch(/Windchill|CATIA|Abaqus|SolidWorks/);
+  });
+
+  it('retains financing, annual-report, and Ark input-budget gaps in the final report', async () => {
+    const financingGap = '融资结果无法结构化验证（适配器契约缺口）';
+    const annualReportGap = '年报信息获取失败';
+    const budgetGap = '方舟输入受网关容量限制，仅选取4条代表证据，未选数据不代表不存在';
+    const qccItems = [
+      item('qcc', 'company-get_company_profile-1'),
+      item('qcc', 'operation-get_recruitment_info-1'),
+      { ...item('qcc', 'risk-get_company_risk_scan-1'), sourceKind: 'risk' as const },
+    ];
+    let searchIndex = 0;
+    const model: EvidenceBundle = {
+      identity: IDENTITY,
+      industryClassification: 'unverified',
+      industryEvidenceIds: [],
+      evidence: [],
+      facts: [],
+      financingRecords: [],
+      conflicts: [],
+      gaps: [],
+      collectedAt: NOW.toISOString(),
+    };
+    const runtime = setup({
+      qccResearch: {
+        collectQccResearch: vi.fn(async (): Promise<SourceCollection> => ({
+          items: qccItems,
+          sourceStatus: { status: 'partial', error: null },
+          gaps: [financingGap, annualReportGap],
+        })),
+      },
+      searchClient: {
+        search: vi.fn(async (query: { Query: string }) => [{
+          ...item('doubao_search', `web-${searchIndex += 1}`),
+          query: query.Query,
+        }]),
+      },
+      ark: new ArkEvidenceService({
+        url: 'https://ark.example/v1/chat/completions',
+        model: 'test-model',
+        credential: 'test-credential',
+        fetchFn: vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+          choices: [{ message: { content: JSON.stringify(model) } }],
+        }), { status: 200 })),
+      }),
+    });
+
+    await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
+
+    const markdown = runtime.assessments.get(runtime.task.assessmentId)?.reportMarkdown ?? '';
+    expect(markdown).toContain(financingGap);
+    expect(markdown).toContain(annualReportGap);
+    expect(markdown).toContain(budgetGap);
   });
 
   it('does not start the search client when the search budget is exhausted', async () => {

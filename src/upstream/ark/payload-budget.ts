@@ -20,11 +20,15 @@ function qccToolSelector(tool: string): Selector {
   return item => item.source === 'qcc' && item.evidenceId.includes(`-${tool}-`);
 }
 
+function truncateCodePoints(value: string, maxLength: number): string {
+  return Array.from(value).slice(0, maxLength).join('');
+}
+
 function compactItem(item: ResearchItem): ResearchItem {
   return {
     ...item,
-    title: item.title.slice(0, MAX_TITLE_CHARS),
-    summary: item.summary === null ? null : item.summary.slice(0, MAX_SUMMARY_CHARS),
+    title: truncateCodePoints(item.title, MAX_TITLE_CHARS),
+    summary: item.summary === null ? null : truncateCodePoints(item.summary, MAX_SUMMARY_CHARS),
     content: null,
   };
 }
@@ -66,7 +70,7 @@ export function compactResearchBundleForArk(bundle: ResearchBundle): ResearchBun
   return ResearchBundleSchema.parse({
     ...bundle,
     items: selected.map(compactItem),
-    gaps: selected.length < bundle.items.length
+    gaps: new Set(bundle.items.map(item => item.evidenceId)).size > MAX_ITEMS
       ? [...new Set([...bundle.gaps, ARK_INPUT_BUDGET_GAP])]
       : bundle.gaps,
   });

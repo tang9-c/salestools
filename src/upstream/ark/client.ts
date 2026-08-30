@@ -100,7 +100,11 @@ export class ArkEvidenceService {
 
     const candidate = jsonContent(parsed.data.choices[0].message.content);
     try {
-      return validateArkEvidence(compactBundle, candidate);
+      const validated = validateArkEvidence(compactBundle, candidate);
+      return {
+        ...validated,
+        gaps: [...new Set([...validated.gaps, ...compactBundle.gaps])],
+      };
     } catch (error) {
       if (error instanceof ArkEvidenceValidationError) {
         throw new ArkInvalidOutputError('INVALID_EVIDENCE', error.message, { cause: error });

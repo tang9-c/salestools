@@ -255,6 +255,80 @@ describe('ArkEvidenceService', () => {
     expect(sent.gaps).toContain(ARK_INPUT_BUDGET_GAP);
   });
 
+  it.each([
+    ['zero unique items', 0, false, false],
+    ['one unique item', 1, false, false],
+    ['four unique items', 4, false, false],
+    ['five unique items', 5, false, true],
+    ['duplicate evidence IDs', 5, true, false],
+  ] as const)('adds the Ark budget gap only above four unique evidence IDs (%s)', async (
+    _name,
+    itemCount,
+    duplicateIds,
+    expectedGap,
+  ) => {
+    const base = researchBundle();
+    const research: ResearchBundle = {
+      ...base,
+      items: Array.from({ length: itemCount }, (_, index) => ({
+        ...base.items[0],
+        evidenceId: duplicateIds ? 'duplicate-id' : `evidence-${index + 1}`,
+      })),
+    };
+    const response = { ...factFreeEvidence(research), gaps: [] };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
+      responseWithContent(JSON.stringify(response)),
+    );
+
+    await client(fetchFn).extract(research);
+
+    expect(requestResearch(fetchFn).gaps.includes(ARK_INPUT_BUDGET_GAP)).toBe(expectedGap);
+  });
+
+  it('truncates title and summary on Unicode code-point boundaries', async () => {
+    const base = researchBundle();
+    const research: ResearchBundle = {
+      ...base,
+      items: [{
+        ...base.items[0],
+        title: `${'a'.repeat(79)}😀tail`,
+        summary: `${'b'.repeat(99)}😀tail`,
+      }],
+    };
+    const response = { ...factFreeEvidence(research), gaps: [] };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
+      responseWithContent(JSON.stringify(response)),
+    );
+
+    await client(fetchFn).extract(research);
+
+    const sent = requestResearch(fetchFn).items[0];
+    expect(Array.from(sent.title)).toHaveLength(80);
+    expect(sent.title.endsWith('😀')).toBe(true);
+    expect(Array.from(sent.summary ?? '')).toHaveLength(100);
+    expect(sent.summary?.endsWith('😀')).toBe(true);
+  });
+
+  it('merges trusted research gaps into validated model gaps with stable deduplication', async () => {
+    const financingGap = '融资结果无法结构化验证（适配器契约缺口）';
+    const annualReportGap = '年报信息获取失败';
+    const research: ResearchBundle = {
+      ...budgetResearchBundle(),
+      gaps: [financingGap, annualReportGap],
+    };
+    const model = {
+      ...factFreeEvidence(research),
+      gaps: ['模型识别缺口', financingGap],
+    };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
+      responseWithContent(JSON.stringify(model)),
+    );
+
+    await expect(client(fetchFn).extract(research)).resolves.toMatchObject({
+      gaps: ['模型识别缺口', financingGap, annualReportGap, ARK_INPUT_BUDGET_GAP],
+    });
+  });
+
   it('fills missing primary categories in the fixed QCC-first fallback order', async () => {
     const full = budgetResearchBundle();
     const research = {
