@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../src/db/database.js';
-import { AssessmentRepository } from '../src/db/assessment-repository.js';
+import {
+  AssessmentNotFoundError,
+  AssessmentRepository,
+  InvalidAssessmentTransitionError,
+} from '../src/db/assessment-repository.js';
 import { ProfileRepository } from '../src/db/profile-repository.js';
 import { TokenRepository } from '../src/db/token-repository.js';
 
@@ -82,6 +86,14 @@ describe('SQLite repositories', () => {
     expect(db.prepare("SELECT count(*) AS count FROM assessments WHERE status='processing'").get()).toEqual({ count: 1 });
   });
 
+  it('reuses processing work even when force refresh is true', () => {
+    const assessments = new AssessmentRepository(db);
+    const first = assessments.createOrReuseAssessment(assessmentInput, false, now, 30);
+    const forced = assessments.createOrReuseAssessment(assessmentInput, true, now, 30);
+    expect(forced.record.assessmentId).toBe(first.record.assessmentId);
+    expect(forced).toMatchObject({ cacheHit: false, cachedAt: null, record: { status: 'processing' } });
+  });
+
   it('reuses fresh completed cache using completedAt, and force refresh bypasses it', () => {
     const assessments = new AssessmentRepository(db);
     const created = assessments.createOrReuseAssessment(assessmentInput, false, now, 30);
@@ -147,5 +159,47 @@ describe('SQLite repositories', () => {
       status: 'failed',
       errorMessage: 'Assessment interrupted by service restart',
     });
+  });
+
+  it('rejects completing a failed assessment and preserves the failed terminal state', () => {
+    const assessments = new AssessmentRepository(db);
+    const created = assessments.createOrReuseAssessment(assessmentInput, false, now, 30);
+    const failed = assessments.failAssessment(created.record.assessmentId, '上游失败', now);
+
+    expect(() => assessments.completeAssessment(created.record.assessmentId, completedResult, now))
+      .toThrow(InvalidAssessmentTransitionError);
+    expect(assessments.get(created.record.assessmentId)).toEqual(failed);
+  });
+
+  it('rejects failing a completed assessment and preserves its report and timestamps', () => {
+    const assessments = new AssessmentRepository(db);
+    const created = assessments.createOrReuseAssessment(assessmentInput, false, now, 30);
+    const completed = assessments.completeAssessment(created.record.assessmentId, completedResult, now);
+
+    expect(() => assessments.failAssessment(created.record.assessmentId, '迟到失败', new Date('2026-08-30T00:00:00.000Z')))
+      .toThrow(InvalidAssessmentTransitionError);
+    expect(assessments.get(created.record.assessmentId)).toEqual(completed);
+  });
+
+  it('rejects completing an assessment a second time', () => {
+    const assessments = new AssessmentRepository(db);
+    const created = assessments.createOrReuseAssessment(assessmentInput, false, now, 30);
+    const completed = assessments.completeAssessment(created.record.assessmentId, completedResult, now);
+
+    expect(() => assessments.completeAssessment(
+      created.record.assessmentId,
+      { ...completedResult, reportMarkdown: '# 被覆盖' },
+      new Date('2026-08-30T00:00:00.000Z'),
+    )).toThrow(InvalidAssessmentTransitionError);
+    expect(assessments.get(created.record.assessmentId)).toEqual(completed);
+  });
+
+  it('distinguishes a missing assessment from an invalid terminal transition', () => {
+    const assessments = new AssessmentRepository(db);
+    expect(() => assessments.failAssessment(
+      '10bd94c4-724a-4ca9-87fb-f474f563d475',
+      '不存在',
+      now,
+    )).toThrow(AssessmentNotFoundError);
   });
 });

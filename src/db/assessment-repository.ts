@@ -4,12 +4,27 @@ import {
   OpportunityLevelSchema,
   ProductKeySchema,
   ReportModelSchema,
-  ResearchSourceStatusSchema,
   UtcTimestampSchema,
   type OpportunityLevel,
   type ProductKey,
   type ReportModel,
 } from '../contracts/index.js';
+
+export class AssessmentNotFoundError extends Error {
+  override readonly name = 'AssessmentNotFoundError';
+
+  constructor(assessmentId: string) {
+    super(`Assessment not found: ${assessmentId}`);
+  }
+}
+
+export class InvalidAssessmentTransitionError extends Error {
+  override readonly name = 'InvalidAssessmentTransitionError';
+
+  constructor(assessmentId: string, status: AssessmentRecord['status']) {
+    super(`Assessment ${assessmentId} cannot transition from ${status}`);
+  }
+}
 
 export interface AssessmentInput {
   requestedBy: string;
@@ -174,7 +189,7 @@ export class AssessmentRepository {
         completed_at = ?,
         cached_at = ?,
         failed_at = NULL
-      WHERE assessment_id = ?
+      WHERE assessment_id = ? AND status = 'processing'
     `).run(
       result.reportMarkdown,
       recommendedProduct,
@@ -185,7 +200,7 @@ export class AssessmentRepository {
       completedAt,
       assessmentId,
     );
-    if (Number(update.changes) !== 1) throw new Error(`Assessment not found: ${assessmentId}`);
+    if (Number(update.changes) !== 1) this.throwTransitionError(assessmentId);
     return this.getRequired(assessmentId);
   }
 
@@ -198,9 +213,9 @@ export class AssessmentRepository {
         failed_at = ?,
         completed_at = NULL,
         cached_at = NULL
-      WHERE assessment_id = ?
+      WHERE assessment_id = ? AND status = 'processing'
     `).run(errorMessage, failedAt, assessmentId);
-    if (Number(update.changes) !== 1) throw new Error(`Assessment not found: ${assessmentId}`);
+    if (Number(update.changes) !== 1) this.throwTransitionError(assessmentId);
     return this.getRequired(assessmentId);
   }
 
@@ -220,7 +235,13 @@ export class AssessmentRepository {
 
   private getRequired(assessmentId: string): AssessmentRecord {
     const record = this.get(assessmentId);
-    if (record === null) throw new Error(`Assessment not found: ${assessmentId}`);
+    if (record === null) throw new AssessmentNotFoundError(assessmentId);
     return record;
+  }
+
+  private throwTransitionError(assessmentId: string): never {
+    const record = this.get(assessmentId);
+    if (record === null) throw new AssessmentNotFoundError(assessmentId);
+    throw new InvalidAssessmentTransitionError(assessmentId, record.status);
   }
 }

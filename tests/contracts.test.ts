@@ -218,6 +218,13 @@ describe('shared contracts', () => {
     expect(parsed.evidence[0].originalDomain).toBe(item.originalDomain);
   });
 
+  it('accepts null original publisher and domain on research and evidence references', () => {
+    const nullableItem = { ...item, originalPublisher: null, originalDomain: null };
+    const nullableReference = { ...reference, originalPublisher: null, originalDomain: null };
+    expect(ResearchBundleSchema.safeParse({ ...researchBundle, items: [nullableItem] }).success).toBe(true);
+    expect(EvidenceBundleSchema.safeParse({ ...evidenceBundle, evidence: [nullableReference] }).success).toBe(true);
+  });
+
   it('validates references and every evidence-id edge against research provenance', () => {
     expect(validateEvidenceProvenance(researchBundle, evidenceBundle)).toEqual(evidenceBundle);
     expect(() => validateEvidenceProvenance(researchBundle, {
@@ -295,6 +302,12 @@ describe('MCP output unions', () => {
     expect(CompanyProfileOutputSchema.safeParse({
       source_status: 'failed', candidates: [], basic_profile: null, cache_hit: false, message: '失败', extra: true,
     }).success).toBe(false);
+    expect(CompanyProfileOutputSchema.safeParse({
+      source_status: 'completed', candidates: [{ ...candidate, extra: true }], basic_profile: basicProfile, cache_hit: false,
+    }).success).toBe(false);
+    expect(CompanyProfileOutputSchema.safeParse({
+      source_status: 'completed', candidates: [candidate], basic_profile: { ...basicProfile, extra: true }, cache_hit: false,
+    }).success).toBe(false);
   });
 
   it('freezes the two and only two submit_assessment variants', () => {
@@ -335,6 +348,15 @@ describe('MCP output unions', () => {
     expect(AssessmentReportOutputSchema.safeParse({ ...completed, financing_status: 'unknown' }).success).toBe(false);
     expect(AssessmentReportOutputSchema.safeParse({
       ...completed, source_status: { ...completed.source_status, ark: 'failed' },
+    }).success).toBe(false);
+    expect(AssessmentReportOutputSchema.safeParse({
+      ...completed, source_status: { ...completed.source_status, extra: true },
+    }).success).toBe(false);
+    expect(AssessmentStatusOutputSchema.safeParse({
+      assessment_id: assessmentId, status: 'processing', message: '状态', extra: true,
+    }).success).toBe(false);
+    expect(AssessmentReportOutputSchema.safeParse({
+      assessment_id: assessmentId, status: 'processing', message: '状态', extra: true,
     }).success).toBe(false);
   });
 });
