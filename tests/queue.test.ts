@@ -54,4 +54,43 @@ describe('AssessmentQueue', () => {
     work.resolve();
     await queue.whenIdle();
   });
+
+  it('reports a fixed observable worker error without exposing the rejection text', async () => {
+    const observed: unknown[] = [];
+    const queue = new AssessmentQueue(
+      async () => { throw new Error('raw upstream body with token'); },
+      1,
+      { onWorkerError: event => observed.push(event) },
+    );
+    queue.enqueue('00000000-0000-4000-8000-000000000001');
+    queue.start();
+    await queue.whenIdle();
+
+    expect(observed).toEqual([{
+      assessmentId: '00000000-0000-4000-8000-000000000001',
+      code: 'WORKER_FAILED',
+      message: 'Assessment worker failed',
+    }]);
+    expect(JSON.stringify(observed)).not.toMatch(/raw upstream|token/);
+  });
+
+  it('stopAccepting lets active work finish but never starts waiting UUIDs', async () => {
+    const active = deferred();
+    const started: string[] = [];
+    const queue = new AssessmentQueue(async assessmentId => {
+      started.push(assessmentId);
+      if (started.length === 1) await active.promise;
+    }, 1);
+    queue.enqueue('00000000-0000-4000-8000-000000000001');
+    queue.enqueue('00000000-0000-4000-8000-000000000002');
+    queue.start();
+    await eventually(() => expect(started).toEqual(['00000000-0000-4000-8000-000000000001']));
+
+    queue.stopAccepting();
+    active.resolve();
+    await queue.waitForActive();
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(started).toEqual(['00000000-0000-4000-8000-000000000001']);
+  });
 });

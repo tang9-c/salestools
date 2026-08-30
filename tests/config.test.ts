@@ -94,6 +94,14 @@ describe('loadConfig', () => {
     expect(() => loadConfig(env)).toThrow('Invalid configuration: MAX_QCC_CALLS');
   });
 
+  it('rejects a total upstream limit that cannot preserve two Ark attempts', () => {
+    expect(() => loadConfig({
+      ...valid,
+      MAX_ARK_CALLS: '2',
+      MAX_TOTAL_UPSTREAM_CALLS: '1',
+    } as NodeJS.ProcessEnv)).toThrow('Invalid configuration: MAX_TOTAL_UPSTREAM_CALLS');
+  });
+
   it('rejects origins that are not complete HTTPS origins', () => {
     const env = { ...valid, ALLOWED_ORIGINS: 'https://codex.example.cn/path' } as NodeJS.ProcessEnv;
 

@@ -264,6 +264,26 @@ describe('QCC mapping and formal collection', () => {
     expect(result).not.toHaveProperty('financingStatus');
   });
 
+  it('limits a later QCC profile request to two outer attempts', async () => {
+    const attempts = new Map<string, number>();
+    const collector = new QccResearchCollector({
+      call: async (_server, tool) => {
+        attempts.set(tool, (attempts.get(tool) ?? 0) + 1);
+        if (tool === 'get_financing_records') return fixture('qcc-financing.json');
+        if (tool === 'get_recruitment_info') return fixture('qcc-recruitment.json');
+        if (tool === 'get_company_profile') throw new Error('raw profile response');
+        return { Data: [] };
+      },
+    }, () => new Date('2026-08-29T12:00:00.000Z'));
+
+    await collector.collectQccResearch(
+      identity,
+      new CallBudget({ qcc: 8, doubaoSearch: 1, ark: 1, total: 8 }),
+    );
+
+    expect(attempts.get('get_company_profile')).toBe(2);
+  });
+
   it('marks QCC failed when every successful response contains no usable items', async () => {
     const events: string[] = [];
     const collector = new QccResearchCollector({

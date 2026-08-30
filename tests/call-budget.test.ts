@@ -26,4 +26,27 @@ describe('CallBudget', () => {
     expect(budget.canConsume('qcc', 2)).toBe(true);
     expect(budget.usage().total).toBe(0);
   });
+
+  it('reserves two total slots for Ark while research sources share the remainder', () => {
+    const budget = new CallBudget(
+      { qcc: 8, doubaoSearch: 8, ark: 2, total: 10 },
+      { reserveArkCalls: 2 },
+    );
+
+    for (let index = 0; index < 8; index += 1) {
+      expect(budget.tryConsume(index % 2 === 0 ? 'qcc' : 'doubao_search')).toBe(true);
+    }
+    expect(budget.tryConsume('qcc')).toBe(false);
+    expect(budget.tryConsume('doubao_search')).toBe(false);
+    expect(budget.tryConsume('ark')).toBe(true);
+    expect(budget.tryConsume('ark')).toBe(true);
+    expect(budget.usage()).toEqual({ qcc: 4, doubaoSearch: 4, ark: 2, total: 10 });
+  });
+
+  it('rejects an Ark reservation larger than the total or Ark source limit', () => {
+    expect(() => new CallBudget(
+      { qcc: 1, doubaoSearch: 1, ark: 2, total: 1 },
+      { reserveArkCalls: 2 },
+    )).toThrow(/reserveArkCalls/);
+  });
 });

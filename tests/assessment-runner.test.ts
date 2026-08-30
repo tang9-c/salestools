@@ -10,8 +10,8 @@ import { AssessmentRepository } from '../src/db/assessment-repository.js';
 import { initializeDatabase } from '../src/db/database.js';
 import { ProfileRepository } from '../src/db/profile-repository.js';
 import { JsonlLogger } from '../src/logging/logger.js';
-import { AssessmentRunner } from '../src/orchestration/assessment-runner.js';
-import { UpstreamError } from '../src/orchestration/retry.js';
+import { AssessmentRunner, AssessmentWorkerError } from '../src/orchestration/assessment-runner.js';
+import { retryOnce, UpstreamError } from '../src/orchestration/retry.js';
 import { QccResearchCollector, type SourceCollection } from '../src/upstream/qcc/assessment-research.js';
 
 const NOW = new Date('2026-08-30T00:00:00.000Z');
@@ -237,5 +237,75 @@ describe('AssessmentRunner', () => {
     const qccLines = lines.map(line => JSON.parse(line)).filter(line => line.source === 'qcc');
     expect(qccLines).toHaveLength(4);
     expect(qccLines.map(line => line.attempt)).toEqual([1, 1, 2, 2]);
+  });
+
+  it('attempts to fail the assessment by UUID when the first repository read throws', async () => {
+    const runtime = setup();
+    const failAssessment = vi.fn(() => runtime.assessments.get(runtime.task.assessmentId)!);
+    const assessments = {
+      get: vi.fn(() => { throw new Error('sqlite path and raw state'); }),
+      completeAssessment: runtime.assessments.completeAssessment.bind(runtime.assessments),
+      failAssessment,
+    };
+
+    await new AssessmentRunner({ ...runtime.dependencies, assessments }).run(runtime.task.assessmentId);
+
+    expect(failAssessment).toHaveBeenCalledWith(
+      runtime.task.assessmentId,
+      '体检任务处理失败',
+      NOW,
+    );
+  });
+
+  it('throws only a fixed worker error when both initial read and failure persistence throw', async () => {
+    const runtime = setup();
+    const assessments = {
+      get: vi.fn(() => { throw new Error('sqlite secret path'); }),
+      completeAssessment: runtime.assessments.completeAssessment.bind(runtime.assessments),
+      failAssessment: vi.fn(() => { throw new Error('raw journal body'); }),
+    };
+
+    const failure = new AssessmentRunner({ ...runtime.dependencies, assessments }).run(runtime.task.assessmentId);
+    await expect(failure).rejects.toMatchObject({
+      name: 'AssessmentWorkerError',
+      code: 'ASSESSMENT_STATE_UNAVAILABLE',
+      message: 'Assessment worker state could not be persisted',
+    } satisfies Partial<AssessmentWorkerError>);
+  });
+
+  it('preserves two total calls for an Ark retry when research shares a total limit of ten', async () => {
+    let qccAttempts = 0;
+    const qccResearch = {
+      collectQccResearch: vi.fn(async (_identity, budget, retryOptions) => {
+        while (budget.canConsume('qcc')) {
+          await retryOnce('qcc', budget, async () => { qccAttempts += 1; }, retryOptions);
+        }
+        return collection('failed');
+      }),
+    };
+    const searchClient = {
+      search: vi.fn(async () => { throw new UpstreamError('doubao_search', 'DOWN', 'raw search body'); }),
+    };
+    let arkAttempts = 0;
+    const ark = {
+      extract: vi.fn(async (bundle: ResearchBundle) => {
+        arkAttempts += 1;
+        if (arkAttempts === 1) throw new UpstreamError('ark', 'NETWORK_ERROR', 'raw ark body');
+        return evidence(bundle);
+      }),
+    };
+    const runtime = setup({
+      qccResearch,
+      searchClient,
+      ark,
+      budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 2, total: 10 },
+    });
+
+    await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
+
+    expect(qccAttempts + searchClient.search.mock.calls.length).toBe(8);
+    expect(ark.extract).toHaveBeenCalledTimes(2);
+    expect(qccAttempts + searchClient.search.mock.calls.length + arkAttempts).toBe(10);
+    expect(runtime.assessments.get(runtime.task.assessmentId)?.status).toBe('completed');
   });
 });

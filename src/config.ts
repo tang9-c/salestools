@@ -55,7 +55,16 @@ const configSchema = z.object({
   PROFILE_CACHE_TTL_DAYS: positiveInteger.default(30),
   ASSESSMENT_CACHE_TTL_DAYS: positiveInteger.default(30),
   MAX_CONCURRENT_ASSESSMENTS: positiveInteger.default(1),
-}).strict();
+}).strict().superRefine((config, context) => {
+  const requiredArkReservation = Math.min(2, config.MAX_ARK_CALLS);
+  if (config.MAX_TOTAL_UPSTREAM_CALLS < requiredArkReservation) {
+    context.addIssue({
+      code: 'custom',
+      path: ['MAX_TOTAL_UPSTREAM_CALLS'],
+      message: 'total upstream calls must preserve Ark attempts',
+    });
+  }
+});
 
 type ParsedConfig = z.infer<typeof configSchema>;
 

@@ -61,11 +61,7 @@ const sdkConnectionFactory: QccConnectionFactory = {
           throw classifyQccSdkError(error) ?? error;
         }
         if (result.isError === true) {
-          const message = result.content
-            .filter(block => block.type === 'text')
-            .map(block => block.text)
-            .join('; ') || 'QCC tool returned an error';
-          throw new UpstreamError('qcc', 'REMOTE_TOOL_ERROR', message);
+          throw new UpstreamError('qcc', 'REMOTE_TOOL_ERROR', 'QCC tool returned an error');
         }
         return result.structuredContent ?? result;
       },

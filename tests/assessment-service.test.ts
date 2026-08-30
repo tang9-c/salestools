@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AssessmentRepository } from '../src/db/assessment-repository.js';
 import { initializeDatabase } from '../src/db/database.js';
 import { AssessmentService } from '../src/orchestration/assessment-service.js';
+import { AssessmentQueue } from '../src/orchestration/fifo-queue.js';
 
 const COMPANY = {
   requestedBy: 'sales-1',
@@ -137,5 +138,42 @@ describe('AssessmentService', () => {
     expect(assessments.get(task.assessmentId)).toMatchObject({
       status: 'failed', errorMessage: 'Assessment interrupted by service restart',
     });
+  });
+
+  it('keeps a database-backed waiting queue item processing without starting it', async () => {
+    const database = initializeDatabase(new DatabaseSync(':memory:'));
+    databases.push(database);
+    const assessments = new AssessmentRepository(database);
+    let releaseActive!: () => void;
+    const active = new Promise<void>(resolve => { releaseActive = resolve; });
+    const started: string[] = [];
+    const queue = new AssessmentQueue(async assessmentId => {
+      started.push(assessmentId);
+      await active;
+    }, 1);
+    const service = new AssessmentService({
+      assessments,
+      queue,
+      assessmentCacheTtlDays: 30,
+      now: () => new Date('2026-08-30T00:00:00.000Z'),
+    });
+    const first = service.submit({
+      legalName: '甲公司', creditCode: '91110000123456789C', forceRefresh: false,
+    }, 'sales-1');
+    const waiting = service.submit({
+      legalName: '乙公司', creditCode: '91110000123456789D', forceRefresh: false,
+    }, 'sales-1');
+    queue.start();
+    for (let index = 0; index < 20 && started.length === 0; index += 1) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    expect(started).toEqual([first.assessmentId]);
+    expect(service.status({ assessmentId: waiting.assessmentId }).status).toBe('processing');
+    queue.stopAccepting();
+    releaseActive();
+    await queue.waitForActive();
+    expect(started).toEqual([first.assessmentId]);
+    expect(assessments.get(waiting.assessmentId)?.status).toBe('processing');
   });
 });

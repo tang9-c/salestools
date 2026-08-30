@@ -9,10 +9,15 @@ export type UpstreamAttemptLog = RetryAttemptEvent & Readonly<{
   userId: string;
 }>;
 
-const BEARER_PATTERN = /(Authorization\s*:\s*Bearer\s+)[^\s,;]+/giu;
+const AUTHORIZATION_PATTERN = /(authorization["']?\s*[:=]\s*)(?:bearer\s+)?[^\s,;}\]]+/giu;
+const SECRET_FIELD_PATTERN = /((?:api[_-]?key|token|credential|secret)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/giu;
+const BEARER_PATTERN = /(bearer\s+)[^\s,;}\]]+/giu;
 
 function safeMessage(message: string): string {
-  return message.replace(BEARER_PATTERN, '$1[REDACTED]');
+  return message
+    .replace(AUTHORIZATION_PATTERN, '$1[REDACTED]')
+    .replace(SECRET_FIELD_PATTERN, '$1[REDACTED]')
+    .replace(BEARER_PATTERN, '$1[REDACTED]');
 }
 
 export class JsonlLogger {

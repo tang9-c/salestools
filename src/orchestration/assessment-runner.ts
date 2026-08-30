@@ -59,6 +59,14 @@ export interface AssessmentRunnerOptions {
   markdownRenderer?: typeof renderMarkdown;
 }
 
+export class AssessmentWorkerError extends Error {
+  override readonly name = 'AssessmentWorkerError';
+
+  constructor(readonly code: 'ASSESSMENT_STATE_UNAVAILABLE') {
+    super('Assessment worker state could not be persisted');
+  }
+}
+
 function failedCollection(message: string): SourceCollection {
   return {
     items: [],
@@ -85,7 +93,13 @@ export class AssessmentRunner {
   }
 
   async run(assessmentId: string): Promise<void> {
-    const task = this.options.assessments.get(assessmentId);
+    let task: AssessmentRecord | null;
+    try {
+      task = this.options.assessments.get(assessmentId);
+    } catch {
+      this.failById(assessmentId, '体检任务处理失败');
+      return;
+    }
     if (task === null || task.status !== 'processing') return;
     try {
       const startedAt = this.now();
@@ -101,7 +115,9 @@ export class AssessmentRunner {
         return;
       }
 
-      const budget = new CallBudget(this.options.budgetLimits);
+      const budget = new CallBudget(this.options.budgetLimits, {
+        reserveArkCalls: Math.min(2, this.options.budgetLimits.ark),
+      });
       const retryOptions = this.retryOptions(task);
       const qccPromise = this.options.qccResearch
         .collectQccResearch(profile.identity, budget, retryOptions)
@@ -206,10 +222,14 @@ export class AssessmentRunner {
   }
 
   private fail(task: AssessmentRecord, message: string): void {
+    this.failById(task.assessmentId, message);
+  }
+
+  private failById(assessmentId: string, message: string): void {
     try {
-      this.options.assessments.failAssessment(task.assessmentId, message, this.now());
+      this.options.assessments.failAssessment(assessmentId, message, this.now());
     } catch {
-      // If SQLite itself is unavailable there is no second persistence channel in v0.1.
+      throw new AssessmentWorkerError('ASSESSMENT_STATE_UNAVAILABLE');
     }
   }
 }

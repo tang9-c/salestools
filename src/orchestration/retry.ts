@@ -36,6 +36,48 @@ function typedError(source: UpstreamSource, error: unknown): UpstreamError {
   return new UpstreamError(source, 'UPSTREAM_FAILED', message, { cause: error });
 }
 
+const SAFE_SOURCE_LABEL: Readonly<Record<UpstreamSource, string>> = {
+  qcc: 'QCC',
+  doubao_search: 'Doubao search',
+  ark: 'Ark',
+};
+
+const SAFE_ERROR_MESSAGES: Readonly<Partial<Record<UpstreamSource, Readonly<Record<string, string>>>>> = {
+  qcc: {
+    TRANSPORT: 'QCC transport unavailable',
+    REMOTE_PROTOCOL_ERROR: 'QCC protocol request failed',
+    AUTHENTICATION_ERROR: 'QCC authentication failed',
+    REMOTE_HTTP_ERROR: 'QCC HTTP request failed',
+    REMOTE_TOOL_ERROR: 'QCC tool request failed',
+    TOOL_NOT_ALLOWED: 'QCC tool request rejected locally',
+  },
+  doubao_search: {
+    NETWORK_ERROR: 'Doubao search network request failed',
+    AUTHENTICATION_ERROR: 'Doubao search authentication failed',
+    RATE_LIMITED: 'Doubao search rate limit reached',
+    QUOTA_EXCEEDED: 'Doubao search quota exhausted',
+    REMOTE_SERVER_ERROR: 'Doubao search server request failed',
+    REMOTE_HTTP_ERROR: 'Doubao search HTTP request failed',
+    REMOTE_BUSINESS_ERROR: 'Doubao search business request failed',
+    INVALID_RESPONSE: 'Doubao search returned an invalid response',
+  },
+  ark: {
+    NETWORK_ERROR: 'Ark network request failed',
+    REMOTE_HTTP_ERROR: 'Ark HTTP request failed',
+    INVALID_RESPONSE: 'Ark returned an invalid response',
+    EMPTY_RESPONSE: 'Ark returned empty content',
+    INVALID_JSON: 'Ark returned invalid JSON',
+    INVALID_EVIDENCE: 'Ark returned invalid evidence',
+  },
+};
+
+function safeAttemptError(error: UpstreamError): RetryAttemptEvent['error'] {
+  const message = error.code === 'BUDGET_EXHAUSTED'
+    ? `${SAFE_SOURCE_LABEL[error.source]} call budget exhausted`
+    : SAFE_ERROR_MESSAGES[error.source]?.[error.code] ?? `${SAFE_SOURCE_LABEL[error.source]} upstream request failed`;
+  return { code: error.code, message };
+}
+
 export async function retryOnce<T>(
   source: UpstreamSource,
   budget: CallBudget,
@@ -68,7 +110,7 @@ export async function retryOnce<T>(
         durationMs: elapsedMs(startedAt, options.nowMs),
         success: false,
         attempt: attemptNumber,
-        error: { code: upstreamError.code, message: upstreamError.message },
+        error: safeAttemptError(upstreamError),
       });
       if (attemptNumber === 2) return { status: 'failed', error: upstreamError };
     }

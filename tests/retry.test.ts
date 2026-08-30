@@ -3,6 +3,19 @@ import { CallBudget } from '../src/orchestration/call-budget.js';
 import { retryOnce, UpstreamError } from '../src/orchestration/retry.js';
 
 describe('retryOnce', () => {
+  it('stops after the first successful attempt', async () => {
+    const budget = new CallBudget({ qcc: 2, doubaoSearch: 1, ark: 1, total: 2 });
+    let calls = 0;
+    const result = await retryOnce('qcc', budget, async () => {
+      calls += 1;
+      return 'ok';
+    });
+
+    expect(result).toEqual({ status: 'completed', value: 'ok' });
+    expect(calls).toBe(1);
+    expect(budget.usage().total).toBe(1);
+  });
+
   it('retries once, charging one source and total call per attempt', async () => {
     const budget = new CallBudget({ qcc: 2, doubaoSearch: 1, ark: 1, total: 2 });
     let calls = 0;
