@@ -8,6 +8,7 @@
   - `b5fac1e fix: reject negated opportunity signals`
   - `75c889d fix: bind opportunity negation to actions`
   - `5e57c5b fix: classify product signals per occurrence`
+  - `11bff1b fix: propagate negation across controlled lists`
 - 新增 `PRODUCT_RULES`，覆盖 Windchill、Feigenbaum QMS、Creo、CATIA、Abaqus、CST 和 SolidWorks 的固定产品词、工程方法、竞品词和阻碍词。
 - 新增 `evaluateProduct` 与 `evaluateOpportunities`，仅使用 `EvidenceBundle` 和显式 `now`，按固定四档顺序返回七产品结果。
 - 融资只在已有产品场景且来源归属已确认时增强预算/时机；不创建场景，不单独产生“高”。
@@ -36,11 +37,13 @@
 11. 替换否定仅匹配“暂无迁移计划、未计划、未决定、未迁移、不替换”等完整结构；`不久后计划`、`未雨绸缪后决定`、`不得不迁移`保持肯定。预算纠正显式处理“并非没有预算”和“没有预算问题，资金充足”，避免双重否定形成 blocker。
 12. 后续复审删除跨 occurrence 的动作作用域：每个产品别名和工程方法命中独立检查紧邻前置否定或后置停用动作，只对同一文本位置保留最长别名。`无需Pro/E但要求Creo` 与 `不使用旧版PLM但招聘Windchill管理员` 中的后一个别名可独立成立；`停止使用Creo`、`Creo计划停用`、`CATIA后续不再使用` 均保持否定。
 13. 替换否定拆成计划、前置动作、未完成状态三类小型结构，覆盖“尚未开始迁移、并未启动替换、暂不考虑替代、迁移工作尚未完成”，且不影响既有肯定反例。
+14. occurrence classifier 只沿 `和/及/或/、/以及` 白名单连接词传播已确认否定；转折、招聘、要求或任意肯定动作均因不属于连接词而终止传播。四组产品/别名/工程方法枚举反例已覆盖，既有后续肯定别名保持成立。
+15. replacement 前置否定允许普通 `未/不` 紧接 `开始/启动/实施/进行/完成/考虑` 后再接迁移或替换动作；新增四组反例，同时保留“未雨绸缪、不久后、不得不”的肯定判断。
 
 ## 验证
 
-- Focused: `tests/opportunity.test.ts` + `tests/recruitment-signals.test.ts` 共 `184 passed`。
-- Full suite: `15` test files, `327 passed`。
+- Focused: `tests/opportunity.test.ts` + `tests/recruitment-signals.test.ts` 共 `192 passed`。
+- Full suite: `15` test files, `335 passed`。
 - Typecheck: `tsc --noEmit` 退出码 `0`。
 - Diff check: `git diff --check` 与提交前 `git diff --cached --check` 退出码均为 `0`。
 - 禁用输出/非确定性扫描：机会模块中无分数、星级、模型调用、`Math.random` 或隐式 `new Date()`。
