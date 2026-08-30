@@ -9,6 +9,7 @@
   - `75c889d fix: bind opportunity negation to actions`
   - `5e57c5b fix: classify product signals per occurrence`
   - `11bff1b fix: propagate negation across controlled lists`
+  - `cd73348 fix: require directional replacement evidence`
 - 新增 `PRODUCT_RULES`，覆盖 Windchill、Feigenbaum QMS、Creo、CATIA、Abaqus、CST 和 SolidWorks 的固定产品词、工程方法、竞品词和阻碍词。
 - 新增 `evaluateProduct` 与 `evaluateOpportunities`，仅使用 `EvidenceBundle` 和显式 `now`，按固定四档顺序返回七产品结果。
 - 融资只在已有产品场景且来源归属已确认时增强预算/时机；不创建场景，不单独产生“高”。
@@ -39,11 +40,13 @@
 13. 替换否定拆成计划、前置动作、未完成状态三类小型结构，覆盖“尚未开始迁移、并未启动替换、暂不考虑替代、迁移工作尚未完成”，且不影响既有肯定反例。
 14. occurrence classifier 只沿 `和/及/或/、/以及` 白名单连接词传播已确认否定；转折、招聘、要求或任意肯定动作均因不属于连接词而终止传播。四组产品/别名/工程方法枚举反例已覆盖，既有后续肯定别名保持成立。
 15. replacement 前置否定允许普通 `未/不` 紧接 `开始/启动/实施/进行/完成/考虑` 后再接迁移或替换动作；新增四组反例，同时保留“未雨绸缪、不久后、不得不”的肯定判断。
+16. replacement 必须在同一事实中同时出现当前产品词、当前产品的竞品词和受控方向结构。竞品迁移/替换为目标产品，或“用目标产品替换竞品”才可解除 blocker；反向 `Creo → Siemens NX` 与 `Abaqus → 新服务器` 均无效，工程方法不参与方向目标判断。
+17. 枚举继承会检查当前 occurrence 的 `已部署/已使用/正在使用/已实施` 后置肯定谓词；该肯定只终止继承否定，不覆盖 occurrence 自身的直接否定。短别名 `NX` 与完整 `Siemens NX` 统一走最长重叠分类，避免 blocker 文案旁路复活。
 
 ## 验证
 
-- Focused: `tests/opportunity.test.ts` + `tests/recruitment-signals.test.ts` 共 `192 passed`。
-- Full suite: `15` test files, `335 passed`。
+- Focused: `tests/opportunity.test.ts` + `tests/recruitment-signals.test.ts` 共 `197 passed`。
+- Full suite: `15` test files, `340 passed`。
 - Typecheck: `tsc --noEmit` 退出码 `0`。
 - Diff check: `git diff --check` 与提交前 `git diff --cached --check` 退出码均为 `0`。
 - 禁用输出/非确定性扫描：机会模块中无分数、星级、模型调用、`Math.random` 或隐式 `new Date()`。
