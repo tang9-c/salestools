@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { config as loadDotEnv } from 'dotenv';
 import { loadConfig } from '../config.js';
 import { openDatabase } from '../db/database.js';
 import { TokenRepository, type TokenMetadata } from '../db/token-repository.js';
@@ -55,5 +56,6 @@ export function runConfiguredTokenCli(
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  loadDotEnv({ quiet: true });
   process.exitCode = runConfiguredTokenCli(process.argv.slice(2));
 }

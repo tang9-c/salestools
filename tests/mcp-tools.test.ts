@@ -227,4 +227,64 @@ describe('MCP tool schemas', () => {
     await connection.client.close();
     await connection.server.close();
   });
+
+  it('maps every non-default business-state union branch to snake_case contracts', async () => {
+    let statusCalls = 0;
+    let reportCalls = 0;
+    const connection = await connectedClient(services({
+      getCompanyProfile: async () => ({
+        sourceStatus: 'failed', candidates: [], basicProfile: null, cacheHit: false, message: '上游失败',
+      }),
+      submitAssessment: async () => ({
+        assessmentId, status: 'completed', cacheHit: true, cachedAt: collectedAt,
+      }),
+      getAssessmentStatus: async () => {
+        statusCalls += 1;
+        return {
+          assessmentId,
+          status: statusCalls === 1 ? 'completed' : 'failed',
+          message: statusCalls === 1 ? '已完成' : '处理失败',
+        };
+      },
+      getAssessmentReport: async () => {
+        reportCalls += 1;
+        return {
+          assessmentId,
+          status: reportCalls === 1 ? 'processing' : 'failed',
+          message: reportCalls === 1 ? '正在处理' : '处理失败',
+        };
+      },
+    }));
+
+    const calls = [
+      ['get_company_profile', { query: '测试公司' }, {
+        source_status: 'failed', candidates: [], basic_profile: null, cache_hit: false, message: '上游失败',
+      }],
+      ['submit_assessment', { legal_name: '测试制造有限公司', credit_code: '91310000TEST000001' }, {
+        assessment_id: assessmentId, status: 'completed', cache_hit: true, cached_at: collectedAt,
+      }],
+      ['get_assessment_status', { assessment_id: assessmentId }, {
+        assessment_id: assessmentId, status: 'completed', message: '已完成',
+      }],
+      ['get_assessment_status', { assessment_id: assessmentId }, {
+        assessment_id: assessmentId, status: 'failed', message: '处理失败',
+      }],
+      ['get_assessment_report', { assessment_id: assessmentId }, {
+        assessment_id: assessmentId, status: 'processing', message: '正在处理',
+      }],
+      ['get_assessment_report', { assessment_id: assessmentId }, {
+        assessment_id: assessmentId, status: 'failed', message: '处理失败',
+      }],
+    ] as const;
+
+    for (const [name, args, expected] of calls) {
+      const result = await connection.client.callTool({ name, arguments: args });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toEqual(expected);
+      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(expected) }]);
+    }
+
+    await connection.client.close();
+    await connection.server.close();
+  });
 });

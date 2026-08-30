@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TokenService } from '../src/auth/token-service.js';
 import { runTokenCli } from '../src/cli/tokens.js';
@@ -86,5 +88,69 @@ describe('token CLI parser', () => {
   ])('returns non-zero for malformed arguments: $args', ({ args }) => {
     const fake = { create: () => 'secret', disable: () => true, list: () => [] };
     expect(runTokenCli(args, fake, () => undefined)).not.toBe(0);
+  });
+});
+
+describe('configured token CLI entry', () => {
+  const projectRoot = fileURLToPath(new URL('..', import.meta.url));
+  const cliPath = join(projectRoot, 'src/cli/tokens.ts');
+  const tsxPath = join(projectRoot, 'node_modules/.bin/tsx');
+  let directory: string;
+
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), 'target-customer-cli-'));
+  });
+
+  afterEach(() => {
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  function writeDotEnv(sqlitePath: string): void {
+    writeFileSync(join(directory, '.env'), [
+      'PUBLIC_MCP_HOST=mcp.example.cn',
+      'ALLOWED_ORIGINS=https://codex.example.cn',
+      `SQLITE_PATH=${sqlitePath}`,
+      'QCC_MCP_COMPANY_URL=https://qcc.example.cn/company',
+      'QCC_MCP_RISK_URL=https://qcc.example.cn/risk',
+      'QCC_MCP_IPR_URL=https://qcc.example.cn/ipr',
+      'QCC_MCP_OPERATION_URL=https://qcc.example.cn/operation',
+      'QCC_API_KEY=test-qcc-key',
+      'DOUBAO_SEARCH_API_URL=https://search.example.cn',
+      'DOUBAO_SEARCH_API_KEY=test-search-key',
+      'ARK_API_URL=https://ark.example.cn',
+      'ARK_MODEL=test-model',
+      'ARK_CREDENTIAL=test-credential',
+    ].join('\n'));
+  }
+
+  function launch(extraEnv: NodeJS.ProcessEnv = {}) {
+    return spawnSync(tsxPath, [cliPath, 'tokens:list'], {
+      cwd: directory,
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH, ...extraEnv },
+    });
+  }
+
+  it('loads project-local .env when starting the real CLI process', () => {
+    const dotenvDatabase = join(directory, 'dotenv.sqlite');
+    writeDotEnv(dotenvDatabase);
+
+    const result = launch();
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('[]\n');
+    expect(existsSync(dotenvDatabase)).toBe(true);
+  });
+
+  it('does not overwrite an explicitly supplied environment variable', () => {
+    const dotenvDatabase = join(directory, 'dotenv.sqlite');
+    const explicitDatabase = join(directory, 'explicit.sqlite');
+    writeDotEnv(dotenvDatabase);
+
+    const result = launch({ SQLITE_PATH: explicitDatabase });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(explicitDatabase)).toBe(true);
+    expect(existsSync(dotenvDatabase)).toBe(false);
   });
 });

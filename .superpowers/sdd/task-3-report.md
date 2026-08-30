@@ -58,10 +58,24 @@ RED result: expected submit caller `user-2`, received an empty string.
 
 After restoring `context.http.authInfo.clientId`, the same command passed (1 passed, 6 skipped).
 
+### RED/GREEN 4 — real CLI dotenv startup
+
+Command before the fix:
+
+```text
+rtk npm test -- --run tests/auth.test.ts tests/mcp-tools.test.ts
+```
+
+RED result: both real-process CLI tests exited 1 because all values stored in the project-local `.env` were absent from `process.env`. The explicit `SQLITE_PATH` case retained only that explicit value, proving the test distinguished environment precedence.
+
+Minimal fix: call `dotenv.config({ quiet: true })` only in the real CLI entry branch. Default dotenv precedence keeps explicit environment variables, and quiet mode prevents dotenv diagnostics from contaminating token/list stdout.
+
+GREEN result: focused Task 3 verification passed 25 tests. The added M1 coverage also exercises profile failed, submit cached-completed, status completed/failed, and report processing/failed mappings.
+
 ## Delivered behavior
 
 - `TokenService.create/verify/disable/list` stores only SHA-256 hashes; generated plaintext is 32 random bytes encoded as base64url.
-- `runTokenCli` accepts exactly `tokens:create --user`, `tokens:disable --user`, and `tokens:list`; the configured CLI opens the configured SQLite database and never lists hashes or plaintext.
+- `runTokenCli` accepts exactly `tokens:create --user`, `tokens:disable --user`, and `tokens:list`; the real CLI loads the project-local `.env` without overriding explicit environment variables, opens the configured SQLite database, and never lists hashes or plaintext.
 - Four MCP tools register strict input/output schemas, preserve business states as successful structured results, and return matching JSON in `content` and `structuredContent`.
 - `src/mcp/tools.ts` is the only snake_case boundary; service DTOs are camelCase, including nested candidates, profiles, source status, and report fields.
 - `get_assessment_report` forwards only `{ assessmentId }`, so report access is not filtered by requester identity.
@@ -82,7 +96,7 @@ Passed with no whitespace errors.
 rtk npm test -- --run tests/auth.test.ts tests/mcp-tools.test.ts tests/http-security.test.ts
 ```
 
-Passed: 3 files, 22 tests.
+Passed: 3 files, 25 tests.
 
 ```text
 rtk npm run typecheck
@@ -94,7 +108,7 @@ Passed with zero TypeScript errors.
 rtk npm test -- --run
 ```
 
-Passed: 6 files, 55 tests.
+Passed: 6 files, 58 tests.
 
 ## Concerns
 
