@@ -61,6 +61,11 @@ function normalizeSuccessfulPayload(payload: unknown): unknown {
     throw new UpstreamError('doubao_search', 'REMOTE_BUSINESS_ERROR', 'Doubao search metadata contains an error');
   }
 
+  const legacy = BusinessEnvelopeSchema.safeParse(payload);
+  if (legacy.success && legacy.data.Code !== 0) {
+    throw businessError(legacy.data.Code, legacy.data.Message ?? '');
+  }
+
   const official = OfficialEnvelopeSchema.safeParse(payload);
   if (official.success) {
     return {
@@ -70,9 +75,7 @@ function normalizeSuccessfulPayload(payload: unknown): unknown {
     };
   }
 
-  const legacy = BusinessEnvelopeSchema.safeParse(payload);
   if (legacy.success) {
-    if (legacy.data.Code !== 0) throw businessError(legacy.data.Code, legacy.data.Message ?? '');
     return payload;
   }
 
