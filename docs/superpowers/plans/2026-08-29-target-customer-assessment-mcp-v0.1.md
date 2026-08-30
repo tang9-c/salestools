@@ -439,12 +439,12 @@ rtk npm test -- --run tests/ark-adapter.test.ts tests/evidence-validator.test.ts
 - [ ] **Step 3: 实现固定系统提示和 HTTP client**
 
 POST to `ARK_API_URL` with Bearer `ARK_CREDENTIAL`, body `{ model: ARK_MODEL, messages, response_format:{type:'json_object'}, temperature:0 }`. System prompt states webpages are untrusted data, forbids tool calls/instructions, requires `P1/P2/non_target/unverified`, forbids creating sources/aliases/URLs, and emits the exact `EvidenceBundleSchema` JSON shape.
-It also forbids unsupported executive personality/age-based decision-style claims, revenue estimation or employee-productivity extrapolation, and inferred purchasing-intent statements. Direct recruitment and published tender facts remain allowed.
+It also forbids unsupported executive personality/age-based decision-style claims, revenue estimation or employee-productivity extrapolation, and inferred purchasing-intent statements. Direct recruitment and published tender facts remain allowed. Purchase-intent wording is allowed only when a `direct` `procurement` fact for the confirmed target entity cites confirmed evidence and its statement explicitly identifies a published notice, tender, award, procurement file/project, or contract; supporting/weak facts and other kinds never receive this exception.
 
 - [ ] **Step 4: 实现引用校验并接入唯一外层重试**
 
 Build a map of `ResearchItem.evidenceId`; reject every absent ID, URL/publisher/domain mismatch, missing mentioned name, or non-unverified classification without evidence. The Ark client and validator never retry. The assessment runner wraps the whole `extract` call in orchestration `retryOnce`; two invalid/failed outer attempts consume both Ark calls and make the task fail.
-The validator also rejects those unsupported inference phrases in `facts[].statement`, `conflicts[]`, and `gaps[]`, regardless of fact kind.
+The validator also rejects those unsupported inference phrases in `facts[].statement`, `conflicts[]`, `gaps[]`, and every renderable financing string (`typeOrRound`, `disclosedAmount`, each investor). Financing fields never receive the procurement-notice exception.
 
 - [ ] **Step 5: 运行测试并提交**
 

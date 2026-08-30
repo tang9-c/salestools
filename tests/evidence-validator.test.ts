@@ -225,6 +225,84 @@ describe('validateArkEvidence', () => {
     expect(validateArkEvidence(researchBundle(), accepted)).toEqual(accepted);
   });
 
+  it.each([
+    { typeOrRound: '按董事长年龄判断决策风格保守' },
+    { disclosedAmount: '按员工人数和行业人效倒推约 5 亿元' },
+    { investors: ['投资方计划采购某软件'] },
+  ])('rejects unsupported inference in every renderable financing field: %j', polluted => {
+    const candidate = fixture();
+    expectInvalid({
+      ...candidate,
+      financingRecords: [{
+        occurredAt: '2026-08-20T12:00:00.000Z',
+        typeOrRound: 'A 轮',
+        disclosedAmount: '1 亿元',
+        investors: ['测试基金'],
+        evidenceIds: ['web-1'],
+        ...polluted,
+      }],
+    });
+  });
+
+  it('keeps normal financing fields', () => {
+    const candidate = fixture();
+    const accepted = {
+      ...candidate,
+      financingRecords: [{
+        occurredAt: '2026-08-20T12:00:00.000Z',
+        typeOrRound: 'A 轮',
+        disclosedAmount: '1 亿元',
+        investors: ['测试基金'],
+        evidenceIds: ['web-1'],
+      }],
+    };
+    expect(validateArkEvidence(researchBundle(), accepted)).toEqual(accepted);
+  });
+
+  it('allows purchase wording only as a direct, confirmed, cited public procurement notice fact', () => {
+    const candidate = fixture();
+    const directNotice = {
+      ...candidate.facts[0],
+      factId: 'fact-procurement-notice',
+      kind: 'procurement' as const,
+      strength: 'direct' as const,
+      statement: '采购公告原文披露该项目拟采购 Windchill 软件',
+    };
+    expect(validateArkEvidence(researchBundle(), { ...candidate, facts: [directNotice] }).facts)
+      .toEqual([directNotice]);
+
+    expectInvalid({ ...candidate, facts: [{ ...directNotice, strength: 'supporting' }] });
+    expectInvalid({ ...candidate, facts: [{ ...directNotice, statement: '公司计划采购 Windchill 软件' }] });
+    expectInvalid({ ...candidate, facts: [{ ...directNotice, statement: '公司已发布新品，计划采购 Windchill 软件' }] });
+    expectInvalid({ ...candidate, facts: [{ ...directNotice, kind: 'organization' }] });
+
+    const research = researchBundle();
+    research.items[0] = {
+      ...research.items[0],
+      entityScope: 'unknown',
+      entityMatch: 'unverified',
+      matchBasis: ['仅提及简称'],
+    };
+    const unverifiedReference = {
+      ...candidate.evidence[0],
+      entityScope: 'unknown' as const,
+      entityMatch: 'unverified' as const,
+      matchBasis: ['仅提及简称'],
+    };
+    expectInvalid({
+      ...candidate,
+      industryClassification: 'unverified',
+      industryEvidenceIds: [],
+      evidence: [unverifiedReference],
+      facts: [{
+        ...directNotice,
+        entityScope: 'unknown',
+        entityMatch: 'unverified',
+        matchBasis: ['仅提及简称'],
+      }],
+    }, research);
+  });
+
   it('does not accept a verified industry classification supported only by unverified entity evidence', () => {
     const candidate = fixture();
     const research = researchBundle();

@@ -37,15 +37,41 @@ function requireMatchBasis(label: string, matchBasis: readonly string[]): void {
 
 const UNSUPPORTED_INFERENCE_PATTERNS: readonly RegExp[] = [
   /(?:(?:高管|董事长|实控人|负责人|管理层).{0,24}(?:人格|性格|决策风格|保守|激进|求稳|冒险))|(?:(?:年龄|年纪|\d{1,3}\s*岁|老年|年轻).{0,24}(?:决策|掌权|风格|保守|激进|求稳|冒险))|(?:(?:决策|掌权|风格|保守|激进|求稳|冒险).{0,24}(?:年龄|年纪|\d{1,3}\s*岁|老年|年轻))/u,
-  /(?:(?:预计|估算|预估|推算|倒推).{0,16}(?:营收|销售收入|营业收入))|(?:(?:营收|销售收入|营业收入).{0,16}(?:预计|估算|预估|推算|倒推))|(?:(?:员工人数|社保人数|行业人效|人效|人均产值).{0,32}(?:营收|销售收入|营业收入))|(?:(?:营收|销售收入|营业收入).{0,32}(?:员工人数|社保人数|行业人效|人效|人均产值))|(?:(?:员工人数|社保人数|行业人效|人效|人均产值).{0,32}(?:乘以|[×*xX]).{0,32}(?:亿元|万元))|(?:真实营收)/u,
-  /(?:采购\s*意向|计划\s*采购|拟\s*采购|即将\s*采购|有\s*采购需求|存在\s*采购需求|准备\s*采购)/u,
+  /(?:(?:预计|估算|预估|推算|倒推).{0,16}(?:营收|销售收入|营业收入))|(?:(?:营收|销售收入|营业收入).{0,16}(?:预计|估算|预估|推算|倒推))|(?:(?:员工人数|社保人数|行业人效|人效|人均产值).{0,32}(?:营收|销售收入|营业收入))|(?:(?:营收|销售收入|营业收入).{0,32}(?:员工人数|社保人数|行业人效|人效|人均产值))|(?:(?:员工人数|社保人数|行业人效|人效|人均产值).{0,32}(?:倒推|推算|估算|预估|乘以|[×*xX]).{0,32}(?:亿元|万元))|(?:真实营收)/u,
 ];
 
-function rejectUnsupportedInference(label: string, value: string): void {
+const PROCUREMENT_INTENT_PATTERN =
+  /(?:采购\s*意向|计划\s*采购|拟\s*采购|即将\s*采购|有\s*采购需求|存在\s*采购需求|准备\s*采购)/u;
+const PUBLIC_PROCUREMENT_CARRIER_PATTERN =
+  /(?:已发布\s*(?:采购|拟采购|计划采购)|公告|招标|中标|采购文件|采购项目|采购合同)/u;
+
+function rejectUnsupportedInference(
+  label: string,
+  value: string,
+  allowDirectProcurementDisclosure = false,
+): void {
   const normalized = value.normalize('NFKC').replace(/\s+/gu, ' ').trim();
-  if (UNSUPPORTED_INFERENCE_PATTERNS.some(pattern => pattern.test(normalized))) {
+  const unsupported = UNSUPPORTED_INFERENCE_PATTERNS.some(pattern => pattern.test(normalized));
+  const unsupportedProcurement = PROCUREMENT_INTENT_PATTERN.test(normalized)
+    && !allowDirectProcurementDisclosure;
+  if (unsupported || unsupportedProcurement) {
     invalid(`${label} contains an unsupported inference`);
   }
+}
+
+function isDirectProcurementDisclosure(
+  fact: EvidenceBundle['facts'][number],
+  citedReferences: readonly EvidenceBundle['evidence'][number][],
+): boolean {
+  return fact.kind === 'procurement'
+    && fact.strength === 'direct'
+    && fact.entityScope === 'legal_entity'
+    && fact.entityMatch === 'confirmed'
+    && fact.evidenceIds.length > 0
+    && citedReferences.length === fact.evidenceIds.length
+    && citedReferences.every(reference =>
+      reference.entityScope === 'legal_entity' && reference.entityMatch === 'confirmed')
+    && PUBLIC_PROCUREMENT_CARRIER_PATTERN.test(fact.statement.normalize('NFKC'));
 }
 
 export function validateArkEvidence(researchInput: ResearchBundle, candidate: unknown): EvidenceBundle {
@@ -107,7 +133,11 @@ export function validateArkEvidence(researchInput: ResearchBundle, candidate: un
     if (fact.matchBasis.some(basis => !sourceMatchBasis.has(basis))) {
       invalid(`Fact ${fact.factId} contains invented matchBasis`);
     }
-    rejectUnsupportedInference(`Fact ${fact.factId}`, fact.statement);
+    rejectUnsupportedInference(
+      `Fact ${fact.factId}`,
+      fact.statement,
+      isDirectProcurementDisclosure(fact, citedReferences),
+    );
   }
   for (const [index, conflict] of evidence.conflicts.entries()) {
     rejectUnsupportedInference(`Conflict ${index}`, conflict);
@@ -117,6 +147,15 @@ export function validateArkEvidence(researchInput: ResearchBundle, candidate: un
   }
   for (const [index, record] of evidence.financingRecords.entries()) {
     if (record.evidenceIds.length === 0) invalid(`Financing record ${index} requires evidence`);
+    if (record.typeOrRound !== null) {
+      rejectUnsupportedInference(`Financing record ${index} typeOrRound`, record.typeOrRound);
+    }
+    if (record.disclosedAmount !== null) {
+      rejectUnsupportedInference(`Financing record ${index} disclosedAmount`, record.disclosedAmount);
+    }
+    for (const [investorIndex, investor] of record.investors.entries()) {
+      rejectUnsupportedInference(`Financing record ${index} investor ${investorIndex}`, investor);
+    }
   }
 
   if (research.items.length === 0) {

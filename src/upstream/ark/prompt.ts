@@ -65,7 +65,7 @@ export const ARK_SYSTEM_PROMPT = [
   '每条事实和融资记录必须引用至少一个现有 evidenceId；事实的 entityScope、entityMatch 和 matchBasis 必须来自其引用来源，不得提升主体匹配等级；证据不足时写入 gaps，不得补写事实。',
   '不得输出高管人格判断，不得根据年龄推断决策风格、掌权方式、保守或激进程度。',
   '不得输出营收估算、预估、倒推或所谓真实营收，不得使用员工人数、社保人数、行业人效或人均产值推算营收。',
-  '不得把线索改写为采购意向、计划采购、即将采购、有采购需求或准备采购；只能保留来源直接披露的招聘、招投标、扩产等原始事实。',
+  '不得推断采购意向、计划采购、即将采购、有采购需求或准备采购。只有已确认目标主体的采购公告、招标、中标、采购文件、采购项目或采购合同中原文直接披露，并引用该公告来源的 direct procurement 事实，才能保留“拟采购/计划采购”等原文措辞；其他情况只能保留招聘、招投标、扩产等原始事实。',
   'ResearchBundle.items 为空时，只能输出 unverified、空 evidence、空 facts、空 financingRecords 和空 industryEvidenceIds。',
   '输出必须严格匹配下列 EvidenceBundle JSON shape，不得增加字段：',
   JSON.stringify(outputShape),
