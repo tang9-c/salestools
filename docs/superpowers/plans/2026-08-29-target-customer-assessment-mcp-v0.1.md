@@ -19,6 +19,7 @@
 - `PROFILE_CACHE_TTL_DAYS` 和 `ASSESSMENT_CACHE_TTL_DAYS` 默认均为 30；不自动删除历史数据。
 - 任一有效 Token 知道 UUID 后可以读取他人报告；不要增加跨用户报告隔离。
 - 上游各失败后只重试一次；企查查或豆包搜索失败可降级，方舟两次失败则任务失败。
+- 正式评估的企查查调用先执行融资、再执行招聘；融资是重点预算/扩张/时机证据，但不能单独建立产品场景或机会“高”。
 - 不保存上游原始响应；只保存清洗后的基础画像、任务元数据和最终 Markdown。
 - 机会等级仅为 `高/中/低/待核实`；不实现分数、星级或模型直接评分。
 - 每个 shell 命令必须以 `rtk` 开头。
@@ -52,7 +53,7 @@ src/mcp/*.ts                         四工具注册、HTTP 鉴权和路由
 src/index.ts                         组合依赖、启动和优雅关闭
 tests/fixtures/*.json                脱敏的企查查、搜索、方舟样本
 tests/**/*.test.ts                   单元、契约、集成测试
-scripts/real-e2e.ts                  显式启用的一家真实企业链路
+docs/validation/real-e2e-result.md   一家真实企业的人工验收记录
 Dockerfile                           Node 24 单进程镜像
 README.md                            本地运行、Token、Codex 和部署说明
 ```
@@ -68,12 +69,11 @@ README.md                            本地运行、Token、Codex 和部署说�
 - Produces: `loadConfig(env: NodeJS.ProcessEnv): AppConfig`
 - Produces: `AppConfig`，包含端口、数据库路径、Host/Origin、四个 QCC URL、搜索/方舟凭证、调用上限和缓存 TTL。
 
-- [ ] **Step 1: 初始化 Git 并写失败的配置测试**
+- [ ] **Step 1: 初始化 Node 工程并写失败的配置测试**
 
 Run:
 
 ```bash
-rtk git init
 rtk npm init -y
 ```
 
@@ -121,7 +121,7 @@ Expected: FAIL because `src/config.ts` does not exist.
 
 - [ ] **Step 3: 写最小工程配置和 `loadConfig`**
 
-Use ESM, `engines.node >=24`, scripts `build`, `typecheck`, `test`, `start`, `dev`, `tokens`, `real:e2e`. In `src/config.ts`, define one strict Zod object; parse comma-separated origins; validate all upstream URLs with `.url().startsWith('https://')`; use integer coercion with defaults `8/8/2/18/30/30/1`; throw `Invalid configuration: <comma-separated field names>` only.
+Use ESM, `engines.node >=24`, scripts `build`, `typecheck`, `test`, `start`, `dev`, `tokens`. In `src/config.ts`, define one strict Zod object; parse comma-separated origins; validate all upstream URLs with `.url().startsWith('https://')`; use integer coercion with defaults `8/8/2/18/30/30/1`; throw `Invalid configuration: <comma-separated field names>` only.
 
 ```ts
 export type AppConfig = z.infer<typeof configSchema> & { allowedOrigins: Set<string> };
@@ -189,11 +189,14 @@ Use these exact shared enums and core shapes:
 ```ts
 export const ProductKeySchema = z.enum(['windchill','feigenbaum_qms','creo','catia','abaqus','cst','solidworks']);
 export const OpportunityLevelSchema = z.enum(['高','中','低','待核实']);
-export const SourceStatusSchema = z.enum(['completed','partial','failed']);
+export const ResearchSourceStatusSchema = z.enum(['completed','partial','failed']);
+export const ArkSourceStatusSchema = z.enum(['completed','failed']);
 export const EntityScopeSchema = z.enum(['legal_entity','group','subsidiary','brand','unknown']);
 export const EntityMatchSchema = z.enum(['confirmed','probable','unverified']);
-export const FactKindSchema = z.enum(['industry','product_scene','recruitment','software_ecosystem','organization','quality','manufacturing','procurement','budget','decision_power','risk']);
+export const FactKindSchema = z.enum(['industry','product_scene','recruitment','financing','software_ecosystem','organization','quality','manufacturing','procurement','budget','decision_power','risk']);
 ```
+
+`ReportSourceStatus` must use `ResearchSourceStatusSchema` for `qcc` and `doubaoSearch`, and `ArkSourceStatusSchema` for `ark`; tests must reject `ark: 'partial'`.
 
 `ResearchItem` must include `evidenceId`, `source`, `sourceKind`, `title`, `url`, nullable `summary/content/publishedAt`, `collectedAt`, `mentionedName`, and preliminary entity fields. `EvidenceFact` must include `factId`, `statement`, `kind`, `productTags`, `strength: direct|supporting|weak`, `evidenceIds`, entity scope/match/basis, nullable `publishedAt`. All schemas use `.strict()`.
 
@@ -231,7 +234,7 @@ rtk git commit -m "feat: add data contracts and sqlite repositories"
 
 - [ ] **Step 1: 写失败测试**
 
-Test one-time plaintext output, stored SHA-256 hash only, disabled rejection, invalid Bearer rejection, valid no-Origin acceptance, invalid Host/Origin rejection, unknown MCP input fields, and the four response shapes. Assert a valid user can read an assessment created by another user.
+Test one-time plaintext output, stored SHA-256 hash only, disabled rejection, invalid Bearer rejection, valid no-Origin acceptance, invalid Host/Origin rejection, unknown MCP input fields, and the four response shapes. Assert a valid user can read an assessment created by another user. Also inspect registered tool descriptions: `get_company_profile` must say it is the default for basic or ambiguous requests; `submit_assessment` must say it is only for explicit formal assessment after the user confirms `legal_name` and `credit_code`.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -259,6 +262,7 @@ app.post('/mcp', authMiddleware, async (req, res) => {
 
 Tool handlers return both text `content` and the same small JSON as `structuredContent`; business `processing/failed` states are successful tool calls, not thrown protocol errors.
 Each registration declares both strict input and output schemas so `structuredContent` is contract-checked. External field names follow the design (`assessment_id`, `overall_opportunity`, `recommended_product`); conversion from internal camelCase happens only in `src/mcp/tools.ts`.
+Encode the design's tool-selection rules directly in the MCP tool descriptions. Do not add an intent-classifier module: the client model uses these descriptions, while `submit_assessment` enforces the confirmed identity fields at runtime.
 
 - [ ] **Step 5: 运行测试并提交**
 
@@ -283,7 +287,7 @@ rtk git commit -m "feat: add bearer auth and four mcp tool contracts"
 
 - [ ] **Step 1: 保存脱敏样本并写失败契约测试**
 
-Allow only these v0.1 tools: company `get_company_by_query`, `get_company_registration_info`, `get_company_profile`, `get_contact_info`, `get_shareholder_info`, `get_actual_controller`, `get_key_personnel`; risk `get_company_risk_scan`; IPR `get_patent_info`, `get_software_copyright_info`; operation `get_recruitment_info`, `get_bidding_info`, `get_qualifications`. Tests must prove any other tool name is rejected locally before network access.
+Allow only these v0.1 tools: company `get_company_by_query`, `get_company_registration_info`, `get_company_profile`, `get_contact_info`, `get_shareholder_info`, `get_actual_controller`, `get_key_personnel`; risk `get_company_risk_scan`; IPR `get_patent_info`, `get_software_copyright_info`; operation `get_recruitment_info`, `get_financing_records`, `get_annual_reports`, `get_bidding_info`, `get_qualifications`. Tests must prove any other tool name is rejected locally before network access, and that financing/recruitment initial calls occur before every other formal-assessment QCC call or retry. Contract fixtures must cover financing date, type/round, nullable disclosed amount, investors, and missing optional fields.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -295,7 +299,7 @@ rtk npm test -- --run tests/qcc-adapter.test.ts tests/company-profile.test.ts
 
 Use `Client` and `StreamableHTTPClientTransport` from `@modelcontextprotocol/client`, setting `requestInit.headers.Authorization`. Build one lazy client per configured server; on transport error close, reconnect once, then surface a typed `UpstreamError`. Validate mapped results, never persist raw payloads.
 
-For formal assessment, fixed priority plan is eight calls: profile, shareholder, risk scan, patents, software copyrights, recruitment, bidding, qualifications. Stop before starting a call when budget is exhausted. Missing dataset becomes a gap, not a negative fact.
+For formal assessment, call `get_financing_records` first and `get_recruitment_info` second, then profile, risk scan, patents, annual reports and bidding. The eighth call selects the most relevant gap among shareholder, software copyrights and qualifications. These first two calls must start before any other QCC call or retry can consume their reserved budget; retries run after both initial attempts. Stop before starting later calls when budget is exhausted. A missing dataset is a gap, not a negative fact. If financing fails while other QCC data is usable, set only the overall QCC status to `partial` and render “融资信息获取失败” as a gap; do not add `financingStatus` or infer a replacement value.
 
 - [ ] **Step 4: 实现基础画像唯一/多候选、重试和 30 天缓存**
 
@@ -399,7 +403,7 @@ rtk git commit -m "feat: extract and validate evidence with ark"
 
 - [ ] **Step 1: 写表驱动失败测试**
 
-For every product cover direct named recruitment, competitor signal, generic role, old recruitment, two independent sources plus recent signal, strong blocker, unverified entity, P1 without product scene, P2 CST RF evidence, and empty evidence. Run the same input twice and deep-equal outputs.
+For every product cover direct named recruitment, competitor signal, generic role, old recruitment, two independent original publishers plus recent signal, strong blocker, unverified entity, P1 without product scene, P2 CST RF evidence, financing with and without a product scene, and empty evidence. Assert that financing strengthens budget/timing only when a product scene already exists, never creates a product scene or independently yields `高`. Run the same input twice and deep-equal outputs.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -409,7 +413,7 @@ rtk npm test -- --run tests/opportunity.test.ts tests/recruitment-signals.test.t
 
 - [ ] **Step 3: 实现产品规则表**
 
-Each product rule declares exact positive keywords, engineering methods, competitor keywords and blockers. Recruitment published within 365 days can be `recent`; older recruitment is converted to software-ecosystem support only. Generic roles are weak and cannot establish a product scene.
+Each product rule declares exact positive keywords, engineering methods, competitor keywords and blockers. Recruitment published within 365 days can be `recent`; older recruitment is converted to software-ecosystem support only. Generic roles are weak and cannot establish a product scene. Financing facts are product-neutral budget/timing support: preserve disclosed date/type/round/amount/investors, never estimate missing values, and never turn financing into a product-scene fact.
 
 - [ ] **Step 4: 实现统一四档决策树**
 
@@ -417,11 +421,13 @@ Apply exactly in this order:
 
 ```text
 industry unverified OR critical conflict OR all supporting entity matches unverified -> 待核实
-confirmed product scene + >=2 independent sourceKind/domain groups + recent demand + no strong blocker -> 高
-confirmed product scene + reliable support, but no recent signal or budget/decision unknown -> 中
-confirmed target industry + evidence collected but no product scene, OR strong incumbent blocker without replacement signal -> 低
+confirmed product scene + >=2 independent original publisher/domain groups + matching engineering/organization complexity + recent timing signal + no known budget/decision blocker -> 高
+confirmed product scene + reliable support + matching complexity or software ecosystem, but no recent timing signal or budget/decision unknown -> 中
+confirmed target industry + evidence collected but no product scene, OR insufficient complexity, OR strong incumbent blocker without replacement signal -> 低
 otherwise -> 待核实
 ```
+
+P1/P2 affects prioritization and tie-breaking only. A recent financing fact may satisfy timing/budget support but never `confirmed product scene`; QCC and Doubao are acquisition channels, so independence is computed from the original publisher/domain and duplicate reposts count once.
 
 Choose overall highest valid level; ties use most direct confirmed evidence, then lowest blocker count, then fixed product order. If only weak/probable evidence supports the highest level, return overall `待核实` and `recommendedProduct=null`.
 
@@ -446,7 +452,7 @@ rtk git commit -m "feat: add deterministic seven-product opportunity rules"
 
 - [ ] **Step 1: 写失败快照和禁止内容测试**
 
-Assert one-screen summary, seven rows, evidence URL/time/basis, sales questions, risks/gaps, source failure labels, no unsupported revenue/personality/procurement statements, and no sales recommendation when `recommendedProduct=null`.
+Test two branches. A normal report must contain the one-screen summary, latest financing result, seven product rows, evidence URL/time/basis, sales questions, risks/gaps, source failure labels, and no unsupported revenue/personality/procurement statements. When financing fails but other QCC data succeeds, assert `sourceStatus.qcc='partial'`, the Markdown contains “融资信息获取失败”, and no standalone `financingStatus` field exists. A `recommendedProduct=null` report must contain only evidence gaps, source status and next verification actions: no product matrix, product names, target roles or sales approach.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -497,7 +503,7 @@ Queue stores only assessment UUIDs in memory, shifts in submission order and sta
 
 - [ ] **Step 4: 实现评估 runner 和服务**
 
-Runner flow is fixed: load task/identity → concurrently collect QCC and search within budget → build `ResearchBundle` → Ark extraction → deterministic rules → ReportModel/Markdown → atomic completion. If both research sources fail, pass an empty bundle to Ark and complete with seven `待核实`; if Ark or persistence fails, mark failed and store no Markdown.
+Runner flow is fixed: load task/identity → concurrently collect QCC and search within budget → build `ResearchBundle` → Ark extraction → deterministic rules → ReportModel/Markdown → atomic completion. If both research sources fail, pass an empty bundle to Ark and complete with `overallOpportunity='待核实'`, `recommendedProduct=null` and a gaps-only Markdown report; if Ark or persistence fails, mark failed and store no Markdown.
 
 - [ ] **Step 5: 运行测试并提交**
 
@@ -550,39 +556,32 @@ rtk git commit -m "feat: assemble deployable target assessment mcp"
 
 Expected: all tests PASS, build exits 0, Docker image builds.
 
-### Task 11: 一家真实企业的显式端到端验收
+### Task 11: 一家真实企业的人工端到端验收
 
 **Files:**
-- Create: `scripts/real-e2e.ts`
-- Create: `docs/validation/real-e2e-checklist.md`
-- Modify: `README.md`
+- Create: `docs/validation/real-e2e-result.md`
 
 **Interfaces:**
-- Produces: opt-in interactive `npm run real:e2e -- --company "公司名称" --region "地域"`; never runs in ordinary tests or CI.
+- Produces: one sanitized record of the already required real MCP validation; no extra script, test harness or production interface.
 
-- [ ] **Step 1: 写只读 dry-run 参数测试**
+- [ ] **Step 1: 启动已完成的服务并配置 Codex 客户端**
 
-Create `tests/real-e2e-script.test.ts` that proves missing `REAL_E2E=1` exits before network access and that company/region arguments are required.
+Use an authorized `.env` and one enabled Bearer Token. Configure the current Codex MCP client to call the deployed or local HTTPS `/mcp`; do not commit credentials, the real credit code, report body or raw upstream payload.
 
-- [ ] **Step 2: 实现真实调用脚本**
+- [ ] **Step 2: 人工调用四工具闭环**
 
-The script loads real `.env`, calls `get_company_profile`, prints numbered candidates, then prompts the operator to type the candidate number and retype its exact legal name before submit. It polls every 10 seconds with a 15-minute ceiling, then writes report to stdout only. It must redact all credentials and must not create a second task while one is processing.
+In Codex call `get_company_profile` for one authorized company, explicitly confirm one candidate, call `submit_assessment`, poll `get_assessment_status`, then call `get_assessment_report`. Do not submit a second task while the first is processing.
 
-- [ ] **Step 3: 运行 dry-run 和真实链路**
+- [ ] **Step 3: 核对结果**
 
-```bash
-rtk npm test -- --run tests/real-e2e-script.test.ts
-rtk REAL_E2E=1 npm run real:e2e -- --company "深圳市海明润超硬材料股份有限公司" --region "深圳"
-```
-
-Expected: profile resolves to the confirmed entity; assessment transitions `processing → completed` or returns an explicitly explained upstream `failed`; completed report includes links and seven product rows. Do not place the real credit code, report or upstream payload in Git fixtures unless separately approved and sanitized.
+Expected: profile resolves to the confirmed entity; assessment transitions `processing → completed` or returns an explicitly explained upstream `failed`. A normal report states the financing result or its evidence gap, includes evidence links and seven product rows. A gaps-only report omits product/role/sales recommendations. This single run validates connectivity and contracts only.
 
 - [ ] **Step 4: 记录验收结果并提交**
 
-Fill the checklist with date, elapsed time, source statuses, whether every key conclusion has a link, and discovered adapter/schema mismatches; do not claim sales accuracy from this one company.
+Write `docs/validation/real-e2e-result.md` with date, elapsed time, source statuses, whether financing was obtained or explicitly failed, whether every key conclusion has a link, and any adapter/schema mismatch. Do not include sensitive company details or claim sales accuracy from this one company.
 
 ```bash
-rtk git add scripts/real-e2e.ts tests/real-e2e-script.test.ts docs/validation/real-e2e-checklist.md README.md
+rtk git add docs/validation/real-e2e-result.md
 rtk git commit -m "test: validate one authorized real assessment flow"
 ```
 
@@ -593,4 +592,4 @@ rtk git commit -m "test: validate one authorized real assessment flow"
 - [ ] Run `rtk npm run build` — expected `dist/` generated successfully.
 - [ ] Run `rtk rg -n "@modelcontextprotocol/sdk|DOUBAO_SEARCH_CREDENTIAL|QCC_MCP_EXECUTIVE|QCC_MCP_TENDER|TODO|TBD" package.json src tests README.md .env.example` — expected no matches.
 - [ ] Run `rtk rg -n "API_KEY=.+|CREDENTIAL=.+|Bearer [A-Za-z0-9_-]{16}" . --glob '!package-lock.json' --glob '!.git/**'` — expected no real secrets.
-- [ ] Verify the one real report contains legal entity, source timestamps, source failure labels, seven opportunity rows, evidence links and no unsupported personality/revenue/procurement claims.
+- [ ] Verify the one real report contains legal entity, source timestamps, a financing result or evidence gap, source failure labels, evidence links and no unsupported personality/revenue/procurement claims; require seven opportunity rows only when `recommended_product` is non-null.
