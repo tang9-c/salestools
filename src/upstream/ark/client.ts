@@ -110,7 +110,7 @@ export class ArkEvidenceService {
       const validated = validateArkEvidence(compactBundle, candidate);
       return {
         ...validated,
-        gaps: [...new Set([...validated.gaps, ...compactBundle.gaps])],
+        gaps: [...new Set([...validated.gaps, ...bundle.gaps, ...compactBundle.gaps])],
       };
     } catch (error) {
       if (error instanceof ArkEvidenceValidationError) {

@@ -13,6 +13,7 @@ const INITIAL_SUPPORT_CONTENT_BYTES = 1_024;
 const SHRINK_STEP_BYTES = 256;
 const MAX_EXCERPT_WINDOWS = 4;
 const MIN_WINDOW_BYTES = 256;
+const QCC_UNAVAILABLE_LINK_GAP_PREFIX = '企查查来源链接不可用：';
 
 type EvidenceTextCategory = 'financing' | 'procurement' | 'recruitment' | 'technical' | 'support';
 
@@ -350,7 +351,7 @@ function materialize(
     ...bundle,
     items: states.map(state => state.item),
     gaps: [...new Set([
-      ...bundle.gaps,
+      ...bundle.gaps.filter(gap => !gap.startsWith(QCC_UNAVAILABLE_LINK_GAP_PREFIX)),
       ...(includeCapacityGap ? [ARK_INPUT_BUDGET_GAP] : []),
       ...(includeHistoricalFinancingGap ? [ARK_HISTORICAL_FINANCING_GAP] : []),
     ])],

@@ -74,7 +74,7 @@ docker run --rm -p 3000:3000 \
 
 模拟 MCP HTTP 闭环由测试覆盖，包括 SDK v2 modern 协商、画像、提交、轮询、报告、缓存字段和跨 Token 读取。生产与常规 Task 11 验收仍要求未提交的 `.env` 中具备真实凭据、HTTPS endpoint 可访问且企业已获授权。
 
-2026-08-30 用户明确批准过一次仅限 Task 11 的本地 `127.0.0.1` HTTP 技术链路例外。该次运行没有验证 TLS、反向代理、生产 Host 或生产 Origin，也不改变上面的生产 HTTPS 要求。此后 nullable QCC 链接和 Ark 输入预算语义已修复，旧记录中的“关键结论链接覆盖=true”不再可靠；修复后尚未调用真实上游重跑，不能把旧记录当作当前通过结论。
+2026-08-30 用户明确批准了仅限 Task 11 的本地 `127.0.0.1` HTTP 技术链路例外。修复真实数据暴露的 Ark 输入预算问题后，使用全新临时 SQLite 的单次正式提交在 491 秒内完成。QCC 为 `partial`，豆包搜索和 Ark 为 `completed`；部分关键证据缺少直链，已明确标记而没有伪造 URL。详见 `docs/validation/real-e2e-result.md`。该例外没有验证 TLS、反向代理、生产 Host 或生产 Origin，也不改变上面的生产 HTTPS 要求。
 
 ```bash
 npm test

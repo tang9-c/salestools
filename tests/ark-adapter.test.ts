@@ -539,6 +539,27 @@ describe('ArkEvidenceService', () => {
     expect(sent.items.every(item => !item.title.endsWith('\uFFFD'))).toBe(true);
   });
 
+  it('keeps repetitive unavailable-link audit gaps out of the prompt budget but returns them unchanged', async () => {
+    const research = budgetResearchBundle();
+    const unavailableLinkGaps = Array.from(
+      { length: 120 },
+      (_, index) => `企查查来源链接不可用：qcc-evidence-${index}`,
+    );
+    const financingGap = '融资结果无法结构化验证（适配器契约缺口）';
+    research.gaps = [financingGap, ...unavailableLinkGaps];
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
+      responseWithContent(JSON.stringify(factFreeEvidence(research))),
+    );
+
+    const output = await client(fetchFn).extract(research);
+
+    const sent = requestResearch(fetchFn);
+    expect(Buffer.byteLength(JSON.stringify(sent), 'utf8')).toBeLessThanOrEqual(ARK_COMPACT_BUNDLE_MAX_BYTES);
+    expect(sent.gaps).toContain(financingGap);
+    expect(sent.gaps).not.toContain(unavailableLinkGaps[0]);
+    expect(output.gaps).toEqual(expect.arrayContaining([financingGap, ...unavailableLinkGaps]));
+  });
+
   it.each([
     ['zero unique items', 0, false, false],
     ['one unique item', 1, false, false],
