@@ -8,7 +8,7 @@
     "test": "vitest",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "tokens": "tsx src/tokens.ts"
+    "tokens": "tsx src/cli/tokens.ts"
   },
   "keywords": [],
   "author": "",

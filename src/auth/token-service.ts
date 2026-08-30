@@ -1,0 +1,59 @@
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import type { TokenMetadata, TokenRecord } from '../db/token-repository.js';
+
+export interface AuthenticatedUser {
+  userId: string;
+}
+
+export interface TokenStore {
+  insert(input: {
+    userId: string;
+    tokenHash: string;
+    enabled: boolean;
+    createdAt: string;
+  }): void;
+  findByHash(tokenHash: string): TokenRecord | null;
+  disableByUserId(userId: string): number;
+  list(): TokenMetadata[];
+}
+
+function hashToken(plaintext: string): string {
+  return createHash('sha256').update(plaintext).digest('hex');
+}
+
+export class TokenService {
+  constructor(
+    private readonly repository: TokenStore,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
+
+  create(userId: string): string {
+    const plaintext = randomBytes(32).toString('base64url');
+    this.repository.insert({
+      userId,
+      tokenHash: hashToken(plaintext),
+      enabled: true,
+      createdAt: this.now().toISOString(),
+    });
+    return plaintext;
+  }
+
+  verify(plaintext: string): AuthenticatedUser | null {
+    const candidateHash = hashToken(plaintext);
+    const record = this.repository.findByHash(candidateHash);
+    if (record === null || !record.enabled) return null;
+
+    const stored = Buffer.from(record.tokenHash, 'hex');
+    const candidate = Buffer.from(candidateHash, 'hex');
+    if (stored.length !== candidate.length || !timingSafeEqual(stored, candidate)) return null;
+    return { userId: record.userId };
+  }
+
+  disable(userId: string): boolean {
+    return this.repository.disableByUserId(userId) > 0;
+  }
+
+  list(): TokenMetadata[] {
+    return this.repository.list();
+  }
+}
