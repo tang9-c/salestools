@@ -431,6 +431,51 @@ describe('assessment report', () => {
   it('counts only complete real direct-link coverage for key conclusions', () => {
     const model = buildReportModel(identity, evidenceBundle(), assessment(), sourceStatus);
     expect(hasDirectLinkCoverageForKeyConclusions(model)).toBe(true);
+    expect(hasDirectLinkCoverageForKeyConclusions({
+      ...model,
+      industryEvidenceIds: [],
+    })).toBe(false);
+  });
+
+  it('requires a direct link for industry classification even when product evidence has one', () => {
+    const industryWithoutLink = reference('industry-without-link', {
+      url: null,
+      originalPublisher: null,
+      originalDomain: null,
+      title: 'QCC 行业分类依据',
+    });
+    const productWithLink = reference('product-with-link', {
+      url: 'https://jobs.example/windchill-role',
+      originalPublisher: '招聘官网',
+      originalDomain: 'jobs.example',
+    });
+    const input = evidenceBundle({
+      industryEvidenceIds: ['industry-without-link'],
+      evidence: [industryWithoutLink, productWithLink],
+      facts: [fact(
+        'direct-product-scene',
+        '招聘 Windchill 管理员负责 BOM 与工程变更',
+        'recruitment',
+        ['product-with-link'],
+        ['windchill'],
+      )],
+      financingRecords: [],
+      conflicts: [],
+      gaps: ['企查查来源链接不可用：industry-without-link'],
+    });
+    const result = assessment();
+    result.products = result.products.map(row => ({
+      ...row,
+      evidenceIds: row.product === 'windchill' ? ['product-with-link'] : [],
+    }));
+
+    const model = buildReportModel(identity, input, result, sourceStatus);
+    const markdown = renderMarkdown(model);
+
+    expect(model.industryEvidenceIds).toEqual(['industry-without-link']);
+    expect(markdown).toContain('行业分类：P1');
+    expect(markdown).toContain('QCC 行业分类依据（来源链接不可用）');
+    expect(hasDirectLinkCoverageForKeyConclusions(model)).toBe(false);
   });
 
   it('presents stored markdown by completed_at without persisting a ReportModel', () => {

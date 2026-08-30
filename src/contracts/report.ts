@@ -15,6 +15,7 @@ export const ArkSourceStatusSchema = z.enum(['completed', 'failed']);
 export const ReportModelSchema = z.object({
   legalName: z.string(),
   industryClassification: IndustryClassificationSchema,
+  industryEvidenceIds: z.array(z.string()),
   companyScaleClues: z.array(z.string()),
   overallOpportunity: OpportunityLevelSchema,
   recommendedProduct: ProductKeySchema.nullable(),

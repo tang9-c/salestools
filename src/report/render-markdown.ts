@@ -84,10 +84,12 @@ function sourceLink(reference: EvidenceReference): string {
 
 export function hasDirectLinkCoverageForKeyConclusions(modelInput: ReportModel): boolean {
   const model = ReportModelSchema.parse(modelInput);
+  if (model.industryClassification !== 'unverified' && model.industryEvidenceIds.length === 0) return false;
   const recommendedEvidenceIds = model.recommendedProduct === null
     ? []
     : model.products.find(product => product.product === model.recommendedProduct)?.evidenceIds ?? [];
   const keyEvidenceIds = new Set([
+    ...model.industryEvidenceIds,
     ...recommendedEvidenceIds,
     ...model.facts.flatMap(fact => fact.evidenceIds),
     ...(model.latestFinancing?.evidenceIds ?? []),
@@ -174,14 +176,24 @@ function evidenceRow(statement: string, reference: EvidenceReference, support: s
 
 function evidenceRows(model: ReportModel): string[] {
   const referencesById = new Map(model.evidence.map(reference => [reference.evidenceId, reference]));
+  const factEvidenceIds = new Set(model.facts.flatMap(fact => fact.evidenceIds));
   const factRows = model.facts.flatMap(fact => fact.evidenceIds.flatMap(evidenceId => {
     const reference = referencesById.get(evidenceId);
     return reference === undefined ? [] : [evidenceRow(fact.statement, reference, factSupport(model, fact))];
   }));
+  const industryRows = model.industryEvidenceIds
+    .filter(evidenceId => !factEvidenceIds.has(evidenceId))
+    .flatMap(evidenceId => {
+      const reference = referencesById.get(evidenceId);
+      return reference === undefined
+        ? []
+        : [evidenceRow(`行业分类：${model.industryClassification}`, reference, '行业分类依据')];
+    });
+  const baseRows = [...factRows, ...industryRows];
   const latestFinancing = model.latestFinancing;
-  if (latestFinancing === null) return factRows;
+  if (latestFinancing === null) return baseRows;
   return [
-    ...factRows,
+    ...baseRows,
     ...latestFinancing.evidenceIds.flatMap(evidenceId => {
       const reference = referencesById.get(evidenceId);
       return reference === undefined

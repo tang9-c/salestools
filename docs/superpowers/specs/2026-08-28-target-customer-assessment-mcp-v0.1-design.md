@@ -334,7 +334,7 @@ SQLite 保存最终报告
 
 服务端校验被引用的 `evidence_id` 对应本次 `ResearchBundle` 中已有的来源条目；URL 必须逐字复制且允许为 `null`，网页提及名称和主体归属字段必须完整。模型不得创建新来源、URL、别名或证据 ID。方舟适配器对一次调用只发起一次 HTTP 请求；方舟返回空内容、非法 JSON、悬空引用或其他不合格结构时抛出类型化错误，由任务编排的 `retryOnce` 重试整个调用一次。第二次仍不合格则任务标为 `failed`，不生成正式报告。
 
-当前自建 Ark 网关的实测容量约束为最多 4 条代表证据。发送前使用字段感知的 UTF-8 字节预算：compact `ResearchBundle` 不超过 6,656 bytes，包含系统提示和请求 envelope 的完整序列化请求不超过 12,288 bytes。成功映射的 QCC 融资记录占最高优先专用槽，完整保留结构化日期、轮次/类型、披露金额和投资方；其余槽位在 QCC 与豆包搜索之间确定性公平选择招聘、采购/招投标和技术场景证据。主体身份已通过 `identity` 单独传输，企业 profile 只能作为低优先 fallback，不能挤占融资或需求槽。超限时先按低优先级缩减正文和摘要，再丢弃最低优先条目；不得截断标题、URL、evidence ID、主体归属或 provenance 字段。被裁剪或未选条目触发容量 gap，原有可信 gaps 必须保留；未选不代表不存在。
+当前自建 Ark 网关的实测容量约束为最多 4 条代表证据。发送前使用字段感知的 UTF-8 字节预算：compact `ResearchBundle` 不超过 6,656 bytes，包含系统提示和请求 envelope 的完整序列化请求不超过 12,288 bytes。成功映射的 QCC 融资记录占最高优先专用槽；多个融资条目按有效 `publishedAt` 降序稳定选择，有日期的排在无日期之前，同日期保持来源顺序，全部无日期时保留第一条。专槽完整保留结构化日期、轮次/类型、披露金额和投资方，不再用其他历史/无日期融资填充剩余槽；省略其他融资时加入可信 gap，未选不代表不存在。其余槽位在 QCC 与豆包搜索之间确定性公平选择招聘、采购/招投标和技术场景证据。主体身份已通过 `identity` 单独传输，企业 profile 只能作为低优先 fallback，不能挤占融资或需求槽。超限时先按证据类别和关键词强度从全文选择最多 4 个互不重叠正文窗口，产品词、采购披露/动作和工程技能高于泛化“招聘/岗位/公告”，并为剩余窗口公平预留 UTF-8 配额；随后按低优先级缩减正文和摘要，再丢弃最低优先条目。不得截断标题、URL、evidence ID、主体归属或 provenance 字段。被裁剪或未选条目触发容量 gap，原有可信 gaps 必须保留；未选不代表不存在。
 
 固定提示和服务端校验同时保守拒绝以下推断，无论它们出现在 `facts[].statement`、`conflicts[]`、`gaps[]`，还是融资记录的轮次、金额和投资方字符串中：高管人格或按年龄推断决策风格；营收估算、倒推或员工人数/行业人效乘法；把招聘、扩产等线索改写为采购意向、计划采购、即将采购或有采购需求。只有 `kind=procurement`、`strength=direct`、事实和全部引用均确认属于目标法定主体，并且 statement 与每个引用 `ResearchItem` 的 `title + summary + content` 均明确包含“采购公告/招标公告/中标公告/采购文件/采购项目/采购合同”之一、相同的采购披露措辞及全部目标产品词时，才允许保留原文中的“拟采购/计划采购”等措辞。裸“公告/招标/中标”、招聘公告、新品公告、产品不一致的页面、supporting/weak、其他 fact kind、无公开载体、未确认主体、`conflicts/gaps` 和融资字段均不适用该例外。该一致性检查为确定性字符串规则，不另行调用语义模型。已发布的招聘和招投标原始事实仍允许保留；销售问题可以询问采购计划。
 
@@ -548,6 +548,7 @@ type OpportunityAssessment = {
 type ReportModel = {
   legalName: string;
   industryClassification: 'P1' | 'P2' | 'non_target' | 'unverified';
+  industryEvidenceIds: string[];
   companyScaleClues: string[];
   overallOpportunity: '高' | '中' | '低' | '待核实';
   recommendedProduct: ProductKey | null;
@@ -570,7 +571,7 @@ type ReportModel = {
 };
 ```
 
-`originalPublisher` 和 `originalDomain` 表示原始发布方，而不是企查查或豆包搜索这一获取通道。去重优先按规范化 `originalDomain`，缺失时按规范化 `originalPublisher`；两者都为空的条目可以引用，但不能计入“两个独立原始发布方”的门槛。同一去重键的转载只计一次。`EvidenceReference` 必须由服务端从对应 `ResearchItem` 复制并校验，包括 nullable URL；方舟不得创建或改写这些来源字段。只有真实 HTTP(S) 直接 URL 才计入链接覆盖，`null` 和目录页均不计入。这里的契约只是五个既有模块边界，不抽象通用事件、来源或规则框架。
+`originalPublisher` 和 `originalDomain` 表示原始发布方，而不是企查查或豆包搜索这一获取通道。去重优先按规范化 `originalDomain`，缺失时按规范化 `originalPublisher`；两者都为空的条目可以引用，但不能计入“两个独立原始发布方”的门槛。同一去重键的转载只计一次。`EvidenceReference` 必须由服务端从对应 `ResearchItem` 复制并校验，包括 nullable URL；方舟不得创建或改写这些来源字段。`ReportModel.industryEvidenceIds` 保留行业分类依据的审计链。只有真实 HTTP(S) 直接 URL 才计入链接覆盖，行业分类依据、关键事实、最近融资和推荐产品依据中的任一引用为 `null` 或目录页时，覆盖均为 `false`。这里的契约只是五个既有模块边界，不抽象通用事件、来源或规则框架。
 
 ### 主体身份档案与证据归属
 
@@ -910,7 +911,7 @@ P1 行业：
 - 正式评估优先调用 `get_financing_records`；融资记录映射日期、类型或轮次、披露金额和投资方，缺字段不补写，调用失败在报告中明确标注。
 - 调用预算测试保证融资和招聘的首次调用先于其他企查查调用及重试，后续调用不得挤占这两个预留名额。
 - 融资只能作为预算、扩张和采购时机证据，不能单独建立产品场景、证明采购意向或把机会提升为“高”。
-- 报告的关键结论包含来源时间和简短依据；有真实直接 URL 时包含链接，只有 QCC `null` URL 时必须显示“来源链接不可用”，且链接覆盖不得记为 `true`。
+- 报告的关键结论包含来源时间和简短依据；行业分类依据也必须进入关键证据审计链。有真实直接 URL 时包含链接，只有 QCC `null` URL 时必须显示“来源链接不可用”；行业分类、关键事实、最近融资或推荐产品依据中任一引用没有真实直链时，链接覆盖不得记为 `true`。
 
 ### 5. 真实端到端
 

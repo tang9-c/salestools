@@ -117,6 +117,7 @@ const evidenceBundle = {
 const report = {
   legalName: identity.legalName,
   industryClassification: 'P1' as const,
+  industryEvidenceIds: evidenceBundle.industryEvidenceIds,
   companyScaleClues: [],
   overallOpportunity: '待核实' as const,
   recommendedProduct: null,

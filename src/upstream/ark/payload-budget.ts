@@ -2,6 +2,7 @@ import { ResearchBundleSchema, type ResearchBundle, type ResearchItem } from '..
 import { buildSearchPlan, type SearchQuery } from '../search/search-plan.js';
 
 export const ARK_INPUT_BUDGET_GAP = '方舟输入受网关容量限制，仅选取4条代表证据，未选数据不代表不存在';
+export const ARK_HISTORICAL_FINANCING_GAP = '方舟融资专槽有日期时仅保留最新记录、均无日期时按来源顺序保留一条；其他融资记录未送入整理，未选不代表不存在';
 export const ARK_COMPACT_BUNDLE_MAX_BYTES = 6_656;
 export const ARK_REQUEST_MAX_BYTES = 12_288;
 
@@ -10,15 +11,56 @@ const INITIAL_SUMMARY_BYTES = 512;
 const INITIAL_DEMAND_CONTENT_BYTES = 1_536;
 const INITIAL_SUPPORT_CONTENT_BYTES = 1_024;
 const SHRINK_STEP_BYTES = 256;
+const MAX_EXCERPT_WINDOWS = 4;
+const MIN_WINDOW_BYTES = 256;
 
-const IMPORTANT_EVIDENCE_PATTERN = new RegExp([
-  '采购公告', '招标公告', '中标公告', '采购文件', '采购项目', '采购合同',
-  '采购意向', '计划\\s*采购', '拟\\s*采购', '即将\\s*采购', '采购需求', '准备\\s*采购',
-  '招聘', '职位', '岗位', '任职要求', '工作职责', '扩产', '融资', '投资方',
-  'Windchill', 'Feigenbaum', 'QMS', 'Creo', 'Pro\\s*/?\\s*E', 'CATIA', 'Abaqus',
-  'CST(?:\\s+Studio(?:\\s+Suite)?)?', 'Solid\\s*Works', 'PLM', 'PDM', 'BOM', 'CAPA',
-  '有限元', '非线性', '仿真', '射频', '天线', '雷达', 'EMC', 'EMI', '参数化',
-].join('|'), 'giu');
+type EvidenceTextCategory = 'financing' | 'procurement' | 'recruitment' | 'technical' | 'support';
+
+type KeywordRule = {
+  readonly pattern: RegExp;
+  readonly weight: number;
+  readonly categoryBoost?: Partial<Record<EvidenceTextCategory, number>>;
+};
+
+const KEYWORD_RULES: readonly KeywordRule[] = [
+  {
+    pattern: /\b(?:windchill|feigenbaum(?:\s+qms)?|qms|creo|pro\s*\/?\s*e|catia|abaqus|cst(?:\s+studio(?:\s+suite)?)?|solid\s*works|plm|pdm|bom|capa)\b/giu,
+    weight: 180,
+    categoryBoost: { procurement: 30, recruitment: 30, technical: 40 },
+  },
+  {
+    pattern: /(?:采购意向|计划\s*采购|拟\s*采购|即将\s*采购|有\s*采购需求|存在\s*采购需求|准备\s*采购)/giu,
+    weight: 170,
+    categoryBoost: { procurement: 60 },
+  },
+  {
+    pattern: /(?:采购公告|招标公告|中标公告|采购文件|采购项目|采购合同)/giu,
+    weight: 100,
+    categoryBoost: { procurement: 50 },
+  },
+  {
+    pattern: /(?:有限元|非线性|材料失效|参数化|工程变更|配置管理|质量追溯|供应商质量|射频|天线|雷达|微波|电磁|仿真|emc|emi)/giu,
+    weight: 120,
+    categoryBoost: { recruitment: 30, technical: 60 },
+  },
+  {
+    pattern: /(?:融资|投资方|融资轮次|融资金额|扩产|研发中心建设|数字化项目)/giu,
+    weight: 70,
+    categoryBoost: { financing: 80 },
+  },
+  {
+    pattern: /(?:招聘|职位|岗位|任职要求|工作职责|招标|中标|公告)/giu,
+    weight: 15,
+    categoryBoost: { recruitment: 10 },
+  },
+];
+
+type ScoredWindow = {
+  start: number;
+  end: number;
+  score: number;
+  ruleIds: Set<number>;
+};
 
 type ItemState = {
   readonly original: ResearchItem;
@@ -27,6 +69,7 @@ type ItemState = {
   summaryBudget: number;
   readonly preferredContentBytes: number;
   readonly preserveFinancingContent: boolean;
+  readonly textCategory: EvidenceTextCategory;
 };
 
 function utf8Bytes(value: string): number {
@@ -47,28 +90,78 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return output;
 }
 
-function evidenceExcerpt(value: string, maxBytes: number): string | null {
+function evidenceExcerpt(
+  value: string,
+  maxBytes: number,
+  category: EvidenceTextCategory,
+): string | null {
   if (maxBytes <= 0) return null;
   if (utf8Bytes(value) <= maxBytes) return value;
 
-  const matches = [...value.matchAll(IMPORTANT_EVIDENCE_PATTERN)];
-  if (matches.length === 0) {
+  const candidates: ScoredWindow[] = [];
+  for (const [ruleId, rule] of KEYWORD_RULES.entries()) {
+    for (const match of value.matchAll(rule.pattern)) {
+      const index = match.index ?? 0;
+      candidates.push({
+        start: Math.max(0, index - 48),
+        end: Math.min(value.length, index + match[0].length + 180),
+        score: rule.weight + (rule.categoryBoost?.[category] ?? 0),
+        ruleIds: new Set([ruleId]),
+      });
+    }
+  }
+  if (candidates.length === 0) {
     const head = truncateUtf8(value, maxBytes);
     return head.length === 0 ? null : head;
   }
 
+  candidates.sort((left, right) => left.start - right.start || left.end - right.end);
+  const clustered: ScoredWindow[] = [];
+  for (const candidate of candidates) {
+    const previous = clustered.at(-1);
+    const combinedEnd = previous === undefined ? candidate.end : Math.max(previous.end, candidate.end);
+    if (previous !== undefined
+      && candidate.start <= previous.end + 24
+      && combinedEnd - previous.start <= 360) {
+      previous.end = combinedEnd;
+      for (const ruleId of candidate.ruleIds) {
+        if (!previous.ruleIds.has(ruleId)) {
+          previous.score += candidate.score;
+          previous.ruleIds.add(ruleId);
+        }
+      }
+      continue;
+    }
+    clustered.push(candidate);
+  }
+  clustered.sort((left, right) => right.score - left.score || left.start - right.start);
+  const nonOverlappingWindows: ScoredWindow[] = [];
+  for (const window of clustered) {
+    if (nonOverlappingWindows.every(selected => window.end <= selected.start || window.start >= selected.end)) {
+      nonOverlappingWindows.push(window);
+    }
+  }
+
   const separator = '\n…\n';
-  const headBudget = Math.min(384, Math.floor(maxBytes / 3));
-  const head = truncateUtf8(value, headBudget);
-  const remaining = Math.max(0, maxBytes - utf8Bytes(head) - utf8Bytes(separator));
-  const firstMatch = matches[0]!;
-  const start = Math.max(0, (firstMatch.index ?? 0) - 180);
-  const lastNearbyMatch = matches.findLast(match => (match.index ?? 0) - start < 700) ?? firstMatch;
-  const end = Math.min(value.length, (lastNearbyMatch.index ?? 0) + lastNearbyMatch[0].length + 220);
-  const evidence = truncateUtf8(value.slice(start, end), remaining);
-  if (head.length === 0) return evidence.length === 0 ? null : evidence;
-  if (evidence.length === 0 || value.slice(0, head.length).includes(evidence)) return head;
-  return `${head}${separator}${evidence}`;
+  const windowCount = Math.max(1, Math.min(
+    MAX_EXCERPT_WINDOWS,
+    Math.floor(maxBytes / MIN_WINDOW_BYTES),
+  ));
+  const selectedWindows = nonOverlappingWindows.slice(0, windowCount);
+  const fragments: string[] = [];
+  let usedBytes = 0;
+  for (const [index, window] of selectedWindows.entries()) {
+    const separatorBytes = fragments.length === 0 ? 0 : utf8Bytes(separator);
+    const available = maxBytes - usedBytes - separatorBytes;
+    if (available <= 0) break;
+    const remainingWindows = selectedWindows.length - index;
+    const fragmentBudget = Math.floor(available / remainingWindows);
+    const fragment = truncateUtf8(value.slice(window.start, window.end), fragmentBudget);
+    if (fragment.length === 0) continue;
+    fragments.push(fragment);
+    usedBytes += separatorBytes + utf8Bytes(fragment);
+  }
+  return fragments.length === 0 ? null : fragments.join(separator);
 }
 
 function financingContent(value: string | null): string | null {
@@ -82,7 +175,7 @@ function financingContent(value: string | null): string | null {
       investors: Array.isArray(parsed['investors']) ? parsed['investors'] : [],
     });
   } catch {
-    return evidenceExcerpt(value, INITIAL_DEMAND_CONTENT_BYTES);
+    return evidenceExcerpt(value, INITIAL_DEMAND_CONTENT_BYTES, 'financing');
   }
 }
 
@@ -129,13 +222,31 @@ function stableSort<T>(values: readonly T[], priority: (value: T) => number): T[
     .map(entry => entry.value);
 }
 
+function latestFinancing(items: readonly ResearchItem[]): ResearchItem | undefined {
+  return items
+    .map((item, index) => ({
+      item,
+      index,
+      timestamp: item.publishedAt === null ? null : Date.parse(item.publishedAt),
+    }))
+    .sort((left, right) => {
+      if (left.timestamp === null && right.timestamp !== null) return 1;
+      if (left.timestamp !== null && right.timestamp === null) return -1;
+      if (left.timestamp !== null && right.timestamp !== null && left.timestamp !== right.timestamp) {
+        return right.timestamp - left.timestamp;
+      }
+      return left.index - right.index;
+    })[0]?.item;
+}
+
 function selectItems(bundle: ResearchBundle): ResearchItem[] {
   const purposes = purposeByQuery(bundle);
   const unique = bundle.items.filter((item, index, items) => (
     items.findIndex(candidate => candidate.evidenceId === item.evidenceId) === index
   ));
-  const financing = unique.find(item => qccTool(item, 'get_financing_records'));
-  const used = new Set<string>(financing === undefined ? [] : [financing.evidenceId]);
+  const financingItems = unique.filter(item => qccTool(item, 'get_financing_records'));
+  const financing = latestFinancing(financingItems);
+  const used = new Set<string>(financingItems.map(item => item.evidenceId));
   const qcc = stableSort(
     unique.filter(item => item.source === 'qcc' && !used.has(item.evidenceId)),
     qccPriority,
@@ -186,11 +297,27 @@ function isDemandItem(item: ResearchItem, purposes: ReadonlyMap<string, SearchQu
     || purpose === 'software_ecosystem';
 }
 
+function evidenceTextCategory(
+  item: ResearchItem,
+  purposes: ReadonlyMap<string, SearchQuery['purpose']>,
+): EvidenceTextCategory {
+  if (qccTool(item, 'get_financing_records')) return 'financing';
+  if (qccTool(item, 'get_bidding_info') || searchPurpose(item, purposes) === 'procurement') return 'procurement';
+  if (qccTool(item, 'get_recruitment_info') || searchPurpose(item, purposes) === 'recruitment') return 'recruitment';
+  const purpose = searchPurpose(item, purposes);
+  if (item.sourceKind === 'ipr'
+    || purpose === 'engineering'
+    || purpose === 'software_ecosystem'
+    || purpose === 'official_products') return 'technical';
+  return 'support';
+}
+
 function buildState(
   item: ResearchItem,
   purposes: ReadonlyMap<string, SearchQuery['purpose']>,
 ): ItemState {
   const preserveFinancingContent = qccTool(item, 'get_financing_records');
+  const textCategory = evidenceTextCategory(item, purposes);
   const preferredContentBytes = isDemandItem(item, purposes)
     ? INITIAL_DEMAND_CONTENT_BYTES
     : INITIAL_SUPPORT_CONTENT_BYTES;
@@ -205,6 +332,7 @@ function buildState(
     summaryBudget: item.summary === null ? 0 : utf8Bytes(item.summary),
     preferredContentBytes,
     preserveFinancingContent,
+    textCategory,
   };
 }
 
@@ -212,13 +340,20 @@ function bundleBytes(bundle: ResearchBundle): number {
   return utf8Bytes(JSON.stringify(bundle));
 }
 
-function materialize(bundle: ResearchBundle, states: readonly ItemState[], includeCapacityGap: boolean): ResearchBundle {
+function materialize(
+  bundle: ResearchBundle,
+  states: readonly ItemState[],
+  includeCapacityGap: boolean,
+  includeHistoricalFinancingGap: boolean,
+): ResearchBundle {
   return ResearchBundleSchema.parse({
     ...bundle,
     items: states.map(state => state.item),
-    gaps: includeCapacityGap
-      ? [...new Set([...bundle.gaps, ARK_INPUT_BUDGET_GAP])]
-      : bundle.gaps,
+    gaps: [...new Set([
+      ...bundle.gaps,
+      ...(includeCapacityGap ? [ARK_INPUT_BUDGET_GAP] : []),
+      ...(includeHistoricalFinancingGap ? [ARK_HISTORICAL_FINANCING_GAP] : []),
+    ])],
   });
 }
 
@@ -229,7 +364,7 @@ function shrinkContent(state: ItemState): boolean {
     : Math.max(0, state.contentBudget - SHRINK_STEP_BYTES);
   state.item = {
     ...state.item,
-    content: evidenceExcerpt(state.original.content, state.contentBudget),
+    content: evidenceExcerpt(state.original.content, state.contentBudget, state.textCategory),
   };
   return true;
 }
@@ -241,7 +376,7 @@ function shrinkSummary(state: ItemState): boolean {
     : Math.max(0, state.summaryBudget - SHRINK_STEP_BYTES);
   state.item = {
     ...state.item,
-    summary: evidenceExcerpt(state.original.summary, state.summaryBudget),
+    summary: evidenceExcerpt(state.original.summary, state.summaryBudget, state.textCategory),
   };
   return true;
 }
@@ -250,11 +385,15 @@ export function compactResearchBundleForArk(bundleInput: ResearchBundle): Resear
   const bundle = ResearchBundleSchema.parse(bundleInput);
   const purposes = purposeByQuery(bundle);
   const uniqueCount = new Set(bundle.items.map(item => item.evidenceId)).size;
+  const financingCount = new Set(bundle.items
+    .filter(item => qccTool(item, 'get_financing_records'))
+    .map(item => item.evidenceId)).size;
+  const includeHistoricalFinancingGap = financingCount > 1;
   const states = selectItems(bundle).map(item => buildState(item, purposes));
   let capacityChanged = uniqueCount > states.length || states.some(state => (
     state.item.summary !== state.original.summary || state.item.content !== state.original.content
   ));
-  let compact = materialize(bundle, states, capacityChanged);
+  let compact = materialize(bundle, states, capacityChanged, includeHistoricalFinancingGap);
 
   while (bundleBytes(compact) > ARK_COMPACT_BUNDLE_MAX_BYTES) {
     let shrunk = false;
@@ -282,7 +421,7 @@ export function compactResearchBundleForArk(bundleInput: ResearchBundle): Resear
     if (!shrunk) {
       throw new RangeError('Ark compact ResearchBundle exceeds the immutable provenance byte budget');
     }
-    compact = materialize(bundle, states, capacityChanged);
+    compact = materialize(bundle, states, capacityChanged, includeHistoricalFinancingGap);
   }
 
   return compact;

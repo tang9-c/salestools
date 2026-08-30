@@ -8,6 +8,7 @@ import {
 } from '../src/upstream/ark/client.js';
 import {
   ARK_COMPACT_BUNDLE_MAX_BYTES,
+  ARK_HISTORICAL_FINANCING_GAP,
   ARK_REQUEST_MAX_BYTES,
 } from '../src/upstream/ark/payload-budget.js';
 import { ARK_SYSTEM_PROMPT } from '../src/upstream/ark/prompt.js';
@@ -320,6 +321,91 @@ describe('ArkEvidenceService', () => {
     expect(requestResearch(fetchFn).items[0]?.content).toBe(financing.content);
   });
 
+  it('selects the latest dated financing record even when an older record appears first', async () => {
+    const research = budgetResearchBundle();
+    const financing = research.items.find(item => item.evidenceId.includes('get_financing_records'))!;
+    const oldFinancing: ResearchItem = {
+      ...financing,
+      evidenceId: 'qcc-operation-get_financing_records-old',
+      title: `${research.identity.legalName}｜A 轮融资`,
+      publishedAt: '2025-03-01T00:00:00.000Z',
+      content: JSON.stringify({
+        occurredAt: '2025-03-01T00:00:00.000Z',
+        typeOrRound: 'A 轮',
+        disclosedAmount: '5,000 万元',
+        investors: ['早期基金'],
+      }),
+    };
+    const undatedFinancing: ResearchItem = {
+      ...financing,
+      evidenceId: 'qcc-operation-get_financing_records-undated',
+      title: `${research.identity.legalName}｜未披露日期融资`,
+      publishedAt: null,
+      content: JSON.stringify({
+        occurredAt: null,
+        typeOrRound: '战略融资',
+        disclosedAmount: null,
+        investors: [],
+      }),
+    };
+    const latestFinancing: ResearchItem = {
+      ...financing,
+      evidenceId: 'qcc-operation-get_financing_records-latest',
+      title: `${research.identity.legalName}｜C 轮融资`,
+      publishedAt: '2026-08-25T00:00:00.000Z',
+      content: JSON.stringify({
+        occurredAt: '2026-08-25T00:00:00.000Z',
+        typeOrRound: 'C 轮',
+        disclosedAmount: '3 亿元',
+        investors: ['最新基金'],
+      }),
+    };
+    research.items = [
+      oldFinancing,
+      undatedFinancing,
+      ...research.items.filter(item => item !== financing),
+      latestFinancing,
+    ];
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
+      responseWithContent(JSON.stringify(factFreeEvidence(research))),
+    );
+
+    await client(fetchFn).extract(research);
+
+    const sent = requestResearch(fetchFn);
+    expect(sent.items[0]?.evidenceId).toBe(latestFinancing.evidenceId);
+    expect(sent.items[0]?.content).toBe(latestFinancing.content);
+    expect(sent.items).not.toContainEqual(expect.objectContaining({ evidenceId: oldFinancing.evidenceId }));
+    expect(sent.items).not.toContainEqual(expect.objectContaining({ evidenceId: undatedFinancing.evidenceId }));
+    expect(sent.gaps).toContain(ARK_HISTORICAL_FINANCING_GAP);
+  });
+
+  it('keeps source order stable when every financing record has no date', async () => {
+    const research = budgetResearchBundle();
+    const financing = research.items.find(item => item.evidenceId.includes('get_financing_records'))!;
+    const first: ResearchItem = {
+      ...financing,
+      evidenceId: 'qcc-operation-get_financing_records-undated-first',
+      publishedAt: null,
+    };
+    const second: ResearchItem = {
+      ...financing,
+      evidenceId: 'qcc-operation-get_financing_records-undated-second',
+      publishedAt: null,
+    };
+    research.items = [first, second, ...research.items.filter(item => item !== financing)];
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
+      responseWithContent(JSON.stringify(factFreeEvidence(research))),
+    );
+
+    await client(fetchFn).extract(research);
+
+    const sent = requestResearch(fetchFn);
+    expect(sent.items[0]?.evidenceId).toBe(first.evidenceId);
+    expect(sent.items).not.toContainEqual(expect.objectContaining({ evidenceId: second.evidenceId }));
+    expect(sent.gaps).toContain(ARK_HISTORICAL_FINANCING_GAP);
+  });
+
   it('retains a technical fact that appears after the first 100 characters', async () => {
     const base = researchBundle();
     const plan = buildSearchPlan(base.identity);
@@ -341,6 +427,35 @@ describe('ArkEvidenceService', () => {
     expect(requestResearch(fetchFn).items[0]?.content).toContain(factText);
   });
 
+  it('prioritizes strong product and engineering windows beyond a generic recruitment prefix', async () => {
+    const base = researchBundle();
+    const plan = buildSearchPlan(base.identity);
+    const strongFact = [
+      '研发团队使用 Windchill 管理 BOM 变更',
+      `${'工程背景。'.repeat(120)}使用 Abaqus 开展结构分析`,
+      `${'技术说明。'.repeat(120)}具备非线性有限元仿真能力`,
+    ].join('。');
+    const research: ResearchBundle = {
+      ...base,
+      items: [{
+        ...base.items[0],
+        evidenceId: 'search-engineering-strong-tail',
+        query: plan.find(query => query.purpose === 'engineering')!.Query,
+        content: `招聘岗位信息：普通岗位正在招聘。${'企业概况与通用岗位介绍。'.repeat(400)}${strongFact}。`,
+      }],
+    };
+    const response = { ...factFreeEvidence(research), gaps: [] };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(responseWithContent(JSON.stringify(response)));
+
+    await client(fetchFn).extract(research);
+
+    const sentContent = requestResearch(fetchFn).items[0]?.content ?? '';
+    expect(sentContent).toContain('Windchill');
+    expect(sentContent).toContain('BOM 变更');
+    expect(sentContent).toContain('Abaqus');
+    expect(sentContent).toContain('非线性有限元仿真');
+  });
+
   it('retains direct procurement carrier, disclosure, and product wording for validation', async () => {
     const base = researchBundle();
     const plan = buildSearchPlan(base.identity);
@@ -355,6 +470,37 @@ describe('ArkEvidenceService', () => {
     const directFact = {
       ...fixture().facts[0],
       factId: 'fact-procurement',
+      statement: '采购公告原文披露该项目拟采购 Windchill 软件许可',
+      kind: 'procurement' as const,
+      productTags: ['windchill' as const],
+      strength: 'direct' as const,
+      evidenceIds: [procurementItem.evidenceId],
+    };
+    const model: EvidenceBundle = {
+      ...factFreeEvidence(research),
+      evidence: [referenceFromResearchItem(procurementItem)],
+      facts: [directFact],
+    };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(responseWithContent(JSON.stringify(model)));
+
+    await expect(client(fetchFn).extract(research)).resolves.toMatchObject({ facts: [directFact] });
+    expect(requestResearch(fetchFn).items[0]?.content).toMatch(/采购公告.*拟采购.*Windchill/s);
+  });
+
+  it('prioritizes a strong procurement disclosure beyond a generic procurement prefix', async () => {
+    const base = researchBundle();
+    const plan = buildSearchPlan(base.identity);
+    const procurementItem: ResearchItem = {
+      ...base.items[0],
+      evidenceId: 'search-procurement-strong-tail',
+      title: '测试制造有限公司软件采购项目',
+      query: plan.find(query => query.purpose === 'procurement')!.Query,
+      content: `采购公告栏目与岗位信息。${'企业一般项目背景与流程说明。'.repeat(400)}采购公告原文披露该项目拟采购 Windchill 软件许可。`,
+    };
+    const research: ResearchBundle = { ...base, items: [procurementItem] };
+    const directFact = {
+      ...fixture().facts[0],
+      factId: 'fact-procurement-strong-tail',
       statement: '采购公告原文披露该项目拟采购 Windchill 软件许可',
       kind: 'procurement' as const,
       productTags: ['windchill' as const],

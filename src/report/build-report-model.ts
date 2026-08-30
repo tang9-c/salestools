@@ -151,6 +151,7 @@ export function buildReportModel(
   return ReportModelSchema.parse({
     legalName: identity.legalName,
     industryClassification: evidence.industryClassification,
+    industryEvidenceIds: evidence.industryEvidenceIds,
     companyScaleClues: uniqueInOrder(reliableFacts
       .filter(fact => fact.kind === 'organization' || fact.kind === 'manufacturing')
       .map(fact => fact.statement)),
