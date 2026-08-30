@@ -77,7 +77,7 @@ ARK_MODEL=
 ARK_CREDENTIAL=
 ```
 
-应用启动时校验所有必填配置。调用地址必须是合法的 HTTPS URL，模型标识和凭证必须为非空字符串；缺失或非法时拒绝启动，并只报告缺失的配置名称，不输出配置值。企查查 4 个远程 MCP Server 共用 `QCC_API_KEY`；豆包搜索使用独立的 `DOUBAO_SEARCH_API_KEY`。两者请求头均使用 `Authorization: Bearer <对应 API Key>`。
+应用启动时只从 `process.env` 挑选上述已声明配置键，再交给拒绝未知字段的严格 Schema 校验；`PATH`、`HOME` 等进程固有键不得导致启动失败。调用地址必须是合法的 HTTPS URL，模型标识和凭证必须为非空字符串；缺失或非法时拒绝启动，错误和日志只列配置名称，不输出配置值或整个环境对象。企查查 4 个远程 MCP Server 共用 `QCC_API_KEY`；豆包搜索使用独立的 `DOUBAO_SEARCH_API_KEY`。两者请求头均使用 `Authorization: Bearer <对应 API Key>`。
 
 ## 三、鉴权
 
@@ -151,9 +151,9 @@ Token 仅用于：
     "website": "...",
     "employee_range": "100-499",
     "risk_summary": "未发现明显经营异常",
-    "collected_at": "2026-08-28T10:00:00Z",
-    "cache_hit": false
-  }
+    "collected_at": "2026-08-28T10:00:00.000Z"
+  },
+  "cache_hit": false
 }
 ```
 
@@ -165,6 +165,8 @@ Token 仅用于：
 {
   "source_status": "failed",
   "candidates": [],
+  "basic_profile": null,
+  "cache_hit": false,
   "message": "企查查暂不可用，请稍后重试"
 }
 ```
@@ -185,15 +187,29 @@ Token 仅用于：
 
 按统一社会信用代码查找最近结果。30 天内有效的已完成报告直接复用，仍在 `processing` 的任务直接返回原任务；失败任务允许重新提交。SQLite 事务和部分唯一索引保证同一主体同时只有一个 `processing` 任务。`force_refresh=true` 时忽略已完成缓存，但若已有进行中任务仍返回该任务，避免重复上游调用。
 
-输出：
+新建任务或复用进行中任务时输出；两种情况均明确表示未命中完成报告缓存：
 
 ```json
 {
   "assessment_id": "uuid",
   "status": "processing",
-  "estimated_minutes": "5-10"
+  "estimated_minutes": "5-10",
+  "cache_hit": false
 }
 ```
+
+复用有效期内的已完成报告时，不伪装成进行中任务，输出：
+
+```json
+{
+  "assessment_id": "uuid",
+  "status": "completed",
+  "cache_hit": true,
+  "cached_at": "2026-08-29T10:00:00.000Z"
+}
+```
+
+`cached_at` 等于该报告的 `completed_at`；报告 TTL 也只按 `completed_at` 计算。
 
 ### 3. `get_assessment_status`
 
@@ -226,8 +242,7 @@ Token 仅用于：
   "legal_name": "...",
   "overall_opportunity": "高",
   "recommended_product": "Windchill",
-  "collected_at": "2026-08-29T10:00:00Z",
-  "cache_hit": false,
+  "collected_at": "2026-08-29T10:00:00.000Z",
   "dynamic_signal_freshness": "current",
   "source_status": {
     "qcc": "completed",
@@ -273,9 +288,9 @@ Token 仅用于：
 
 - **主体基础画像**：以统一社会信用代码作为主键缓存，并为规范化法定名称建立查找索引，默认有效期由 `PROFILE_CACHE_TTL_DAYS=30` 配置。`get_company_profile` 先按规范化法定名称查找有效缓存；只有一个匹配结果时直接返回，多个结果时结合 `region_hint` 过滤，仍无法唯一确认则调用企查查。简称或模糊名称不直接命中该索引。缓存的是清洗后的主体字段，不保存企查查原始响应；每次返回必须附 `collected_at` 和“截至该时间的快照”标记。该配置只控制是否复用，不控制数据删除。
 - **动态信息**：经营状态、处罚、诉讼、招聘、招投标、扩产和采购信号不视为 30 天内不变。它们只在正式评估任务中重新采集，并在报告中标注各自采集时间。
-- **正式评估报告**：默认复用 `ASSESSMENT_CACHE_TTL_DAYS=30` 天内的已完成报告；超过期限时创建新任务。首版不使用规则版本自动失效缓存；规则改变后如需立即生成新报告，使用 `force_refresh=true`。每份报告显示信息截至时间和缓存状态；缓存报告超过 7 天时，明确提示招聘、采购、诉讼和经营风险等动态信号可能已过期。该配置只控制是否复用，不控制数据删除。
+- **正式评估报告**：默认复用从 `completed_at` 起算、`ASSESSMENT_CACHE_TTL_DAYS=30` 天内的已完成报告；不得用 `created_at`、`collected_at` 或最后读取时间延长 TTL。超过期限时创建新任务。首版不使用规则版本自动失效缓存；规则改变后如需立即生成新报告，使用 `force_refresh=true`。缓存是否命中只由 `submit_assessment` 返回；报告保留信息截至时间，完成超过 7 天时明确提示招聘、采购、诉讼和经营风险等动态信号可能已过期。该配置只控制是否复用，不控制数据删除。
 - 用户说“重新查最新情况”“强制刷新”或“不要使用缓存”时，调用 `force_refresh=true`。
-- 所有缓存命中都返回 `cache_hit` 和缓存时间，避免用户误以为获得了实时数据。
+- `cache_hit` 只出现在 `get_company_profile` 和 `submit_assessment` 的输出中：基础画像用自身 `collected_at` 表示快照时间；完成报告缓存由 `submit_assessment` 返回 `cached_at=completed_at`。进行中任务复用和新建任务均返回 `cache_hit: false`；`get_assessment_status` 与 `get_assessment_report` 不返回该字段。
 
 ## 五、处理流程与模块边界
 
@@ -317,7 +332,7 @@ SQLite 保存最终报告
 
 方舟输出的行业分类为 `P1`、`P2`、`non_target` 或 `unverified`。模型可以根据来源资料自由分类，因此重新调用方舟时分类可能变化；机会判断模块不得自行重新分类。
 
-服务端校验被引用的 `evidence_id` 对应本次 `ResearchBundle` 中已有的来源条目，且 URL、网页提及名称和主体归属字段完整。模型不得创建新来源、URL、别名或证据 ID。方舟返回空内容、非法 JSON、悬空引用或其他不合格结构时重试一次；重试后仍不合格则任务标为 `failed`，不生成正式报告。
+服务端校验被引用的 `evidence_id` 对应本次 `ResearchBundle` 中已有的来源条目，且 URL、网页提及名称和主体归属字段完整。模型不得创建新来源、URL、别名或证据 ID。方舟适配器对一次调用只发起一次 HTTP 请求；方舟返回空内容、非法 JSON、悬空引用或其他不合格结构时抛出类型化错误，由任务编排的 `retryOnce` 重试整个调用一次。第二次仍不合格则任务标为 `failed`，不生成正式报告。
 
 #### 企查查适配器契约
 
@@ -338,13 +353,15 @@ SQLite 保存最终报告
 
 适配器的输入输出使用运行时 Schema 校验；契约测试覆盖 4 个 Server 的连接配置、Bearer 鉴权、工具入参、关键字段映射、缺字段、认证失败和上游返回结构变化。
 
+企查查客户端的单次 `call` 不做业务重试。遇到 transport error 时只关闭并丢弃当前 client/transport，然后立即抛出类型化错误，不得在客户端内部重发同一工具调用；任务编排的下一次外层 `retryOnce` attempt 再懒加载新连接并发起一次调用。这样每个上游业务请求只有一个重试所有者，也不会在网络结果未知时出现隐式第三次调用。
+
 #### 豆包搜索适配器契约
 
 v0.1 直接调用豆包搜索 Custom 版 HTTP API，不部署或连接豆包搜索 MCP Server，也不引入 Python、UV 或 UVX。适配器通过 `POST DOUBAO_SEARCH_API_URL` 请求搜索接口，使用 `DOUBAO_SEARCH_API_KEY` Bearer 鉴权，并把返回的网页结果统一映射为 `ResearchBundle` 来源条目。
 
 适配器固定 `SearchType=web` 和 `Filter.NeedUrl=true`，不启用图片搜索。每条查询必须满足 API 的 1～100 字符限制，`Count` 不得超过 50；首版搜索计划默认每次最多取 10 条结果。近期招聘、采购、扩产等动态查询使用 `TimeRange=OneYear`；官网、产品、软件生态等非时效性查询不设置 `TimeRange`。招聘和需要正文的技术场景查询设置 `Filter.NeedContent=true`，其他发现型查询设置为 `false`，避免因为正文缺失而过早排除有效链接。
 
-适配器只接收搜索计划生成的明确查询，不让模型在调用过程中自行追加查询。它保留标题、站点名、URL、正文或摘要、发布时间、排序位置、搜索原始 Query、采集时间和日志 ID；缺少正文或发布时间时明确留空，不由模型补写。API 参数错误、鉴权失败、额度不足、QPS 限制和服务端错误统一映射为来源错误；每次 HTTP 请求及其重试分别计入 `MAX_SEARCH_CALLS` 和总调用预算。
+适配器只接收搜索计划生成的明确查询，不让模型在调用过程中自行追加查询。它保留标题、站点名、URL、正文或摘要、发布时间、排序位置、搜索原始 Query、采集时间和日志 ID，并将原始发布方与 URL 域名分别映射为 `originalPublisher`、`originalDomain`；缺少正文、发布时间或原始发布方时明确留空，不由模型补写。API 参数错误、鉴权失败、额度不足、QPS 限制和服务端错误统一映射为来源错误；适配器单次调用只发起一次 HTTP 请求，重试统一由任务编排的 `retryOnce` 执行，每个 attempt 分别计入 `MAX_SEARCH_CALLS` 和总调用预算。
 
 ### 模块二：机会判断
 
@@ -387,6 +404,8 @@ v0.1 直接调用豆包搜索 Custom 版 HTTP API，不部署或连接豆包搜�
 
 任务调度采用单进程内存 FIFO 队列。新任务先写入 SQLite，再加入队列；同时最多运行 `MAX_CONCURRENT_ASSESSMENTS` 个任务，首版默认值为 1。当前任务结束后自动启动下一项。队列不负责崩溃恢复；进程重启后，SQLite 中遗留的 `processing` 任务统一标为 `failed`。
 
+所有企查查工具调用、豆包搜索 HTTP 请求和方舟 HTTP 请求都必须由任务编排模块的同一个 `retryOnce` 包装；适配器和 mapper 不得自行重试或递归调用。`retryOnce` 最多执行两个 attempt，并在每个 attempt 发起网络请求前分别占用分项和总调用预算。
+
 ### 模块间最小数据契约
 
 ```text
@@ -401,7 +420,151 @@ OpportunityAssessment
 ReportModel / Markdown
 ```
 
-四个契约使用 TypeScript 类型和运行时 Schema 固定字段。模块之间只依赖契约，不依赖对方的内部实现。信息获取、机会判断和报告输出分别编写单元测试，再增加一组端到端契约测试验证字段兼容性。
+五个契约使用 TypeScript 类型和运行时 Schema 固定字段。模块之间只依赖契约，不依赖对方的内部实现。信息获取、机会判断和报告输出分别编写单元测试，再增加一组端到端契约测试验证字段兼容性。
+
+#### 契约字段冻结
+
+所有对象 Schema 均拒绝未知字段；下列字段全部必需，只有显式标为 `| null` 的值可为空，数组无值时使用 `[]`。`UtcTimestamp` 统一为 `Date.toISOString()` 生成的 ISO 8601 UTC 字符串（`YYYY-MM-DDTHH:mm:ss.sssZ`），不得混用本地时间、Unix 秒或仅日期字符串。
+
+```ts
+type UtcTimestamp = string; // Date.toISOString()
+type ProductKey = 'windchill' | 'feigenbaum_qms' | 'creo' | 'catia' |
+  'abaqus' | 'cst' | 'solidworks';
+
+type IdentityProfile = {
+  legalName: string;
+  creditCode: string;
+  formerNames: string[];
+  aliases: string[];
+  englishNames: string[];
+  brands: string[];
+  officialDomains: string[];
+  registeredAddress: string | null;
+  parentLegalName: string | null;
+  subsidiaryLegalNames: string[];
+};
+
+type ResearchItem = {
+  evidenceId: string;
+  source: 'qcc' | 'doubao_search';
+  sourceKind: 'company' | 'risk' | 'ipr' | 'operation' | 'web';
+  title: string;
+  url: string;
+  originalPublisher: string | null;
+  originalDomain: string | null;
+  summary: string | null;
+  content: string | null;
+  publishedAt: UtcTimestamp | null;
+  collectedAt: UtcTimestamp;
+  mentionedName: string;
+  entityScope: 'legal_entity' | 'group' | 'subsidiary' | 'brand' | 'unknown';
+  entityMatch: 'confirmed' | 'probable' | 'unverified';
+  matchBasis: string[];
+  query: string | null;
+  position: number | null;
+  logId: string | null;
+};
+
+type ResearchBundle = {
+  identity: IdentityProfile;
+  items: ResearchItem[];
+  sourceStatus: {
+    qcc: { status: 'completed' | 'partial' | 'failed'; error: string | null };
+    doubaoSearch: { status: 'completed' | 'partial' | 'failed'; error: string | null };
+  };
+  gaps: string[];
+  collectedAt: UtcTimestamp;
+};
+
+type EvidenceReference = {
+  evidenceId: string;
+  title: string;
+  url: string;
+  originalPublisher: string | null;
+  originalDomain: string | null;
+  publishedAt: UtcTimestamp | null;
+  collectedAt: UtcTimestamp;
+  mentionedName: string;
+  entityScope: 'legal_entity' | 'group' | 'subsidiary' | 'brand' | 'unknown';
+  entityMatch: 'confirmed' | 'probable' | 'unverified';
+  matchBasis: string[];
+};
+
+type EvidenceFact = {
+  factId: string;
+  statement: string;
+  kind: 'industry' | 'product_scene' | 'recruitment' | 'software_ecosystem' |
+    'organization' | 'quality' | 'manufacturing' | 'procurement' | 'budget' |
+    'decision_power' | 'risk';
+  productTags: ProductKey[];
+  strength: 'direct' | 'supporting' | 'weak';
+  evidenceIds: string[];
+  entityScope: 'legal_entity' | 'group' | 'subsidiary' | 'brand' | 'unknown';
+  entityMatch: 'confirmed' | 'probable' | 'unverified';
+  matchBasis: string[];
+};
+
+type FinancingRecord = {
+  occurredAt: UtcTimestamp | null;
+  typeOrRound: string | null;
+  disclosedAmount: string | null;
+  investors: string[];
+  evidenceIds: string[];
+};
+
+type EvidenceBundle = {
+  identity: IdentityProfile;
+  industryClassification: 'P1' | 'P2' | 'non_target' | 'unverified';
+  industryEvidenceIds: string[];
+  evidence: EvidenceReference[];
+  facts: EvidenceFact[];
+  financingRecords: FinancingRecord[];
+  conflicts: string[];
+  gaps: string[];
+  collectedAt: UtcTimestamp;
+};
+
+type ProductOpportunity = {
+  product: ProductKey;
+  level: '高' | '中' | '低' | '待核实';
+  evidenceIds: string[];
+  reasons: string[];
+  blockers: string[];
+  gaps: string[];
+};
+
+type OpportunityAssessment = {
+  products: ProductOpportunity[]; // 七个 ProductKey 各且仅各一项
+  overallOpportunity: '高' | '中' | '低' | '待核实';
+  recommendedProduct: ProductKey | null;
+  summaryReasons: string[];
+};
+
+type ReportModel = {
+  legalName: string;
+  industryClassification: 'P1' | 'P2' | 'non_target' | 'unverified';
+  companyScaleClues: string[];
+  overallOpportunity: '高' | '中' | '低' | '待核实';
+  recommendedProduct: ProductKey | null;
+  summaryReasons: string[];
+  latestFinancing: FinancingRecord | null;
+  products: ProductOpportunity[];
+  evidence: EvidenceReference[];
+  salesQuestions: string[];
+  risks: string[];
+  gaps: string[];
+  nextVerificationActions: string[];
+  sourceStatus: {
+    qcc: 'completed' | 'partial' | 'failed';
+    doubaoSearch: 'completed' | 'partial' | 'failed';
+    ark: 'completed' | 'failed';
+  };
+  collectedAt: UtcTimestamp;
+  dynamicSignalFreshness: 'current' | 'stale';
+};
+```
+
+`originalPublisher` 和 `originalDomain` 表示原始发布方，而不是企查查或豆包搜索这一获取通道。去重优先按规范化 `originalDomain`，缺失时按规范化 `originalPublisher`；两者都为空的条目可以引用，但不能计入“两个独立原始发布方”的门槛。同一去重键的转载只计一次。`EvidenceReference` 必须由服务端从对应 `ResearchItem` 复制并校验，方舟不得创建或改写这些来源字段。这里的契约只是五个既有模块边界，不抽象通用事件、来源或规则框架。
 
 ### 主体身份档案与证据归属
 
@@ -475,7 +638,8 @@ MAX_CONCURRENT_ASSESSMENTS=1
 
 上游调用规则：
 
-- 每个来源失败后重试一次。
+- `src/orchestration/retry.ts` 的 `retryOnce` 是唯一重试所有者；每个上游请求失败后最多进行一次外层重试，client、适配器和 mapper 内部均不重发。
+- 企查查 transport error 的当前 attempt 只负责关闭连接并抛错；若预算允许，下一外层 attempt 使用新连接。豆包搜索和方舟的每个 attempt 同样只发出一个 HTTP 请求。
 - 企查查或豆包搜索两次均失败且没有获得可用资料时，在 `source_status` 中将该来源标为 `failed`，记录简短错误原因；若已获得部分资料则标为 `partial`。只要火山方舟仍可用，任务继续执行。
 - 火山方舟两次均失败，或其结构化输出在一次重试后仍不合格时，任务标为 `failed`，不生成正式报告；状态和错误信息明确指出“模型事实整理不可用”。
 - 企查查和豆包搜索均失败、但火山方舟仍可用时，方舟基于空 `ResearchBundle` 返回无事实的有效结构，随后生成降级报告：七项机会均为“待核实”，`recommended_product` 为 `null`，明确说明“未获得可用证据，不能形成销售判断”。
@@ -688,7 +852,7 @@ P1 行业：
 - `created_at`
 - `completed_at`
 
-基础画像另存于 `company_profiles` 表，只保存清洗后的主体字段、统一社会信用代码、规范化法定名称和 `collected_at`，不保存上游原始响应。规范化法定名称使用普通索引；缓存读取仍遵守多候选不自动猜测主体的规则。`source_status_json` 只保存三个来源的最终状态和简短失败原因，不保存原始响应。`cache_key` 直接使用统一社会信用代码。建立 SQLite 部分唯一索引 `cache_key WHERE status='processing'`，保证单主体单进行中任务，同时允许保存同主体的历史完成报告。不自动清理历史报告。
+基础画像另存于 `company_profiles` 表，只保存清洗后的主体字段、统一社会信用代码、规范化法定名称和 `collected_at`，不保存上游原始响应。规范化法定名称使用普通索引；缓存读取仍遵守多候选不自动猜测主体的规则。`source_status_json` 只保存三个来源的最终状态和简短失败原因，不保存原始响应。`cache_key` 直接使用统一社会信用代码。建立 SQLite 部分唯一索引 `cache_key WHERE status='processing'`，保证单主体单进行中任务，同时允许保存同主体的历史完成报告。完成事务将 `cached_at` 与 `completed_at` 设为同一 UTC 时间；查找有效报告只比较 `completed_at`，任何读取都不得续期。不自动清理历史报告。
 
 ## 九、首版测试
 
@@ -696,12 +860,14 @@ P1 行业：
 
 ### 1. MCP 契约
 
-- 缺失或非法的上游 URL、模型标识和凭证会阻止应用启动；错误信息和日志不包含配置值。
+- 配置加载先挑选声明键再做严格校验；包含 `PATH` 等额外进程键时可启动。缺失或非法的上游 URL、模型标识和凭证会阻止应用启动；错误信息和日志只列配置名称，不包含配置值。
 - 本地 `.env` 可加载配置，`.env.example` 不包含真实凭证，`.env` 被 Git 忽略。
 - 企查查 4 个 MCP Server 使用各自 URL 和共享 `QCC_API_KEY`；`history`、`executive`、`regulation`、`case`、`tender` 和 `document` 不会被调用。
 - 豆包搜索只调用配置的 Custom 版 HTTP API，使用独立 Bearer API Key；不会启动或连接豆包搜索 MCP Server。
 - 搜索请求固定为 `SearchType=web`、`NeedUrl=true`，并校验 Query 长度、Count 上限、招聘查询的 `NeedContent=true` 和 `TimeRange=OneYear`。
 - 四个工具的输入、输出、有效和无效 Bearer Token。
+- 四个工具输出严格匹配冻结字段；`cache_hit` 只允许出现在 `get_company_profile` 和 `submit_assessment`，报告输出拒绝该字段。
+- 每个 POST 请求使用官方 `NodeStreamableHTTPServerTransport` 创建无状态 transport；模拟 MCP 客户端完成四工具闭环后，`client.getProtocolEra()` 必须为 `modern`。
 - `get_company_profile` 的企查查调用重试后仍失败时，返回 `source_status: "failed"` 和空候选，不返回泛化内部错误。
 - 缺失字段、错误类型、超长字符串、非法信用代码、非法 UUID 和未知字段返回参数错误。
 - Token CLI 创建、禁用和列表不泄露明文或哈希。
@@ -711,14 +877,14 @@ P1 行业：
 
 - FIFO 按提交顺序运行，默认只执行一个评估；等待任务不调用上游。
 - 同一主体的重复提交只保留一个 `processing` 任务。
-- 30 天内重复查询画像和报告命中缓存；`force_refresh=true` 忽略已完成缓存，但不复制进行中任务。
+- 30 天内重复查询画像和报告命中缓存；报告 TTL 仅从 `completed_at` 起算。已完成缓存的 `submit_assessment` 返回 `status: completed`、`cache_hit: true` 和 `cached_at=completed_at`；新建或复用进行中任务返回 `status: processing`、`cache_hit: false`；`force_refresh=true` 忽略已完成缓存，但不复制进行中任务。
 - 超过 7 天的缓存报告显示动态信号时效提示。
 - 进程重启后遗留 `processing` 任务变为 `failed`，已完成报告仍可读取。
 
 ### 3. 来源与错误
 
 - 企查查和豆包搜索分别覆盖 `completed`、`partial`、`failed`。
-- 上游失败只重试一次，所有尝试计入分项和总调用预算。
+- `retryOnce` 是所有上游请求的唯一重试入口；上游失败只重试一次，所有 attempt 计入分项和总调用预算，QCC transport error 关闭连接但当前 attempt 不内部重发，下一 attempt 才重连。
 - 方舟超时、空响应、非法 JSON、悬空引用或结构校验失败，在一次重试后令任务 `failed`，不生成正式报告。
 - 企查查和豆包搜索均失败、方舟可用时，任务 `completed`，七项均为“待核实”，`recommended_product` 为 `null`。
 - SQLite 无法保存最终报告时任务 `failed`。
@@ -738,7 +904,8 @@ P1 行业：
 
 ### 5. 真实端到端
 
-- 使用一家已授权的真实企业完成主体画像、提交任务、状态轮询和 Markdown 报告读取。
+- 该组明确延后到真实 `.env`、可访问的 HTTPS `/mcp` endpoint 和一家已授权企业同时到位后执行，不阻塞模拟闭环的实现完成。
+- 使用一家已授权的真实企业完成主体画像、提交任务、状态轮询和 Markdown 报告读取；只接受最终状态为 `completed` 且可读取合格 Markdown 报告，任何 `failed` 都是本次验收失败，记录原因后修复并重新验收。
 - 真实调用只验证技术链路，不作为销售价值、准确率、并发能力或 SLA 的证明。
 
 ## 十、延期内容

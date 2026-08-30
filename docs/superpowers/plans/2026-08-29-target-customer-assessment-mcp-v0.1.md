@@ -18,9 +18,11 @@
 - 状态只有 `processing`、`completed`、`failed`；重启时遗留 `processing` 任务全部改为 `failed`。
 - `PROFILE_CACHE_TTL_DAYS` 和 `ASSESSMENT_CACHE_TTL_DAYS` 默认均为 30；不自动删除历史数据。
 - 任一有效 Token 知道 UUID 后可以读取他人报告；不要增加跨用户报告隔离。
-- 上游各失败后只重试一次；企查查或豆包搜索失败可降级，方舟两次失败则任务失败。
+- `src/orchestration/retry.ts` 的 `retryOnce` 是所有上游请求的唯一重试所有者；client、适配器和 mapper 内部不得重发。企查查或豆包搜索失败可降级，方舟两个外层 attempt 均失败则任务失败。
 - 正式评估的企查查调用先执行融资、再执行招聘；融资是重点预算/扩张/时机证据，但不能单独建立产品场景或机会“高”。
 - 不保存上游原始响应；只保存清洗后的基础画像、任务元数据和最终 Markdown。
+- 所有契约时间使用 `Date.toISOString()` 的 ISO 8601 UTC 格式；报告缓存 TTL 只按 `completed_at` 计算。
+- `cache_hit` 只由 `get_company_profile` 和 `submit_assessment` 返回；完成报告缓存的 submit 结果为 `completed/true` 并返回 `cached_at=completed_at`，进行中任务为 `processing/false`。
 - 机会等级仅为 `高/中/低/待核实`；不实现分数、星级或模型直接评分。
 - 每个 shell 命令必须以 `rtk` 开头。
 
@@ -77,7 +79,7 @@ Run:
 rtk npm init -y
 ```
 
-Create `tests/config.test.ts` with assertions for defaults, invalid HTTP URL, missing secret, integer bounds and error messages not containing secret values:
+Create `tests/config.test.ts` with assertions for defaults, invalid HTTP URL, missing secret, integer bounds, a realistic `process.env` containing `PATH`/`HOME`/shell keys, and error messages containing only declared configuration names rather than values or unrelated environment keys:
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -94,15 +96,20 @@ const valid = {
 };
 
 describe('loadConfig', () => {
+  it('ignores undeclared process keys before strict parsing', () => {
+    expect(loadConfig({ ...valid, PATH: '/usr/bin', HOME: '/tmp/home', SHELL: '/bin/zsh' } as NodeJS.ProcessEnv))
+      .toMatchObject({ maxQccCalls: 8 });
+  });
   it('applies v0.1 defaults', () => expect(loadConfig(valid as NodeJS.ProcessEnv)).toMatchObject({
     maxQccCalls: 8, maxSearchCalls: 8, maxArkCalls: 2, maxTotalUpstreamCalls: 18,
     profileCacheTtlDays: 30, assessmentCacheTtlDays: 30, maxConcurrentAssessments: 1
   }));
   it('rejects non-HTTPS upstreams without leaking values', () => {
-    expect(() => loadConfig({ ...valid, ARK_API_URL: 'http://secret.invalid' } as NodeJS.ProcessEnv))
+    const env = { ...valid, ARK_API_URL: 'http://secret.invalid', PATH: '/private/bin' } as NodeJS.ProcessEnv;
+    expect(() => loadConfig(env))
       .toThrow(/ARK_API_URL/);
-    try { loadConfig({ ...valid, ARK_API_URL: 'http://secret.invalid' } as NodeJS.ProcessEnv); }
-    catch (error) { expect(String(error)).not.toContain('secret.invalid'); }
+    try { loadConfig(env); }
+    catch (error) { expect(String(error)).toBe('Error: Invalid configuration: ARK_API_URL'); }
   });
 });
 ```
@@ -121,7 +128,7 @@ Expected: FAIL because `src/config.ts` does not exist.
 
 - [ ] **Step 3: 写最小工程配置和 `loadConfig`**
 
-Use ESM, `engines.node >=24`, scripts `build`, `typecheck`, `test`, `start`, `dev`, `tokens`. In `src/config.ts`, define one strict Zod object; parse comma-separated origins; validate all upstream URLs with `.url().startsWith('https://')`; use integer coercion with defaults `8/8/2/18/30/30/1`; throw `Invalid configuration: <comma-separated field names>` only.
+Use ESM, `engines.node >=24`, scripts `build`, `typecheck`, `test`, `start`, `dev`, `tokens`. In `src/config.ts`, define the declared key list once, pick only those keys from the supplied `NodeJS.ProcessEnv`, and pass that new object to one strict Zod schema; never strict-parse the complete `process.env`. Parse comma-separated origins; validate all upstream URLs with `.url().startsWith('https://')`; use integer coercion with defaults `8/8/2/18/30/30/1`; throw `Invalid configuration: <comma-separated declared field names>` only. Tests must prove `PATH` and other extra keys do not fail validation and no error contains an environment value, unknown process key, or serialized environment object.
 
 ```ts
 export type AppConfig = z.infer<typeof configSchema> & { allowedOrigins: Set<string> };
@@ -154,11 +161,12 @@ Expected: tests PASS; typecheck exits 0.
 
 **Interfaces:**
 - Produces: `IdentityProfileSchema`, `ResearchBundleSchema`, `EvidenceBundleSchema`, `OpportunityAssessmentSchema`, `ReportModelSchema` and inferred types.
+- Produces: strict `CompanyProfileOutputSchema`, `SubmitAssessmentOutputSchema`, `AssessmentStatusOutputSchema`, `AssessmentReportOutputSchema`; Task 3 only registers and converts these schemas, and must not redefine their fields.
 - Produces: repositories with `findFresh*`, `insert*`, `createOrReuseAssessment`, `completeAssessment`, `failAssessment`, `failInterruptedAssessments`.
 
 - [ ] **Step 1: 写契约和数据库失败测试**
 
-Cover unknown-field rejection, dangling product enum rejection, `recommendedProduct: null`, WAL initialization, 30-day fresh lookup, one processing task per credit code, failed-task resubmit, and restart failure conversion.
+Cover unknown-field rejection at every object level, all explicit nullable fields, rejection of local-time/offset/date-only timestamps, dangling product enum rejection, exactly seven distinct product rows, `recommendedProduct: null`, `originalPublisher`/`originalDomain` source deduplication, and the four exact MCP output unions. Database cases cover WAL initialization, report freshness calculated from `completed_at` rather than `created_at`/`collected_at`, one processing task per credit code, completed-cache reuse, failed-task resubmit, and restart failure conversion.
 
 ```ts
 it('reuses one processing assessment per company', () => {
@@ -184,7 +192,7 @@ Expected: FAIL because contracts and repositories do not exist.
 
 - [ ] **Step 3: 实现五个严格契约**
 
-Use these exact shared enums and core shapes:
+Use these exact shared enums and no others:
 
 ```ts
 export const ProductKeySchema = z.enum(['windchill','feigenbaum_qms','creo','catia','abaqus','cst','solidworks']);
@@ -193,12 +201,25 @@ export const ResearchSourceStatusSchema = z.enum(['completed','partial','failed'
 export const ArkSourceStatusSchema = z.enum(['completed','failed']);
 export const EntityScopeSchema = z.enum(['legal_entity','group','subsidiary','brand','unknown']);
 export const EntityMatchSchema = z.enum(['confirmed','probable','unverified']);
-export const FactKindSchema = z.enum(['industry','product_scene','recruitment','financing','software_ecosystem','organization','quality','manufacturing','procurement','budget','decision_power','risk']);
+export const FactKindSchema = z.enum(['industry','product_scene','recruitment','software_ecosystem','organization','quality','manufacturing','procurement','budget','decision_power','risk']);
 ```
 
-`ReportSourceStatus` must use `ResearchSourceStatusSchema` for `qcc` and `doubaoSearch`, and `ArkSourceStatusSchema` for `ark`; tests must reject `ark: 'partial'`.
+Define `UtcTimestampSchema` as an ISO 8601 UTC string emitted by `Date.toISOString()` (`YYYY-MM-DDTHH:mm:ss.sssZ`); every object below uses `.strict()`, every listed field is required, arrays use `[]`, and only fields marked `| null` accept null. Nested item/reference schemas are part of these five existing contracts, not a generic framework.
 
-`ResearchItem` must include `evidenceId`, `source`, `sourceKind`, `title`, `url`, nullable `summary/content/publishedAt`, `collectedAt`, `mentionedName`, and preliminary entity fields. `EvidenceFact` must include `factId`, `statement`, `kind`, `productTags`, `strength: direct|supporting|weak`, `evidenceIds`, entity scope/match/basis, nullable `publishedAt`. All schemas use `.strict()`.
+- `IdentityProfile`: `legalName:string`, `creditCode:string`, `formerNames:string[]`, `aliases:string[]`, `englishNames:string[]`, `brands:string[]`, `officialDomains:string[]`, `registeredAddress:string|null`, `parentLegalName:string|null`, `subsidiaryLegalNames:string[]`.
+- `ResearchBundle`: `identity:IdentityProfile`, `items:ResearchItem[]`, `sourceStatus:{qcc:{status:ResearchSourceStatus,error:string|null},doubaoSearch:{status:ResearchSourceStatus,error:string|null}}`, `gaps:string[]`, `collectedAt:UtcTimestamp`. `ResearchItem` is exactly `evidenceId:string`, `source:'qcc'|'doubao_search'`, `sourceKind:'company'|'risk'|'ipr'|'operation'|'web'`, `title:string`, `url:string`, `originalPublisher:string|null`, `originalDomain:string|null`, `summary:string|null`, `content:string|null`, `publishedAt:UtcTimestamp|null`, `collectedAt:UtcTimestamp`, `mentionedName:string`, `entityScope:EntityScope`, `entityMatch:EntityMatch`, `matchBasis:string[]`, `query:string|null`, `position:number|null`, `logId:string|null`.
+- `EvidenceBundle`: `identity:IdentityProfile`, `industryClassification:'P1'|'P2'|'non_target'|'unverified'`, `industryEvidenceIds:string[]`, `evidence:EvidenceReference[]`, `facts:EvidenceFact[]`, `financingRecords:FinancingRecord[]`, `conflicts:string[]`, `gaps:string[]`, `collectedAt:UtcTimestamp`. `EvidenceReference` is exactly `evidenceId`, `title`, `url`, nullable `originalPublisher/originalDomain/publishedAt`, `collectedAt`, `mentionedName`, `entityScope`, `entityMatch`, `matchBasis`; `EvidenceFact` is exactly `factId:string`, `statement:string`, `kind:FactKind`, `productTags:ProductKey[]`, `strength:'direct'|'supporting'|'weak'`, `evidenceIds:string[]`, `entityScope:EntityScope`, `entityMatch:EntityMatch`, `matchBasis:string[]`; `FinancingRecord` is exactly `occurredAt:UtcTimestamp|null`, `typeOrRound:string|null`, `disclosedAmount:string|null`, `investors:string[]`, `evidenceIds:string[]`.
+- `OpportunityAssessment`: `products:ProductOpportunity[]`, `overallOpportunity:OpportunityLevel`, `recommendedProduct:ProductKey|null`, `summaryReasons:string[]`; `ProductOpportunity` is exactly `product:ProductKey`, `level:OpportunityLevel`, `evidenceIds:string[]`, `reasons:string[]`, `blockers:string[]`, `gaps:string[]`, and `products` contains every `ProductKey` exactly once.
+- `ReportModel`: `legalName:string`, `industryClassification`, `companyScaleClues:string[]`, `overallOpportunity`, `recommendedProduct:ProductKey|null`, `summaryReasons:string[]`, `latestFinancing:FinancingRecord|null`, `products:ProductOpportunity[]`, `evidence:EvidenceReference[]`, `salesQuestions:string[]`, `risks:string[]`, `gaps:string[]`, `nextVerificationActions:string[]`, `sourceStatus:{qcc:ResearchSourceStatus,doubaoSearch:ResearchSourceStatus,ark:ArkSourceStatus}`, `collectedAt:UtcTimestamp`, `dynamicSignalFreshness:'current'|'stale'`. Tests reject `ark:'partial'`.
+
+Freeze the four strict MCP output unions here as well:
+
+- `get_company_profile`: completed is `{source_status:'completed',candidates:Candidate[],basic_profile:BasicProfile|null,cache_hit:boolean}`; failed is `{source_status:'failed',candidates:[],basic_profile:null,cache_hit:false,message:string}`. `Candidate` is exactly `legal_name:string`, `credit_code:string`, `status:string|null`, `registered_address:string|null`, `match_reason:string`. `BasicProfile` is exactly `industry:string|null`, `region:string|null`, `company_type:string|null`, `founded_year:number|null`, `registered_capital:string|null`, `legal_representative:string|null`, `website:string|null`, `employee_range:string|null`, `risk_summary:string|null`, `collected_at:UtcTimestamp`. A multi-candidate completed result has `basic_profile:null` and `cache_hit:false`; only a unique cached profile may return `cache_hit:true`.
+- `submit_assessment`: processing is `{assessment_id:UUID,status:'processing',estimated_minutes:'5-10',cache_hit:false}` for both new and reused in-progress work; completed-cache reuse is `{assessment_id:UUID,status:'completed',cache_hit:true,cached_at:UtcTimestamp}`, with `cached_at=completed_at`. No other variant exists.
+- `get_assessment_status`: `{assessment_id:UUID,status:'processing'|'completed'|'failed',message:string}`.
+- `get_assessment_report`: processing/failed is `{assessment_id:UUID,status:'processing'|'failed',message:string}`; completed is `{assessment_id:UUID,status:'completed',legal_name:string,overall_opportunity:OpportunityLevel,recommended_product:ProductKey|null,collected_at:UtcTimestamp,dynamic_signal_freshness:'current'|'stale',source_status:{qcc:ResearchSourceStatus,doubao_search:ResearchSourceStatus,ark:'completed'},markdown:string}`. It contains neither cache metadata nor any extra financing status field.
+
+`originalPublisher` and `originalDomain` describe the original publisher, not the QCC/Doubao acquisition channel. Deduplicate by normalized `originalDomain`, falling back to normalized `originalPublisher`; if both are null, the item remains citable but does not count toward the two-independent-publisher threshold. `EvidenceReference` is copied from matching `ResearchItem` data and validated byte-for-byte for IDs/URLs/provenance; the model cannot invent it.
 
 - [ ] **Step 4: 实现 SQLite schema 和 repositories**
 
@@ -209,7 +230,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_processing_per_company
 ON assessments(cache_key) WHERE status = 'processing';
 ```
 
-Wrap `createOrReuseAssessment` in `BEGIN IMMEDIATE`/`COMMIT`, roll back on error, check processing first, then fresh completed cache unless `forceRefresh`, then insert a UUID task.
+Wrap `createOrReuseAssessment` in `BEGIN IMMEDIATE`/`COMMIT`, roll back on error, check processing first, then fresh completed cache unless `forceRefresh`, then insert a UUID task. A processing reuse returns `cacheHit:false`; a completed-cache reuse returns its persisted `completedAt` as `cachedAt` and `cacheHit:true`. `completeAssessment` sets `completed_at` and `cached_at` to the same UTC instant. `findFresh*` computes report TTL from `completed_at` only; reads never extend it.
 
 - [ ] **Step 5: 运行测试并提交**
 
@@ -234,7 +255,7 @@ rtk git commit -m "feat: add data contracts and sqlite repositories"
 
 - [ ] **Step 1: 写失败测试**
 
-Test one-time plaintext output, stored SHA-256 hash only, disabled rejection, invalid Bearer rejection, valid no-Origin acceptance, invalid Host/Origin rejection, unknown MCP input fields, and the four response shapes. Assert a valid user can read an assessment created by another user. Also inspect registered tool descriptions: `get_company_profile` must say it is the default for basic or ambiguous requests; `submit_assessment` must say it is only for explicit formal assessment after the user confirms `legal_name` and `credit_code`.
+Test one-time plaintext output, stored SHA-256 hash only, disabled rejection, invalid Bearer rejection, valid no-Origin acceptance, invalid Host/Origin rejection, unknown MCP input fields, and the four Task 2 response unions. Assert only profile and submit schemas permit `cache_hit`, completed-cache submit includes `cached_at`, report rejects cache metadata, and a valid user can read an assessment created by another user. Also inspect registered tool descriptions: `get_company_profile` must say it is the default for basic or ambiguous requests; `submit_assessment` must say it is only for explicit formal assessment after the user confirms `legal_name` and `credit_code`.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -248,7 +269,7 @@ Generate 32 random bytes as base64url; store `createHash('sha256').update(token)
 
 - [ ] **Step 4: 注册四个工具和安全 HTTP 路由**
 
-Use `McpServer` from `@modelcontextprotocol/server`, `NodeStreamableHTTPServerTransport` from `@modelcontextprotocol/node`, and `createMcpExpressApp` from `@modelcontextprotocol/express`. For each POST create a stateless transport with `sessionIdGenerator: undefined`, connect a fresh server, and close both on response close. Reject GET/DELETE `/mcp` with 405 JSON-RPC response.
+Use `McpServer` from `@modelcontextprotocol/server`, the official `NodeStreamableHTTPServerTransport` from `@modelcontextprotocol/node`, and `createMcpExpressApp` from `@modelcontextprotocol/express`. Preserve the official per-request stateless pattern: for each POST create a transport with `sessionIdGenerator: undefined`, connect a fresh server, and close both on response close. Do not replace it with a custom transport or shared session. Reject GET/DELETE `/mcp` with 405 JSON-RPC response.
 
 ```ts
 app.post('/mcp', authMiddleware, async (req, res) => {
@@ -276,48 +297,52 @@ rtk git commit -m "feat: add bearer auth and four mcp tool contracts"
 ### Task 4: 企查查四 Server 适配器与基础画像缓存
 
 **Files:**
+- Create: `src/orchestration/call-budget.ts`, `retry.ts`
 - Create: `src/upstream/qcc/tool-allowlist.ts`, `client.ts`, `mapper.ts`, `profile-service.ts`, `assessment-research.ts`
 - Create: `tests/fixtures/qcc-*.json`
-- Test: `tests/qcc-adapter.test.ts`, `tests/company-profile.test.ts`
+- Test: `tests/call-budget.test.ts`, `tests/retry.test.ts`, `tests/qcc-adapter.test.ts`, `tests/company-profile.test.ts`
 
 **Interfaces:**
 - Produces: `QccGateway.call(server, tool, input): Promise<unknown>`.
 - Produces: `CompanyProfileService.get(query, regionHint): Promise<CompanyProfileResult>`.
 - Produces: `collectQccResearch(identity, budget): Promise<SourceCollection>`.
+- Produces: `retryOnce<T>(source, budget, attempt): Promise<{status:'completed',value:T}|{status:'failed',error:UpstreamError}>`; every adapter call is a single attempt.
 
 - [ ] **Step 1: 保存脱敏样本并写失败契约测试**
 
-Allow only these v0.1 tools: company `get_company_by_query`, `get_company_registration_info`, `get_company_profile`, `get_contact_info`, `get_shareholder_info`, `get_actual_controller`, `get_key_personnel`; risk `get_company_risk_scan`; IPR `get_patent_info`, `get_software_copyright_info`; operation `get_recruitment_info`, `get_financing_records`, `get_annual_reports`, `get_bidding_info`, `get_qualifications`. Tests must prove any other tool name is rejected locally before network access, and that financing/recruitment initial calls occur before every other formal-assessment QCC call or retry. Contract fixtures must cover financing date, type/round, nullable disclosed amount, investors, and missing optional fields.
+Allow only these v0.1 tools: company `get_company_by_query`, `get_company_registration_info`, `get_company_profile`, `get_contact_info`, `get_shareholder_info`, `get_actual_controller`, `get_key_personnel`; risk `get_company_risk_scan`; IPR `get_patent_info`, `get_software_copyright_info`; operation `get_recruitment_info`, `get_financing_records`, `get_annual_reports`, `get_bidding_info`, `get_qualifications`. Tests must prove any other tool name is rejected locally before network access, and that financing/recruitment initial calls occur before every other formal-assessment QCC call or retry. Contract fixtures must cover financing date, type/round, nullable disclosed amount, investors, and missing optional fields. `retryOnce` tests assert at most two attempts, one budget charge per attempt, no second attempt after budget exhaustion, and no third call hidden in a client.
 
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-rtk npm test -- --run tests/qcc-adapter.test.ts tests/company-profile.test.ts
+rtk npm test -- --run tests/call-budget.test.ts tests/retry.test.ts tests/qcc-adapter.test.ts tests/company-profile.test.ts
 ```
 
 - [ ] **Step 3: 实现 QCC MCP client 和映射**
 
-Use `Client` and `StreamableHTTPClientTransport` from `@modelcontextprotocol/client`, setting `requestInit.headers.Authorization`. Build one lazy client per configured server; on transport error close, reconnect once, then surface a typed `UpstreamError`. Validate mapped results, never persist raw payloads.
+Implement `CallBudget` and the sole orchestration `retryOnce` first. `retryOnce` consumes source and total budget immediately before each attempt, executes at most two attempts, and returns the typed result without swallowing the second error.
 
-For formal assessment, call `get_financing_records` first and `get_recruitment_info` second, then profile, risk scan, patents, annual reports and bidding. The eighth call selects the most relevant gap among shareholder, software copyrights and qualifications. These first two calls must start before any other QCC call or retry can consume their reserved budget; retries run after both initial attempts. Stop before starting later calls when budget is exhausted. A missing dataset is a gap, not a negative fact. If financing fails while other QCC data is usable, set only the overall QCC status to `partial` and render “融资信息获取失败” as a gap; do not add `financingStatus` or infer a replacement value.
+Use `Client` and `StreamableHTTPClientTransport` from `@modelcontextprotocol/client`, setting `requestInit.headers.Authorization`. Build one lazy client per configured server. `QccGateway.call` makes exactly one `callTool` attempt: on transport error it closes and clears the current client/transport and immediately throws typed `UpstreamError`; it must not reconnect or resend inside the same call. If `retryOnce` starts a second outer attempt, that later call lazily creates a new connection. Validate mapped results and never persist raw payloads.
+
+For formal assessment, call `get_financing_records` first and `get_recruitment_info` second, then profile, risk scan, patents, annual reports and bidding. The eighth call selects the most relevant gap among shareholder, software copyrights and qualifications. These first two calls must start before any other QCC call or retry can consume their reserved budget; retries run after both initial attempts. Stop before starting later calls when budget is exhausted. A missing dataset is a gap, not a negative fact. If financing fails while other QCC data is usable, set only the overall QCC status to `partial` and render “融资信息获取失败” as a gap; do not create a separate financing status field or infer a replacement value.
 
 - [ ] **Step 4: 实现基础画像唯一/多候选、重试和 30 天缓存**
 
-Normalize legal names only by trim, Unicode NFKC, whitespace removal and ASCII case folding; do not strip legal suffixes. Exact single match returns profile; multiple matches return candidates without profile; QCC failure after one retry returns `{ sourceStatus:'failed', candidates:[] }`.
+Normalize legal names only by trim, Unicode NFKC, whitespace removal and ASCII case folding; do not strip legal suffixes. Exact single match returns profile; multiple matches return candidates without profile; wrap each QCC request with orchestration `retryOnce`, so failure after two outer attempts returns `{ sourceStatus:'failed', candidates:[] }`.
 
 - [ ] **Step 5: 运行测试并提交**
 
 ```bash
-rtk npm test -- --run tests/qcc-adapter.test.ts tests/company-profile.test.ts
+rtk npm test -- --run tests/call-budget.test.ts tests/retry.test.ts tests/qcc-adapter.test.ts tests/company-profile.test.ts
 rtk npm run typecheck
-rtk git add src/upstream/qcc tests/fixtures/qcc-*.json tests/qcc-adapter.test.ts tests/company-profile.test.ts
+rtk git add src/orchestration/call-budget.ts src/orchestration/retry.ts src/upstream/qcc tests/fixtures/qcc-*.json tests/call-budget.test.ts tests/retry.test.ts tests/qcc-adapter.test.ts tests/company-profile.test.ts
 rtk git commit -m "feat: integrate qcc profile and research adapters"
 ```
 
 ### Task 5: 豆包搜索计划、HTTP 适配器和调用预算
 
 **Files:**
-- Create: `src/orchestration/call-budget.ts`
+- Modify: `src/orchestration/call-budget.ts`, `retry.ts`
 - Create: `src/upstream/search/search-plan.ts`, `doubao-client.ts`, `mapper.ts`
 - Create: `tests/fixtures/doubao-search.json`
 - Test: `tests/call-budget.test.ts`, `tests/doubao-search.test.ts`
@@ -329,7 +354,7 @@ rtk git commit -m "feat: integrate qcc profile and research adapters"
 
 - [ ] **Step 1: 写失败测试**
 
-Assert: all Query values are 1–100 chars; `SearchType='web'`; `NeedUrl=true`; recruitment queries use `NeedContent=true` and `TimeRange='OneYear'`; generic company/product queries omit TimeRange; Count defaults 10 and rejects >50; retry consumes a second search and total call; exhausted budget starts no fetch.
+Assert: all Query values are 1–100 chars; `SearchType='web'`; `NeedUrl=true`; recruitment queries use `NeedContent=true` and `TimeRange='OneYear'`; generic company/product queries omit TimeRange; Count defaults 10 and rejects >50; orchestration retry consumes a second search and total call; exhausted budget starts no fetch; one `DoubaoSearchClient.search` call performs exactly one fetch and never retries internally.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -343,14 +368,14 @@ Generate no more than eight explicit queries: official website/products, enginee
 
 - [ ] **Step 4: 实现 API client 和结果映射**
 
-POST JSON to configured URL with Bearer Key. Map `Result.WebResults` into evidence items preserving `Title`, `SiteName`, `Url`, content/summary, `PublishTime`, `SortId`, origin Query, collected timestamp and `LogId`. Error codes, 401/403, quota/QPS and 5xx become typed errors; retry once in orchestration, not recursively inside mapper.
+POST JSON to configured URL with Bearer Key. Map `Result.WebResults` into evidence items preserving `Title`, `SiteName` as `originalPublisher`, URL hostname as `originalDomain`, `Url`, content/summary, `PublishTime`, `SortId`, origin Query, collected timestamp and `LogId`. Error codes, 401/403, quota/QPS and 5xx become typed errors. One client call performs one fetch; callers use the already-created orchestration `retryOnce`, and neither client nor mapper retries.
 
 - [ ] **Step 5: 运行测试并提交**
 
 ```bash
 rtk npm test -- --run tests/call-budget.test.ts tests/doubao-search.test.ts
 rtk npm run typecheck
-rtk git add src/orchestration/call-budget.ts src/upstream/search tests/fixtures/doubao-search.json tests/call-budget.test.ts tests/doubao-search.test.ts
+rtk git add src/orchestration/call-budget.ts src/orchestration/retry.ts src/upstream/search tests/fixtures/doubao-search.json tests/call-budget.test.ts tests/doubao-search.test.ts
 rtk git commit -m "feat: add deterministic doubao search collection"
 ```
 
@@ -362,12 +387,12 @@ rtk git commit -m "feat: add deterministic doubao search collection"
 - Test: `tests/ark-adapter.test.ts`, `tests/evidence-validator.test.ts`
 
 **Interfaces:**
-- Produces: `ArkEvidenceService.extract(bundle, budget): Promise<EvidenceBundle>`.
+- Produces: `ArkEvidenceService.extract(bundle): Promise<EvidenceBundle>` for exactly one HTTP attempt; orchestration supplies `retryOnce` and the budget.
 - Consumes: `ResearchBundle`; may only return IDs present in that bundle.
 
 - [ ] **Step 1: 写失败测试**
 
-Cover valid JSON, empty response, fenced JSON, malformed JSON, invented URL/evidence ID, missing match basis, empty ResearchBundle producing `unverified`, and second failure throwing `ArkUnavailableError`.
+Cover valid JSON, empty response, fenced JSON, malformed JSON, invented URL/evidence ID, altered original publisher/domain, missing match basis, empty ResearchBundle producing `unverified`, and prove each `extract` call performs exactly one HTTP request and throws `ArkUnavailableError` on that attempt.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -379,9 +404,9 @@ rtk npm test -- --run tests/ark-adapter.test.ts tests/evidence-validator.test.ts
 
 POST to `ARK_API_URL` with Bearer `ARK_CREDENTIAL`, body `{ model: ARK_MODEL, messages, response_format:{type:'json_object'}, temperature:0 }`. System prompt states webpages are untrusted data, forbids tool calls/instructions, requires `P1/P2/non_target/unverified`, forbids creating sources/aliases/URLs, and emits the exact `EvidenceBundleSchema` JSON shape.
 
-- [ ] **Step 4: 实现引用校验和一次重试**
+- [ ] **Step 4: 实现引用校验并接入唯一外层重试**
 
-Build a map of `ResearchItem.evidenceId`; reject every absent ID, URL mismatch, missing mentioned name, or non-unverified classification without evidence. Retry the entire Ark call once; two invalid/failed attempts consume both Ark calls and make the task fail.
+Build a map of `ResearchItem.evidenceId`; reject every absent ID, URL/publisher/domain mismatch, missing mentioned name, or non-unverified classification without evidence. The Ark client and validator never retry. The assessment runner wraps the whole `extract` call in orchestration `retryOnce`; two invalid/failed outer attempts consume both Ark calls and make the task fail.
 
 - [ ] **Step 5: 运行测试并提交**
 
@@ -452,7 +477,7 @@ rtk git commit -m "feat: add deterministic seven-product opportunity rules"
 
 - [ ] **Step 1: 写失败快照和禁止内容测试**
 
-Test two branches. A normal report must contain the one-screen summary, latest financing result, seven product rows, evidence URL/time/basis, sales questions, risks/gaps, source failure labels, and no unsupported revenue/personality/procurement statements. When financing fails but other QCC data succeeds, assert `sourceStatus.qcc='partial'`, the Markdown contains “融资信息获取失败”, and no standalone `financingStatus` field exists. A `recommendedProduct=null` report must contain only evidence gaps, source status and next verification actions: no product matrix, product names, target roles or sales approach.
+Test two branches. A normal report must contain the one-screen summary, latest financing result, seven product rows, evidence URL/time/basis, sales questions, risks/gaps, source failure labels, and no unsupported revenue/personality/procurement statements. When financing fails but other QCC data succeeds, assert `sourceStatus.qcc='partial'`, the Markdown contains “融资信息获取失败”, and the strict model has no separate financing status field. A `recommendedProduct=null` report must contain only evidence gaps, source status and next verification actions: no product matrix, product names, target roles or sales approach.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -462,7 +487,7 @@ rtk npm test -- --run tests/report.test.ts
 
 - [ ] **Step 3: 实现 ReportModel builder 和 Markdown renderer**
 
-Builder may only dereference existing fact/evidence IDs. Renderer contains no conditional scoring logic. Escape Markdown table pipes/newlines in cell content; render source names as links; include `collectedAt`, cache state and >7-day dynamic-signal warning.
+Builder may only dereference existing fact/evidence IDs. Renderer contains no conditional scoring logic. Escape Markdown table pipes/newlines in cell content; render source names as links; include `collectedAt` and the >7-day dynamic-signal warning. Cache reuse metadata is returned by `submit_assessment`, not embedded in `ReportModel`, Markdown or `get_assessment_report`.
 
 - [ ] **Step 4: 运行测试并提交**
 
@@ -476,7 +501,8 @@ rtk git commit -m "feat: render auditable markdown assessment reports"
 ### Task 9: FIFO 队列、完整评估编排和失败降级
 
 **Files:**
-- Create: `src/orchestration/fifo-queue.ts`, `retry.ts`, `assessment-runner.ts`, `assessment-service.ts`
+- Create: `src/orchestration/fifo-queue.ts`, `assessment-runner.ts`, `assessment-service.ts`
+- Modify: `src/orchestration/retry.ts`, `call-budget.ts`
 - Create: `src/logging/logger.ts`
 - Test: `tests/queue.test.ts`, `tests/assessment-runner.test.ts`, `tests/assessment-service.test.ts`, `tests/logging.test.ts`
 
@@ -487,7 +513,7 @@ rtk git commit -m "feat: render auditable markdown assessment reports"
 
 - [ ] **Step 1: 写失败集成测试**
 
-Cover FIFO order/concurrency 1, waiting tasks still `processing`, cache reuse, force refresh, duplicate processing reuse, failed resubmit, QCC-only failure, search-only failure, both failure empty report, Ark failure, SQLite completion failure, call-budget stopping, and startup interruption marking.
+Cover FIFO order/concurrency 1, waiting tasks still `processing`, completed-cache submit returning `completed/cache_hit=true/cached_at=completed_at`, new and duplicate processing returning `processing/cache_hit=false`, TTL based only on `completed_at`, force refresh, failed resubmit, QCC-only failure, search-only failure, both failure empty report, Ark failure, SQLite completion failure, call-budget stopping, startup interruption marking, and exactly two attempts maximum for every QCC/search/Ark request with no adapter-internal resend.
 Logging tests assert one JSON line per upstream attempt with assessment ID, user ID, source, duration, success/error and attempt count, while API keys, Authorization headers, report bodies and raw upstream payloads never appear.
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -496,9 +522,9 @@ Logging tests assert one JSON line per upstream attempt with assessment ID, user
 rtk npm test -- --run tests/queue.test.ts tests/assessment-runner.test.ts tests/assessment-service.test.ts tests/logging.test.ts
 ```
 
-- [ ] **Step 3: 实现队列和 retry helper**
+- [ ] **Step 3: 实现队列并组合既有 retry helper**
 
-Queue stores only assessment UUIDs in memory, shifts in submission order and starts at most configured concurrency. `retryOnce` performs at most two attempts, records each attempt in `CallBudget`, and returns typed result `{status, value?, error?}` rather than swallowing errors.
+Queue stores only assessment UUIDs in memory, shifts in submission order and starts at most configured concurrency. Use the Task 4 `retryOnce` for every QCC/search/Ark request; do not add any second retry loop. It performs at most two attempts, records each attempt in `CallBudget`, and returns its typed result rather than swallowing errors.
 `logger.ts` writes newline-delimited JSON through an injected `LogSink`; it accepts only an allowlisted event object and serializes typed error code/message, never arbitrary request/response objects.
 
 - [ ] **Step 4: 实现评估 runner 和服务**
@@ -526,7 +552,7 @@ rtk git commit -m "feat: orchestrate cached assessments with fifo execution"
 
 - [ ] **Step 1: 写模拟端到端失败测试**
 
-Start app on ephemeral localhost port with in-memory SQLite and fake QCC/search/Ark. Use `Client` + `StreamableHTTPClientTransport` from `@modelcontextprotocol/client` to call profile, submit, poll, and report; assert Markdown/source status and cross-user UUID read.
+Start app on ephemeral localhost port with in-memory SQLite and fake QCC/search/Ark. Use `Client` + `StreamableHTTPClientTransport` from `@modelcontextprotocol/client` to call profile, submit, poll, and report; assert Markdown/source status, cross-user UUID read, exact cache-field placement, and `client.getProtocolEra() === 'modern'` after the first successful MCP call.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -558,6 +584,8 @@ Expected: all tests PASS, build exits 0, Docker image builds.
 
 ### Task 11: 一家真实企业的人工端到端验收
 
+**Deferred gate:** 本任务明确延后，只有真实凭证已写入未提交的 `.env`、可访问的 HTTPS `/mcp` endpoint 已就绪、并取得一家企业的明确授权后才能开始。上述前置条件缺一时记录为“未执行”，不伪造夹具或把模拟 E2E 当作真实验收；Tasks 1–10 的实现完成不依赖本任务。
+
 **Files:**
 - Create: `docs/validation/real-e2e-result.md`
 
@@ -566,7 +594,7 @@ Expected: all tests PASS, build exits 0, Docker image builds.
 
 - [ ] **Step 1: 启动已完成的服务并配置 Codex 客户端**
 
-Use an authorized `.env` and one enabled Bearer Token. Configure the current Codex MCP client to call the deployed or local HTTPS `/mcp`; do not commit credentials, the real credit code, report body or raw upstream payload.
+Verify all three deferred prerequisites first: an authorized real `.env`, one reachable HTTPS `/mcp` endpoint, and one authorized company; then use one enabled Bearer Token. Configure the current Codex MCP client to call that endpoint; do not commit credentials, the real credit code, report body or raw upstream payload.
 
 - [ ] **Step 2: 人工调用四工具闭环**
 
@@ -574,7 +602,7 @@ In Codex call `get_company_profile` for one authorized company, explicitly confi
 
 - [ ] **Step 3: 核对结果**
 
-Expected: profile resolves to the confirmed entity; assessment transitions `processing → completed` or returns an explicitly explained upstream `failed`. A normal report states the financing result or its evidence gap, includes evidence links and seven product rows. A gaps-only report omits product/role/sales recommendations. This single run validates connectivity and contracts only.
+Acceptance requires: profile resolves to the confirmed entity; assessment reaches `completed`; `get_assessment_report` returns completed Markdown stating the financing result or its evidence gap and containing evidence links. A gaps-only completed report may omit product/role/sales recommendations. Any `failed` status is an acceptance failure, not an accepted explanatory outcome: record the reason, fix it, and rerun this task. This single completed run validates connectivity and contracts only.
 
 - [ ] **Step 4: 记录验收结果并提交**
 
@@ -587,9 +615,12 @@ rtk git commit -m "test: validate one authorized real assessment flow"
 
 ## Final Verification Gate
 
+Tasks 1–10 use the following implementation gate; Task 11 is the separate deferred real-environment gate above.
+
 - [ ] Run `rtk npm test` — expected all unit/contract/integration tests PASS.
 - [ ] Run `rtk npm run typecheck` — expected zero TypeScript errors.
 - [ ] Run `rtk npm run build` — expected `dist/` generated successfully.
 - [ ] Run `rtk rg -n "@modelcontextprotocol/sdk|DOUBAO_SEARCH_CREDENTIAL|QCC_MCP_EXECUTIVE|QCC_MCP_TENDER|TODO|TBD" package.json src tests README.md .env.example` — expected no matches.
 - [ ] Run `rtk rg -n "API_KEY=.+|CREDENTIAL=.+|Bearer [A-Za-z0-9_-]{16}" . --glob '!package-lock.json' --glob '!.git/**'` — expected no real secrets.
-- [ ] Verify the one real report contains legal entity, source timestamps, a financing result or evidence gap, source failure labels, evidence links and no unsupported personality/revenue/procurement claims; require seven opportunity rows only when `recommended_product` is non-null.
+- [ ] Run `rtk rg -n "cache_hit" docs/superpowers/specs/2026-08-28-target-customer-assessment-mcp-v0.1-design.md docs/superpowers/plans/2026-08-29-target-customer-assessment-mcp-v0.1.md` and inspect every match — expected only profile/submit contracts, examples, tests or explanatory prohibitions; no report output field.
+- [ ] When Task 11 prerequisites are available, verify the one real assessment reaches `completed` and its report contains legal entity, source timestamps, a financing result or evidence gap, source failure labels, evidence links and no unsupported personality/revenue/procurement claims; require seven opportunity rows only when `recommended_product` is non-null. Any `failed` status fails this gate.
