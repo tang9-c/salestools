@@ -153,4 +153,15 @@ describe('configured token CLI entry', () => {
     expect(existsSync(explicitDatabase)).toBe(true);
     expect(existsSync(dotenvDatabase)).toBe(false);
   });
+
+  it('does not load project-local .env in production', () => {
+    const dotenvDatabase = join(directory, 'dotenv.sqlite');
+    writeDotEnv(dotenvDatabase);
+
+    const result = launch({ NODE_ENV: 'production' });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('Invalid configuration');
+    expect(existsSync(dotenvDatabase)).toBe(false);
+  });
 });

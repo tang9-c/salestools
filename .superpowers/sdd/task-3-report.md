@@ -72,10 +72,22 @@ Minimal fix: call `dotenv.config({ quiet: true })` only in the real CLI entry br
 
 GREEN result: focused Task 3 verification passed 25 tests. The added M1 coverage also exercises profile failed, submit cached-completed, status completed/failed, and report processing/failed mappings.
 
+### RED/GREEN 5 — production dotenv boundary
+
+Command with a complete `.env` on disk but only `NODE_ENV=production` supplied to the real CLI process:
+
+```text
+rtk npm test -- --run tests/auth.test.ts -t "does not load project-local .env in production"
+```
+
+RED result: the process incorrectly exited 0 and created the `.env`-configured SQLite database.
+
+Minimal fix: guard dotenv loading with `process.env.NODE_ENV !== 'production'`. GREEN result: the production process exits non-zero on missing explicit configuration and does not create the `.env` database; focused Task 3 verification passes 26 tests.
+
 ## Delivered behavior
 
 - `TokenService.create/verify/disable/list` stores only SHA-256 hashes; generated plaintext is 32 random bytes encoded as base64url.
-- `runTokenCli` accepts exactly `tokens:create --user`, `tokens:disable --user`, and `tokens:list`; the real CLI loads the project-local `.env` without overriding explicit environment variables, opens the configured SQLite database, and never lists hashes or plaintext.
+- `runTokenCli` accepts exactly `tokens:create --user`, `tokens:disable --user`, and `tokens:list`; outside production the real CLI loads the project-local `.env` without overriding explicit environment variables, while production never reads `.env`; it opens the explicitly configured SQLite database and never lists hashes or plaintext.
 - Four MCP tools register strict input/output schemas, preserve business states as successful structured results, and return matching JSON in `content` and `structuredContent`.
 - `src/mcp/tools.ts` is the only snake_case boundary; service DTOs are camelCase, including nested candidates, profiles, source status, and report fields.
 - `get_assessment_report` forwards only `{ assessmentId }`, so report access is not filtered by requester identity.
@@ -96,7 +108,7 @@ Passed with no whitespace errors.
 rtk npm test -- --run tests/auth.test.ts tests/mcp-tools.test.ts tests/http-security.test.ts
 ```
 
-Passed: 3 files, 25 tests.
+Passed: 3 files, 26 tests.
 
 ```text
 rtk npm run typecheck
@@ -108,7 +120,7 @@ Passed with zero TypeScript errors.
 rtk npm test -- --run
 ```
 
-Passed: 6 files, 58 tests.
+Passed: 6 files, 59 tests.
 
 ## Concerns
 

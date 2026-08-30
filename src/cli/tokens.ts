@@ -56,6 +56,6 @@ export function runConfiguredTokenCli(
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  loadDotEnv({ quiet: true });
+  if (process.env.NODE_ENV !== 'production') loadDotEnv({ quiet: true });
   process.exitCode = runConfiguredTokenCli(process.argv.slice(2));
 }
