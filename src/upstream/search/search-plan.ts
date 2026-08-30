@@ -28,11 +28,17 @@ export const SearchQuerySchema = z.object({
   searchedName: z.string().min(1),
 }).strict().superRefine((query, context) => {
   const isRecruitment = query.purpose === 'recruitment';
+  const isDynamic = isRecruitment
+    || query.purpose === 'procurement'
+    || query.purpose === 'expansion_financing';
   if (isRecruitment && (!query.Filter.NeedContent || query.Filter.TimeRange !== 'OneYear')) {
     context.addIssue({ code: 'custom', message: 'recruitment queries require content and OneYear' });
   }
-  if (!isRecruitment && query.Filter.TimeRange !== undefined) {
-    context.addIssue({ code: 'custom', message: 'ordinary queries must omit TimeRange' });
+  if (isDynamic && query.Filter.TimeRange !== 'OneYear') {
+    context.addIssue({ code: 'custom', message: 'dynamic queries require OneYear' });
+  }
+  if (!isDynamic && query.Filter.TimeRange !== undefined) {
+    context.addIssue({ code: 'custom', message: 'non-dynamic queries must omit TimeRange' });
   }
 });
 
@@ -70,13 +76,18 @@ export function buildSearchPlan(identity: IdentityProfile): SearchQuery[] {
     const needsContent = plan.purpose === 'recruitment'
       || plan.purpose === 'engineering'
       || plan.purpose === 'software_ecosystem';
+    const needsOneYear = plan.purpose === 'recruitment'
+      || plan.purpose === 'procurement'
+      || plan.purpose === 'expansion_financing';
     return SearchQuerySchema.parse({
       Query: `${searchedName} ${plan.terms}`,
       SearchType: 'web',
       Count: 10,
-      Filter: plan.purpose === 'recruitment'
-        ? { NeedUrl: true, NeedContent: true, TimeRange: 'OneYear' }
-        : { NeedUrl: true, NeedContent: needsContent },
+      Filter: {
+        NeedUrl: true,
+        NeedContent: needsContent,
+        ...(needsOneYear ? { TimeRange: 'OneYear' as const } : {}),
+      },
       purpose: plan.purpose,
       subjectLegalName: identity.legalName,
       subjectAliases: aliases,

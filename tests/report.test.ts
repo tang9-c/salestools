@@ -11,7 +11,11 @@ import {
   type ReportModel,
 } from '../src/contracts/index.js';
 import { buildReportModel } from '../src/report/build-report-model.js';
-import { presentStoredReport, renderMarkdown } from '../src/report/render-markdown.js';
+import {
+  hasDirectLinkCoverageForKeyConclusions,
+  presentStoredReport,
+  renderMarkdown,
+} from '../src/report/render-markdown.js';
 
 const NOW = new Date('2026-08-30T12:00:00.000Z');
 const COLLECTED_AT = '2026-08-29T12:00:00.000Z';
@@ -363,10 +367,10 @@ describe('assessment report', () => {
     expect(model.companyScaleClues).not.toContain(weakFact.statement);
   });
 
-  it('escapes table pipes and newlines and never creates non-http links', () => {
+  it('escapes unsafe table labels and content without emitting executable markup', () => {
     const unsafe = reference('unsafe', {
       title: '官网 | 标题\n第二行<script>alert(1)</script>',
-      url: 'javascript:alert(1)',
+      url: 'https://company.example/unsafe',
       originalPublisher: '来源 | 名称<img src=x>',
       originalDomain: null,
     });
@@ -389,9 +393,44 @@ describe('assessment report', () => {
     const markdown = renderMarkdown(buildReportModel(identity, input, result, sourceStatus));
 
     expect(markdown).toContain('官网 \\| 标题<br>第二行&lt;script&gt;alert(1)&lt;/script&gt;');
-    expect(markdown).toContain('来源 \\| 名称&lt;img src=x&gt;（链接不可用）');
-    expect(markdown).not.toContain('javascript:');
+    expect(markdown).toContain('[来源 \\| 名称&lt;img src=x&gt;](<https://company.example/unsafe>)');
     expect(markdown).not.toMatch(/<script>|<img/);
+  });
+
+  it('renders unavailable QCC links explicitly and does not count them as conclusion link coverage', () => {
+    const qccOnly = {
+      ...reference('qcc-only'),
+      url: null,
+      originalPublisher: null,
+      originalDomain: null,
+    } as unknown as EvidenceReference;
+    const input = evidenceBundle({
+      industryEvidenceIds: ['qcc-only'],
+      evidence: [qccOnly],
+      facts: [fact(
+        'qcc-scene',
+        '企查查记录显示研发组织设有 PLM 管理岗位',
+        'organization',
+        ['qcc-only'],
+        ['windchill'],
+      )],
+      financingRecords: [],
+      conflicts: [],
+      gaps: ['企查查来源链接不可用：qcc-only'],
+    });
+    const result = assessment();
+    result.products = result.products.map(row => ({ ...row, evidenceIds: ['qcc-only'] }));
+    const model = buildReportModel(identity, input, result, sourceStatus);
+    const markdown = renderMarkdown(model);
+
+    expect(markdown).toContain('来源链接不可用');
+    expect(markdown).not.toContain('https://agent.qcc.com/data');
+    expect(hasDirectLinkCoverageForKeyConclusions(model)).toBe(false);
+  });
+
+  it('counts only complete real direct-link coverage for key conclusions', () => {
+    const model = buildReportModel(identity, evidenceBundle(), assessment(), sourceStatus);
+    expect(hasDirectLinkCoverageForKeyConclusions(model)).toBe(true);
   });
 
   it('presents stored markdown by completed_at without persisting a ReportModel', () => {

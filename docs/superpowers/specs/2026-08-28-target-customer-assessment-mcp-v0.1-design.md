@@ -324,7 +324,7 @@ SQLite 保存最终报告
 
 输入：已确认的 `legal_name`、`credit_code`。
 
-输出：`ResearchBundle`，包含已获取的来源条目、URL、标题、摘要、发布时间或采集时间、来源状态和主体身份档案，不包含产品机会等级，不生成销售结论，不生成 Markdown。
+输出：`ResearchBundle`，包含已获取的来源条目、可用的直接证据 URL（不可用时为 `null`）、标题、摘要、发布时间或采集时间、来源状态和主体身份档案，不包含产品机会等级，不生成销售结论，不生成 Markdown。
 
 #### 模型事实引用校验
 
@@ -332,7 +332,9 @@ SQLite 保存最终报告
 
 方舟输出的行业分类为 `P1`、`P2`、`non_target` 或 `unverified`。模型可以根据来源资料自由分类，因此重新调用方舟时分类可能变化；机会判断模块不得自行重新分类。
 
-服务端校验被引用的 `evidence_id` 对应本次 `ResearchBundle` 中已有的来源条目，且 URL、网页提及名称和主体归属字段完整。模型不得创建新来源、URL、别名或证据 ID。方舟适配器对一次调用只发起一次 HTTP 请求；方舟返回空内容、非法 JSON、悬空引用或其他不合格结构时抛出类型化错误，由任务编排的 `retryOnce` 重试整个调用一次。第二次仍不合格则任务标为 `failed`，不生成正式报告。
+服务端校验被引用的 `evidence_id` 对应本次 `ResearchBundle` 中已有的来源条目；URL 必须逐字复制且允许为 `null`，网页提及名称和主体归属字段必须完整。模型不得创建新来源、URL、别名或证据 ID。方舟适配器对一次调用只发起一次 HTTP 请求；方舟返回空内容、非法 JSON、悬空引用或其他不合格结构时抛出类型化错误，由任务编排的 `retryOnce` 重试整个调用一次。第二次仍不合格则任务标为 `failed`，不生成正式报告。
+
+当前自建 Ark 网关的实测容量约束为最多 4 条代表证据。发送前使用字段感知的 UTF-8 字节预算：compact `ResearchBundle` 不超过 6,656 bytes，包含系统提示和请求 envelope 的完整序列化请求不超过 12,288 bytes。成功映射的 QCC 融资记录占最高优先专用槽，完整保留结构化日期、轮次/类型、披露金额和投资方；其余槽位在 QCC 与豆包搜索之间确定性公平选择招聘、采购/招投标和技术场景证据。主体身份已通过 `identity` 单独传输，企业 profile 只能作为低优先 fallback，不能挤占融资或需求槽。超限时先按低优先级缩减正文和摘要，再丢弃最低优先条目；不得截断标题、URL、evidence ID、主体归属或 provenance 字段。被裁剪或未选条目触发容量 gap，原有可信 gaps 必须保留；未选不代表不存在。
 
 固定提示和服务端校验同时保守拒绝以下推断，无论它们出现在 `facts[].statement`、`conflicts[]`、`gaps[]`，还是融资记录的轮次、金额和投资方字符串中：高管人格或按年龄推断决策风格；营收估算、倒推或员工人数/行业人效乘法；把招聘、扩产等线索改写为采购意向、计划采购、即将采购或有采购需求。只有 `kind=procurement`、`strength=direct`、事实和全部引用均确认属于目标法定主体，并且 statement 与每个引用 `ResearchItem` 的 `title + summary + content` 均明确包含“采购公告/招标公告/中标公告/采购文件/采购项目/采购合同”之一、相同的采购披露措辞及全部目标产品词时，才允许保留原文中的“拟采购/计划采购”等措辞。裸“公告/招标/中标”、招聘公告、新品公告、产品不一致的页面、supporting/weak、其他 fact kind、无公开载体、未确认主体、`conflicts/gaps` 和融资字段均不适用该例外。该一致性检查为确定性字符串规则，不另行调用语义模型。已发布的招聘和招投标原始事实仍允许保留；销售问题可以询问采购计划。
 
@@ -349,7 +351,7 @@ SQLite 保存最终报告
 
 接入前读取 4 个 Server 的实际工具目录，记录已使用工具的名称、输入参数、调用上限和返回字段，并为每个已使用工具保存脱敏 JSON 测试样本。官方新增或调整工具时，不自动扩大调用范围，只有适配器映射表中明确允许的工具可以被任务编排模块调用。
 
-适配器负责把企查查返回统一映射为 `IdentityProfile` 和 `ResearchBundle` 所需字段：主体标识、工商状态、别名、股权/集团关系、主要人员、风险、知识产权、年报、资质、融资、招投标、招聘和其他经营线索。某项数据不存在或企业未披露时记录为信息缺口，不因单项缺失直接降低机会等级；字段缺失、认证失败、配额耗尽和上游工具变更必须映射为明确的来源状态和信息缺口，不得静默跳过。
+适配器负责把企查查返回统一映射为 `IdentityProfile` 和 `ResearchBundle` 所需字段：主体标识、工商状态、别名、股权/集团关系、主要人员、风险、知识产权、年报、资质、融资、招投标、招聘和其他经营线索。某项数据不存在或企业未披露时记录为信息缺口，不因单项缺失直接降低机会等级；字段缺失、认证失败、配额耗尽和上游工具变更必须映射为明确的来源状态和信息缺口，不得静默跳过。只有上游记录提供的真实 HTTP(S) 直接证据 URL 才能进入条目；缺少直接 URL 时使用 `null` 并记录“来源链接不可用”，不得把 `https://agent.qcc.com/data` 工具目录或猜测的公司页面当作证据链接。
 
 正式评估固定为最多 8 次企查查调用。`get_financing_records` 排在第一位，`get_recruitment_info` 排在第二位，不得被其他调用或重试挤出预算；其余调用按主体、风险、专利、年报、招投标等基础需要排列，最后一个名额可在股东、软件著作权和资质中按信息缺口选择。融资调用失败但其他企查查资料可用时，企查查整体状态为 `partial`；全部企查查调用均无可用资料时才为 `failed`。报告正文必须明确列出“融资信息获取失败”，但不增加独立的融资状态字段，也不得用豆包搜索结果伪装成企查查融资记录。
 
@@ -452,7 +454,7 @@ type ResearchItem = {
   source: 'qcc' | 'doubao_search';
   sourceKind: 'company' | 'risk' | 'ipr' | 'operation' | 'web';
   title: string;
-  url: string;
+  url: string | null; // 豆包搜索必有直接 HTTP(S) URL；QCC 无上游直接 URL 时为 null
   originalPublisher: string | null;
   originalDomain: string | null;
   summary: string | null;
@@ -482,7 +484,7 @@ type ResearchBundle = {
 type EvidenceReference = {
   evidenceId: string;
   title: string;
-  url: string;
+  url: string | null;
   originalPublisher: string | null;
   originalDomain: string | null;
   publishedAt: UtcTimestamp | null;
@@ -568,7 +570,7 @@ type ReportModel = {
 };
 ```
 
-`originalPublisher` 和 `originalDomain` 表示原始发布方，而不是企查查或豆包搜索这一获取通道。去重优先按规范化 `originalDomain`，缺失时按规范化 `originalPublisher`；两者都为空的条目可以引用，但不能计入“两个独立原始发布方”的门槛。同一去重键的转载只计一次。`EvidenceReference` 必须由服务端从对应 `ResearchItem` 复制并校验，方舟不得创建或改写这些来源字段。这里的契约只是五个既有模块边界，不抽象通用事件、来源或规则框架。
+`originalPublisher` 和 `originalDomain` 表示原始发布方，而不是企查查或豆包搜索这一获取通道。去重优先按规范化 `originalDomain`，缺失时按规范化 `originalPublisher`；两者都为空的条目可以引用，但不能计入“两个独立原始发布方”的门槛。同一去重键的转载只计一次。`EvidenceReference` 必须由服务端从对应 `ResearchItem` 复制并校验，包括 nullable URL；方舟不得创建或改写这些来源字段。只有真实 HTTP(S) 直接 URL 才计入链接覆盖，`null` 和目录页均不计入。这里的契约只是五个既有模块边界，不抽象通用事件、来源或规则框架。
 
 ### 主体身份档案与证据归属
 
@@ -808,7 +810,7 @@ P1 行业：
 - 证据归属范围：法定主体、集团、子公司、品牌或未知
 - 主体匹配等级及匹配依据
 - 来源名称
-- 来源链接
+- 来源链接；仅真实 HTTP(S) 直接 URL 渲染链接，`null` 显示“来源链接不可用”
 - 发布时间或采集时间
 - 该证据支持的结论
 
@@ -870,7 +872,7 @@ P1 行业：
 - 本地 `.env` 可加载配置，`.env.example` 不包含真实凭证，`.env` 被 Git 忽略。
 - 企查查 4 个 MCP Server 使用各自 URL 和共享 `QCC_API_KEY`；`history`、`executive`、`regulation`、`case`、`tender` 和 `document` 不会被调用。
 - 豆包搜索只调用配置的 Custom 版 HTTP API，使用独立 Bearer API Key；不会启动或连接豆包搜索 MCP Server。
-- 搜索请求固定为 `SearchType=web`、`NeedUrl=true`，并校验 Query 长度、Count 上限、招聘查询的 `NeedContent=true` 和 `TimeRange=OneYear`。
+- 搜索请求固定为 `SearchType=web`、`NeedUrl=true`，并校验 Query 长度、Count 上限；招聘查询强制 `NeedContent=true`，招聘、采购/招投标/数字化采购、扩产/融资动态查询强制 `TimeRange=OneYear`，官网、产品、工程、质量和软件生态等非时效查询不得设置 `TimeRange`。
 - 四个工具的输入、输出、有效和无效 Bearer Token。
 - 四个工具输出严格匹配冻结字段；`cache_hit` 只允许出现在 `get_company_profile` 和 `submit_assessment`，报告输出拒绝该字段。
 - HTTP 服务使用官方 v2 `createMcpHandler(factory)`，经 `toNodeHandler(handler)` 挂载到 `createMcpExpressApp`；后者只接收从完整 Origin 派生的 hostname 白名单。完整 Origin 精确校验 middleware 位于 Bearer 认证之前，Bearer 认证又位于 handler 之前；验证后的 `authInfo` 传入每请求 factory，由 `authInfo.clientId` 构造 caller services，不手工创建服务端 transport，也不新增安全模块。
@@ -908,7 +910,7 @@ P1 行业：
 - 正式评估优先调用 `get_financing_records`；融资记录映射日期、类型或轮次、披露金额和投资方，缺字段不补写，调用失败在报告中明确标注。
 - 调用预算测试保证融资和招聘的首次调用先于其他企查查调用及重试，后续调用不得挤占这两个预留名额。
 - 融资只能作为预算、扩张和采购时机证据，不能单独建立产品场景、证明采购意向或把机会提升为“高”。
-- 报告的关键结论包含来源链接、时间和简短依据。
+- 报告的关键结论包含来源时间和简短依据；有真实直接 URL 时包含链接，只有 QCC `null` URL 时必须显示“来源链接不可用”，且链接覆盖不得记为 `true`。
 
 ### 5. 真实端到端
 

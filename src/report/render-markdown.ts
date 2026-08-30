@@ -60,10 +60,15 @@ function escapeTableCell(value: string): string {
     .trim();
 }
 
-function safeHttpUrl(value: string): string | null {
+function safeHttpUrl(value: string | null): string | null {
+  if (value === null) return null;
   try {
     const url = new URL(value);
-    if (!['http:', 'https:'].includes(url.protocol) || url.username !== '' || url.password !== '') return null;
+    const normalizedPath = url.pathname.replace(/\/+$/u, '') || '/';
+    if (!['http:', 'https:'].includes(url.protocol)
+      || url.username !== ''
+      || url.password !== ''
+      || (url.origin === 'https://agent.qcc.com' && normalizedPath === '/data')) return null;
     return url.href;
   } catch {
     return null;
@@ -73,8 +78,26 @@ function safeHttpUrl(value: string): string | null {
 function sourceLink(reference: EvidenceReference): string {
   const label = reference.originalPublisher ?? reference.originalDomain ?? reference.title;
   const url = safeHttpUrl(reference.url);
-  if (url === null) return `${escapeTableCell(label)}（链接不可用）`;
+  if (url === null) return `${escapeTableCell(label)}（来源链接不可用）`;
   return `[${escapeTableCell(label)}](<${url}>)`;
+}
+
+export function hasDirectLinkCoverageForKeyConclusions(modelInput: ReportModel): boolean {
+  const model = ReportModelSchema.parse(modelInput);
+  const recommendedEvidenceIds = model.recommendedProduct === null
+    ? []
+    : model.products.find(product => product.product === model.recommendedProduct)?.evidenceIds ?? [];
+  const keyEvidenceIds = new Set([
+    ...recommendedEvidenceIds,
+    ...model.facts.flatMap(fact => fact.evidenceIds),
+    ...(model.latestFinancing?.evidenceIds ?? []),
+  ]);
+  if (keyEvidenceIds.size === 0) return false;
+  const referencesById = new Map(model.evidence.map(reference => [reference.evidenceId, reference]));
+  return [...keyEvidenceIds].every(evidenceId => {
+    const reference = referencesById.get(evidenceId);
+    return reference !== undefined && safeHttpUrl(reference.url) !== null;
+  });
 }
 
 function formatValues(values: readonly string[], empty = '—'): string {

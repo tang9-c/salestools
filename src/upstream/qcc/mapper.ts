@@ -560,16 +560,23 @@ function yearOf(value: string | null): number | null {
   return match === null ? null : Number(match[1]);
 }
 
-function safeUrl(value: string | null): string {
+function safeUrl(value: string | null): string | null {
   if (value !== null) {
     try {
       const url = new URL(value);
-      if (url.protocol === 'https:' || url.protocol === 'http:') return url.toString();
+      const normalizedPath = url.pathname.replace(/\/+$/u, '') || '/';
+      const isCatalogue = url.origin === 'https://agent.qcc.com'
+        && normalizedPath === '/data';
+      if ((url.protocol === 'https:' || url.protocol === 'http:')
+        && url.hostname.length > 0
+        && url.username.length === 0
+        && url.password.length === 0
+        && !isCatalogue) return url.toString();
     } catch {
-      // Fall through to the public QCC data catalogue.
+      // Invalid or absent upstream links remain explicitly unavailable.
     }
   }
-  return 'https://agent.qcc.com/data';
+  return null;
 }
 
 export function mapCompanyCandidates(payload: unknown): MappedCandidate[] {
@@ -695,7 +702,7 @@ function safeMappedRecord(tool: string, record: Record<string, unknown>): {
   summary: string | null;
   content: Record<string, unknown>;
   publishedAt: string | null;
-  url: string;
+  url: string | null;
 } {
   if (tool === 'get_financing_records') {
     const parsed = FinancingRecordSchema.safeParse(record);
@@ -748,7 +755,7 @@ function safeMappedRecord(tool: string, record: Record<string, unknown>): {
       summary: introduction ?? industry,
       content: { name, industry, introduction, employeeRange, website },
       publishedAt: null,
-      url: safeUrl(stringValue(parsed.data, 'Url') ?? website),
+      url: safeUrl(stringValue(parsed.data, 'Url')),
     };
   }
 
@@ -1058,5 +1065,10 @@ export function mapQccToolResult(
       logId: null,
     });
   });
-  return { items, gaps: [] };
+  return {
+    items,
+    gaps: items
+      .filter(item => item.url === null)
+      .map(item => `企查查来源链接不可用：${item.evidenceId}`),
+  };
 }

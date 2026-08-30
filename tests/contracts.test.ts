@@ -230,6 +230,46 @@ describe('shared contracts', () => {
     expect(EvidenceBundleSchema.safeParse({ ...evidenceBundle, evidence: [nullableReference] }).success).toBe(true);
   });
 
+  it('allows a missing QCC direct link but still requires a safe direct search URL', () => {
+    const qccWithoutLink = {
+      ...item,
+      source: 'qcc' as const,
+      sourceKind: 'operation' as const,
+      url: null,
+    };
+    const qccReferenceWithoutLink = { ...reference, url: null };
+
+    expect(ResearchBundleSchema.safeParse({ ...researchBundle, items: [qccWithoutLink] }).success).toBe(true);
+    expect(EvidenceBundleSchema.safeParse({
+      ...evidenceBundle,
+      evidence: [qccReferenceWithoutLink],
+    }).success).toBe(true);
+    expect(ResearchBundleSchema.safeParse({
+      ...researchBundle,
+      items: [{ ...item, url: null }],
+    }).success).toBe(false);
+    for (const unsafe of ['javascript:alert(1)', 'https://user:password@example.cn/private', 'https://agent.qcc.com/data']) {
+      expect(ResearchBundleSchema.safeParse({
+        ...researchBundle,
+        items: [{ ...item, url: unsafe }],
+      }).success).toBe(false);
+    }
+  });
+
+  it('validates nullable QCC URL provenance byte-for-byte', () => {
+    const qccItem = {
+      ...item,
+      source: 'qcc' as const,
+      sourceKind: 'operation' as const,
+      url: null,
+    };
+    const qccReference = { ...reference, url: null };
+    const qccResearch = { ...researchBundle, items: [qccItem] };
+    const qccEvidence = { ...evidenceBundle, evidence: [qccReference] };
+
+    expect(validateEvidenceProvenance(qccResearch, qccEvidence)).toEqual(qccEvidence);
+  });
+
   it('validates references and every evidence-id edge against research provenance', () => {
     expect(validateEvidenceProvenance(researchBundle, evidenceBundle)).toEqual(evidenceBundle);
     expect(() => validateEvidenceProvenance(researchBundle, {

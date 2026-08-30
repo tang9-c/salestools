@@ -6,6 +6,10 @@ import {
   ArkInvalidOutputError,
   ArkUnavailableError,
 } from '../src/upstream/ark/client.js';
+import {
+  ARK_COMPACT_BUNDLE_MAX_BYTES,
+  ARK_REQUEST_MAX_BYTES,
+} from '../src/upstream/ark/payload-budget.js';
 import { ARK_SYSTEM_PROMPT } from '../src/upstream/ark/prompt.js';
 import { buildSearchPlan } from '../src/upstream/search/search-plan.js';
 
@@ -59,11 +63,27 @@ function factFreeEvidence(research: ResearchBundle): EvidenceBundle {
   };
 }
 
+function referenceFromResearchItem(item: ResearchItem): EvidenceBundle['evidence'][number] {
+  return {
+    evidenceId: item.evidenceId,
+    title: item.title,
+    url: item.url,
+    originalPublisher: item.originalPublisher,
+    originalDomain: item.originalDomain,
+    publishedAt: item.publishedAt,
+    collectedAt: item.collectedAt,
+    mentionedName: item.mentionedName,
+    entityScope: item.entityScope,
+    entityMatch: item.entityMatch,
+    matchBasis: item.matchBasis,
+  };
+}
+
 function budgetResearchBundle(): ResearchBundle {
   const research = researchBundle();
   const base = research.items[0];
   const plan = buildSearchPlan(research.identity);
-  const searchQuery = (purpose: 'official_products' | 'recruitment' | 'software_ecosystem' | 'expansion_financing'): string => (
+  const searchQuery = (purpose: 'official_products' | 'engineering' | 'recruitment' | 'procurement' | 'software_ecosystem' | 'expansion_financing'): string => (
     plan.find(query => query.purpose === purpose)?.Query ?? ''
   );
   const item = (overrides: Partial<ResearchItem>): ResearchItem => ({
@@ -76,6 +96,18 @@ function budgetResearchBundle(): ResearchBundle {
   return {
     ...research,
     items: [
+      item({
+        evidenceId: 'qcc-operation-get_financing_records-1', source: 'qcc', sourceKind: 'operation',
+        title: `${research.identity.legalName}｜B 轮融资`,
+        summary: 'B 轮，2 亿元，投资方测试基金、产业资本',
+        content: JSON.stringify({
+          occurredAt: '2026-08-20T00:00:00.000Z',
+          typeOrRound: 'B 轮',
+          disclosedAmount: '2 亿元',
+          investors: ['测试基金', '产业资本'],
+        }),
+        url: 'https://finance.example.cn/qcc-direct', query: null, position: 1, logId: null,
+      }),
       item({
         evidenceId: 'qcc-risk-get_company_risk_scan-1', source: 'qcc', sourceKind: 'risk',
         url: 'https://www.qcc.com/risk', query: null, position: null, logId: null,
@@ -95,6 +127,16 @@ function budgetResearchBundle(): ResearchBundle {
       item({
         evidenceId: 'search-financing-1', query: searchQuery('expansion_financing'),
         url: 'https://finance.example.cn/item',
+      }),
+      item({
+        evidenceId: 'search-procurement-1', query: searchQuery('procurement'),
+        url: 'https://procurement.example.cn/item',
+        content: '采购公告原文披露该项目拟采购 Windchill 软件许可。',
+      }),
+      item({
+        evidenceId: 'search-engineering-1', query: searchQuery('engineering'),
+        url: 'https://engineering.example.cn/item',
+        content: '研发中心使用 Abaqus 开展非线性有限元仿真。',
       }),
       item({
         evidenceId: 'qcc-company-get_company_profile-1', source: 'qcc', sourceKind: 'company',
@@ -212,14 +254,11 @@ describe('ArkEvidenceService', () => {
       response_format: { type: 'json_object' },
       temperature: 0,
     });
-    expect(JSON.parse(body.messages[1].content)).toEqual({
-      ...research,
-      items: [{ ...research.items[0], content: null }],
-    });
+    expect(JSON.parse(body.messages[1].content)).toEqual(research);
     expect(service.extract.length).toBe(1);
   });
 
-  it('sends four deterministic representative items under the fixed Ark input budget', async () => {
+  it('reserves a financing slot and fairly selects QCC and search demand evidence', async () => {
     const research = budgetResearchBundle();
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
       responseWithContent(JSON.stringify(factFreeEvidence(research))),
@@ -229,17 +268,12 @@ describe('ArkEvidenceService', () => {
 
     const sent = requestResearch(fetchFn);
     expect(sent.items.map(item => item.evidenceId)).toEqual([
-      'qcc-company-get_company_profile-1',
+      'qcc-operation-get_financing_records-1',
+      'search-procurement-1',
       'qcc-operation-get_recruitment_info-1',
-      'search-official-1',
       'search-recruitment-1',
     ]);
     expect(sent.items).toHaveLength(4);
-    for (const item of sent.items) {
-      expect(item.title.length).toBeLessThanOrEqual(80);
-      expect(item.summary?.length ?? 0).toBeLessThanOrEqual(100);
-      expect(item.content).toBeNull();
-    }
     const original = research.items.find(item => item.evidenceId === sent.items[0].evidenceId);
     expect(sent.items[0]).toMatchObject({
       evidenceId: original?.evidenceId,
@@ -252,7 +286,111 @@ describe('ArkEvidenceService', () => {
       entityScope: original?.entityScope,
       entityMatch: original?.entityMatch,
     });
+    expect(sent.items[0]?.title).toBe(original?.title);
+    expect(sent.items[0]?.content).toContain('"typeOrRound":"B 轮"');
+    expect(sent.items[0]?.content).toContain('"disclosedAmount":"2 亿元"');
+    expect(sent.items[0]?.content).toContain('"investors":["测试基金","产业资本"]');
     expect(sent.gaps).toContain(ARK_INPUT_BUDGET_GAP);
+  });
+
+  it('preserves successful structured financing fields through Ark extraction', async () => {
+    const research = budgetResearchBundle();
+    const financing = research.items.find(item => item.evidenceId.includes('get_financing_records'))!;
+    const model: EvidenceBundle = {
+      ...factFreeEvidence(research),
+      evidence: [referenceFromResearchItem(financing)],
+      financingRecords: [{
+        occurredAt: '2026-08-20T00:00:00.000Z',
+        typeOrRound: 'B 轮',
+        disclosedAmount: '2 亿元',
+        investors: ['测试基金', '产业资本'],
+        evidenceIds: [financing.evidenceId],
+      }],
+    };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(responseWithContent(JSON.stringify(model)));
+
+    await expect(client(fetchFn).extract(research)).resolves.toMatchObject({
+      financingRecords: [{
+        occurredAt: '2026-08-20T00:00:00.000Z',
+        typeOrRound: 'B 轮',
+        disclosedAmount: '2 亿元',
+        investors: ['测试基金', '产业资本'],
+      }],
+    });
+    expect(requestResearch(fetchFn).items[0]?.content).toBe(financing.content);
+  });
+
+  it('retains a technical fact that appears after the first 100 characters', async () => {
+    const base = researchBundle();
+    const plan = buildSearchPlan(base.identity);
+    const factText = 'Abaqus 非线性有限元仿真用于材料失效分析';
+    const research: ResearchBundle = {
+      ...base,
+      items: [{
+        ...base.items[0],
+        evidenceId: 'search-engineering-tail-fact',
+        query: plan.find(query => query.purpose === 'engineering')!.Query,
+        content: `${'背景介绍。'.repeat(30)}${factText}。`,
+      }],
+    };
+    const response = { ...factFreeEvidence(research), gaps: [] };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(responseWithContent(JSON.stringify(response)));
+
+    await client(fetchFn).extract(research);
+
+    expect(requestResearch(fetchFn).items[0]?.content).toContain(factText);
+  });
+
+  it('retains direct procurement carrier, disclosure, and product wording for validation', async () => {
+    const base = researchBundle();
+    const plan = buildSearchPlan(base.identity);
+    const procurementItem: ResearchItem = {
+      ...base.items[0],
+      evidenceId: 'search-procurement-tail-fact',
+      title: '测试制造有限公司软件采购项目',
+      query: plan.find(query => query.purpose === 'procurement')!.Query,
+      content: `${'项目背景。'.repeat(35)}采购公告原文披露该项目拟采购 Windchill 软件许可。`,
+    };
+    const research: ResearchBundle = { ...base, items: [procurementItem] };
+    const directFact = {
+      ...fixture().facts[0],
+      factId: 'fact-procurement',
+      statement: '采购公告原文披露该项目拟采购 Windchill 软件许可',
+      kind: 'procurement' as const,
+      productTags: ['windchill' as const],
+      strength: 'direct' as const,
+      evidenceIds: [procurementItem.evidenceId],
+    };
+    const model: EvidenceBundle = {
+      ...factFreeEvidence(research),
+      evidence: [referenceFromResearchItem(procurementItem)],
+      facts: [directFact],
+    };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(responseWithContent(JSON.stringify(model)));
+
+    await expect(client(fetchFn).extract(research)).resolves.toMatchObject({ facts: [directFact] });
+    expect(requestResearch(fetchFn).items[0]?.content).toMatch(/采购公告.*拟采购.*Windchill/s);
+  });
+
+  it('bounds the compact bundle and full serialized request by UTF-8 bytes', async () => {
+    const research = budgetResearchBundle();
+    research.items = research.items.map((item, index) => ({
+      ...item,
+      summary: `${item.summary ?? ''}${'摘要😀'.repeat(600 + index * 20)}`,
+      content: `${item.content ?? ''}${'正文😀'.repeat(1_200 + index * 40)}`,
+    }));
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
+      responseWithContent(JSON.stringify(factFreeEvidence(research))),
+    );
+
+    await client(fetchFn).extract(research);
+
+    const sent = requestResearch(fetchFn);
+    const body = String(fetchFn.mock.calls[0]?.[1]?.body);
+    expect(Buffer.byteLength(JSON.stringify(sent), 'utf8')).toBeLessThanOrEqual(ARK_COMPACT_BUNDLE_MAX_BYTES);
+    expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(ARK_REQUEST_MAX_BYTES);
+    expect(sent.items).toHaveLength(4);
+    expect(sent.items.every(item => !item.title.endsWith('\uFFFD'))).toBe(true);
   });
 
   it.each([
@@ -285,14 +423,14 @@ describe('ArkEvidenceService', () => {
     expect(requestResearch(fetchFn).gaps.includes(ARK_INPUT_BUDGET_GAP)).toBe(expectedGap);
   });
 
-  it('truncates title and summary on Unicode code-point boundaries', async () => {
+  it('never truncates evidence title or provenance fields', async () => {
     const base = researchBundle();
     const research: ResearchBundle = {
       ...base,
       items: [{
         ...base.items[0],
-        title: `${'a'.repeat(79)}😀tail`,
-        summary: `${'b'.repeat(99)}😀tail`,
+        title: `${'a'.repeat(140)}😀tail`,
+        summary: `${'b'.repeat(140)}😀tail`,
       }],
     };
     const response = { ...factFreeEvidence(research), gaps: [] };
@@ -303,10 +441,11 @@ describe('ArkEvidenceService', () => {
     await client(fetchFn).extract(research);
 
     const sent = requestResearch(fetchFn).items[0];
-    expect(Array.from(sent.title)).toHaveLength(80);
-    expect(sent.title.endsWith('😀')).toBe(true);
-    expect(Array.from(sent.summary ?? '')).toHaveLength(100);
-    expect(sent.summary?.endsWith('😀')).toBe(true);
+    expect(sent.title).toBe(research.items[0]?.title);
+    expect(sent.evidenceId).toBe(research.items[0]?.evidenceId);
+    expect(sent.url).toBe(research.items[0]?.url);
+    expect(sent.mentionedName).toBe(research.items[0]?.mentionedName);
+    expect(sent.matchBasis).toEqual(research.items[0]?.matchBasis);
   });
 
   it('merges trusted research gaps into validated model gaps with stable deduplication', async () => {
@@ -329,17 +468,18 @@ describe('ArkEvidenceService', () => {
     });
   });
 
-  it('fills missing primary categories in the fixed QCC-first fallback order', async () => {
+  it('falls back deterministically with two-source fairness when financing is absent', async () => {
     const full = budgetResearchBundle();
     const research = {
       ...full,
       items: full.items.filter(item => [
-        'qcc-company-get_company_profile-1',
+        'qcc-operation-get_recruitment_info-1',
         'qcc-risk-get_company_risk_scan-1',
         'qcc-ipr-get_patent_info-1',
         'qcc-operation-get_bidding_info-1',
+        'search-procurement-1',
+        'search-engineering-1',
         'search-software-1',
-        'search-financing-1',
       ].includes(item.evidenceId)),
     };
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
@@ -349,10 +489,10 @@ describe('ArkEvidenceService', () => {
     await client(fetchFn).extract(research);
 
     expect(requestResearch(fetchFn).items.map(item => item.evidenceId)).toEqual([
-      'qcc-company-get_company_profile-1',
-      'qcc-risk-get_company_risk_scan-1',
-      'qcc-ipr-get_patent_info-1',
+      'qcc-operation-get_recruitment_info-1',
+      'search-procurement-1',
       'qcc-operation-get_bidding_info-1',
+      'search-engineering-1',
     ]);
   });
 

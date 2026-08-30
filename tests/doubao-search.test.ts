@@ -72,12 +72,44 @@ describe('buildSearchPlan', () => {
     }
   });
 
-  it('omits TimeRange from every ordinary query', () => {
-    const ordinary = buildSearchPlan(identity).filter(query => query.purpose !== 'recruitment');
-    expect(ordinary).toHaveLength(6);
+  it('applies OneYear to every dynamic recruitment, procurement, expansion, or financing query', () => {
+    const dynamic = buildSearchPlan(identity).filter(query => (
+      query.purpose === 'recruitment'
+      || query.purpose === 'procurement'
+      || query.purpose === 'expansion_financing'
+    ));
+    expect(dynamic).toHaveLength(4);
+    for (const query of dynamic) {
+      expect(query.Filter.TimeRange).toBe('OneYear');
+    }
+  });
+
+  it('omits TimeRange from non-dynamic website, product, engineering, quality, and ecosystem queries', () => {
+    const ordinary = buildSearchPlan(identity).filter(query => (
+      query.purpose !== 'recruitment'
+      && query.purpose !== 'procurement'
+      && query.purpose !== 'expansion_financing'
+    ));
+    expect(ordinary).toHaveLength(4);
     for (const query of ordinary) {
       expect(query.Filter).not.toHaveProperty('TimeRange');
     }
+  });
+
+  it('enforces dynamic TimeRange policy in the strict query schema', () => {
+    const plan = buildSearchPlan(identity);
+    const procurement = plan.find(query => query.purpose === 'procurement')!;
+    const official = plan.find(query => query.purpose === 'official_products')!;
+    const { TimeRange: _timeRange, ...withoutTimeRange } = procurement.Filter;
+
+    expect(SearchQuerySchema.safeParse({
+      ...procurement,
+      Filter: withoutTimeRange,
+    }).success).toBe(false);
+    expect(SearchQuerySchema.safeParse({
+      ...official,
+      Filter: { ...official.Filter, TimeRange: 'OneYear' },
+    }).success).toBe(false);
   });
 
   it('requests content for engineering and software-ecosystem evidence without adding a time range', () => {

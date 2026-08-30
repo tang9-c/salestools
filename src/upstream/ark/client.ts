@@ -2,7 +2,10 @@ import { z } from 'zod';
 import type { EvidenceBundle, ResearchBundle } from '../../contracts/index.js';
 import { UpstreamError } from '../../orchestration/retry.js';
 import { ArkEvidenceValidationError, validateArkEvidence } from './evidence-validator.js';
-import { compactResearchBundleForArk } from './payload-budget.js';
+import {
+  ARK_REQUEST_MAX_BYTES,
+  compactResearchBundleForArk,
+} from './payload-budget.js';
 import { buildArkMessages } from './prompt.js';
 
 const ArkResponseSchema = z.object({
@@ -59,6 +62,15 @@ export class ArkEvidenceService {
 
   async extract(bundle: ResearchBundle): Promise<EvidenceBundle> {
     const compactBundle = compactResearchBundleForArk(bundle);
+    const requestBody = JSON.stringify({
+      model: this.options.model,
+      messages: buildArkMessages(compactBundle),
+      response_format: { type: 'json_object' },
+      temperature: 0,
+    });
+    if (Buffer.byteLength(requestBody, 'utf8') > ARK_REQUEST_MAX_BYTES) {
+      throw new ArkInvalidOutputError('INPUT_TOO_LARGE', 'Ark request exceeds the UTF-8 byte budget');
+    }
     let response: Response;
     try {
       response = await this.fetchFn(this.options.url, {
@@ -68,12 +80,7 @@ export class ArkEvidenceService {
           Authorization: `Bearer ${this.options.credential}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model: this.options.model,
-          messages: buildArkMessages(compactBundle),
-          response_format: { type: 'json_object' },
-          temperature: 0,
-        }),
+        body: requestBody,
       });
     } catch (error) {
       if (this.options.signal?.aborted === true) {

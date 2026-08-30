@@ -3,6 +3,7 @@ import { IdentityProfileSchema, UtcTimestampSchema } from './identity.js';
 import {
   EntityMatchSchema,
   EntityScopeSchema,
+  DirectEvidenceUrlSchema,
   ResearchBundleSchema,
   type ResearchBundle,
 } from './research.js';
@@ -34,7 +35,7 @@ export const FactKindSchema = z.enum([
 export const EvidenceReferenceSchema = z.object({
   evidenceId: z.string(),
   title: z.string(),
-  url: z.string(),
+  url: DirectEvidenceUrlSchema.nullable(),
   originalPublisher: z.string().nullable(),
   originalDomain: z.string().nullable(),
   publishedAt: UtcTimestampSchema.nullable(),
