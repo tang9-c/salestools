@@ -38,6 +38,37 @@ function expectInvalid(candidate: unknown, research = researchBundle()): void {
   expect(() => validateArkEvidence(research, candidate)).toThrow(ArkEvidenceValidationError);
 }
 
+function referenceFromResearchItem(item: ResearchBundle['items'][number]): EvidenceBundle['evidence'][number] {
+  return {
+    evidenceId: item.evidenceId,
+    title: item.title,
+    url: item.url,
+    originalPublisher: item.originalPublisher,
+    originalDomain: item.originalDomain,
+    publishedAt: item.publishedAt,
+    collectedAt: item.collectedAt,
+    mentionedName: item.mentionedName,
+    entityScope: item.entityScope,
+    entityMatch: item.entityMatch,
+    matchBasis: item.matchBasis,
+  };
+}
+
+function procurementResearchBundle(product = 'Windchill'): ResearchBundle {
+  const research = researchBundle();
+  research.items[0] = {
+    ...research.items[0],
+    title: `${product} 软件采购公告`,
+    url: 'https://procurement.example.cn/notices/software-purchase',
+    originalPublisher: '企业采购平台',
+    originalDomain: 'procurement.example.cn',
+    summary: `采购公告原文披露该项目拟采购 ${product} 软件`,
+    content: `测试制造有限公司采购项目公告：本项目拟采购 ${product} 软件许可。`,
+    query: `测试制造有限公司 ${product} 采购公告`,
+  };
+  return research;
+}
+
 describe('validateArkEvidence', () => {
   it('accepts a strict evidence bundle whose identity and provenance come from the research bundle', () => {
     const candidate = fixture();
@@ -261,22 +292,60 @@ describe('validateArkEvidence', () => {
 
   it('allows purchase wording only as a direct, confirmed, cited public procurement notice fact', () => {
     const candidate = fixture();
+    const procurementResearch = procurementResearchBundle();
+    const procurementReference = referenceFromResearchItem(procurementResearch.items[0]!);
     const directNotice = {
       ...candidate.facts[0],
       factId: 'fact-procurement-notice',
       kind: 'procurement' as const,
       strength: 'direct' as const,
+      productTags: ['windchill' as const],
       statement: '采购公告原文披露该项目拟采购 Windchill 软件',
     };
-    expect(validateArkEvidence(researchBundle(), { ...candidate, facts: [directNotice] }).facts)
+    const procurementCandidate = {
+      ...candidate,
+      evidence: [procurementReference],
+      facts: [directNotice],
+    };
+    expect(validateArkEvidence(procurementResearch, procurementCandidate).facts)
       .toEqual([directNotice]);
 
-    expectInvalid({ ...candidate, facts: [{ ...directNotice, strength: 'supporting' }] });
-    expectInvalid({ ...candidate, facts: [{ ...directNotice, statement: '公司计划采购 Windchill 软件' }] });
-    expectInvalid({ ...candidate, facts: [{ ...directNotice, statement: '公司已发布新品，计划采购 Windchill 软件' }] });
-    expectInvalid({ ...candidate, facts: [{ ...directNotice, kind: 'organization' }] });
+    expectInvalid({ ...procurementCandidate, facts: [{ ...directNotice, strength: 'supporting' }] }, procurementResearch);
+    expectInvalid({ ...procurementCandidate, facts: [{ ...directNotice, statement: '公司计划采购 Windchill 软件' }] }, procurementResearch);
+    expectInvalid({ ...procurementCandidate, facts: [{ ...directNotice, statement: '招聘公告披露公司计划采购 Windchill 软件' }] }, procurementResearch);
+    expectInvalid({ ...procurementCandidate, facts: [{ ...directNotice, statement: '新品公告披露公司计划采购 Windchill 软件' }] }, procurementResearch);
+    expectInvalid({ ...procurementCandidate, facts: [{ ...directNotice, statement: '公司已发布新品，计划采购 Windchill 软件' }] }, procurementResearch);
+    expectInvalid({ ...procurementCandidate, facts: [{ ...directNotice, statement: '招标披露公司计划采购 Windchill 软件' }] }, procurementResearch);
+    expectInvalid({ ...procurementCandidate, facts: [{ ...directNotice, kind: 'organization' }] }, procurementResearch);
 
-    const research = researchBundle();
+    expectInvalid({ ...candidate, facts: [directNotice] }, researchBundle());
+
+    for (const nonProcurementCarrier of ['招聘公告', '新品公告']) {
+      const unrelatedResearch = procurementResearchBundle();
+      unrelatedResearch.items[0] = {
+        ...unrelatedResearch.items[0],
+        title: `${nonProcurementCarrier}：Windchill 软件`,
+        summary: `${nonProcurementCarrier}披露公司计划采购 Windchill 软件`,
+        content: `${nonProcurementCarrier}正文提到计划采购 Windchill 软件。`,
+      };
+      expectInvalid({
+        ...candidate,
+        evidence: [referenceFromResearchItem(unrelatedResearch.items[0]!)],
+        facts: [{
+          ...directNotice,
+          statement: `${nonProcurementCarrier}披露公司计划采购 Windchill 软件`,
+        }],
+      }, unrelatedResearch);
+    }
+
+    const wrongProductResearch = procurementResearchBundle('Creo');
+    expectInvalid({
+      ...candidate,
+      evidence: [referenceFromResearchItem(wrongProductResearch.items[0]!)],
+      facts: [directNotice],
+    }, wrongProductResearch);
+
+    const research = procurementResearchBundle();
     research.items[0] = {
       ...research.items[0],
       entityScope: 'unknown',
@@ -284,7 +353,7 @@ describe('validateArkEvidence', () => {
       matchBasis: ['仅提及简称'],
     };
     const unverifiedReference = {
-      ...candidate.evidence[0],
+      ...referenceFromResearchItem(research.items[0]),
       entityScope: 'unknown' as const,
       entityMatch: 'unverified' as const,
       matchBasis: ['仅提及简称'],
@@ -300,6 +369,33 @@ describe('validateArkEvidence', () => {
         entityMatch: 'unverified',
         matchBasis: ['仅提及简称'],
       }],
+    }, research);
+  });
+
+  it('requires every cited item to carry the same procurement disclosure and product', () => {
+    const candidate = fixture();
+    const research = procurementResearchBundle();
+    const unrelated = {
+      ...researchBundle().items[0]!,
+      evidenceId: 'web-2',
+      title: 'Creo 机械设计工程师招聘公告',
+      url: 'https://jobs.example.cn/positions/creo-2',
+      originalDomain: 'jobs.example.cn',
+    };
+    research.items.push(unrelated);
+    const directNotice = {
+      ...candidate.facts[0],
+      factId: 'fact-procurement-notice',
+      kind: 'procurement' as const,
+      strength: 'direct' as const,
+      productTags: ['windchill' as const],
+      statement: '采购公告原文披露该项目拟采购 Windchill 软件',
+      evidenceIds: ['web-1', 'web-2'],
+    };
+    expectInvalid({
+      ...candidate,
+      evidence: research.items.map(referenceFromResearchItem),
+      facts: [directNotice],
     }, research);
   });
 

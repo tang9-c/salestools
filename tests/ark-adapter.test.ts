@@ -62,6 +62,7 @@ describe('ARK_SYSTEM_PROMPT', () => {
     expect(ARK_SYSTEM_PROMPT).toMatch(/不得.*采购意向.*计划采购/s);
     expect(ARK_SYSTEM_PROMPT).toMatch(/采购公告.*原文直接披露.*引用/s);
     expect(ARK_SYSTEM_PROMPT).toMatch(/不得.*推断.*采购意向/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/每个.*标题.*摘要.*正文.*采购.*产品词/s);
     for (const field of [
       'identity', 'industryClassification', 'industryEvidenceIds', 'evidence', 'facts',
       'financingRecords', 'conflicts', 'gaps', 'collectedAt',

@@ -3,7 +3,9 @@ import {
   ResearchBundleSchema,
   validateEvidenceProvenance,
   type EvidenceBundle,
+  type ProductKey,
   type ResearchBundle,
+  type ResearchItem,
 } from '../../contracts/index.js';
 
 export class ArkEvidenceValidationError extends Error {
@@ -43,7 +45,44 @@ const UNSUPPORTED_INFERENCE_PATTERNS: readonly RegExp[] = [
 const PROCUREMENT_INTENT_PATTERN =
   /(?:采购\s*意向|计划\s*采购|拟\s*采购|即将\s*采购|有\s*采购需求|存在\s*采购需求|准备\s*采购)/u;
 const PUBLIC_PROCUREMENT_CARRIER_PATTERN =
-  /(?:已发布\s*(?:采购|拟采购|计划采购)|公告|招标|中标|采购文件|采购项目|采购合同)/u;
+  /(?:采购公告|招标公告|中标公告|采购文件|采购项目|采购合同)/u;
+
+const PROCUREMENT_DISCLOSURES = [
+  '采购意向',
+  '计划采购',
+  '拟采购',
+  '即将采购',
+  '有采购需求',
+  '存在采购需求',
+  '准备采购',
+] as const;
+
+const PRODUCT_PATTERNS: Readonly<Record<ProductKey, readonly RegExp[]>> = {
+  windchill: [/\bwindchill\b/iu],
+  feigenbaum_qms: [/\bfeigenbaum\s*qms\b/iu, /\bfeigenbaum\b/iu],
+  creo: [/\bcreo\b/iu, /\bpro\s*\/\s*e\b/iu, /\bproe\b/iu],
+  catia: [/\bcatia\b/iu],
+  abaqus: [/\babaqus\b/iu],
+  cst: [/\bcst(?:\s+studio(?:\s+suite)?)?\b/iu],
+  solidworks: [/\bsolid\s*works\b/iu],
+};
+
+function compact(value: string): string {
+  return value.normalize('NFKC').toLowerCase().replace(/\s+/gu, '');
+}
+
+function researchText(item: ResearchItem): string {
+  return [item.title, item.summary ?? '', item.content ?? ''].join('\n').normalize('NFKC');
+}
+
+function procurementDisclosures(value: string): readonly string[] {
+  const normalized = compact(value);
+  return PROCUREMENT_DISCLOSURES.filter(disclosure => normalized.includes(disclosure));
+}
+
+function mentionsProduct(value: string, product: ProductKey): boolean {
+  return PRODUCT_PATTERNS[product].some(pattern => pattern.test(value.normalize('NFKC')));
+}
 
 function rejectUnsupportedInference(
   label: string,
@@ -62,16 +101,33 @@ function rejectUnsupportedInference(
 function isDirectProcurementDisclosure(
   fact: EvidenceBundle['facts'][number],
   citedReferences: readonly EvidenceBundle['evidence'][number][],
+  citedResearchItems: readonly ResearchItem[],
 ): boolean {
-  return fact.kind === 'procurement'
-    && fact.strength === 'direct'
-    && fact.entityScope === 'legal_entity'
-    && fact.entityMatch === 'confirmed'
-    && fact.evidenceIds.length > 0
-    && citedReferences.length === fact.evidenceIds.length
-    && citedReferences.every(reference =>
+  const statement = fact.statement.normalize('NFKC');
+  const disclosures = procurementDisclosures(statement);
+  if (fact.kind !== 'procurement'
+    || fact.strength !== 'direct'
+    || fact.entityScope !== 'legal_entity'
+    || fact.entityMatch !== 'confirmed'
+    || fact.evidenceIds.length === 0
+    || fact.productTags.length === 0
+    || citedReferences.length !== fact.evidenceIds.length
+    || citedResearchItems.length !== fact.evidenceIds.length
+    || !citedReferences.every(reference =>
       reference.entityScope === 'legal_entity' && reference.entityMatch === 'confirmed')
-    && PUBLIC_PROCUREMENT_CARRIER_PATTERN.test(fact.statement.normalize('NFKC'));
+    || !PUBLIC_PROCUREMENT_CARRIER_PATTERN.test(compact(statement))
+    || disclosures.length === 0
+    || !fact.productTags.every(product => mentionsProduct(statement, product))) {
+    return false;
+  }
+
+  return citedResearchItems.every(item => {
+    const sourceText = researchText(item);
+    const normalizedSource = compact(sourceText);
+    return PUBLIC_PROCUREMENT_CARRIER_PATTERN.test(normalizedSource)
+      && disclosures.every(disclosure => normalizedSource.includes(disclosure))
+      && fact.productTags.every(product => mentionsProduct(sourceText, product));
+  });
 }
 
 export function validateArkEvidence(researchInput: ResearchBundle, candidate: unknown): EvidenceBundle {
@@ -109,6 +165,7 @@ export function validateArkEvidence(researchInput: ResearchBundle, candidate: un
   }
 
   const referenceById = new Map(evidence.evidence.map(reference => [reference.evidenceId, reference]));
+  const researchById = new Map(research.items.map(item => [item.evidenceId, item]));
   if (evidence.industryClassification !== 'unverified') {
     const industryReferences = evidence.industryEvidenceIds
       .map(evidenceId => referenceById.get(evidenceId))
@@ -124,6 +181,9 @@ export function validateArkEvidence(researchInput: ResearchBundle, candidate: un
     const citedReferences = fact.evidenceIds
       .map(evidenceId => referenceById.get(evidenceId))
       .filter(reference => reference !== undefined);
+    const citedResearchItems = fact.evidenceIds
+      .map(evidenceId => researchById.get(evidenceId))
+      .filter(item => item !== undefined);
     if (citedReferences.some(
       reference => reference.entityScope !== fact.entityScope || reference.entityMatch !== fact.entityMatch,
     )) {
@@ -136,7 +196,7 @@ export function validateArkEvidence(researchInput: ResearchBundle, candidate: un
     rejectUnsupportedInference(
       `Fact ${fact.factId}`,
       fact.statement,
-      isDirectProcurementDisclosure(fact, citedReferences),
+      isDirectProcurementDisclosure(fact, citedReferences, citedResearchItems),
     );
   }
   for (const [index, conflict] of evidence.conflicts.entries()) {
