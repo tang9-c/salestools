@@ -1,3 +1,5 @@
-.DS_Store
-.worktrees/
-.superpowers/
+.env
+*.sqlite*
+dist/
+coverage/
+node_modules/
