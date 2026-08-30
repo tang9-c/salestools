@@ -101,6 +101,24 @@ describe('buildSearchPlan', () => {
 });
 
 describe('DoubaoSearchClient', () => {
+  it('threads AbortSignal into fetch and maps cancellation to a typed error', async () => {
+    const controller = new AbortController();
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      expect(init?.signal).toBe(controller.signal);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    });
+    const search = new DoubaoSearchClient({
+      url: 'https://open.feedcoopapi.com/search_api/web_search',
+      apiKey: 'test-search-key', fetchFn, signal: controller.signal,
+    }).search(buildSearchPlan(identity)[0]);
+
+    controller.abort();
+    await expect(search).rejects.toMatchObject({ source: 'doubao_search', code: 'ABORTED' });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it('performs one POST attempt and maps the official response fields into ResearchItem', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(fixture()), {
       status: 200,

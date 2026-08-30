@@ -3,6 +3,7 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, type AuthInfo } from '@modelcontextprotocol/server';
 import type { Express, RequestHandler } from 'express';
 import type { AuthenticatedUser } from '../auth/token-service.js';
+import type { ActivityTracker } from '../orchestration/activity-tracker.js';
 import { buildMcpServer, type McpServices } from './tools.js';
 
 export interface McpHttpConfig {
@@ -19,6 +20,7 @@ export function createHttpApp(
   config: McpHttpConfig,
   authenticate: (plaintext: string) => AuthenticatedUser | null,
   servicesFor: (userId: string) => McpServices,
+  activity?: ActivityTracker,
 ): McpHttpApp {
   const handler = createMcpHandler(({ authInfo }) => {
     if (!authInfo?.clientId) throw new Error('Authenticated caller is required');
@@ -59,10 +61,21 @@ export function createHttpApp(
     next();
   };
 
+  const activityMiddleware: RequestHandler = (_request, response, next) => {
+    if (activity === undefined) {
+      next();
+      return;
+    }
+    const end = activity.begin();
+    response.once('finish', end);
+    response.once('close', end);
+    next();
+  };
+
   app.get('/healthz', (_request, response) => {
     response.json({ status: 'ok' });
   });
-  app.all('/mcp', exactOriginMiddleware, authMiddleware, (request, response, next) => {
+  app.all('/mcp', exactOriginMiddleware, authMiddleware, activityMiddleware, (request, response, next) => {
     void nodeHandler(request, response, request.body).catch(next);
   });
   app.closeMcpHandler = () => handler.close();

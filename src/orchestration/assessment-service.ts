@@ -14,6 +14,7 @@ export interface AssessmentServiceOptions {
   queue: AssessmentEnqueuer;
   assessmentCacheTtlDays: number;
   now?: () => Date;
+  signal?: AbortSignal;
 }
 
 export class AssessmentService {
@@ -27,6 +28,9 @@ export class AssessmentService {
     input: { legalName: string; creditCode: string; forceRefresh: boolean },
     userId: string,
   ) {
+    if (isAborted(this.options.signal)) {
+      throw new Error('Assessment service is shutting down');
+    }
     const result = this.options.assessments.createOrReuseAssessment({
       requestedBy: userId,
       legalName: input.legalName,
@@ -43,7 +47,26 @@ export class AssessmentService {
       };
     }
 
-    if (result.created) this.options.queue.enqueue(result.record.assessmentId);
+    if (result.created) {
+      if (isAborted(this.options.signal)) {
+        this.options.assessments.failAssessment(
+          result.record.assessmentId,
+          'Assessment rejected during service shutdown',
+          this.now(),
+        );
+        throw new Error('Assessment service is shutting down');
+      }
+      try {
+        this.options.queue.enqueue(result.record.assessmentId);
+      } catch (error) {
+        this.options.assessments.failAssessment(
+          result.record.assessmentId,
+          'Assessment rejected during service shutdown',
+          this.now(),
+        );
+        throw error;
+      }
+    }
     return {
       assessmentId: result.record.assessmentId,
       status: 'processing' as const,
@@ -100,6 +123,10 @@ export class AssessmentService {
     if (record === null) throw new AssessmentNotFoundError(assessmentId);
     return record;
   }
+}
+
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
 }
 
 function statusMessage(record: AssessmentRecord): string {

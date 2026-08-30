@@ -17,6 +17,7 @@ export interface ArkEvidenceServiceOptions {
   model: string;
   credential: string;
   fetchFn?: typeof fetch;
+  signal?: AbortSignal;
 }
 
 export class ArkUnavailableError extends UpstreamError {
@@ -60,6 +61,7 @@ export class ArkEvidenceService {
     try {
       response = await this.fetchFn(this.options.url, {
         method: 'POST',
+        signal: this.options.signal,
         headers: {
           Authorization: `Bearer ${this.options.credential}`,
           'Content-Type': 'application/json',
@@ -72,6 +74,9 @@ export class ArkEvidenceService {
         }),
       });
     } catch (error) {
+      if (this.options.signal?.aborted === true) {
+        throw new ArkUnavailableError('ABORTED', 'Ark request aborted', { cause: error });
+      }
       throw new ArkUnavailableError('NETWORK_ERROR', 'Ark request failed', { cause: error });
     }
 

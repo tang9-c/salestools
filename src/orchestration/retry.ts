@@ -50,6 +50,7 @@ const SAFE_ERROR_MESSAGES: Readonly<Partial<Record<UpstreamSource, Readonly<Reco
     REMOTE_HTTP_ERROR: 'QCC HTTP request failed',
     REMOTE_TOOL_ERROR: 'QCC tool request failed',
     TOOL_NOT_ALLOWED: 'QCC tool request rejected locally',
+    ABORTED: 'QCC request cancelled during shutdown',
   },
   doubao_search: {
     NETWORK_ERROR: 'Doubao search network request failed',
@@ -60,6 +61,7 @@ const SAFE_ERROR_MESSAGES: Readonly<Partial<Record<UpstreamSource, Readonly<Reco
     REMOTE_HTTP_ERROR: 'Doubao search HTTP request failed',
     REMOTE_BUSINESS_ERROR: 'Doubao search business request failed',
     INVALID_RESPONSE: 'Doubao search returned an invalid response',
+    ABORTED: 'Doubao search request cancelled during shutdown',
   },
   ark: {
     NETWORK_ERROR: 'Ark network request failed',
@@ -68,6 +70,7 @@ const SAFE_ERROR_MESSAGES: Readonly<Partial<Record<UpstreamSource, Readonly<Reco
     EMPTY_RESPONSE: 'Ark returned empty content',
     INVALID_JSON: 'Ark returned invalid JSON',
     INVALID_EVIDENCE: 'Ark returned invalid evidence',
+    ABORTED: 'Ark request cancelled during shutdown',
   },
 };
 

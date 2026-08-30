@@ -28,8 +28,45 @@ describe('AssessmentService', () => {
       assessmentCacheTtlDays: 30,
       now,
     });
-    return { assessments, service, enqueued };
+    return { database, assessments, service, enqueued };
   }
+
+  it('rejects new submissions after the shared shutdown signal is aborted without creating work', () => {
+    const database = initializeDatabase(new DatabaseSync(':memory:'));
+    databases.push(database);
+    const controller = new AbortController();
+    const service = new AssessmentService({
+      assessments: new AssessmentRepository(database),
+      queue: { enqueue: () => { throw new Error('must not enqueue'); } },
+      assessmentCacheTtlDays: 30,
+      signal: controller.signal,
+      now: () => new Date('2026-08-30T00:00:00.000Z'),
+    });
+    controller.abort();
+
+    expect(() => service.submit({
+      legalName: COMPANY.legalName, creditCode: COMPANY.creditCode, forceRefresh: false,
+    }, COMPANY.requestedBy)).toThrow(/shutting down/i);
+    const count = database.prepare('SELECT COUNT(*) AS count FROM assessments').get() as { count: number };
+    expect(count.count).toBe(0);
+  });
+
+  it('marks a newly persisted task failed when queue shutdown races with submit', () => {
+    const database = initializeDatabase(new DatabaseSync(':memory:'));
+    databases.push(database);
+    const service = new AssessmentService({
+      assessments: new AssessmentRepository(database),
+      queue: { enqueue: () => { throw new Error('Assessment queue is not accepting new work'); } },
+      assessmentCacheTtlDays: 30,
+      now: () => new Date('2026-08-30T00:00:00.000Z'),
+    });
+
+    expect(() => service.submit({
+      legalName: COMPANY.legalName, creditCode: COMPANY.creditCode, forceRefresh: false,
+    }, COMPANY.requestedBy)).toThrow(/not accepting/i);
+    const row = database.prepare('SELECT status FROM assessments').get() as { status: string };
+    expect(row.status).toBe('failed');
+  });
 
   it('keeps waiting and duplicate submissions processing and enqueues one UUID', async () => {
     const { service, enqueued } = setup(() => new Date('2026-08-30T00:00:00.000Z'));

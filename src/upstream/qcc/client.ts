@@ -12,6 +12,7 @@ import { isAllowedQccTool, type QccServer } from './tool-allowlist.js';
 export interface QccGatewayConfig {
   urls: Record<QccServer, string>;
   apiKey: string;
+  signal?: AbortSignal;
 }
 
 export interface QccConnection {
@@ -20,7 +21,7 @@ export interface QccConnection {
 }
 
 export interface QccConnectionFactory {
-  create(server: QccServer, url: string, apiKey: string): Promise<QccConnection>;
+  create(server: QccServer, url: string, apiKey: string, signal?: AbortSignal): Promise<QccConnection>;
 }
 
 export function classifyQccSdkError(error: unknown): UpstreamError | null {
@@ -37,13 +38,13 @@ export function classifyQccSdkError(error: unknown): UpstreamError | null {
 }
 
 const sdkConnectionFactory: QccConnectionFactory = {
-  async create(server, url, apiKey) {
+  async create(server, url, apiKey, signal) {
     const client = new Client(
       { name: `salestools-qcc-${server}`, version: '0.1.0' },
       { versionNegotiation: { mode: 'auto' } },
     );
     const transport = new StreamableHTTPClientTransport(new URL(url), {
-      requestInit: { headers: { Authorization: `Bearer ${apiKey}` } },
+      requestInit: { headers: { Authorization: `Bearer ${apiKey}` }, signal },
     });
     try {
       await client.connect(transport);
@@ -70,30 +71,47 @@ const sdkConnectionFactory: QccConnectionFactory = {
   },
 };
 
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
 export class QccGateway {
   private readonly connections = new Map<QccServer, Promise<QccConnection>>();
+  private closing: Promise<void> | null = null;
+  private readonly abort = (): void => { void this.close(); };
 
   constructor(
     private readonly config: QccGatewayConfig,
     private readonly factory: QccConnectionFactory = sdkConnectionFactory,
-  ) {}
+  ) {
+    config.signal?.addEventListener('abort', this.abort, { once: true });
+  }
 
   async call(server: QccServer, tool: string, input: Record<string, unknown>): Promise<unknown> {
     if (!isAllowedQccTool(server, tool)) {
       throw new UpstreamError('qcc', 'TOOL_NOT_ALLOWED', `QCC tool is not allowed: ${server}/${tool}`);
     }
+    if (isAborted(this.config.signal)) {
+      throw new UpstreamError('qcc', 'ABORTED', 'QCC request aborted');
+    }
 
     let pending = this.connections.get(server);
     if (pending === undefined) {
-      pending = this.factory.create(server, this.config.urls[server], this.config.apiKey);
+      pending = this.factory.create(server, this.config.urls[server], this.config.apiKey, this.config.signal);
       this.connections.set(server, pending);
     }
 
     let connection: QccConnection | undefined;
     try {
       connection = await pending;
+      if (isAborted(this.config.signal)) {
+        throw new UpstreamError('qcc', 'ABORTED', 'QCC request aborted');
+      }
       return await connection.callTool(tool, input);
     } catch (error) {
+      if (isAborted(this.config.signal)) {
+        throw new UpstreamError('qcc', 'ABORTED', 'QCC request aborted', { cause: error });
+      }
       if (connection === undefined) {
         if (this.connections.get(server) === pending) this.connections.delete(server);
         if (error instanceof UpstreamError) throw error;
@@ -101,8 +119,10 @@ export class QccGateway {
         throw new UpstreamError('qcc', 'TRANSPORT', message, { cause: error });
       }
       if (error instanceof UpstreamError && error.code !== 'TRANSPORT') throw error;
-      if (this.connections.get(server) === pending) this.connections.delete(server);
-      await connection.close().catch(() => undefined);
+      if (this.connections.get(server) === pending) {
+        this.connections.delete(server);
+        await connection.close().catch(() => undefined);
+      }
       if (error instanceof UpstreamError) throw error;
       const message = error instanceof Error ? error.message : 'QCC transport failed';
       throw new UpstreamError('qcc', 'TRANSPORT', message, { cause: error });
@@ -110,8 +130,13 @@ export class QccGateway {
   }
 
   async close(): Promise<void> {
+    if (this.closing !== null) return this.closing;
+    this.config.signal?.removeEventListener('abort', this.abort);
     const pending = [...this.connections.values()];
     this.connections.clear();
-    await Promise.allSettled(pending.map(async connection => (await connection).close()));
+    this.closing = Promise.allSettled(
+      pending.map(async connection => (await connection).close()),
+    ).then(() => undefined);
+    return this.closing;
   }
 }

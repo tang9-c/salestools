@@ -88,6 +88,25 @@ describe('ARK_SYSTEM_PROMPT', () => {
 });
 
 describe('ArkEvidenceService', () => {
+  it('threads AbortSignal into fetch and maps cancellation to a typed unavailable error', async () => {
+    const controller = new AbortController();
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      expect(init?.signal).toBe(controller.signal);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    });
+    const service = new ArkEvidenceService({
+      url: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+      model: 'ep-test', credential: 'ark-test-secret', fetchFn, signal: controller.signal,
+    });
+    const extraction = service.extract(researchBundle());
+
+    controller.abort();
+    await expect(extraction).rejects.toMatchObject({ source: 'ark', code: 'ABORTED' });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it('performs exactly one POST and validates a normal JSON response', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(responseWithContent(JSON.stringify(fixture())));
     const service = client(fetchFn);

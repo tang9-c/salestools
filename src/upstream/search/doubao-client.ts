@@ -14,6 +14,7 @@ export interface DoubaoSearchClientOptions {
   apiKey: string;
   fetchFn?: typeof fetch;
   now?: () => Date;
+  signal?: AbortSignal;
 }
 
 function httpError(status: number): UpstreamError {
@@ -58,6 +59,7 @@ export class DoubaoSearchClient {
     try {
       response = await this.fetchFn(this.options.url, {
         method: 'POST',
+        signal: this.options.signal,
         headers: {
           Authorization: `Bearer ${this.options.apiKey}`,
           'Content-Type': 'application/json',
@@ -70,6 +72,9 @@ export class DoubaoSearchClient {
         }),
       });
     } catch (error) {
+      if (this.options.signal?.aborted === true) {
+        throw new UpstreamError('doubao_search', 'ABORTED', 'Doubao search request aborted', { cause: error });
+      }
       throw new UpstreamError('doubao_search', 'NETWORK_ERROR', 'Doubao search request failed', { cause: error });
     }
 

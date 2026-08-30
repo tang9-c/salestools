@@ -68,7 +68,7 @@ docker run --rm -p 3000:3000 \
 - 只允许 `ALLOWED_ORIGINS` 中完整匹配的 HTTPS Origin；无 Origin 的非浏览器客户端仍必须携带 Bearer Token。
 - 将 `GET /healthz` 限制为内部负载均衡访问；它只返回 `{"status":"ok"}`。
 
-收到 SIGTERM 或 SIGINT 后，应用停止接收新任务并关闭监听；当前任务最多等待 30 秒，排队任务不会继续执行。进程重启时，遗留的 `processing` 任务会标为 `failed`，用户可重新提交。
+收到 SIGTERM 或 SIGINT 后，应用停止接收新任务并关闭监听；当前任务和在途 MCP 请求最多等待 30 秒。超时后会取消在途上游请求，等待业务 Promise 收敛并将当前任务标为 `failed`，然后才关闭 SQLite；排队任务不会继续执行。进程重启时，遗留的 `processing` 任务会标为 `failed`，用户可重新提交。
 
 ## 验证状态
 

@@ -62,6 +62,7 @@ export interface AssessmentRunnerOptions {
   opportunityEvaluator?: typeof evaluateOpportunities;
   reportModelBuilder?: typeof buildReportModel;
   markdownRenderer?: typeof renderMarkdown;
+  signal?: AbortSignal;
 }
 
 export class AssessmentWorkerError extends Error {
@@ -110,6 +111,7 @@ export class AssessmentRunner {
       return;
     }
     if (task === null || task.status !== 'processing') return;
+    if (this.stopIfAborted(task)) return;
     try {
       const startedAt = this.now();
       const profile = this.options.profiles.findFreshByCreditCode(
@@ -123,6 +125,7 @@ export class AssessmentRunner {
         this.fail(task, '主体信息不可用');
         return;
       }
+      if (this.stopIfAborted(task)) return;
 
       const budget = new CallBudget(this.options.budgetLimits, {
         reserveArkCalls: Math.min(2, this.options.budgetLimits.ark),
@@ -134,6 +137,7 @@ export class AssessmentRunner {
       const searchPromise = this.collectSearch(profile.identity, budget, retryOptions)
         .catch(error => failedCollection('豆包搜索信息获取失败', 'doubao_search', error));
       const [qcc, search] = await Promise.all([qccPromise, searchPromise]);
+      if (this.stopIfAborted(task)) return;
       const research = ResearchBundleSchema.parse({
         identity: profile.identity,
         items: [...qcc.items, ...search.items],
@@ -143,6 +147,7 @@ export class AssessmentRunner {
       });
 
       const extracted = await retryOnce('ark', budget, () => this.options.ark.extract(research), retryOptions);
+      if (this.stopIfAborted(task)) return;
       if (extracted.status === 'failed') {
         this.fail(task, '模型事实整理不可用');
         return;
@@ -158,6 +163,7 @@ export class AssessmentRunner {
         };
         const model = this.reportModelBuilder(profile.identity, evidence, assessment, sourceStatus);
         const markdown = this.markdownRenderer(model);
+        if (this.stopIfAborted(task)) return;
         this.options.assessments.completeAssessment(task.assessmentId, {
           reportMarkdown: markdown,
           recommendedProduct: model.recommendedProduct,
@@ -169,7 +175,7 @@ export class AssessmentRunner {
         this.fail(task, '体检报告生成或保存失败');
       }
     } catch {
-      this.fail(task, '体检任务处理失败');
+      this.fail(task, this.options.signal?.aborted === true ? '体检任务已取消' : '体检任务处理失败');
     }
   }
 
@@ -232,6 +238,12 @@ export class AssessmentRunner {
 
   private fail(task: AssessmentRecord, message: string): void {
     this.failById(task.assessmentId, message);
+  }
+
+  private stopIfAborted(task: AssessmentRecord): boolean {
+    if (this.options.signal?.aborted !== true) return false;
+    this.fail(task, '体检任务已取消');
+    return true;
   }
 
   private failById(assessmentId: string, message: string): void {

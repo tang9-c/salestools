@@ -1,5 +1,4 @@
 import { type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { config as loadDotEnv } from 'dotenv';
@@ -14,6 +13,7 @@ import { createHttpApp } from './mcp/http-app.js';
 import type { McpServices } from './mcp/tools.js';
 import { AssessmentRunner } from './orchestration/assessment-runner.js';
 import { AssessmentService } from './orchestration/assessment-service.js';
+import { ActivityTracker } from './orchestration/activity-tracker.js';
 import { AssessmentQueue } from './orchestration/fifo-queue.js';
 import { ArkEvidenceService } from './upstream/ark/client.js';
 import { QccResearchCollector } from './upstream/qcc/assessment-research.js';
@@ -50,16 +50,17 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-async function waitAtMost(promise: Promise<void>, timeoutMs: number): Promise<void> {
+async function waitAtMost(promise: Promise<void>, timeoutMs: number): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined;
-  await Promise.race([
-    promise,
-    new Promise<void>(resolve => {
-      timer = setTimeout(resolve, timeoutMs);
+  const completed = await Promise.race([
+    promise.then(() => true),
+    new Promise<boolean>(resolve => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
       timer.unref();
     }),
   ]);
   if (timer !== undefined) clearTimeout(timer);
+  return completed;
 }
 
 export function createApplication(
@@ -71,6 +72,8 @@ export function createApplication(
     : initializeDatabase(overrides.database);
   const assessments = new AssessmentRepository(database);
   assessments.failInterruptedAssessments(overrides.now?.() ?? new Date());
+  const abortController = new AbortController();
+  const activity = new ActivityTracker();
 
   const profiles = new ProfileRepository(database);
   const tokenService = new TokenService(new TokenRepository(database), overrides.now);
@@ -82,16 +85,19 @@ export function createApplication(
       operation: config.qccMcpOperationUrl,
     },
     apiKey: config.qccApiKey,
+    signal: abortController.signal,
   });
   const searchClient: SearchDependency = overrides.searchClient ?? new DoubaoSearchClient({
     url: config.doubaoSearchApiUrl,
     apiKey: config.doubaoSearchApiKey,
     now: overrides.now,
+    signal: abortController.signal,
   });
   const ark: ArkDependency = overrides.ark ?? new ArkEvidenceService({
     url: config.arkApiUrl,
     model: config.arkModel,
     credential: config.arkCredential,
+    signal: abortController.signal,
   });
   const profileService = new CompanyProfileService(qccGateway, profiles, {
     profileCacheTtlDays: config.profileCacheTtlDays,
@@ -116,9 +122,10 @@ export function createApplication(
       total: config.maxTotalUpstreamCalls,
     },
     now: overrides.now,
+    signal: abortController.signal,
   });
   const queue = new AssessmentQueue(
-    assessmentId => runner.run(assessmentId),
+    assessmentId => activity.track(() => runner.run(assessmentId)),
     config.maxConcurrentAssessments,
   );
   const assessmentService = new AssessmentService({
@@ -126,6 +133,7 @@ export function createApplication(
     queue,
     assessmentCacheTtlDays: config.assessmentCacheTtlDays,
     now: overrides.now,
+    signal: abortController.signal,
   });
   const servicesFor = (userId: string): McpServices => ({
     getCompanyProfile: input => profileService.get(input.query, input.regionHint),
@@ -133,7 +141,18 @@ export function createApplication(
     getAssessmentStatus: input => assessmentService.status(input),
     getAssessmentReport: input => assessmentService.report(input),
   });
-  const app = createHttpApp(config, token => tokenService.verify(token), servicesFor);
+  const app = createHttpApp(config, token => tokenService.verify(token), servicesFor, activity);
+
+  let upstreamClosing: Promise<void> | null = null;
+  const closeUpstreams = (): Promise<void> => {
+    if (upstreamClosing !== null) return upstreamClosing;
+    upstreamClosing = Promise.allSettled([
+      qccGateway.close(),
+      searchClient.close?.() ?? Promise.resolve(),
+      ark.close?.() ?? Promise.resolve(),
+    ]).then(() => undefined);
+    return upstreamClosing;
+  };
 
   let server: Server | null = null;
   let closing: Promise<void> | null = null;
@@ -154,14 +173,15 @@ export function createApplication(
       closing = (async () => {
         queue.stopAccepting();
         const listenerClosed = server === null ? Promise.resolve() : closeServer(server);
-        await waitAtMost(queue.waitForActive(), timeoutMs);
-        await Promise.allSettled([
-          app.closeMcpHandler(),
-          qccGateway.close(),
-          searchClient.close?.() ?? Promise.resolve(),
-          ark.close?.() ?? Promise.resolve(),
-        ]);
-        await listenerClosed;
+        const businessSettled = Promise.all([activity.whenIdle(), listenerClosed]).then(() => undefined);
+        const completedNormally = await waitAtMost(businessSettled, timeoutMs);
+        if (!completedNormally) {
+          abortController.abort();
+          await closeUpstreams();
+          await businessSettled;
+        }
+        await closeUpstreams();
+        await app.closeMcpHandler();
         database.close();
       })();
       return closing;

@@ -22,6 +22,13 @@ function fixture(name: string): unknown {
   return JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
 }
 
+async function eventually(assertion: () => void): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try { assertion(); return; } catch { await new Promise(resolve => setTimeout(resolve, 1)); }
+  }
+  assertion();
+}
+
 const config = {
   urls: {
     company: 'https://agent.qcc.com/mcp/company/stream',
@@ -39,6 +46,37 @@ const identity: IdentityProfile = {
 };
 
 describe('QccGateway', () => {
+  it('aborts an active call by closing its connection once and returns a typed safe error', async () => {
+    const controller = new AbortController();
+    let rejectCall!: (error: unknown) => void;
+    let callStarted = false;
+    let closes = 0;
+    const factory: QccConnectionFactory = {
+      create: async (_server, _url, _apiKey, signal) => {
+        expect(signal).toBe(controller.signal);
+        return {
+          callTool: async () => {
+            callStarted = true;
+            return new Promise((_resolve, reject) => { rejectCall = reject; });
+          },
+          close: async () => {
+            closes += 1;
+            rejectCall(new Error('transport closed'));
+          },
+        };
+      },
+    };
+    const gateway = new QccGateway({ ...config, signal: controller.signal }, factory);
+    const request = gateway.call('company', 'get_company_by_query', {});
+    await eventually(() => expect(callStarted).toBe(true));
+
+    controller.abort();
+    await expect(request).rejects.toMatchObject({ source: 'qcc', code: 'ABORTED' });
+    await gateway.close();
+    await gateway.close();
+    expect(closes).toBe(1);
+  });
+
   it('classifies SDK authentication, scope and HTTP handshake errors as typed remote errors', () => {
     expect(classifyQccSdkError(new UnauthorizedError('missing token'))).toMatchObject({
       code: 'AUTHENTICATION_ERROR',
