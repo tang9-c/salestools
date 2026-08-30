@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { IdentityProfile } from '../src/contracts/index.js';
 import { CallBudget } from '../src/orchestration/call-budget.js';
+import { UpstreamError } from '../src/orchestration/retry.js';
 import {
   QccGateway,
   type QccConnection,
@@ -71,6 +72,40 @@ describe('QccGateway', () => {
     expect({ created, calls }).toEqual({ created: 2, calls: 2 });
     await gateway.close();
   });
+
+  it('keeps a shared operation connection open when one concurrent call returns a business error', async () => {
+    let created = 0;
+    let closes = 0;
+    let releaseRecruitment!: () => void;
+    const recruitmentMayFinish = new Promise<void>(resolve => { releaseRecruitment = resolve; });
+    const factory: QccConnectionFactory = {
+      create: async () => {
+        created += 1;
+        let closed = false;
+        return {
+          callTool: async tool => {
+            if (tool === 'get_financing_records') {
+              throw new UpstreamError('qcc', 'REMOTE_TOOL_ERROR', 'invalid company parameter');
+            }
+            await recruitmentMayFinish;
+            if (closed) throw new Error('shared connection was closed');
+            return { Data: [{ JobName: '研发工程师' }] };
+          },
+          close: async () => { closes += 1; closed = true; },
+        };
+      },
+    };
+    const gateway = new QccGateway(config, factory);
+
+    const financing = gateway.call('operation', 'get_financing_records', {});
+    const recruitment = gateway.call('operation', 'get_recruitment_info', {});
+    await expect(financing).rejects.toMatchObject({ code: 'REMOTE_TOOL_ERROR' });
+    releaseRecruitment();
+    await expect(recruitment).resolves.toEqual({ Data: [{ JobName: '研发工程师' }] });
+    await expect(gateway.call('operation', 'get_annual_reports', {})).resolves.toEqual({ Data: [{ JobName: '研发工程师' }] });
+    expect({ created, closes }).toEqual({ created: 1, closes: 0 });
+    await gateway.close();
+  });
 });
 
 describe('QCC mapping and formal collection', () => {
@@ -90,6 +125,41 @@ describe('QCC mapping and formal collection', () => {
       publishedAt: '2026-07-01T00:00:00.000Z', jobName: 'Creo机械设计工程师', location: '上海',
     });
     expect(financing.gaps).toEqual([]);
+  });
+
+  it.each([
+    ['risk', 'get_company_risk_scan', 'qcc-risk.json', {
+      riskCount: 3, exceptionCount: 1, penaltyCount: 1, judicialCount: 1,
+      summary: '存在一条已移出的经营异常记录',
+    }],
+    ['ipr', 'get_patent_info', 'qcc-patent.json', {
+      patentName: '一种精密传动装置', patentType: '发明专利', applicationNumber: 'CN202610000001.0',
+      applicationDate: '2026-02-03T00:00:00.000Z', status: '实质审查',
+    }],
+    ['operation', 'get_annual_reports', 'qcc-annual-report.json', {
+      year: '2025', employeeCount: 286, totalAssets: '8.2亿元', revenue: null,
+    }],
+    ['operation', 'get_bidding_info', 'qcc-bidding.json', {
+      title: '研发数据管理平台采购项目', publishedAt: '2026-07-20T00:00:00.000Z', role: '采购方',
+      amount: null, purchaser: '测试制造有限公司',
+    }],
+    ['company', 'get_shareholder_info', 'qcc-shareholder.json', {
+      shareholderName: '测试控股有限公司', shareholdingRatio: '62.5%',
+      subscribedCapital: '3125万元人民币', shareholderType: '企业法人',
+    }],
+    ['ipr', 'get_software_copyright_info', 'qcc-software-copyright.json', {
+      softwareName: '研发协同管理系统', shortName: '研发协同', registrationNumber: '2026SR000001',
+      registrationDate: '2026-04-08T00:00:00.000Z', version: 'V1.0',
+    }],
+    ['operation', 'get_qualifications', 'qcc-qualification.json', {
+      qualificationName: 'IATF 16949质量管理体系认证', certificateNumber: 'IATF-TEST-001',
+      issuedAt: '2025-09-01T00:00:00.000Z', expiresAt: '2028-08-31T00:00:00.000Z', issuer: '示例认证机构',
+    }],
+  ] as const)('validates and maps %s/%s with its tool-level contract', (server, tool, file, expected) => {
+    const mapped = mapQccToolResult(server, tool, fixture(file), identity, new Date('2026-08-29T12:00:00.000Z'));
+    expect(mapped.items).toHaveLength(1);
+    expect(JSON.parse(mapped.items[0].content ?? '{}')).toEqual(expected);
+    expect(mapped.items[0].url).toMatch(/^https:\/\//);
   });
 
   it('starts financing first and recruitment second before any other call or retry', async () => {
@@ -134,5 +204,42 @@ describe('QCC mapping and formal collection', () => {
     expect(result.gaps).toContain('融资信息获取失败');
     expect(result.items.length).toBeGreaterThan(0);
     expect(result).not.toHaveProperty('financingStatus');
+  });
+
+  it('marks QCC failed when every successful response contains no usable items', async () => {
+    const events: string[] = [];
+    const collector = new QccResearchCollector({
+      call: async (_server, tool) => { events.push(tool); return { Data: [] }; },
+    }, () => new Date('2026-08-29T12:00:00.000Z'));
+
+    const result = await collector.collectQccResearch(
+      identity,
+      new CallBudget({ qcc: 8, doubaoSearch: 1, ark: 1, total: 8 }),
+    );
+
+    expect(events).toHaveLength(8);
+    expect(result.items).toEqual([]);
+    expect(result.sourceStatus.status).toBe('failed');
+    expect(result.sourceStatus.error).toBe('企查查未返回可用资料');
+  });
+
+  it('uses the only remaining QCC call for financing and does not let ordinary calls consume it', async () => {
+    const events: string[] = [];
+    const collector = new QccResearchCollector({
+      call: async (_server, tool) => {
+        events.push(tool);
+        return tool === 'get_financing_records' ? fixture('qcc-financing.json') : { Data: [] };
+      },
+    }, () => new Date('2026-08-29T12:00:00.000Z'));
+
+    const result = await collector.collectQccResearch(
+      identity,
+      new CallBudget({ qcc: 1, doubaoSearch: 1, ark: 1, total: 1 }),
+    );
+
+    expect(events).toEqual(['get_financing_records']);
+    expect(result.items).toHaveLength(2);
+    expect(result.sourceStatus.status).toBe('partial');
+    expect(result.gaps).toContain('招聘信息获取失败');
   });
 });

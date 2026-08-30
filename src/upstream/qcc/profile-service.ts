@@ -67,13 +67,13 @@ function candidateFromIdentity(identity: {
   legalName: string;
   creditCode: string;
   registeredAddress: string | null;
-}): CompanyProfileCandidate {
+}, matchReason: string): CompanyProfileCandidate {
   return {
     legalName: identity.legalName,
     creditCode: identity.creditCode,
     status: null,
     registeredAddress: identity.registeredAddress,
-    matchReason: '30天内缓存的法定名称完全匹配',
+    matchReason,
   };
 }
 
@@ -126,11 +126,22 @@ export class CompanyProfileService {
       requestedAt,
       this.options.profileCacheTtlDays,
     );
-    if (cached.length === 1) {
+    const normalizedRegionHint = regionHint === undefined ? null : normalizeLegalName(regionHint);
+    const regionalCacheMatches = normalizedRegionHint === null ? [] : cached.filter(entry => [
+      entry.basicProfile.region,
+      entry.identity.registeredAddress,
+    ].some(value => value !== null && normalizeLegalName(value).includes(normalizedRegionHint)));
+    const cachedMatch = cached.length === 1
+      ? cached[0]
+      : regionalCacheMatches.length === 1 ? regionalCacheMatches[0] : null;
+    if (cachedMatch !== null) {
       return {
         sourceStatus: 'completed',
-        candidates: [candidateFromIdentity(cached[0].identity)],
-        basicProfile: basicProfileToService(cached[0].basicProfile),
+        candidates: [candidateFromIdentity(
+          cachedMatch.identity,
+          cached.length === 1 ? '缓存的法定名称完全匹配' : '缓存的法定名称与地域匹配',
+        )],
+        basicProfile: basicProfileToService(cachedMatch.basicProfile),
         cacheHit: true,
       };
     }

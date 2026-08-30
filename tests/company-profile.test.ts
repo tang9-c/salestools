@@ -50,6 +50,30 @@ describe('CompanyProfileService', () => {
     expect(calls).toBe(0);
   });
 
+  it('uses regionHint to select one of multiple fresh same-name cache entries', async () => {
+    profiles.upsert({ identity, normalizedLegalName: normalizeLegalName(identity.legalName), basicProfile: cachedProfile, collectedAt: now.toISOString() });
+    profiles.upsert({
+      identity: { ...identity, creditCode: '91310000TEST000002', registeredAddress: '北京市海淀区测试路2号' },
+      normalizedLegalName: normalizeLegalName(identity.legalName),
+      basicProfile: { ...cachedProfile, region: '北京' },
+      collectedAt: now.toISOString(),
+    });
+    let calls = 0;
+    const service = new CompanyProfileService({ call: async () => { calls += 1; throw new Error('network'); } }, profiles, {
+      profileCacheTtlDays: 30, maxQccCalls: 8, maxTotalCalls: 18, now: () => now,
+    });
+
+    const result = await service.get(identity.legalName, '北京');
+
+    expect(result).toMatchObject({
+      sourceStatus: 'completed', cacheHit: true,
+      candidates: [{ creditCode: '91310000TEST000002' }],
+      basicProfile: { region: '北京' },
+    });
+    expect(result.candidates[0].matchReason).not.toMatch(/30/);
+    expect(calls).toBe(0);
+  });
+
   it('returns multiple candidates without fetching or guessing a profile', async () => {
     let calls = 0;
     const service = new CompanyProfileService({

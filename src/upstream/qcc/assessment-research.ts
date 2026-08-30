@@ -84,10 +84,7 @@ export class QccResearchCollector {
       gaps.push(...result.value.gaps);
     };
 
-    if (!budget.canConsume('qcc', 2)) {
-      stoppedByBudget = true;
-      gaps.push(financingCall.failureGap, recruitmentCall.failureGap);
-    } else {
+    if (budget.canConsume('qcc', 2)) {
       // Starting both promises back-to-back guarantees both initial attempts consume
       // their reserved slots before either retry continuation can run.
       const financing = start(financingCall);
@@ -95,6 +92,15 @@ export class QccResearchCollector {
       const [financingResult, recruitmentResult] = await Promise.all([financing, recruitment]);
       accept(financingCall, financingResult);
       accept(recruitmentCall, recruitmentResult);
+    } else if (budget.canConsume('qcc')) {
+      // With only one slot left, financing keeps the first priority. Recruitment
+      // and ordinary calls must not consume or displace that slot.
+      accept(financingCall, await start(financingCall));
+      stoppedByBudget = true;
+      gaps.push(recruitmentCall.failureGap);
+    } else {
+      stoppedByBudget = true;
+      gaps.push(financingCall.failureGap, recruitmentCall.failureGap);
     }
 
     for (const call of coreCalls) {
@@ -114,12 +120,15 @@ export class QccResearchCollector {
       gaps.push(`${eighthCall.failureGap}（调用预算已用尽）`);
     }
 
-    const status: ResearchSourceStatus = successfulCalls === 0
+    const status: ResearchSourceStatus = items.length === 0
       ? 'failed'
       : failedCalls > 0 || stoppedByBudget ? 'partial' : 'completed';
     return {
       items,
-      sourceStatus: { status, error: errors[0] ?? null },
+      sourceStatus: {
+        status,
+        error: status === 'failed' ? errors[0] ?? '企查查未返回可用资料' : errors[0] ?? null,
+      },
       gaps: [...new Set(gaps)],
     };
   }

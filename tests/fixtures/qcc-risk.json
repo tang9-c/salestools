@@ -1,0 +1,12 @@
+{
+  "Data": [
+    {
+      "RiskCount": 3,
+      "ExceptionCount": 1,
+      "PenaltyCount": 1,
+      "JudicialCount": 1,
+      "Summary": "存在一条已移出的经营异常记录",
+      "Url": "https://www.qcc.com/example/risk-1"
+    }
+  ]
+}

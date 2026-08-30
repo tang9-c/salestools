@@ -12,6 +12,101 @@ import type { QccServer } from './tool-allowlist.js';
 
 const RawRootSchema = z.object({ Data: z.unknown() }).passthrough();
 const RawRecordSchema = z.record(z.string(), z.unknown());
+const OptionalStringSchema = z.string().nullable().optional();
+const OptionalNumberSchema = z.number().nullable().optional();
+const OptionalUrlSchema = OptionalStringSchema;
+
+const FormalProfileRecordSchema = z.object({
+  Name: OptionalStringSchema,
+  Industry: OptionalStringSchema,
+  Introduction: OptionalStringSchema,
+  EmployeeRange: OptionalStringSchema,
+  Website: OptionalStringSchema,
+  Url: OptionalUrlSchema,
+}).passthrough().refine(record => [record.Name, record.Industry, record.Introduction].some(value => value != null));
+
+const FinancingRecordSchema = z.object({
+  Date: OptionalStringSchema,
+  Round: OptionalStringSchema,
+  Type: OptionalStringSchema,
+  Amount: OptionalStringSchema,
+  Investors: z.array(z.string()).optional(),
+  Url: OptionalUrlSchema,
+}).passthrough().refine(record => [record.Date, record.Round, record.Type, record.Amount].some(value => value != null)
+  || (record.Investors?.length ?? 0) > 0);
+
+const RecruitmentRecordSchema = z.object({
+  PublishDate: OptionalStringSchema,
+  JobName: OptionalStringSchema,
+  Salary: OptionalStringSchema,
+  Education: OptionalStringSchema,
+  Experience: OptionalStringSchema,
+  Location: OptionalStringSchema,
+  Url: OptionalUrlSchema,
+}).passthrough().refine(record => record.JobName != null || record.PublishDate != null);
+
+const RiskRecordSchema = z.object({
+  RiskCount: OptionalNumberSchema,
+  ExceptionCount: OptionalNumberSchema,
+  PenaltyCount: OptionalNumberSchema,
+  JudicialCount: OptionalNumberSchema,
+  Summary: OptionalStringSchema,
+  Url: OptionalUrlSchema,
+}).passthrough().refine(record => [
+  record.RiskCount, record.ExceptionCount, record.PenaltyCount, record.JudicialCount, record.Summary,
+].some(value => value != null));
+
+const PatentRecordSchema = z.object({
+  PatentName: OptionalStringSchema,
+  PatentType: OptionalStringSchema,
+  ApplicationNumber: OptionalStringSchema,
+  ApplicationDate: OptionalStringSchema,
+  Status: OptionalStringSchema,
+  Url: OptionalUrlSchema,
+}).passthrough().refine(record => record.PatentName != null || record.ApplicationNumber != null);
+
+const AnnualReportRecordSchema = z.object({
+  Year: OptionalStringSchema,
+  EmployeeCount: OptionalNumberSchema,
+  TotalAssets: OptionalStringSchema,
+  Revenue: OptionalStringSchema,
+  Url: OptionalUrlSchema,
+}).passthrough().refine(record => record.Year != null);
+
+const BiddingRecordSchema = z.object({
+  Title: OptionalStringSchema,
+  PublishDate: OptionalStringSchema,
+  Role: OptionalStringSchema,
+  Amount: OptionalStringSchema,
+  Purchaser: OptionalStringSchema,
+  Url: OptionalUrlSchema,
+}).passthrough().refine(record => record.Title != null || record.PublishDate != null);
+
+const ShareholderRecordSchema = z.object({
+  ShareholderName: OptionalStringSchema,
+  ShareholdingRatio: OptionalStringSchema,
+  SubscribedCapital: OptionalStringSchema,
+  ShareholderType: OptionalStringSchema,
+  Url: OptionalUrlSchema,
+}).passthrough().refine(record => record.ShareholderName != null);
+
+const SoftwareCopyrightRecordSchema = z.object({
+  SoftwareName: OptionalStringSchema,
+  ShortName: OptionalStringSchema,
+  RegistrationNumber: OptionalStringSchema,
+  RegistrationDate: OptionalStringSchema,
+  Version: OptionalStringSchema,
+  Url: OptionalUrlSchema,
+}).passthrough().refine(record => record.SoftwareName != null || record.RegistrationNumber != null);
+
+const QualificationRecordSchema = z.object({
+  QualificationName: OptionalStringSchema,
+  CertificateNumber: OptionalStringSchema,
+  IssuedAt: OptionalStringSchema,
+  ExpiresAt: OptionalStringSchema,
+  Issuer: OptionalStringSchema,
+  Url: OptionalUrlSchema,
+}).passthrough().refine(record => record.QualificationName != null || record.CertificateNumber != null);
 
 export interface MappedCandidate {
   legalName: string;
@@ -84,6 +179,11 @@ function stringArray(record: Record<string, unknown>, key: string): string[] {
   const value = record[key];
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map(item => item.trim());
+}
+
+function numberValue(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function dateTimestamp(value: unknown): string | null {
@@ -191,48 +291,196 @@ function safeMappedRecord(tool: string, record: Record<string, unknown>): {
   url: string;
 } {
   if (tool === 'get_financing_records') {
-    const occurredAt = dateTimestamp(record.Date);
-    const typeOrRound = stringValue(record, 'Round') ?? stringValue(record, 'Type');
-    const disclosedAmount = stringValue(record, 'Amount');
-    const investors = stringArray(record, 'Investors');
+    const parsed = FinancingRecordSchema.safeParse(record);
+    if (!parsed.success) throw invalidResponse('QCC financing record has an unsupported shape');
+    const occurredAt = dateTimestamp(parsed.data.Date);
+    const typeOrRound = stringValue(parsed.data, 'Round') ?? stringValue(parsed.data, 'Type');
+    const disclosedAmount = stringValue(parsed.data, 'Amount');
+    const investors = stringArray(parsed.data, 'Investors');
     return {
       titleDetail: typeOrRound ?? '融资记录',
       summary: [typeOrRound, disclosedAmount].filter(Boolean).join('，') || null,
       content: { occurredAt, typeOrRound, disclosedAmount, investors },
       publishedAt: occurredAt,
-      url: safeUrl(stringValue(record, 'Url')),
+      url: safeUrl(stringValue(parsed.data, 'Url')),
     };
   }
 
   if (tool === 'get_recruitment_info') {
-    const publishedAt = dateTimestamp(record.PublishDate);
-    const jobName = stringValue(record, 'JobName');
+    const parsed = RecruitmentRecordSchema.safeParse(record);
+    if (!parsed.success) throw invalidResponse('QCC recruitment record has an unsupported shape');
+    const publishedAt = dateTimestamp(parsed.data.PublishDate);
+    const jobName = stringValue(parsed.data, 'JobName');
     const content = {
       publishedAt,
       jobName,
-      salary: stringValue(record, 'Salary'),
-      education: stringValue(record, 'Education'),
-      experience: stringValue(record, 'Experience'),
-      location: stringValue(record, 'Location'),
+      salary: stringValue(parsed.data, 'Salary'),
+      education: stringValue(parsed.data, 'Education'),
+      experience: stringValue(parsed.data, 'Experience'),
+      location: stringValue(parsed.data, 'Location'),
     };
     return {
       titleDetail: jobName ?? '招聘记录',
       summary: [jobName, content.location].filter(Boolean).join('，') || null,
       content,
       publishedAt,
-      url: safeUrl(stringValue(record, 'Url')),
+      url: safeUrl(stringValue(parsed.data, 'Url')),
     };
   }
 
-  const title = stringValue(record, 'Title') ?? stringValue(record, 'Name') ?? tool;
-  const summary = stringValue(record, 'Summary') ?? stringValue(record, 'Introduction');
-  return {
-    titleDetail: title,
-    summary,
-    content: { title, summary },
-    publishedAt: dateTimestamp(record.PublishDate ?? record.Date),
-    url: safeUrl(stringValue(record, 'Url')),
-  };
+  if (tool === 'get_company_profile') {
+    const parsed = FormalProfileRecordSchema.safeParse(record);
+    if (!parsed.success) throw invalidResponse('QCC company profile has an unsupported shape');
+    const name = stringValue(parsed.data, 'Name');
+    const industry = stringValue(parsed.data, 'Industry');
+    const introduction = stringValue(parsed.data, 'Introduction');
+    const employeeRange = stringValue(parsed.data, 'EmployeeRange');
+    const website = stringValue(parsed.data, 'Website');
+    return {
+      titleDetail: name ?? '企业简介',
+      summary: introduction ?? industry,
+      content: { name, industry, introduction, employeeRange, website },
+      publishedAt: null,
+      url: safeUrl(stringValue(parsed.data, 'Url') ?? website),
+    };
+  }
+
+  if (tool === 'get_company_risk_scan') {
+    const parsed = RiskRecordSchema.safeParse(record);
+    if (!parsed.success) throw invalidResponse('QCC risk record has an unsupported shape');
+    const summary = stringValue(parsed.data, 'Summary');
+    return {
+      titleDetail: '企业风险扫描',
+      summary,
+      content: {
+        riskCount: numberValue(parsed.data, 'RiskCount'),
+        exceptionCount: numberValue(parsed.data, 'ExceptionCount'),
+        penaltyCount: numberValue(parsed.data, 'PenaltyCount'),
+        judicialCount: numberValue(parsed.data, 'JudicialCount'),
+        summary,
+      },
+      publishedAt: null,
+      url: safeUrl(stringValue(parsed.data, 'Url')),
+    };
+  }
+
+  if (tool === 'get_patent_info') {
+    const parsed = PatentRecordSchema.safeParse(record);
+    if (!parsed.success) throw invalidResponse('QCC patent record has an unsupported shape');
+    const patentName = stringValue(parsed.data, 'PatentName');
+    const applicationDate = dateTimestamp(parsed.data.ApplicationDate);
+    return {
+      titleDetail: patentName ?? '专利记录',
+      summary: [stringValue(parsed.data, 'PatentType'), stringValue(parsed.data, 'Status')].filter(Boolean).join('，') || null,
+      content: {
+        patentName,
+        patentType: stringValue(parsed.data, 'PatentType'),
+        applicationNumber: stringValue(parsed.data, 'ApplicationNumber'),
+        applicationDate,
+        status: stringValue(parsed.data, 'Status'),
+      },
+      publishedAt: applicationDate,
+      url: safeUrl(stringValue(parsed.data, 'Url')),
+    };
+  }
+
+  if (tool === 'get_annual_reports') {
+    const parsed = AnnualReportRecordSchema.safeParse(record);
+    if (!parsed.success) throw invalidResponse('QCC annual report has an unsupported shape');
+    const year = stringValue(parsed.data, 'Year');
+    return {
+      titleDetail: `${year ?? '未知年度'}年报`,
+      summary: year === null ? null : `${year}年度公开年报信息`,
+      content: {
+        year,
+        employeeCount: numberValue(parsed.data, 'EmployeeCount'),
+        totalAssets: stringValue(parsed.data, 'TotalAssets'),
+        revenue: stringValue(parsed.data, 'Revenue'),
+      },
+      publishedAt: null,
+      url: safeUrl(stringValue(parsed.data, 'Url')),
+    };
+  }
+
+  if (tool === 'get_bidding_info') {
+    const parsed = BiddingRecordSchema.safeParse(record);
+    if (!parsed.success) throw invalidResponse('QCC bidding record has an unsupported shape');
+    const title = stringValue(parsed.data, 'Title');
+    const publishedAt = dateTimestamp(parsed.data.PublishDate);
+    return {
+      titleDetail: title ?? '招投标记录',
+      summary: [stringValue(parsed.data, 'Role'), stringValue(parsed.data, 'Purchaser')].filter(Boolean).join('，') || null,
+      content: {
+        title,
+        publishedAt,
+        role: stringValue(parsed.data, 'Role'),
+        amount: stringValue(parsed.data, 'Amount'),
+        purchaser: stringValue(parsed.data, 'Purchaser'),
+      },
+      publishedAt,
+      url: safeUrl(stringValue(parsed.data, 'Url')),
+    };
+  }
+
+  if (tool === 'get_shareholder_info') {
+    const parsed = ShareholderRecordSchema.safeParse(record);
+    if (!parsed.success) throw invalidResponse('QCC shareholder record has an unsupported shape');
+    const shareholderName = stringValue(parsed.data, 'ShareholderName');
+    return {
+      titleDetail: shareholderName ?? '股东记录',
+      summary: [shareholderName, stringValue(parsed.data, 'ShareholdingRatio')].filter(Boolean).join('，') || null,
+      content: {
+        shareholderName,
+        shareholdingRatio: stringValue(parsed.data, 'ShareholdingRatio'),
+        subscribedCapital: stringValue(parsed.data, 'SubscribedCapital'),
+        shareholderType: stringValue(parsed.data, 'ShareholderType'),
+      },
+      publishedAt: null,
+      url: safeUrl(stringValue(parsed.data, 'Url')),
+    };
+  }
+
+  if (tool === 'get_software_copyright_info') {
+    const parsed = SoftwareCopyrightRecordSchema.safeParse(record);
+    if (!parsed.success) throw invalidResponse('QCC software copyright record has an unsupported shape');
+    const softwareName = stringValue(parsed.data, 'SoftwareName');
+    const registrationDate = dateTimestamp(parsed.data.RegistrationDate);
+    return {
+      titleDetail: softwareName ?? '软件著作权记录',
+      summary: [softwareName, stringValue(parsed.data, 'Version')].filter(Boolean).join('，') || null,
+      content: {
+        softwareName,
+        shortName: stringValue(parsed.data, 'ShortName'),
+        registrationNumber: stringValue(parsed.data, 'RegistrationNumber'),
+        registrationDate,
+        version: stringValue(parsed.data, 'Version'),
+      },
+      publishedAt: registrationDate,
+      url: safeUrl(stringValue(parsed.data, 'Url')),
+    };
+  }
+
+  if (tool === 'get_qualifications') {
+    const parsed = QualificationRecordSchema.safeParse(record);
+    if (!parsed.success) throw invalidResponse('QCC qualification record has an unsupported shape');
+    const qualificationName = stringValue(parsed.data, 'QualificationName');
+    const issuedAt = dateTimestamp(parsed.data.IssuedAt);
+    return {
+      titleDetail: qualificationName ?? '资质记录',
+      summary: [qualificationName, stringValue(parsed.data, 'Issuer')].filter(Boolean).join('，') || null,
+      content: {
+        qualificationName,
+        certificateNumber: stringValue(parsed.data, 'CertificateNumber'),
+        issuedAt,
+        expiresAt: dateTimestamp(parsed.data.ExpiresAt),
+        issuer: stringValue(parsed.data, 'Issuer'),
+      },
+      publishedAt: issuedAt,
+      url: safeUrl(stringValue(parsed.data, 'Url')),
+    };
+  }
+
+  throw invalidResponse(`QCC tool has no v0.1 mapper: ${tool}`);
 }
 
 export function mapQccToolResult(

@@ -1,4 +1,11 @@
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import {
+  Client,
+  InsufficientScopeError,
+  ProtocolError,
+  SdkHttpError,
+  StreamableHTTPClientTransport,
+  UnauthorizedError,
+} from '@modelcontextprotocol/client';
 import { UpstreamError } from '../../orchestration/retry.js';
 import { isAllowedQccTool, type QccServer } from './tool-allowlist.js';
 
@@ -34,7 +41,21 @@ const sdkConnectionFactory: QccConnectionFactory = {
 
     return {
       async callTool(tool, input) {
-        const result = await client.callTool({ name: tool, arguments: input } as Parameters<Client['callTool']>[0]);
+        let result;
+        try {
+          result = await client.callTool({ name: tool, arguments: input } as Parameters<Client['callTool']>[0]);
+        } catch (error) {
+          if (ProtocolError.isInstance(error)) {
+            throw new UpstreamError('qcc', 'REMOTE_PROTOCOL_ERROR', error.message, { cause: error });
+          }
+          if (UnauthorizedError.isInstance(error) || InsufficientScopeError.isInstance(error)) {
+            throw new UpstreamError('qcc', 'AUTHENTICATION_ERROR', error.message, { cause: error });
+          }
+          if (SdkHttpError.isInstance(error)) {
+            throw new UpstreamError('qcc', 'REMOTE_HTTP_ERROR', error.message, { cause: error });
+          }
+          throw error;
+        }
         if (result.isError === true) {
           const message = result.content
             .filter(block => block.type === 'text')
@@ -73,6 +94,7 @@ export class QccGateway {
       connection = await pending;
       return await connection.callTool(tool, input);
     } catch (error) {
+      if (error instanceof UpstreamError && error.code !== 'TRANSPORT') throw error;
       if (this.connections.get(server) === pending) this.connections.delete(server);
       if (connection !== undefined) await connection.close().catch(() => undefined);
       if (error instanceof UpstreamError) throw error;

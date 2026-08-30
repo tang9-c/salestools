@@ -1,0 +1,12 @@
+{
+  "Data": [
+    {
+      "QualificationName": "IATF 16949质量管理体系认证",
+      "CertificateNumber": "IATF-TEST-001",
+      "IssuedAt": "2025-09-01",
+      "ExpiresAt": "2028-08-31",
+      "Issuer": "示例认证机构",
+      "Url": "https://www.qcc.com/example/qualification-1"
+    }
+  ]
+}
