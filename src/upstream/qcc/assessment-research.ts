@@ -1,6 +1,11 @@
 import type { IdentityProfile, ResearchItem, ResearchSourceStatus } from '../../contracts/index.js';
 import type { CallBudget } from '../../orchestration/call-budget.js';
-import { retryOnce, type RetryOptions, type RetryResult } from '../../orchestration/retry.js';
+import {
+  retryOnce,
+  safeUpstreamErrorMessage,
+  type RetryOptions,
+  type RetryResult,
+} from '../../orchestration/retry.js';
 import { mapQccToolResult, type MappedQccResult } from './mapper.js';
 import type { QccServer } from './tool-allowlist.js';
 
@@ -81,7 +86,7 @@ export class QccResearchCollector {
         failedCalls += 1;
         if (result.error.code === 'BUDGET_EXHAUSTED') stoppedByBudget = true;
         gaps.push(call.failureGap);
-        errors.push(result.error.message);
+        errors.push(safeUpstreamErrorMessage('qcc', result.error.code));
         return;
       }
       successfulCalls += 1;

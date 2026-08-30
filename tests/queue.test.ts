@@ -93,4 +93,27 @@ describe('AssessmentQueue', () => {
 
     expect(started).toEqual(['00000000-0000-4000-8000-000000000001']);
   });
+
+  it('resolves an existing whenIdle waiter after stop once active work ends despite pending UUIDs', async () => {
+    const active = deferred();
+    const started: string[] = [];
+    const queue = new AssessmentQueue(async assessmentId => {
+      started.push(assessmentId);
+      await active.promise;
+    }, 1);
+    queue.enqueue('00000000-0000-4000-8000-000000000001');
+    queue.enqueue('00000000-0000-4000-8000-000000000002');
+    queue.start();
+    await eventually(() => expect(started).toHaveLength(1));
+    const idle = queue.whenIdle();
+
+    queue.stopAccepting();
+    active.resolve();
+    await expect(Promise.race([
+      idle.then(() => 'idle'),
+      new Promise<string>(resolve => setTimeout(() => resolve('timeout'), 50)),
+    ])).resolves.toBe('idle');
+
+    expect(started).toEqual(['00000000-0000-4000-8000-000000000001']);
+  });
 });

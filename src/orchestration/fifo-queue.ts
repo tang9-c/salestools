@@ -43,10 +43,11 @@ export class AssessmentQueue {
 
   stopAccepting(): void {
     this.accepting = false;
+    this.resolveIdle();
   }
 
   whenIdle(): Promise<void> {
-    if (this.active === 0 && this.waiting.length === 0) return Promise.resolve();
+    if (this.active === 0 && (!this.accepting || this.waiting.length === 0)) return Promise.resolve();
     return new Promise(resolve => this.idleWaiters.add(resolve));
   }
 
@@ -97,7 +98,7 @@ export class AssessmentQueue {
   }
 
   private resolveIdle(): void {
-    if (this.active !== 0 || this.waiting.length !== 0) return;
+    if (this.active !== 0 || (this.accepting && this.waiting.length !== 0)) return;
     for (const resolve of this.idleWaiters) resolve();
     this.idleWaiters.clear();
   }

@@ -19,8 +19,13 @@ import { buildReportModel } from '../report/build-report-model.js';
 import { renderMarkdown } from '../report/render-markdown.js';
 import type { SourceCollection } from '../upstream/qcc/assessment-research.js';
 import { buildSearchPlan } from '../upstream/search/search-plan.js';
-import { CallBudget, type CallBudgetLimits } from './call-budget.js';
-import { retryOnce, type RetryOptions } from './retry.js';
+import { CallBudget, type CallBudgetLimits, type UpstreamSource } from './call-budget.js';
+import {
+  retryOnce,
+  safeUpstreamErrorMessage,
+  UpstreamError,
+  type RetryOptions,
+} from './retry.js';
 
 interface AssessmentStore {
   get(assessmentId: string): AssessmentRecord | null;
@@ -67,16 +72,20 @@ export class AssessmentWorkerError extends Error {
   }
 }
 
-function failedCollection(message: string): SourceCollection {
-  return {
-    items: [],
-    sourceStatus: { status: 'failed', error: message },
-    gaps: [message],
-  };
+function safeCaughtError(source: UpstreamSource, error: unknown): string {
+  const code = error instanceof UpstreamError && error.source === source
+    ? error.code
+    : 'UPSTREAM_FAILED';
+  return safeUpstreamErrorMessage(source, code);
 }
 
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+function failedCollection(label: string, source: UpstreamSource, error: unknown): SourceCollection {
+  const safeError = safeCaughtError(source, error);
+  return {
+    items: [],
+    sourceStatus: { status: 'failed', error: safeError },
+    gaps: [`${label}：${safeError}`],
+  };
 }
 
 export class AssessmentRunner {
@@ -121,9 +130,9 @@ export class AssessmentRunner {
       const retryOptions = this.retryOptions(task);
       const qccPromise = this.options.qccResearch
         .collectQccResearch(profile.identity, budget, retryOptions)
-        .catch(error => failedCollection(`企查查信息获取失败：${errorMessage(error, '未知错误')}`));
+        .catch(error => failedCollection('企查查信息获取失败', 'qcc', error));
       const searchPromise = this.collectSearch(profile.identity, budget, retryOptions)
-        .catch(error => failedCollection(`豆包搜索信息获取失败：${errorMessage(error, '未知错误')}`));
+        .catch(error => failedCollection('豆包搜索信息获取失败', 'doubao_search', error));
       const [qcc, search] = await Promise.all([qccPromise, searchPromise]);
       const research = ResearchBundleSchema.parse({
         identity: profile.identity,
@@ -192,7 +201,7 @@ export class AssessmentRunner {
         items.push(...result.value);
       } else {
         failedCalls += 1;
-        errors.push(result.error.message);
+        errors.push(safeUpstreamErrorMessage('doubao_search', result.error.code));
         gaps.push(`豆包搜索查询失败：${query.purpose}`);
         if (result.error.code === 'BUDGET_EXHAUSTED') stoppedByBudget = true;
       }

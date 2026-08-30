@@ -264,6 +264,22 @@ describe('QCC mapping and formal collection', () => {
     expect(result).not.toHaveProperty('financingStatus');
   });
 
+  it('never places raw upstream error text in QCC source status', async () => {
+    const collector = new QccResearchCollector({
+      call: async () => {
+        throw new UpstreamError('qcc', 'TRANSPORT', 'token=qcc-secret raw_body=/private/sqlite/path');
+      },
+    }, () => new Date('2026-08-29T12:00:00.000Z'));
+
+    const result = await collector.collectQccResearch(
+      identity,
+      new CallBudget({ qcc: 4, doubaoSearch: 1, ark: 1, total: 4 }),
+    );
+
+    expect(result.sourceStatus.error).toBe('QCC transport unavailable');
+    expect(JSON.stringify(result)).not.toMatch(/qcc-secret|raw_body|private\/sqlite/);
+  });
+
   it('limits a later QCC profile request to two outer attempts', async () => {
     const attempts = new Map<string, number>();
     const collector = new QccResearchCollector({

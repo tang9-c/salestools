@@ -308,4 +308,40 @@ describe('AssessmentRunner', () => {
     expect(qccAttempts + searchClient.search.mock.calls.length + arkAttempts).toBe(10);
     expect(runtime.assessments.get(runtime.task.assessmentId)?.status).toBe('completed');
   });
+
+  it('passes only fixed source errors to Ark and the final Markdown', async () => {
+    const rawQcc = 'token=qcc-secret raw_body=/private/qcc/path';
+    const rawSearch = 'credential=search-secret response_body=customer-private-data';
+    const arkInputs: ResearchBundle[] = [];
+    const runtime = setup({
+      qccResearch: {
+        collectQccResearch: vi.fn(async () => { throw new UpstreamError('qcc', 'TRANSPORT', rawQcc); }),
+      },
+      searchClient: {
+        search: vi.fn(async () => { throw new UpstreamError('doubao_search', 'NETWORK_ERROR', rawSearch); }),
+      },
+      ark: {
+        extract: vi.fn(async (bundle: ResearchBundle) => {
+          arkInputs.push(bundle);
+          return evidence(bundle);
+        }),
+      },
+      budgetLimits: { qcc: 4, doubaoSearch: 2, ark: 2, total: 8 },
+    });
+
+    await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
+
+    const arkInput = arkInputs[0];
+    const arkJson = JSON.stringify(arkInput);
+    const markdown = runtime.assessments.get(runtime.task.assessmentId)?.reportMarkdown ?? '';
+    for (const output of [arkJson, markdown]) {
+      expect(output).not.toMatch(/qcc-secret|search-secret|customer-private-data|private\/qcc|raw_body|response_body/);
+    }
+    expect(arkInput?.sourceStatus).toEqual({
+      qcc: { status: 'failed', error: 'QCC transport unavailable' },
+      doubaoSearch: { status: 'failed', error: 'Doubao search network request failed' },
+    });
+    expect(markdown).toContain('企查查信息获取失败：QCC transport unavailable');
+    expect(markdown).toContain('豆包搜索查询失败：official\\_products');
+  });
 });

@@ -71,11 +71,14 @@ const SAFE_ERROR_MESSAGES: Readonly<Partial<Record<UpstreamSource, Readonly<Reco
   },
 };
 
+export function safeUpstreamErrorMessage(source: UpstreamSource, code: string): string {
+  return code === 'BUDGET_EXHAUSTED'
+    ? `${SAFE_SOURCE_LABEL[source]} call budget exhausted`
+    : SAFE_ERROR_MESSAGES[source]?.[code] ?? `${SAFE_SOURCE_LABEL[source]} upstream request failed`;
+}
+
 function safeAttemptError(error: UpstreamError): RetryAttemptEvent['error'] {
-  const message = error.code === 'BUDGET_EXHAUSTED'
-    ? `${SAFE_SOURCE_LABEL[error.source]} call budget exhausted`
-    : SAFE_ERROR_MESSAGES[error.source]?.[error.code] ?? `${SAFE_SOURCE_LABEL[error.source]} upstream request failed`;
-  return { code: error.code, message };
+  return { code: error.code, message: safeUpstreamErrorMessage(error.source, error.code) };
 }
 
 export async function retryOnce<T>(
