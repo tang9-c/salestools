@@ -15,18 +15,19 @@ const identity = {
 
 const products: ReadonlyArray<{
   product: ProductKey;
+  keyword: string;
   named: string;
   method: string;
   competitor: string;
   generic: string;
 }> = [
-  { product: 'windchill', named: 'Windchill PLM 管理员', method: 'BOM 变更和配置管理', competitor: 'Teamcenter PLM 管理员', generic: '研发工程师' },
-  { product: 'feigenbaum_qms', named: 'Feigenbaum QMS 实施顾问', method: 'CAPA 与质量追溯', competitor: 'SAP QM 系统管理员', generic: '质量工程师' },
-  { product: 'creo', named: 'Creo 机械设计工程师', method: '参数化建模', competitor: 'Siemens NX 设计工程师', generic: '机械工程师' },
-  { product: 'catia', named: 'CATIA 设计工程师', method: '复杂曲面与大型装配', competitor: 'Siemens NX 曲面设计工程师', generic: '三维设计工程师' },
-  { product: 'abaqus', named: 'Abaqus 仿真工程师', method: '非线性有限元分析', competitor: 'ANSYS 仿真工程师', generic: '仿真工程师' },
-  { product: 'cst', named: 'CST Studio Suite 电磁仿真工程师', method: '射频天线 EMC/EMI 仿真', competitor: 'HFSS 电磁仿真工程师', generic: '电子工程师' },
-  { product: 'solidworks', named: 'SolidWorks 机械设计工程师', method: '通用设备三维建模', competitor: 'Autodesk Inventor 机械设计工程师', generic: '机械设计工程师' },
+  { product: 'windchill', keyword: 'Windchill', named: 'Windchill PLM 管理员', method: 'BOM 变更和配置管理', competitor: 'Teamcenter PLM 管理员', generic: '研发工程师' },
+  { product: 'feigenbaum_qms', keyword: 'Feigenbaum QMS', named: 'Feigenbaum QMS 实施顾问', method: 'CAPA 与质量追溯', competitor: 'SAP QM 系统管理员', generic: '质量工程师' },
+  { product: 'creo', keyword: 'Creo', named: 'Creo 机械设计工程师', method: '参数化建模', competitor: 'Siemens NX 设计工程师', generic: '机械工程师' },
+  { product: 'catia', keyword: 'CATIA', named: 'CATIA 设计工程师', method: '复杂曲面与大型装配', competitor: 'Siemens NX 曲面设计工程师', generic: '三维设计工程师' },
+  { product: 'abaqus', keyword: 'Abaqus', named: 'Abaqus 仿真工程师', method: '非线性有限元分析', competitor: 'ANSYS 仿真工程师', generic: '仿真工程师' },
+  { product: 'cst', keyword: 'CST Studio Suite', named: 'CST Studio Suite 电磁仿真工程师', method: '射频天线 EMC/EMI 仿真', competitor: 'HFSS 电磁仿真工程师', generic: '电子工程师' },
+  { product: 'solidworks', keyword: 'SolidWorks', named: 'SolidWorks 机械设计工程师', method: '通用设备三维建模', competitor: 'Autodesk Inventor 机械设计工程师', generic: '机械设计工程师' },
 ];
 
 function recruitmentBundle(
@@ -53,6 +54,25 @@ function recruitmentBundle(
 }
 
 describe('招聘信号', () => {
+  it.each(products.flatMap(entry => [
+    { entry, label: '不使用产品', statement: `岗位明确不使用 ${entry.keyword}` },
+    { entry, label: '无需产品经验', statement: `岗位无需 ${entry.keyword} 经验` },
+    { entry, label: '产品已停用', statement: `${entry.keyword} 已停用` },
+    { entry, label: '未开展工程方法', statement: `公司未开展 ${entry.method}` },
+    { entry, label: '暂不建设产品系统', statement: `公司暂不建设 ${entry.keyword} 系统` },
+  ]))('$entry.product: $label cannot establish a positive recruitment scene', ({ entry, statement }) => {
+    const row = evaluateOpportunities(recruitmentBundle(entry, statement, recent), NOW)
+      .products.find(product => product.product === entry.product);
+    expect(row?.level).toBe('低');
+  });
+
+  it('keeps an affirmative product clause when a different product is negated', () => {
+    const entry = products.find(product => product.product === 'creo')!;
+    const input = recruitmentBundle(entry, '岗位不使用 Siemens NX，而使用 Creo 开展参数化建模', recent);
+    expect(evaluateOpportunities(input, NOW).products
+      .find(product => product.product === entry.product)?.level).toBe('中');
+  });
+
   it.each(products)('$product: recent direct product naming is a strong scene signal but one publisher is only 中', entry => {
     const result = evaluateOpportunities(recruitmentBundle(entry, `${entry.named}，${entry.method}`, recent), NOW);
     const row = result.products.find(product => product.product === entry.product);
@@ -138,5 +158,27 @@ describe('招聘信号', () => {
     expect(row?.level).toBe('低');
     expect(row?.gaps.join('')).toMatch(expectedGap);
     expect(row?.gaps.join('')).not.toContain('超过 365 天');
+  });
+
+  it.each([
+    { label: 'missing', publishedAt: null, expectedGap: /缺失|无日期/ },
+    { label: 'future', publishedAt: '2026-08-31T12:00:00.000Z', expectedGap: /晚于|未来/ },
+  ])('keeps positive $label recruitment as historical ecosystem, never recent timing', ({ publishedAt, expectedGap }) => {
+    const entry = products[0]!;
+    const input = recruitmentBundle(entry, `${entry.named}，${entry.method}`, recent);
+    input.evidence[0] = { ...input.evidence[0]!, publishedAt };
+    input.evidence.push({
+      ...input.evidence[0]!, evidenceId: 'scene', title: '公司已实施 Windchill PLM',
+      url: 'https://company.example/plm', originalPublisher: '公司官网', originalDomain: 'company.example',
+      publishedAt: recent,
+    });
+    input.facts.push({
+      ...input.facts[0]!, factId: 'scene-fact', statement: '公司已实施 Windchill PLM 管理 BOM 变更',
+      kind: 'product_scene', evidenceIds: ['scene'],
+    });
+    const row = evaluateOpportunities(input, NOW).products.find(product => product.product === entry.product);
+    expect(row?.level).toBe('中');
+    expect(row?.gaps.join('')).toMatch(expectedGap);
+    expect(row?.gaps.join('')).toMatch(/近期|365/);
   });
 });

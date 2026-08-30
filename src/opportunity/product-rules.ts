@@ -65,6 +65,23 @@ export const REPLACEMENT_KEYWORDS = [
   '替换', '替代', '迁移', '重新选型', '重选', '换型',
 ] as const;
 
+export const PRODUCT_SIGNAL_CLAUSE_SEPARATOR = /[，,。；;！？!?\n]+|(?:但|而)(?=(?:使用|采用|部署|实施|建设|开展))/u;
+
+export const NEGATIVE_PRODUCT_SIGNAL_BEFORE_PATTERN =
+  /(?:不使用|未使用|无需|不需要|未开展|没有开展|暂不开展|暂不建设|不建设|未建设|尚未建设|停用|已停用|不再使用).{0,12}$/u;
+
+export const NEGATIVE_PRODUCT_SIGNAL_AFTER_PATTERN =
+  /^.{0,24}(?:停用|已停用|不再使用|无需|不需要|未开展|暂不建设|未建设)/u;
+
+export const NEGATIVE_BUDGET_PATTERN =
+  /(?:(?:无|没有|并无|并非|不具备|不具有|缺少|暂无|未有|未获).{0,8}(?:预算|资金))|(?:(?:预算|资金).{0,6}(?:不足|不充足|未落实|未批准|冻结))/u;
+
+export const NEGATIVE_DECISION_PATTERN =
+  /(?:无|没有|并无|并非|并不|不具备|不具有|缺少|暂无|未有|未获).{0,12}(?:独立|自主)?.{0,8}(?:采购|决策|审批)(?:权)?/u;
+
+export const NEGATED_REPLACEMENT_PATTERN =
+  /(?:暂无|尚无|尚未|没有|并未|未决定|未计划|不计划|暂不|不再|未|不).{0,12}(?:替换|替代|迁移|重新选型|重选|换型)/u;
+
 export const GENERAL_BLOCKER_KEYWORDS = [
   '无预算', '没有预算', '预算冻结', '暂停采购', '暂无采购计划', '无采购计划',
   '无独立决策权', '没有独立采购权', '不具备独立采购权', '集团统一采购',

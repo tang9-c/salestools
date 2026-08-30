@@ -10,6 +10,12 @@ import {
 import {
   CRITICAL_CONFLICT_KEYWORDS,
   GENERAL_BLOCKER_KEYWORDS,
+  NEGATED_REPLACEMENT_PATTERN,
+  NEGATIVE_BUDGET_PATTERN,
+  NEGATIVE_DECISION_PATTERN,
+  NEGATIVE_PRODUCT_SIGNAL_AFTER_PATTERN,
+  NEGATIVE_PRODUCT_SIGNAL_BEFORE_PATTERN,
+  PRODUCT_SIGNAL_CLAUSE_SEPARATOR,
   REPLACEMENT_KEYWORDS,
   type ProductRule,
 } from './product-rules.js';
@@ -24,9 +30,6 @@ const SUPPORT_KINDS = new Set<EvidenceFact['kind']>([
 const UNKNOWN_SIGNAL_KEYWORDS = ['待核实', '未知', '未确认', '未披露', '无法确认', '不明确', '尚未'] as const;
 const POSITIVE_BUDGET_KEYWORDS = ['预算已批准', '预算充足', '专项预算已落实', '资金充足', '融资到账'] as const;
 const POSITIVE_DECISION_KEYWORDS = ['具有独立决策权', '独立采购决策权', '拥有独立采购权', '可自主采购', '采购审批权归属目标主体'] as const;
-const NEGATIVE_BUDGET_PATTERN = /(?:(?:无|没有|并无|并非|不具备|缺少|暂无|未有).{0,8}(?:预算|资金))|(?:(?:预算|资金).{0,6}(?:不足|未落实|未批准|冻结))/u;
-const NEGATIVE_DECISION_PATTERN = /(?:无|没有|并无|并非|并不|不具备|缺少|暂无|未有).{0,12}(?:独立|自主)?.{0,8}(?:采购|决策|审批)(?:权)?/u;
-const NEGATED_REPLACEMENT_PATTERN = /(?:暂无|尚无|没有|无|不|暂不|不计划).{0,8}(?:替换|替代|迁移|重新选型|重选|换型)/u;
 
 type PublicationState = 'recent' | 'expired' | 'future' | 'missing';
 type AttributionState = 'confirmed' | 'probable' | 'unverified';
@@ -52,6 +55,37 @@ export function containsKeyword(statement: string, keyword: string): boolean {
 
 function containsAny(statement: string, keywords: readonly string[]): boolean {
   return keywords.some(keyword => containsKeyword(statement, keyword));
+}
+
+function keywordOccurrences(text: string, keyword: string): number[] {
+  const starts: number[] = [];
+  let from = 0;
+  while (from <= text.length - keyword.length) {
+    const index = text.indexOf(keyword, from);
+    if (index < 0) break;
+    const before = index === 0 ? '' : text[index - 1]!;
+    const afterIndex = index + keyword.length;
+    const after = afterIndex === text.length ? '' : text[afterIndex]!;
+    const startsWithWord = /^[a-z0-9]/u.test(keyword);
+    const endsWithWord = /[a-z0-9]$/u.test(keyword);
+    if ((!startsWithWord || !/[a-z0-9]/u.test(before))
+      && (!endsWithWord || !/[a-z0-9]/u.test(after))) starts.push(index);
+    from = index + Math.max(keyword.length, 1);
+  }
+  return starts;
+}
+
+function containsAffirmativeKeyword(statement: string, keywords: readonly string[]): boolean {
+  const clauses = normalized(statement).split(PRODUCT_SIGNAL_CLAUSE_SEPARATOR);
+  return clauses.some(clause => keywords.some(keyword => {
+    const term = normalized(keyword);
+    return term.length > 0 && keywordOccurrences(clause, term).some(index => {
+      const before = clause.slice(Math.max(0, index - 24), index);
+      const after = clause.slice(index + term.length, index + term.length + 32);
+      return !NEGATIVE_PRODUCT_SIGNAL_BEFORE_PATTERN.test(before)
+        && !NEGATIVE_PRODUCT_SIGNAL_AFTER_PATTERN.test(after);
+    });
+  }));
 }
 
 function citedReferences(
@@ -181,7 +215,7 @@ function hasReplacementSignal(
   referencesById: ReadonlyMap<string, EvidenceReference>,
   nowMs: number,
 ): boolean {
-  return facts.some(fact => isReliableTargetFact(fact, referencesById)
+  return facts.some(fact => isReliableConfirmedFact(fact, referencesById)
     && factPublicationState(fact, referencesById, nowMs) === 'recent'
     && explicitReplacement(fact.statement)
     && containsAny(fact.statement, [...rule.positiveKeywords, ...rule.engineeringMethods, ...rule.competitorKeywords]));
@@ -200,7 +234,8 @@ function blockerDescriptions(
     const general = GENERAL_BLOCKER_KEYWORDS.find(keyword => containsKeyword(fact.statement, keyword));
     const negativeKind = negativeSupportKind(fact);
     const productBlocker = rule.blockerKeywords.find(keyword => containsKeyword(fact.statement, keyword));
-    const competitor = rule.competitorKeywords.find(keyword => containsKeyword(fact.statement, keyword));
+    const competitor = rule.competitorKeywords.find(keyword =>
+      containsAffirmativeKeyword(fact.statement, [keyword]));
     if (general !== undefined) blockers.push(`已知预算或决策阻碍：${general}`);
     if (general === undefined && negativeKind !== null) {
       blockers.push(negativeKind === 'budget' ? '已知预算阻碍：明确否定预算能力' : '已知决策阻碍：明确否定独立采购权');
@@ -237,9 +272,9 @@ export function evaluateProduct(
   const relevantFacts = evidence.facts.filter(fact => isRelevant(fact, rule.product));
   const productFacts = relevantFacts.filter(fact => fact.productTags.includes(rule.product));
   const usableFacts = relevantFacts.filter(fact => isReliableConfirmedFact(fact, referencesById));
-  const targetNamed = (fact: EvidenceFact): boolean => containsAny(fact.statement, rule.positiveKeywords);
-  const methodNamed = (fact: EvidenceFact): boolean => containsAny(fact.statement, rule.engineeringMethods);
-  const competitorNamed = (fact: EvidenceFact): boolean => containsAny(fact.statement, rule.competitorKeywords);
+  const targetNamed = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(fact.statement, rule.positiveKeywords);
+  const methodNamed = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(fact.statement, rule.engineeringMethods);
+  const competitorNamed = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(fact.statement, rule.competitorKeywords);
   const hasProductSignal = (fact: EvidenceFact): boolean => targetNamed(fact) || methodNamed(fact);
   const isPositiveProductFact = (fact: EvidenceFact): boolean => {
     if (!['product_scene', 'recruitment', 'software_ecosystem', 'procurement'].includes(fact.kind)) return false;
