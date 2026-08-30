@@ -52,7 +52,7 @@
 - 公司现有中国大陆云的负载均衡或 API 网关终止 HTTPS，并对外提供 `/mcp`。
 - 部署为单个常驻 Node.js 容器或虚拟机实例（副本数固定为 1），不用函数计算或自动扩缩；Node.js 应用只监听私网端口，不直接暴露公网 HTTPS。
 - SQLite 数据库位于应用实例挂载的持久化云磁盘，不得写入容器临时文件系统；启用 WAL 模式和合理的 `busy_timeout`，以支持 MCP 请求与后台任务的并发读写。
-- 应用校验 MCP 请求的 `Host`，仅接受配置的公开 MCP 域名；请求带有 `Origin` 时，必须与明确的来源白名单匹配，否则拒绝。非浏览器 MCP 客户端未携带 `Origin` 时不拒绝，仍必须通过 Bearer Token 鉴权。
+- 应用校验 MCP 请求的 `Host`，仅接受配置的公开 MCP 域名。`ALLOWED_ORIGINS` 保存逗号分隔的完整 HTTPS Origin（scheme、hostname 和可选显式 port）；配置加载同时保留 `allowedOriginUrls` 完整值集合，并用 `new URL(v).hostname` 派生 `allowedOriginHostnames` 供 `createMcpExpressApp` 的 hostname 防护使用。SDK 防护之后、Bearer 认证之前增加同一文件内的小型 middleware：请求带有 `Origin` 时必须与 `allowedOriginUrls` 精确字符串匹配，否则返回 403；未携带 `Origin` 时放行到后续 Bearer 鉴权。
 - 企查查、豆包搜索和火山方舟的调用地址、模型标识和凭证统一通过环境变量读取，不写入业务代码。用户 Bearer Token 的明文只在创建时显示一次，由客户端的安全环境变量保存；服务端只保存其哈希。
 - 本地开发和测试从 `.env` 加载环境变量；生产环境由云密钥管理或部署平台注入同名环境变量，不依赖服务器磁盘上的 `.env` 文件。
 - `.env` 必须加入 `.gitignore`；仓库只保存不含真实凭证的 `.env.example`。真实凭证不得写入代码、SQLite、报告、日志或测试夹具。
@@ -867,12 +867,12 @@ P1 行业：
 - 搜索请求固定为 `SearchType=web`、`NeedUrl=true`，并校验 Query 长度、Count 上限、招聘查询的 `NeedContent=true` 和 `TimeRange=OneYear`。
 - 四个工具的输入、输出、有效和无效 Bearer Token。
 - 四个工具输出严格匹配冻结字段；`cache_hit` 只允许出现在 `get_company_profile` 和 `submit_assessment`，报告输出拒绝该字段。
-- HTTP 服务使用官方 v2 `createMcpHandler(factory)`，经 `toNodeHandler(handler)` 挂载到 `createMcpExpressApp`；Bearer 认证 middleware 位于 handler 前，验证后的 `authInfo` 传入每请求 factory，由 `authInfo.clientId` 构造 caller services，不手工创建服务端 transport。
+- HTTP 服务使用官方 v2 `createMcpHandler(factory)`，经 `toNodeHandler(handler)` 挂载到 `createMcpExpressApp`；后者只接收从完整 Origin 派生的 hostname 白名单。完整 Origin 精确校验 middleware 位于 Bearer 认证之前，Bearer 认证又位于 handler 之前；验证后的 `authInfo` 传入每请求 factory，由 `authInfo.clientId` 构造 caller services，不手工创建服务端 transport，也不新增安全模块。
 - 模拟 MCP 客户端显式设置 `versionNegotiation: { mode: 'auto' }`，完成连接和四工具闭环后，`client.getProtocolEra()` 必须为 `modern`。
 - `get_company_profile` 的企查查调用重试后仍失败时，返回 `source_status: "failed"` 和空候选，不返回泛化内部错误。
 - 缺失字段、错误类型、超长字符串、非法信用代码、非法 UUID 和未知字段返回参数错误。
 - Token CLI 创建、禁用和列表不泄露明文或哈希。
-- 非法 `Host` 和不在白名单中的 `Origin` 被拒绝；无 `Origin` 的有效客户端可调用。
+- 非法 `Host` 被拒绝。以允许值 `https://codex.example.cn:8443` 为例，完全相同的 Origin 可通过；错误 scheme `http://codex.example.cn:8443`、缺失/错误 port `https://codex.example.cn`、错误 hostname `https://evil.example.cn:8443` 均在认证前返回 403。无 `Origin` 的请求进入 Bearer 鉴权，有效客户端可调用。
 
 ### 2. 任务与缓存
 

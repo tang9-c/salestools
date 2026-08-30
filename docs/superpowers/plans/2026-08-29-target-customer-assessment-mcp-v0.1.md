@@ -69,7 +69,7 @@ README.md                            本地运行、Token、Codex 和部署说�
 
 **Interfaces:**
 - Produces: `loadConfig(env: NodeJS.ProcessEnv): AppConfig`
-- Produces: `AppConfig`，包含端口、数据库路径、Host/Origin、四个 QCC URL、搜索/方舟凭证、调用上限和缓存 TTL。
+- Produces: `AppConfig`，其中 `ALLOWED_ORIGINS` 保持完整 HTTPS Origin，并同时产生 `allowedOriginUrls:Set<string>` 与供 `createMcpExpressApp` 使用的 `allowedOriginHostnames:Set<string>`；另包含端口、数据库路径、Host、四个 QCC URL、搜索/方舟凭证、调用上限和缓存 TTL。
 
 - [ ] **Step 1: 初始化 Node 工程并写失败的配置测试**
 
@@ -104,6 +104,11 @@ describe('loadConfig', () => {
     maxQccCalls: 8, maxSearchCalls: 8, maxArkCalls: 2, maxTotalUpstreamCalls: 18,
     profileCacheTtlDays: 30, assessmentCacheTtlDays: 30, maxConcurrentAssessments: 1
   }));
+  it('keeps exact origin URLs and derives SDK hostnames', () => {
+    const config = loadConfig({ ...valid, ALLOWED_ORIGINS: 'https://codex.example.cn:8443,https://other.example.cn' } as NodeJS.ProcessEnv);
+    expect(config.allowedOriginUrls).toEqual(new Set(['https://codex.example.cn:8443', 'https://other.example.cn']));
+    expect(config.allowedOriginHostnames).toEqual(new Set(['codex.example.cn', 'other.example.cn']));
+  });
   it('rejects non-HTTPS upstreams without leaking values', () => {
     const env = { ...valid, ARK_API_URL: 'http://secret.invalid', PATH: '/private/bin' } as NodeJS.ProcessEnv;
     expect(() => loadConfig(env))
@@ -139,16 +144,26 @@ const CONFIG_KEYS = [
   'PROFILE_CACHE_TTL_DAYS', 'ASSESSMENT_CACHE_TTL_DAYS', 'MAX_CONCURRENT_ASSESSMENTS'
 ] as const;
 
-export type AppConfig = z.infer<typeof configSchema> & { allowedOrigins: Set<string> };
+export type AppConfig = z.infer<typeof configSchema> & {
+  allowedOriginUrls: Set<string>;
+  allowedOriginHostnames: Set<string>;
+};
 export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   const declaredOnly = Object.fromEntries(
     CONFIG_KEYS.flatMap(key => env[key] === undefined ? [] : [[key, env[key]]])
   );
   const parsed = configSchema.safeParse(declaredOnly);
   if (!parsed.success) throw new Error(`Invalid configuration: ${[...new Set(parsed.error.issues.map(i => String(i.path[0])))].join(', ')}`);
-  return { ...parsed.data, allowedOrigins: new Set(parsed.data.ALLOWED_ORIGINS.split(',').map(v => v.trim()).filter(Boolean)) };
+  const originUrls = parsed.data.ALLOWED_ORIGINS.split(',').map(v => v.trim()).filter(Boolean);
+  return {
+    ...parsed.data,
+    allowedOriginUrls: new Set(originUrls),
+    allowedOriginHostnames: new Set(originUrls.map(v => new URL(v).hostname))
+  };
 }
 ```
+
+The `ALLOWED_ORIGINS` schema validates every comma-separated value as a complete HTTPS Origin (scheme, hostname and optional explicit port, with no path/query/hash). Do not normalize away scheme or port in `allowedOriginUrls`; `allowedOriginHostnames` is the derived SDK guard input only.
 
 `.env.example` must list every config key with blank secrets. `.gitignore` must include `.env`, `*.sqlite*`, `dist/`, `coverage/`, `node_modules/`.
 
@@ -266,7 +281,7 @@ rtk git commit -m "feat: add data contracts and sqlite repositories"
 
 - [ ] **Step 1: 写失败测试**
 
-Test one-time plaintext output, stored SHA-256 hash only, disabled rejection, invalid Bearer rejection, valid no-Origin acceptance, invalid Host/Origin rejection, unknown MCP input fields, and the four Task 2 response unions. Assert authentication middleware runs before the MCP handler, forwards verified `req.auth` as factory `authInfo`, and `servicesFor(authInfo.clientId)` selects the caller. Assert only profile and submit schemas permit `cache_hit`, completed-cache submit includes `cached_at`, report rejects cache metadata, and a valid user can read an assessment created by another user. Also inspect registered tool descriptions: `get_company_profile` must say it is the default for basic or ambiguous requests; `submit_assessment` must say it is only for explicit formal assessment after the user confirms `legal_name` and `credit_code`.
+Test one-time plaintext output, stored SHA-256 hash only, disabled rejection, invalid Bearer rejection, valid Host, and Origin handling against `ALLOWED_ORIGINS=https://codex.example.cn:8443`: the exact full Origin is accepted; `http://codex.example.cn:8443`, `https://codex.example.cn`, and `https://evil.example.cn:8443` are each rejected with 403 before authentication; no `Origin` is accepted and still reaches Bearer authentication. Also test unknown MCP input fields and the four Task 2 response unions. Assert authentication middleware forwards verified `req.auth` as factory `authInfo`, and `servicesFor(authInfo.clientId)` selects the caller. Assert only profile and submit schemas permit `cache_hit`, completed-cache submit includes `cached_at`, report rejects cache metadata, and a valid user can read an assessment created by another user. Also inspect registered tool descriptions: `get_company_profile` must say it is the default for basic or ambiguous requests; `submit_assessment` must say it is only for explicit formal assessment after the user confirms `legal_name` and `credit_code`.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -291,12 +306,17 @@ const nodeHandler = toNodeHandler(handler);
 const app = createMcpExpressApp({
   host: '0.0.0.0',
   allowedHosts: [config.publicMcpHost],
-  allowedOrigins: [...config.allowedOrigins]
+  allowedOrigins: [...config.allowedOriginHostnames]
 });
-app.all('/mcp', authMiddleware, (req, res) => void nodeHandler(req, res, req.body));
+const exactOriginMiddleware: express.RequestHandler = (req, res, next) => {
+  const origin = req.get('Origin');
+  if (!origin || config.allowedOriginUrls.has(origin)) return next();
+  res.status(403).json({ error: 'Forbidden' });
+};
+app.all('/mcp', exactOriginMiddleware, authMiddleware, (req, res) => void nodeHandler(req, res, req.body));
 ```
 
-The handler creates a fresh `McpServer` per request and serves modern requests plus the default stateless legacy fallback. The auth middleware applies to every `/mcp` method; unauthenticated negotiation probes must receive the same authentication challenge as tool calls. Close `handler` during application shutdown.
+`createMcpExpressApp` receives hostnames because its built-in DNS-rebinding guard is hostname-based; `exactOriginMiddleware` preserves the stricter application rule by comparing the unmodified header against complete configured Origins before authentication. Missing `Origin` passes this middleware but never bypasses Bearer authentication. The handler creates a fresh `McpServer` per request and serves modern requests plus the default stateless legacy fallback. The auth middleware applies to every `/mcp` method; unauthenticated negotiation probes must receive the same authentication challenge as tool calls. Close `handler` during application shutdown.
 
 Tool handlers return both text `content` and the same small JSON as `structuredContent`; business `processing/failed` states are successful tool calls, not thrown protocol errors.
 Each registration declares both strict input and output schemas so `structuredContent` is contract-checked. External field names follow the design (`assessment_id`, `overall_opportunity`, `recommended_product`); conversion from internal camelCase happens only in `src/mcp/tools.ts`.
