@@ -1,0 +1,18 @@
+{
+  "Data": {
+    "Name": "测试制造有限公司",
+    "CreditCode": "91310000TEST000001",
+    "Status": "存续",
+    "Address": "上海市浦东新区测试路1号",
+    "Province": "上海",
+    "EconKind": "有限责任公司",
+    "StartDate": "2020-03-04",
+    "RegistCapi": "5000万元人民币",
+    "OperName": "张三",
+    "Industry": "专用设备制造业",
+    "FormerNames": ["测试机械有限公司"],
+    "EnglishNames": [],
+    "ParentLegalName": null,
+    "SubsidiaryLegalNames": []
+  }
+}

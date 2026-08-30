@@ -1,0 +1,11 @@
+{
+  "Data": {
+    "Name": "测试制造有限公司",
+    "ShortNames": ["测试制造"],
+    "Brands": ["测试牌"],
+    "Industry": "专用设备制造业",
+    "EmployeeRange": "100-499",
+    "Website": "https://www.example.cn",
+    "Introduction": "从事精密工业装备研发与制造。"
+  }
+}

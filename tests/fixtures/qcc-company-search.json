@@ -1,0 +1,11 @@
+{
+  "Data": [
+    {
+      "Name": "测试制造有限公司",
+      "CreditCode": "91310000TEST000001",
+      "Status": "存续",
+      "Address": "上海市浦东新区测试路1号",
+      "MatchReason": "名称完全匹配"
+    }
+  ]
+}

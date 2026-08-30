@@ -1,0 +1,16 @@
+{
+  "Data": [
+    {
+      "Date": "2026-06-15",
+      "Round": "A轮",
+      "Amount": null,
+      "Investors": ["示例创投", "产业基金"],
+      "Url": "https://www.qcc.com/example/financing-1"
+    },
+    {
+      "Date": null,
+      "Type": "定向增发",
+      "Investors": []
+    }
+  ]
+}
