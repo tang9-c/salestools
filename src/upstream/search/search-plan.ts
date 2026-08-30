@@ -23,6 +23,8 @@ export const SearchQuerySchema = z.object({
   ]),
   subjectLegalName: z.string().min(1),
   subjectAliases: z.array(z.string().min(1)),
+  subjectOfficialDomains: z.array(z.string().min(1)),
+  subjectRegisteredAddress: z.string().min(1).nullable(),
   searchedName: z.string().min(1),
 }).strict().superRefine((query, context) => {
   const isRecruitment = query.purpose === 'recruitment';
@@ -78,6 +80,8 @@ export function buildSearchPlan(identity: IdentityProfile): SearchQuery[] {
       purpose: plan.purpose,
       subjectLegalName: identity.legalName,
       subjectAliases: aliases,
+      subjectOfficialDomains: [...identity.officialDomains],
+      subjectRegisteredAddress: identity.registeredAddress,
       searchedName,
     });
   });

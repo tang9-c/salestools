@@ -4,6 +4,7 @@ import type { IdentityProfile } from '../src/contracts/index.js';
 import { UpstreamError } from '../src/orchestration/retry.js';
 import { DoubaoSearchClient } from '../src/upstream/search/doubao-client.js';
 import { buildSearchPlan, SearchQuerySchema } from '../src/upstream/search/search-plan.js';
+import { mapDoubaoSearchResponse } from '../src/upstream/search/mapper.js';
 
 const identity: IdentityProfile = {
   legalName: '测试制造有限公司',
@@ -22,6 +23,15 @@ function fixture(): unknown {
   return JSON.parse(readFileSync(new URL('./fixtures/doubao-search.json', import.meta.url), 'utf8'));
 }
 
+function searchPayload(result: Record<string, unknown>, logId?: string): unknown {
+  return {
+    Code: 0,
+    Message: 'success',
+    ...(logId === undefined ? {} : { LogId: logId }),
+    Result: { WebResults: [{ Title: '网页结果', SortId: 1, ...result }] },
+  };
+}
+
 describe('buildSearchPlan', () => {
   it('builds eight bounded deterministic web queries from only the confirmed legal name or aliases', () => {
     const first = buildSearchPlan(identity);
@@ -36,6 +46,7 @@ describe('buildSearchPlan', () => {
       expect(query.SearchType).toBe('web');
       expect(query.Count).toBe(10);
       expect(query.Filter.NeedUrl).toBe(true);
+      expect(query.subjectOfficialDomains).toEqual(identity.officialDomains);
       expect([identity.legalName, ...identity.aliases].some(name => query.Query.includes(name))).toBe(true);
       expect(query.Query).not.toContain(identity.formerNames[0]);
       expect(query.Query).not.toContain(identity.englishNames[0]);
@@ -149,6 +160,93 @@ describe('DoubaoSearchClient', () => {
       logId: 'doubao-log-123',
     });
     expect(client.search.length).toBe(1);
+  });
+
+  it('uses a stable Query-and-URL hash when LogId is absent without embedding source content', () => {
+    const [firstQuery, secondQuery] = buildSearchPlan(identity);
+    const firstPayload = searchPayload({ Url: 'https://news.example.net/item' });
+    const otherUrlPayload = searchPayload({ Url: 'https://news.example.net/other-item' });
+    const now = new Date('2026-08-29T12:00:00.000Z');
+
+    const first = mapDoubaoSearchResponse(firstPayload, firstQuery, now)[0].evidenceId;
+    const repeat = mapDoubaoSearchResponse(firstPayload, firstQuery, now)[0].evidenceId;
+    const otherQuery = mapDoubaoSearchResponse(firstPayload, secondQuery, now)[0].evidenceId;
+    const otherUrl = mapDoubaoSearchResponse(otherUrlPayload, firstQuery, now)[0].evidenceId;
+
+    expect(first).toBe(repeat);
+    expect(new Set([first, otherQuery, otherUrl])).toHaveLength(3);
+    expect(first).toMatch(/^doubao-sha256-[0-9a-f]{24}$/);
+    expect(first).not.toContain(firstQuery.Query);
+    expect(first).not.toContain('news.example.net');
+  });
+
+  it.each([
+    'javascript:alert(1)',
+    'data:text/plain,company',
+    'mailto:sales@example.cn',
+    'https://user:password@example.cn/private',
+  ])('rejects unsafe result URL %s as a typed invalid response', url => {
+    expect(() => mapDoubaoSearchResponse(
+      searchPayload({ Url: url }),
+      buildSearchPlan(identity)[0],
+      new Date('2026-08-29T12:00:00.000Z'),
+    )).toThrow(expect.objectContaining({
+      name: 'UpstreamError', source: 'doubao_search', code: 'INVALID_RESPONSE',
+    }));
+  });
+
+  it('confirms a result on an official domain even when the page omits the company name', () => {
+    const item = mapDoubaoSearchResponse(
+      searchPayload({ Url: 'https://www.example.cn/products', Content: '产品与技术中心' }),
+      buildSearchPlan(identity)[0],
+      new Date('2026-08-29T12:00:00.000Z'),
+    )[0];
+
+    expect(item).toMatchObject({
+      entityScope: 'legal_entity', entityMatch: 'confirmed',
+      matchBasis: ['URL 域名匹配已确认官网域名'],
+    });
+  });
+
+  it('keeps a verified alias alone unverified', () => {
+    const item = mapDoubaoSearchResponse(
+      searchPayload({ Url: 'https://news.example.net/item', Title: '测试制造发布新产品' }),
+      buildSearchPlan(identity)[0],
+      new Date('2026-08-29T12:00:00.000Z'),
+    )[0];
+
+    expect(item).toMatchObject({
+      mentionedName: '测试制造', entityScope: 'unknown', entityMatch: 'unverified',
+      matchBasis: ['网页仅提及已验证简称，缺少额外身份依据'],
+    });
+  });
+
+  it('marks an alias probable only with the exact confirmed registered address', () => {
+    const identityWithAddress = { ...identity, registeredAddress: '上海市浦东新区测试路1号' };
+    const item = mapDoubaoSearchResponse(
+      searchPayload({
+        Url: 'https://news.example.net/item',
+        Title: '测试制造招聘公告',
+        Content: '办公地址：上海市浦东新区测试路1号',
+      }),
+      buildSearchPlan(identityWithAddress)[0],
+      new Date('2026-08-29T12:00:00.000Z'),
+    )[0];
+
+    expect(item).toMatchObject({
+      mentionedName: '测试制造', entityScope: 'legal_entity', entityMatch: 'probable',
+      matchBasis: ['网页提及已验证简称', '网页同时包含已确认注册地址'],
+    });
+  });
+
+  it('keeps a result with no known name or official domain unverified', () => {
+    const item = mapDoubaoSearchResponse(
+      searchPayload({ Url: 'https://unrelated.example.net/item', Content: '某制造企业动态' }),
+      buildSearchPlan(identity)[0],
+      new Date('2026-08-29T12:00:00.000Z'),
+    )[0];
+
+    expect(item).toMatchObject({ entityScope: 'unknown', entityMatch: 'unverified' });
   });
 
   it.each([

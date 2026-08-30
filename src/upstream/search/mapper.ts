@@ -1,13 +1,27 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { ResearchItemSchema, type ResearchItem } from '../../contracts/index.js';
 import { UpstreamError } from '../../orchestration/retry.js';
 import type { SearchQuery } from './search-plan.js';
 
 const OptionalTextSchema = z.string().nullable().optional();
+const SafeWebUrlSchema = z.string().superRefine((value, context) => {
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.hostname.length === 0) {
+      context.addIssue({ code: 'custom', message: 'expected an HTTP(S) URL with a hostname' });
+    }
+    if (url.username.length > 0 || url.password.length > 0) {
+      context.addIssue({ code: 'custom', message: 'embedded URL credentials are forbidden' });
+    }
+  } catch {
+    context.addIssue({ code: 'custom', message: 'expected a valid URL' });
+  }
+});
 const WebResultSchema = z.object({
   Title: z.string().trim().min(1),
   SiteName: OptionalTextSchema,
-  Url: z.url(),
+  Url: SafeWebUrlSchema,
   Summary: OptionalTextSchema,
   Content: OptionalTextSchema,
   PublishTime: z.union([z.string(), z.number()]).nullable().optional(),
@@ -55,6 +69,7 @@ function publishedTimestamp(value: string | number | null | undefined): string |
 
 function attribution(
   query: SearchQuery,
+  url: URL,
   title: string,
   summary: string | null,
   content: string | null,
@@ -69,13 +84,32 @@ function attribution(
     };
   }
 
+  const normalizedResultDomain = normalizeDomain(url.hostname);
+  const officialDomainMatch = query.subjectOfficialDomains.some(domain => normalizeDomain(domain) === normalizedResultDomain);
+  if (officialDomainMatch) {
+    return {
+      mentionedName: query.searchedName,
+      entityScope: 'legal_entity',
+      entityMatch: 'confirmed',
+      matchBasis: ['URL 域名匹配已确认官网域名'],
+    };
+  }
+
   const alias = query.subjectAliases.find(name => pageText.includes(name));
   if (alias !== undefined) {
+    if (query.subjectRegisteredAddress !== null && pageText.includes(query.subjectRegisteredAddress)) {
+      return {
+        mentionedName: alias,
+        entityScope: 'legal_entity',
+        entityMatch: 'probable',
+        matchBasis: ['网页提及已验证简称', '网页同时包含已确认注册地址'],
+      };
+    }
     return {
       mentionedName: alias,
-      entityScope: 'legal_entity',
-      entityMatch: 'probable',
-      matchBasis: ['网页内容提及已验证简称，仍需其他身份要素确认'],
+      entityScope: 'unknown',
+      entityMatch: 'unverified',
+      matchBasis: ['网页仅提及已验证简称，缺少额外身份依据'],
     };
   }
 
@@ -85,6 +119,30 @@ function attribution(
     entityMatch: 'unverified',
     matchBasis: ['仅搜索查询使用已确认名称，网页内容未确认主体'],
   };
+}
+
+function normalizeDomain(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  let hostname = trimmed;
+  try {
+    hostname = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+  return hostname.replace(/^www\./, '').replace(/\.$/, '');
+}
+
+function evidenceId(logId: string | null, query: SearchQuery, url: URL, position: number): string {
+  if (logId !== null) return `doubao-${logId}-${position}`;
+  const digest = createHash('sha256')
+    .update(query.Query)
+    .update('\0')
+    .update(url.toString())
+    .update('\0')
+    .update(String(position))
+    .digest('hex')
+    .slice(0, 24);
+  return `doubao-sha256-${digest}`;
 }
 
 export function mapDoubaoSearchResponse(
@@ -101,7 +159,7 @@ export function mapDoubaoSearchResponse(
     const content = nullableText(result.Content);
     const url = new URL(result.Url);
     return ResearchItemSchema.parse({
-      evidenceId: `doubao-${logId ?? 'no-log-id'}-${result.SortId}`,
+      evidenceId: evidenceId(logId, query, url, result.SortId),
       source: 'doubao_search',
       sourceKind: 'web',
       title: result.Title,
@@ -112,7 +170,7 @@ export function mapDoubaoSearchResponse(
       content,
       publishedAt: publishedTimestamp(result.PublishTime),
       collectedAt: collectedAt.toISOString(),
-      ...attribution(query, result.Title, summary, content),
+      ...attribution(query, url, result.Title, summary, content),
       query: query.Query,
       position: result.SortId,
       logId,
