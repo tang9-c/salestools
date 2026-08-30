@@ -85,8 +85,9 @@ const ChineseContactSchema = z.object({
   record.联系方式信息.邮箱,
 ].some(values => Array.isArray(values) && values.length > 0));
 
+const NonNegativeIntegerNumberSchema = z.number().int().nonnegative();
 const CanonicalNonNegativeIntegerSchema = z.union([
-  z.number().int().nonnegative(),
+  NonNegativeIntegerNumberSchema,
   z.string().regex(/^(?:0|[1-9]\d*)$/u),
 ]);
 
@@ -113,8 +114,8 @@ const ChineseRiskSchema = z.object({
   企业名称: RequiredChineseStringSchema,
   统一社会信用代码: OptionalChineseStringSchema,
   摘要: OptionalChineseStringSchema,
-  有记录因子数: z.number().finite().optional(),
-  无记录因子数: z.number().finite().optional(),
+  有记录因子数: NonNegativeIntegerNumberSchema.optional(),
+  无记录因子数: NonNegativeIntegerNumberSchema.optional(),
   风险因子扫描: z.array(ChineseRiskFactorSchema).optional(),
 }).passthrough().refine(record => nonBlank(record.摘要)
   || typeof record.有记录因子数 === 'number'

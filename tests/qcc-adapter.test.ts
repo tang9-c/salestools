@@ -382,6 +382,50 @@ describe('QCC mapping and formal collection', () => {
     expect(content.summary).toContain('司法案件，条目数：2');
   });
 
+  it.each([
+    ['有记录因子数', -1],
+    ['有记录因子数', 1.5],
+    ['有记录因子数', ''],
+    ['有记录因子数', ' '],
+    ['有记录因子数', null],
+    ['有记录因子数', '说明'],
+    ['有记录因子数', '01'],
+    ['有记录因子数', '0'],
+    ['有记录因子数', '2'],
+    ['无记录因子数', -1],
+    ['无记录因子数', 1.5],
+    ['无记录因子数', ''],
+    ['无记录因子数', ' '],
+    ['无记录因子数', null],
+    ['无记录因子数', '说明'],
+    ['无记录因子数', '01'],
+    ['无记录因子数', '0'],
+    ['无记录因子数', '2'],
+  ])('rejects invalid top-level Chinese risk count %s=%j', (field, value) => {
+    expect(() => mapQccToolResult('risk', 'get_company_risk_scan', {
+      企业名称: identity.legalName,
+      [field]: value,
+      风险因子扫描: [{ 风险因子: '经营异常', 条目数: 0 }],
+    }, identity, new Date('2026-08-29T12:00:00.000Z')))
+      .toThrow(expect.objectContaining({ code: 'INVALID_RESPONSE' }));
+  });
+
+  it.each([
+    ['有记录因子数', 0, 0],
+    ['有记录因子数', 2, 2],
+    ['无记录因子数', 0, null],
+    ['无记录因子数', 2, null],
+  ])('maps explicit top-level Chinese risk count %s=%d without inference', (field, value, expectedRiskCount) => {
+    const mapped = mapQccToolResult('risk', 'get_company_risk_scan', {
+      企业名称: identity.legalName,
+      [field]: value,
+    }, identity, new Date('2026-08-29T12:00:00.000Z'));
+    const content = JSON.parse(mapped.items[0].content ?? '{}') as { riskCount: unknown; summary: string };
+
+    expect(content.riskCount).toBe(expectedRiskCount);
+    expect(content.summary).toContain(`${field}：${value}`);
+  });
+
   it('maps the sanitized real QCC risk-factor field combination into a consumable summary', () => {
     const mapped = mapQccToolResult(
       'risk', 'get_company_risk_scan', fixture('qcc-real-risk-factor-valid.json'), identity,
