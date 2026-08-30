@@ -136,12 +136,12 @@ export function createApplication(
     signal: abortController.signal,
   });
   const servicesFor = (userId: string): McpServices => ({
-    getCompanyProfile: input => profileService.get(input.query, input.regionHint),
-    submitAssessment: input => assessmentService.submit(input, userId),
-    getAssessmentStatus: input => assessmentService.status(input),
-    getAssessmentReport: input => assessmentService.report(input),
+    getCompanyProfile: input => activity.track(() => profileService.get(input.query, input.regionHint)),
+    submitAssessment: input => activity.track(() => assessmentService.submit(input, userId)),
+    getAssessmentStatus: input => activity.track(() => assessmentService.status(input)),
+    getAssessmentReport: input => activity.track(() => assessmentService.report(input)),
   });
-  const app = createHttpApp(config, token => tokenService.verify(token), servicesFor, activity);
+  const app = createHttpApp(config, token => tokenService.verify(token), servicesFor);
 
   let upstreamClosing: Promise<void> | null = null;
   const closeUpstreams = (): Promise<void> => {
@@ -173,15 +173,20 @@ export function createApplication(
       closing = (async () => {
         queue.stopAccepting();
         const listenerClosed = server === null ? Promise.resolve() : closeServer(server);
-        const businessSettled = Promise.all([activity.whenIdle(), listenerClosed]).then(() => undefined);
-        const completedNormally = await waitAtMost(businessSettled, timeoutMs);
-        if (!completedNormally) {
+        void listenerClosed.catch(() => undefined);
+        const normalDrain = listenerClosed.then(() => activity.whenIdle());
+        const completedNormally = await waitAtMost(normalDrain, timeoutMs);
+        if (completedNormally) {
+          await closeUpstreams();
+          await app.closeMcpHandler();
+        } else {
           abortController.abort();
           await closeUpstreams();
-          await businessSettled;
+          void app.closeMcpHandler().catch(() => undefined);
+          server?.closeIdleConnections();
+          server?.closeAllConnections();
+          await activity.whenIdle();
         }
-        await closeUpstreams();
-        await app.closeMcpHandler();
         database.close();
       })();
       return closing;

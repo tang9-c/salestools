@@ -1,5 +1,7 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { createConnection, type Socket } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
@@ -231,5 +233,102 @@ describe('application shutdown lifecycle', () => {
     expect(searchedNames.every(name => name === FIRST.legalName)).toBe(true);
     expect(events).toContain('search-close');
     expect(events.at(-1)).toBe('database-close');
+  });
+
+  it('tracks profile business work after the HTTP client disconnects and closes SQLite only after retry settles', async () => {
+    let rejectLookup!: (error: unknown) => void;
+    let attempts = 0;
+    let closed = false;
+    let attemptsAtDatabaseClose = 0;
+    const database = initializeDatabase(new DatabaseSync(':memory:'));
+    const originalClose = database.close.bind(database);
+    vi.spyOn(database, 'close').mockImplementation(() => {
+      attemptsAtDatabaseClose = attempts;
+      originalClose();
+    });
+    const runtime = createApplication(config, {
+      database,
+      qccGateway: {
+        call: async () => {
+          attempts += 1;
+          if (closed) throw new Error('transport already closed');
+          return new Promise((_resolve, reject) => { rejectLookup = reject; });
+        },
+        close: async () => {
+          closed = true;
+          setTimeout(() => rejectLookup(new Error('transport closed')), 10);
+        },
+      },
+      searchClient: { search: async () => [] },
+      ark: { extract: async () => { throw new Error('unused'); } },
+      logSink: { write: () => undefined },
+    });
+    runtimes.push(runtime);
+    const token = runtime.tokenService.create('sales-a');
+    const listener = await runtime.listen(0, '127.0.0.1');
+    const port = (listener.address() as AddressInfo).port;
+    const request = httpRequest({
+      hostname: '127.0.0.1', port, path: '/mcp', method: 'POST',
+      headers: {
+        Host: '127.0.0.1', Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json', Accept: 'application/json, text/event-stream',
+      },
+    });
+    request.on('error', () => undefined);
+    request.end(JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'get_company_profile', arguments: { query: FIRST.legalName } },
+    }));
+    await eventually(() => expect(attempts).toBe(1));
+    request.destroy();
+
+    await runtime.close(5);
+
+    expect(attempts).toBe(2);
+    expect(attemptsAtDatabaseClose).toBe(2);
+  });
+
+  it('forces a half-open HTTP connection closed after timeout without waiting on listener forever', async () => {
+    const events: string[] = [];
+    let databaseCloses = 0;
+    const database = initializeDatabase(new DatabaseSync(':memory:'));
+    const originalClose = database.close.bind(database);
+    vi.spyOn(database, 'close').mockImplementation(() => {
+      databaseCloses += 1;
+      events.push('database-close');
+      originalClose();
+    });
+    const runtime = createApplication(config, {
+      database,
+      qccGateway: { call: async () => ({ Data: [] }), close: async () => { events.push('qcc-close'); } },
+      searchClient: { search: async () => [] },
+      ark: { extract: async () => { throw new Error('unused'); } },
+      logSink: { write: () => undefined },
+    });
+    runtimes.push(runtime);
+    const listener = await runtime.listen(0, '127.0.0.1');
+    const port = (listener.address() as AddressInfo).port;
+    let socket: Socket | undefined;
+    socket = createConnection({ host: '127.0.0.1', port });
+    await new Promise<void>((resolve, reject) => {
+      socket!.once('connect', resolve);
+      socket!.once('error', reject);
+    });
+    socket.write('POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 999\r\n\r\n{');
+
+    const shutdown = runtime.close(5);
+    const outcome = await Promise.race([
+      shutdown.then(() => 'closed'),
+      new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), 100)),
+    ]);
+    if (outcome === 'timeout') socket.destroy();
+    await shutdown;
+
+    expect(outcome).toBe('closed');
+    await eventually(() => expect(socket.destroyed).toBe(true));
+    expect(databaseCloses).toBe(1);
+    expect(events.at(-1)).toBe('database-close');
+    await runtime.close(5);
+    expect(databaseCloses).toBe(1);
   });
 });

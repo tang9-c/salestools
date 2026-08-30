@@ -187,4 +187,12 @@ describe('MCP HTTP security boundary', () => {
       expect(response.status).toBe(401);
     }
   });
+
+  it('memoizes MCP handler shutdown so repeated close requests share one operation', async () => {
+    const app = createHttpApp(config, () => ({ userId: 'user-1' }), noOpServices);
+    const first = app.closeMcpHandler();
+    const second = app.closeMcpHandler();
+    expect(second).toBe(first);
+    await first;
+  });
 });
