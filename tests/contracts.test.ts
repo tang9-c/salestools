@@ -123,6 +123,7 @@ const report = {
   summaryReasons: [],
   latestFinancing: null,
   products,
+  facts: evidenceBundle.facts,
   evidence: [reference],
   salesQuestions: [],
   risks: [],
@@ -181,6 +182,10 @@ describe('shared contracts', () => {
       summaryReasons: [],
     }).success).toBe(false);
     expect(ReportModelSchema.safeParse({ ...report, extra: true }).success).toBe(false);
+    expect(ReportModelSchema.safeParse({
+      ...report,
+      facts: [{ ...report.facts[0], extra: true }],
+    }).success).toBe(false);
     expect(ReportModelSchema.safeParse({ ...report, sourceStatus: { ...report.sourceStatus, extra: true } }).success).toBe(false);
   });
 

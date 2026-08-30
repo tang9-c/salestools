@@ -57,6 +57,9 @@ describe('ARK_SYSTEM_PROMPT', () => {
     expect(ARK_SYSTEM_PROMPT).toMatch(/不得调用.*工具/);
     expect(ARK_SYSTEM_PROMPT).toMatch(/P1.*P2.*non_target.*unverified/s);
     expect(ARK_SYSTEM_PROMPT).toMatch(/不得创建.*来源.*别名.*URL/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/不得.*高管人格.*年龄.*决策风格/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/不得.*营收.*估算.*人效/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/不得.*采购意向.*计划采购/s);
     for (const field of [
       'identity', 'industryClassification', 'industryEvidenceIds', 'evidence', 'facts',
       'financingRecords', 'conflicts', 'gaps', 'collectedAt',

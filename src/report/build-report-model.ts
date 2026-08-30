@@ -78,13 +78,12 @@ function isConfirmedTargetReference(reference: EvidenceReference | undefined): b
   return reference?.entityScope === 'legal_entity' && reference.entityMatch === 'confirmed';
 }
 
-function reliableTargetFacts(
+function attributedTargetFacts(
   facts: readonly EvidenceFact[],
   referencesById: ReadonlyMap<string, EvidenceReference>,
 ): EvidenceFact[] {
   return facts.filter(fact => fact.entityScope === 'legal_entity'
     && fact.entityMatch === 'confirmed'
-    && fact.strength !== 'weak'
     && fact.evidenceIds.length > 0
     && fact.evidenceIds.every(evidenceId => isConfirmedTargetReference(referencesById.get(evidenceId))));
 }
@@ -128,11 +127,12 @@ export function buildReportModel(
   assertKnownEvidenceIds(evidence, assessment);
 
   const referencesById = new Map(evidence.evidence.map(reference => [reference.evidenceId, reference]));
-  const reliableFacts = reliableTargetFacts(evidence.facts, referencesById);
+  const reportFacts = attributedTargetFacts(evidence.facts, referencesById);
+  const reliableFacts = reportFacts.filter(fact => fact.strength !== 'weak');
   const latest = latestFinancing(evidence, referencesById);
   const selectedEvidenceIds = new Set([
     ...evidence.industryEvidenceIds,
-    ...reliableFacts.flatMap(fact => fact.evidenceIds),
+    ...reportFacts.flatMap(fact => fact.evidenceIds),
     ...(latest?.evidenceIds ?? []),
     ...assessment.products.flatMap(product => product.evidenceIds),
   ]);
@@ -159,6 +159,7 @@ export function buildReportModel(
     summaryReasons: assessment.summaryReasons,
     latestFinancing: latest,
     products: assessment.products,
+    facts: reportFacts,
     evidence: evidence.evidence.filter(reference => selectedEvidenceIds.has(reference.evidenceId)),
     salesQuestions: assessment.recommendedProduct === null
       ? []

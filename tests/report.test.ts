@@ -11,7 +11,7 @@ import {
   type ReportModel,
 } from '../src/contracts/index.js';
 import { buildReportModel } from '../src/report/build-report-model.js';
-import { renderMarkdown } from '../src/report/render-markdown.js';
+import { presentStoredReport, renderMarkdown } from '../src/report/render-markdown.js';
 
 const NOW = new Date('2026-08-30T12:00:00.000Z');
 const COLLECTED_AT = '2026-08-29T12:00:00.000Z';
@@ -100,9 +100,6 @@ function evidenceBundle(overrides: Partial<EvidenceBundle> = {}): EvidenceBundle
       fact('scene', '招聘 Windchill PLM 管理员负责 BOM 变更', 'recruitment', ['recruitment'], ['windchill']),
       fact('scale', '研发组织覆盖机械、电子与软件团队', 'organization', ['industry'], ['windchill']),
       fact('risk', '存在一项经营风险，需在接触前复核', 'risk', ['risk']),
-      fact('unsupported-revenue', '按员工人数估算真实营收为 5 亿元', 'budget', ['industry']),
-      fact('unsupported-personality', '董事长年龄较大所以决策保守', 'decision_power', ['industry']),
-      fact('unsupported-intent', '公司一定有采购意向', 'procurement', ['industry']),
     ],
     financingRecords: [{
       occurredAt: '2026-08-10T12:00:00.000Z',
@@ -167,10 +164,12 @@ describe('assessment report', () => {
     expect(model).not.toHaveProperty('financingStatus');
     expect(model.latestFinancing).toMatchObject({ typeOrRound: 'A 轮', disclosedAmount: '1 亿元' });
     expect(model.products).toHaveLength(7);
+    expect(model.facts.map(fact => fact.factId)).toEqual(['scene', 'scale', 'risk']);
     expect(markdown).toContain('[招聘平台](<https://jobs.example/plm-role>)');
     expect(markdown).toContain('2026-08-20T12:00:00.000Z');
     expect(markdown).toContain('官网域名与法定全称一致');
     expect(markdown).toContain('豆包搜索 | failed');
+    expect(markdown).not.toContain('Feigenbaum QMS：低');
     expect(markdown).not.toMatch(/真实营收|决策保守|一定有采购意向|cache_hit|cached_at/);
     expect(markdown).toMatchInlineSnapshot(`
       "# 目标客户体检报告
@@ -203,10 +202,10 @@ describe('assessment report', () => {
 
       | 事实 | 提及主体 | 归属 | 匹配 | 匹配依据 | 来源 | 时间 | 支持结论 |
       | --- | --- | --- | --- | --- | --- | --- | --- |
-      | 公司产品与行业介绍 | 测试智能装备有限公司 | 法定主体 | confirmed | 官网域名与法定全称一致 | [测试公司官网](<https://company.example/industry>) | 2026-08-20T12:00:00.000Z | PTC Windchill：高；Feigenbaum QMS：低；PTC Creo：低；Dassault Systèmes CATIA：低；Dassault Systèmes Abaqus：低；CST Studio Suite：低；Dassault Systèmes SolidWorks：低 |
-      | PLM 管理员招聘 | 测试智能装备有限公司 | 法定主体 | confirmed | 官网域名与法定全称一致 | [招聘平台](<https://jobs.example/plm-role>) | 2026-08-20T12:00:00.000Z | PTC Windchill：高 |
-      | A 轮融资公告 | 测试智能装备有限公司 | 法定主体 | confirmed | 官网域名与法定全称一致 | [交易中心](<https://exchange.example/financing>) | 2026-08-20T12:00:00.000Z | 最近融资概况 |
-      | 经营风险扫描 | 测试智能装备有限公司 | 法定主体 | confirmed | 官网域名与法定全称一致 | [企查查](<https://qcc.example/risk>) | 2026-08-20T12:00:00.000Z | 企业画像、风险或缺口 |
+      | 招聘 Windchill PLM 管理员负责 BOM 变更 | 测试智能装备有限公司 | 法定主体 | confirmed | 官网域名与法定全称一致 | [招聘平台](<https://jobs.example/plm-role>) | 2026-08-20T12:00:00.000Z | PTC Windchill：高 |
+      | 研发组织覆盖机械、电子与软件团队 | 测试智能装备有限公司 | 法定主体 | confirmed | 官网域名与法定全称一致 | [测试公司官网](<https://company.example/industry>) | 2026-08-20T12:00:00.000Z | PTC Windchill：高 |
+      | 存在一项经营风险，需在接触前复核 | 测试智能装备有限公司 | 法定主体 | confirmed | 官网域名与法定全称一致 | [企查查](<https://qcc.example/risk>) | 2026-08-20T12:00:00.000Z | 风险事实 |
+      | 融资记录：2026-08-10T12:00:00.000Z；A 轮；1 亿元；投资方：测试基金 | 测试智能装备有限公司 | 法定主体 | confirmed | 官网域名与法定全称一致 | [交易中心](<https://exchange.example/financing>) | 2026-08-20T12:00:00.000Z | 最近融资概况 |
 
       ## 销售建议
 
@@ -344,7 +343,24 @@ describe('assessment report', () => {
 
     expect(model.companyScaleClues).toEqual([]);
     expect(model.risks).toEqual([]);
+    expect(model.facts).toEqual([]);
     expect(model.latestFinancing).toBeNull();
+  });
+
+  it('keeps weak but attributed facts in the audit chain without promoting them into the summary', () => {
+    const weakFact = fact('weak-role', '招聘普通研发工程师', 'recruitment', ['industry']);
+    weakFact.strength = 'weak';
+    const input = evidenceBundle({
+      facts: [weakFact],
+      financingRecords: [],
+      conflicts: [],
+      gaps: [],
+    });
+
+    const model = buildReportModel(identity, input, assessment(), sourceStatus);
+
+    expect(model.facts.map(item => item.factId)).toContain('weak-role');
+    expect(model.companyScaleClues).not.toContain(weakFact.statement);
   });
 
   it('escapes table pipes and newlines and never creates non-http links', () => {
@@ -357,7 +373,13 @@ describe('assessment report', () => {
     const input = evidenceBundle({
       industryEvidenceIds: ['unsafe'],
       evidence: [unsafe],
-      facts: [],
+      facts: [fact(
+        'unsafe-fact',
+        '官网 | 标题\n第二行<script>alert(1)</script>',
+        'industry',
+        ['unsafe'],
+        ['windchill'],
+      )],
       financingRecords: [],
       conflicts: [],
       gaps: [],
@@ -370,6 +392,22 @@ describe('assessment report', () => {
     expect(markdown).toContain('来源 \\| 名称&lt;img src=x&gt;（链接不可用）');
     expect(markdown).not.toContain('javascript:');
     expect(markdown).not.toMatch(/<script>|<img/);
+  });
+
+  it('presents stored markdown by completed_at without persisting a ReportModel', () => {
+    const generated = renderMarkdown(buildReportModel(identity, evidenceBundle(), assessment(), sourceStatus));
+    const completedAt = '2026-08-20T12:00:00.000Z';
+
+    const exactSevenDays = presentStoredReport(generated, completedAt, new Date('2026-08-27T12:00:00.000Z'));
+    expect(exactSevenDays.dynamicSignalFreshness).toBe('current');
+    expect(exactSevenDays.markdown).not.toContain('动态信号已超过 7 天');
+
+    const eighthDay = presentStoredReport(generated, completedAt, new Date('2026-08-28T12:00:00.000Z'));
+    expect(eighthDay.dynamicSignalFreshness).toBe('stale');
+    expect(eighthDay.markdown.match(/动态信号已超过 7 天/gu)).toHaveLength(1);
+
+    const normalized = presentStoredReport(eighthDay.markdown, completedAt, new Date('2026-08-29T12:00:00.000Z'));
+    expect(normalized.markdown.match(/动态信号已超过 7 天/gu)).toHaveLength(1);
   });
 
   it('warns when dynamic signals are older than seven days and never exposes cache metadata', () => {

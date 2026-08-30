@@ -236,7 +236,7 @@ Define `UtcTimestampSchema` as an ISO 8601 UTC string emitted by `Date.toISOStri
 - `ResearchBundle`: `identity:IdentityProfile`, `items:ResearchItem[]`, `sourceStatus:{qcc:{status:ResearchSourceStatus,error:string|null},doubaoSearch:{status:ResearchSourceStatus,error:string|null}}`, `gaps:string[]`, `collectedAt:UtcTimestamp`. `ResearchItem` is exactly `evidenceId:string`, `source:'qcc'|'doubao_search'`, `sourceKind:'company'|'risk'|'ipr'|'operation'|'web'`, `title:string`, `url:string`, `originalPublisher:string|null`, `originalDomain:string|null`, `summary:string|null`, `content:string|null`, `publishedAt:UtcTimestamp|null`, `collectedAt:UtcTimestamp`, `mentionedName:string`, `entityScope:EntityScope`, `entityMatch:EntityMatch`, `matchBasis:string[]`, `query:string|null`, `position:number|null`, `logId:string|null`.
 - `EvidenceBundle`: `identity:IdentityProfile`, `industryClassification:'P1'|'P2'|'non_target'|'unverified'`, `industryEvidenceIds:string[]`, `evidence:EvidenceReference[]`, `facts:EvidenceFact[]`, `financingRecords:FinancingRecord[]`, `conflicts:string[]`, `gaps:string[]`, `collectedAt:UtcTimestamp`. `EvidenceReference` is exactly `evidenceId`, `title`, `url`, nullable `originalPublisher/originalDomain/publishedAt`, `collectedAt`, `mentionedName`, `entityScope`, `entityMatch`, `matchBasis`; `EvidenceFact` is exactly `factId:string`, `statement:string`, `kind:FactKind`, `productTags:ProductKey[]`, `strength:'direct'|'supporting'|'weak'`, `evidenceIds:string[]`, `entityScope:EntityScope`, `entityMatch:EntityMatch`, `matchBasis:string[]`; `FinancingRecord` is exactly `occurredAt:UtcTimestamp|null`, `typeOrRound:string|null`, `disclosedAmount:string|null`, `investors:string[]`, `evidenceIds:string[]`.
 - `OpportunityAssessment`: `products:ProductOpportunity[]`, `overallOpportunity:OpportunityLevel`, `recommendedProduct:ProductKey|null`, `summaryReasons:string[]`; `ProductOpportunity` is exactly `product:ProductKey`, `level:OpportunityLevel`, `evidenceIds:string[]`, `reasons:string[]`, `blockers:string[]`, `gaps:string[]`, and `products` contains every `ProductKey` exactly once.
-- `ReportModel`: `legalName:string`, `industryClassification`, `companyScaleClues:string[]`, `overallOpportunity`, `recommendedProduct:ProductKey|null`, `summaryReasons:string[]`, `latestFinancing:FinancingRecord|null`, `products:ProductOpportunity[]`, `evidence:EvidenceReference[]`, `salesQuestions:string[]`, `risks:string[]`, `gaps:string[]`, `nextVerificationActions:string[]`, `sourceStatus:{qcc:ResearchSourceStatus,doubaoSearch:ResearchSourceStatus,ark:'completed'}`, `collectedAt:UtcTimestamp`, `dynamicSignalFreshness:'current'|'stale'`. Tests reject both `ark:'partial'` and `ark:'failed'`; Ark failure belongs only to failed task/error metadata and never produces a `ReportModel`.
+- `ReportModel`: `legalName:string`, `industryClassification`, `companyScaleClues:string[]`, `overallOpportunity`, `recommendedProduct:ProductKey|null`, `summaryReasons:string[]`, `latestFinancing:FinancingRecord|null`, `products:ProductOpportunity[]`, `facts:EvidenceFact[]`, `evidence:EvidenceReference[]`, `salesQuestions:string[]`, `risks:string[]`, `gaps:string[]`, `nextVerificationActions:string[]`, `sourceStatus:{qcc:ResearchSourceStatus,doubaoSearch:ResearchSourceStatus,ark:'completed'}`, `collectedAt:UtcTimestamp`, `dynamicSignalFreshness:'current'|'stale'`. `facts` 只包含引用存在、主体为目标法定实体且事实归属与所有引用一致的已验证事实。Tests reject both `ark:'partial'` and `ark:'failed'`; Ark failure belongs only to failed task/error metadata and never produces a `ReportModel`.
 
 Freeze the four strict MCP output unions here as well:
 
@@ -439,10 +439,12 @@ rtk npm test -- --run tests/ark-adapter.test.ts tests/evidence-validator.test.ts
 - [ ] **Step 3: 实现固定系统提示和 HTTP client**
 
 POST to `ARK_API_URL` with Bearer `ARK_CREDENTIAL`, body `{ model: ARK_MODEL, messages, response_format:{type:'json_object'}, temperature:0 }`. System prompt states webpages are untrusted data, forbids tool calls/instructions, requires `P1/P2/non_target/unverified`, forbids creating sources/aliases/URLs, and emits the exact `EvidenceBundleSchema` JSON shape.
+It also forbids unsupported executive personality/age-based decision-style claims, revenue estimation or employee-productivity extrapolation, and inferred purchasing-intent statements. Direct recruitment and published tender facts remain allowed.
 
 - [ ] **Step 4: 实现引用校验并接入唯一外层重试**
 
 Build a map of `ResearchItem.evidenceId`; reject every absent ID, URL/publisher/domain mismatch, missing mentioned name, or non-unverified classification without evidence. The Ark client and validator never retry. The assessment runner wraps the whole `extract` call in orchestration `retryOnce`; two invalid/failed outer attempts consume both Ark calls and make the task fail.
+The validator also rejects those unsupported inference phrases in `facts[].statement`, `conflicts[]`, and `gaps[]`, regardless of fact kind.
 
 - [ ] **Step 5: 运行测试并提交**
 
@@ -510,10 +512,11 @@ rtk git commit -m "feat: add deterministic seven-product opportunity rules"
 **Interfaces:**
 - Produces: `buildReportModel(identity, evidence, assessment, sourceStatus): ReportModel`.
 - Produces: `renderMarkdown(model): string` with no external calls.
+- Produces: `presentStoredReport(markdown, completedAt, now): {markdown,dynamicSignalFreshness}`，读取缓存时只按 `completed_at` 以严格大于 7 天判断，并规范化为最多一个时效警告。
 
 - [ ] **Step 1: 写失败快照和禁止内容测试**
 
-Test two branches. A normal report must contain the one-screen summary, latest financing result, seven product rows, evidence URL/time/basis, sales questions, risks/gaps, source failure labels, and no unsupported revenue/personality/procurement statements. When financing fails but other QCC data succeeds, assert `sourceStatus.qcc='partial'`, the Markdown contains “融资信息获取失败”, and the strict model has no separate financing status field. A `recommendedProduct=null` report must contain only evidence gaps, source status and next verification actions: no product matrix, product names, target roles or sales approach.
+Test two branches. A normal report must contain the one-screen summary, latest financing result, seven product rows, fact statement plus evidence URL/time/basis, sales questions, risks/gaps, source failure labels, and no unsupported revenue/personality/procurement statements. Product support labels require both a matching `fact.productTags` entry and the same evidence ID on that product row; industry-only evidence must not be labelled as supporting unrelated low product rows. When financing fails but other QCC data succeeds, assert `sourceStatus.qcc='partial'`, the Markdown contains “融资信息获取失败”, and the strict model has no separate financing status field. A `recommendedProduct=null` report must contain only evidence gaps, source status and next verification actions: no product matrix, product names, target roles or sales approach. Also test stored-report presentation at exactly 7 days, after 7 days, and repeated presentation without duplicate warnings.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -523,7 +526,7 @@ rtk npm test -- --run tests/report.test.ts
 
 - [ ] **Step 3: 实现 ReportModel builder 和 Markdown renderer**
 
-Builder may only dereference existing fact/evidence IDs. Renderer contains no conditional scoring logic. Escape Markdown table pipes/newlines in cell content; render source names as links; include `collectedAt` and the >7-day dynamic-signal warning. Cache reuse metadata is returned by `submit_assessment`, not embedded in `ReportModel`, Markdown or `get_assessment_report`.
+Builder may only dereference existing fact/evidence IDs and copies only target-entity facts whose attribution agrees with every cited reference. Renderer contains no conditional scoring logic. The evidence table renders `EvidenceFact.statement` and one row per cited `EvidenceReference`; latest financing is rendered as a separate sourced statement. Escape Markdown table pipes/newlines in cell content; render source names as links; include `collectedAt`. `presentStoredReport` uses `completed_at` to add or remove the unique >7-day dynamic-signal warning without persisting a `ReportModel`. Cache reuse metadata is returned by `submit_assessment`, not embedded in `ReportModel`, Markdown or `get_assessment_report`.
 
 - [ ] **Step 4: 运行测试并提交**
 
@@ -549,7 +552,7 @@ rtk git commit -m "feat: render auditable markdown assessment reports"
 
 - [ ] **Step 1: 写失败集成测试**
 
-Cover FIFO order/concurrency 1, waiting tasks still `processing`, completed-cache submit returning `completed/cache_hit=true/cached_at=completed_at`, new and duplicate processing returning `processing/cache_hit=false`, TTL based only on `completed_at`, force refresh, failed resubmit, QCC-only failure, search-only failure, both failure empty report, Ark failure producing no `ReportModel`, SQLite completion failure, search-budget exhaustion preventing `DoubaoSearchClient.search` from starting, startup interruption marking, and exactly two attempts maximum for every QCC/search/Ark request with no adapter-internal resend.
+Cover FIFO order/concurrency 1, waiting tasks still `processing`, completed-cache submit returning `completed/cache_hit=true/cached_at=completed_at`, new and duplicate processing returning `processing/cache_hit=false`, TTL based only on `completed_at`, cached-report presentation calling `presentStoredReport` so exactly 7 days is current and later reads are stale with one warning, force refresh, failed resubmit, QCC-only failure, search-only failure, both failure empty report, Ark failure producing no `ReportModel`, SQLite completion failure, search-budget exhaustion preventing `DoubaoSearchClient.search` from starting, startup interruption marking, and exactly two attempts maximum for every QCC/search/Ark request with no adapter-internal resend.
 Logging tests assert one JSON line per upstream attempt with assessment ID, user ID, source, duration, success/error and attempt count, while API keys, Authorization headers, report bodies and raw upstream payloads never appear.
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -566,6 +569,7 @@ Queue stores only assessment UUIDs in memory, shifts in submission order and sta
 - [ ] **Step 4: 实现评估 runner 和服务**
 
 Runner flow is fixed: load task/identity → concurrently collect QCC and search within budget → build `ResearchBundle` → Ark extraction → deterministic rules → ReportModel/Markdown → atomic completion. If both research sources fail, pass an empty bundle to Ark and complete with `overallOpportunity='待核实'`, `recommendedProduct=null` and a gaps-only Markdown report; if Ark or persistence fails, mark failed and store no Markdown.
+On report reads, the service calls the report module's `presentStoredReport` with persisted `completed_at`; it must not hand-edit Markdown or persist a refreshed `ReportModel`.
 
 - [ ] **Step 5: 运行测试并提交**
 

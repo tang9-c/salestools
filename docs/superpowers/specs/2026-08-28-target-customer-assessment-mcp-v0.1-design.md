@@ -288,7 +288,7 @@ Token 仅用于：
 
 - **主体基础画像**：以统一社会信用代码作为主键缓存，并为规范化法定名称建立查找索引，默认有效期由 `PROFILE_CACHE_TTL_DAYS=30` 配置。`get_company_profile` 先按规范化法定名称查找有效缓存；只有一个匹配结果时直接返回，多个结果时结合 `region_hint` 过滤，仍无法唯一确认则调用企查查。简称或模糊名称不直接命中该索引。缓存的是清洗后的主体字段，不保存企查查原始响应；每次返回必须附 `collected_at` 和“截至该时间的快照”标记。该配置只控制是否复用，不控制数据删除。
 - **动态信息**：经营状态、处罚、诉讼、招聘、招投标、扩产和采购信号不视为 30 天内不变。它们只在正式评估任务中重新采集，并在报告中标注各自采集时间。
-- **正式评估报告**：默认复用从 `completed_at` 起算、`ASSESSMENT_CACHE_TTL_DAYS=30` 天内的已完成报告；不得用 `created_at`、`collected_at` 或最后读取时间延长 TTL。超过期限时创建新任务。首版不使用规则版本自动失效缓存；规则改变后如需立即生成新报告，使用 `force_refresh=true`。缓存是否命中只由 `submit_assessment` 返回；报告保留信息截至时间，完成超过 7 天时明确提示招聘、采购、诉讼和经营风险等动态信号可能已过期。该配置只控制是否复用，不控制数据删除。
+- **正式评估报告**：默认复用从 `completed_at` 起算、`ASSESSMENT_CACHE_TTL_DAYS=30` 天内的已完成报告；不得用 `created_at`、`collected_at` 或最后读取时间延长 TTL。超过期限时创建新任务。首版不使用规则版本自动失效缓存；规则改变后如需立即生成新报告，使用 `force_refresh=true`。缓存是否命中只由 `submit_assessment` 返回；报告保留信息截至时间。读取报告时由报告模块纯函数使用持久化 `completed_at` 和当前时间计算时效：严格超过 7 天才返回 `stale` 并规范化加入唯一警告，恰好 7 天仍为 `current`；不保存或重建 `ReportModel`。该配置只控制是否复用，不控制数据删除。
 - 用户说“重新查最新情况”“强制刷新”或“不要使用缓存”时，调用 `force_refresh=true`。
 - `cache_hit` 只出现在 `get_company_profile` 和 `submit_assessment` 的输出中：基础画像用自身 `collected_at` 表示快照时间；完成报告缓存由 `submit_assessment` 返回 `cached_at=completed_at`。进行中任务复用和新建任务均返回 `cache_hit: false`；`get_assessment_status` 与 `get_assessment_report` 不返回该字段。
 
@@ -333,6 +333,8 @@ SQLite 保存最终报告
 方舟输出的行业分类为 `P1`、`P2`、`non_target` 或 `unverified`。模型可以根据来源资料自由分类，因此重新调用方舟时分类可能变化；机会判断模块不得自行重新分类。
 
 服务端校验被引用的 `evidence_id` 对应本次 `ResearchBundle` 中已有的来源条目，且 URL、网页提及名称和主体归属字段完整。模型不得创建新来源、URL、别名或证据 ID。方舟适配器对一次调用只发起一次 HTTP 请求；方舟返回空内容、非法 JSON、悬空引用或其他不合格结构时抛出类型化错误，由任务编排的 `retryOnce` 重试整个调用一次。第二次仍不合格则任务标为 `failed`，不生成正式报告。
+
+固定提示和服务端校验同时保守拒绝以下推断，无论它们出现在 `facts[].statement`、`conflicts[]` 还是 `gaps[]`：高管人格或按年龄推断决策风格；营收估算、倒推或员工人数/行业人效乘法；把招聘、扩产等线索改写为采购意向、计划采购、即将采购或有采购需求。已发布的招聘和招投标原始事实仍允许保留；销售问题可以询问采购计划。
 
 #### 企查查适配器契约
 
@@ -386,6 +388,7 @@ v0.1 直接调用豆包搜索 Custom 版 HTTP API，不部署或连接豆包搜�
 - 接收 `EvidenceBundle` 和 `OpportunityAssessment`
 - 有有效产品机会时生成一屏摘要、七项产品矩阵、关键证据、销售建议、风险与缺口；无有效产品机会时只生成证据缺口、来源状态和下一步核实动作
 - 将证据 ID 渲染为来源名称、链接、时间和主体归属依据
+- 将已验证的 `EvidenceFact.statement` 逐条渲染，并为其引用的每个 `EvidenceReference` 单独保留链接；产品支持标签必须同时满足 fact 的 `productTags` 和该产品行引用相同 evidence ID，行业资料不得被标成支持无关低机会产品
 - 输出 Markdown 及 MCP 所需的少量结构字段
 
 本模块不得调用企查查、豆包搜索或分析模型，不重新判断机会，不修改分级结果。报告只能由结构化结果渲染，避免报告文字与判断结果不一致。
@@ -549,6 +552,7 @@ type ReportModel = {
   summaryReasons: string[];
   latestFinancing: FinancingRecord | null;
   products: ProductOpportunity[];
+  facts: EvidenceFact[]; // 只含目标法定主体、引用存在且归属与全部引用一致的事实
   evidence: EvidenceReference[];
   salesQuestions: string[];
   risks: string[];
@@ -807,6 +811,8 @@ P1 行业：
 - 来源链接
 - 发布时间或采集时间
 - 该证据支持的结论
+
+本节的“事实”取自 `EvidenceFact.statement`，不是网页标题；一条事实引用多个来源时逐一展示每个来源。最近融资按结构化融资记录另列真实陈述。没有产品标签映射的事实只标注其真实用途（如风险、招聘、软件生态、组织复杂度），不得推断不存在的产品结论。
 
 ### 销售建议
 

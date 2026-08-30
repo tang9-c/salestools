@@ -187,6 +187,44 @@ describe('validateArkEvidence', () => {
     });
   });
 
+  it.each([
+    ['organization', '董事长 64 岁，因此属于老年一代掌权并偏向保守决策'],
+    ['risk', '高管人格激进，预计决策风格偏冒险'],
+    ['organization', '按员工人数和行业人效倒推真实营收约 5 亿元'],
+    ['risk', '预计营收将在明年达到 10 亿元'],
+    ['procurement', '公司有采购需求并计划采购 Windchill'],
+    ['risk', '公司存在采购 意向'],
+    ['organization', '按行业人效乘以员工人数倒推营业收入'],
+  ] as const)('rejects unsupported inference in a %s fact: %s', (kind, statement) => {
+    const candidate = fixture();
+    expectInvalid({
+      ...candidate,
+      facts: [{ ...candidate.facts[0], kind, statement }],
+    });
+  });
+
+  it.each([
+    ['conflicts', '董事长年龄较大，因此决策风格保守'],
+    ['gaps', '预计营收约 5 亿元'],
+    ['gaps', '公司即将采购 CATIA'],
+  ] as const)('rejects unsupported inference hidden in %s: %s', (field, statement) => {
+    const candidate = fixture();
+    expectInvalid({ ...candidate, [field]: [statement] });
+  });
+
+  it('keeps direct recruitment and published tender facts', () => {
+    const candidate = fixture();
+    const accepted = {
+      ...candidate,
+      facts: [
+        { ...candidate.facts[0], statement: '公司发布 Windchill 管理员招聘岗位', kind: 'recruitment' as const },
+        { ...candidate.facts[0], factId: 'fact-tender', statement: '公司已发布软件采购招标公告', kind: 'procurement' as const },
+        { ...candidate.facts[0], factId: 'fact-revenue', statement: '年报披露 2025 年营业收入 5 亿元', kind: 'budget' as const },
+      ],
+    };
+    expect(validateArkEvidence(researchBundle(), accepted)).toEqual(accepted);
+  });
+
   it('does not accept a verified industry classification supported only by unverified entity evidence', () => {
     const candidate = fixture();
     const research = researchBundle();

@@ -1,4 +1,15 @@
-import { ReportModelSchema, type EvidenceReference, type ProductKey, type ReportModel } from '../contracts/index.js';
+import {
+  ReportModelSchema,
+  UtcTimestampSchema,
+  type EvidenceFact,
+  type EvidenceReference,
+  type FinancingRecord,
+  type ProductKey,
+  type ReportModel,
+} from '../contracts/index.js';
+
+const DYNAMIC_SIGNAL_WARNING = '> ⚠️ 动态信号已超过 7 天，招聘、采购、诉讼和经营风险可能已经变化。';
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1_000;
 
 const PRODUCT_LABELS: Readonly<Record<ProductKey, string>> = {
   windchill: 'PTC Windchill',
@@ -27,10 +38,6 @@ const ENTITY_SCOPE_LABELS: Readonly<Record<EvidenceReference['entityScope'], str
   brand: '品牌',
   unknown: '未知',
 };
-
-function uniqueInOrder(values: readonly string[]): string[] {
-  return [...new Set(values)];
-}
 
 function cleanText(value: string): string {
   return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, '').replace(/\r?\n/gu, ' ').trim();
@@ -102,18 +109,63 @@ function sourceStatusSection(model: ReportModel): string[] {
 function freshnessHeader(model: ReportModel): string[] {
   const lines = [`> 信息采集时间：${model.collectedAt}`];
   if (model.dynamicSignalFreshness === 'stale') {
-    lines.push('>', '> ⚠️ 动态信号已超过 7 天，招聘、采购、诉讼和经营风险可能已经变化。');
+    lines.push('>', DYNAMIC_SIGNAL_WARNING);
   }
   return lines;
 }
 
-function evidenceSupport(model: ReportModel, reference: EvidenceReference): string {
+function factSupport(model: ReportModel, fact: EvidenceFact): string {
   const products = model.products
-    .filter(product => product.evidenceIds.includes(reference.evidenceId))
+    .filter(product => fact.productTags.includes(product.product)
+      && product.evidenceIds.some(evidenceId => fact.evidenceIds.includes(evidenceId)))
     .map(product => `${PRODUCT_LABELS[product.product]}：${product.level}`);
   if (products.length > 0) return products.join('；');
-  if (model.latestFinancing?.evidenceIds.includes(reference.evidenceId)) return '最近融资概况';
-  return '企业画像、风险或缺口';
+  const purpose: Readonly<Record<EvidenceFact['kind'], string>> = {
+    industry: '行业分类事实',
+    product_scene: '产品技术场景事实',
+    recruitment: '招聘事实',
+    software_ecosystem: '软件生态事实',
+    organization: '研发或组织复杂度事实',
+    quality: '质量体系事实',
+    manufacturing: '制造与供应链事实',
+    procurement: '招投标或采购原始事实',
+    budget: '预算能力事实',
+    decision_power: '决策权事实',
+    risk: '风险事实',
+  };
+  return purpose[fact.kind];
+}
+
+function financingStatement(record: FinancingRecord): string {
+  return `融资记录：${[
+    record.occurredAt ?? '日期未披露',
+    record.typeOrRound ?? '类型或轮次未披露',
+    record.disclosedAmount ?? '金额未披露',
+    `投资方：${record.investors.length === 0 ? '未披露' : record.investors.join('、')}`,
+  ].join('；')}`;
+}
+
+function evidenceRow(statement: string, reference: EvidenceReference, support: string): string {
+  return `| ${escapeTableCell(statement)} | ${escapeTableCell(reference.mentionedName)} | ${ENTITY_SCOPE_LABELS[reference.entityScope]} | ${reference.entityMatch} | ${formatValues(reference.matchBasis)} | ${sourceLink(reference)} | ${reference.publishedAt ?? reference.collectedAt} | ${escapeTableCell(support)} |`;
+}
+
+function evidenceRows(model: ReportModel): string[] {
+  const referencesById = new Map(model.evidence.map(reference => [reference.evidenceId, reference]));
+  const factRows = model.facts.flatMap(fact => fact.evidenceIds.flatMap(evidenceId => {
+    const reference = referencesById.get(evidenceId);
+    return reference === undefined ? [] : [evidenceRow(fact.statement, reference, factSupport(model, fact))];
+  }));
+  const latestFinancing = model.latestFinancing;
+  if (latestFinancing === null) return factRows;
+  return [
+    ...factRows,
+    ...latestFinancing.evidenceIds.flatMap(evidenceId => {
+      const reference = referencesById.get(evidenceId);
+      return reference === undefined
+        ? []
+        : [evidenceRow(financingStatement(latestFinancing), reference, '最近融资概况')];
+    }),
+  ];
 }
 
 function renderDegraded(model: ReportModel): string {
@@ -178,7 +230,7 @@ function renderNormal(model: ReportModel): string {
     '',
     '| 事实 | 提及主体 | 归属 | 匹配 | 匹配依据 | 来源 | 时间 | 支持结论 |',
     '| --- | --- | --- | --- | --- | --- | --- | --- |',
-    ...model.evidence.map(reference => `| ${escapeTableCell(reference.title)} | ${escapeTableCell(reference.mentionedName)} | ${ENTITY_SCOPE_LABELS[reference.entityScope]} | ${reference.entityMatch} | ${formatValues(reference.matchBasis)} | ${sourceLink(reference)} | ${reference.publishedAt ?? reference.collectedAt} | ${escapeTableCell(evidenceSupport(model, reference))} |`),
+    ...evidenceRows(model),
     '',
     '## 销售建议',
     '',
@@ -201,4 +253,46 @@ function renderNormal(model: ReportModel): string {
 export function renderMarkdown(modelInput: ReportModel): string {
   const model = ReportModelSchema.parse(modelInput);
   return model.recommendedProduct === null ? renderDegraded(model) : renderNormal(model);
+}
+
+export type StoredReportPresentation = Readonly<{
+  markdown: string;
+  dynamicSignalFreshness: ReportModel['dynamicSignalFreshness'];
+}>;
+
+function withoutDynamicSignalWarning(markdown: string): string {
+  const output: string[] = [];
+  for (const line of markdown.split('\n')) {
+    if (line === DYNAMIC_SIGNAL_WARNING) {
+      if (output.at(-1) === '>') output.pop();
+      continue;
+    }
+    output.push(line);
+  }
+  return output.join('\n');
+}
+
+function withDynamicSignalWarning(markdown: string): string {
+  const lines = withoutDynamicSignalWarning(markdown).split('\n');
+  const collectedAtLine = lines.findIndex(line => line.startsWith('> 信息采集时间：'));
+  if (collectedAtLine >= 0) lines.splice(collectedAtLine + 1, 0, '>', DYNAMIC_SIGNAL_WARNING);
+  else lines.unshift(DYNAMIC_SIGNAL_WARNING, '');
+  return lines.join('\n');
+}
+
+export function presentStoredReport(
+  markdown: string,
+  completedAtInput: string,
+  now: Date,
+): StoredReportPresentation {
+  const completedAt = UtcTimestampSchema.parse(completedAtInput);
+  const nowMs = now.getTime();
+  if (!Number.isFinite(nowMs)) throw new RangeError('now must be a valid Date');
+  const dynamicSignalFreshness = nowMs - Date.parse(completedAt) > SEVEN_DAYS_MS ? 'stale' : 'current';
+  return {
+    markdown: dynamicSignalFreshness === 'stale'
+      ? withDynamicSignalWarning(markdown)
+      : withoutDynamicSignalWarning(markdown),
+    dynamicSignalFreshness,
+  };
 }

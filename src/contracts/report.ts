@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  EvidenceFactSchema,
   EvidenceReferenceSchema,
   FinancingRecordSchema,
   IndustryClassificationSchema,
@@ -20,6 +21,7 @@ export const ReportModelSchema = z.object({
   summaryReasons: z.array(z.string()),
   latestFinancing: FinancingRecordSchema.nullable(),
   products: CompleteProductOpportunitiesSchema,
+  facts: z.array(EvidenceFactSchema),
   evidence: z.array(EvidenceReferenceSchema),
   salesQuestions: z.array(z.string()),
   risks: z.array(z.string()),
