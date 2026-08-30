@@ -209,6 +209,11 @@ describe('evaluateOpportunities', () => {
     { label: 'reverse replacement', statement: '公司将 Creo 替换为 Siemens NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
     { label: 'migrate from NX to Creo', statement: '公司从 NX 迁移到 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
     { label: 'replace NX with Creo', statement: '公司用 Creo 替换 NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
+    { label: 'not yet migrate from NX to Creo', statement: '公司尚未从 NX 迁移到 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
+    { label: 'will not replace NX with Creo', statement: '公司不会将 NX 替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
+    { label: 'did not use Creo to replace NX', statement: '公司并未用 Creo 替换 NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
+    { label: 'does not consider migrating from NX to Creo', statement: '公司不考虑从 NX 迁移到 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
+    { label: 'migration to Creo incomplete', statement: '公司从 NX 迁移到 Creo 尚未完成', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
     { label: 'explicit recent probable migration', statement: '公司正在将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'probable' as const, expected: '低' },
     { label: 'generic procurement', statement: '公司发布软件采购招标', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
     { label: 'negated migration', statement: '公司暂无迁移替换计划', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
@@ -264,6 +269,27 @@ describe('evaluateOpportunities', () => {
     ] }), NOW).products.find(product => product.product === 'abaqus');
     expect(row?.level).toBe('低');
     expect(row?.blockers.join('')).toMatch(/ansys/i);
+  });
+
+  it.each([
+    { product: 'windchill' as const, statement: '公司统一使用 Teamcenter PLM 平台' },
+    { product: 'feigenbaum_qms' as const, statement: '公司统一使用 IQS QMS 平台' },
+  ])('$product: a competitor plus only a generic category term cannot establish target scene', ({ product, statement }) => {
+    const input = bundle({ evidence: [reference('competitor-scene', 'company.example')], facts: [
+      fact('competitor-scene', product, statement, 'product_scene', ['competitor-scene']),
+    ] });
+    const row = evaluateOpportunities(input, NOW).products.find(candidate => candidate.product === product);
+    expect(row?.level).toBe('低');
+    expect(row?.gaps.join('')).toContain('未发现可归属于目标法定主体的具体产品场景');
+  });
+
+  it('keeps a strong Windchill scene when the same fact explicitly migrates from Teamcenter', () => {
+    const refs = [reference('migration', 'company.example'), reference('complexity', 'association.example')];
+    const row = evaluateOpportunities(bundle({ evidence: refs, facts: [
+      fact('migration', 'windchill', '公司从 Teamcenter 迁移到 Windchill', 'product_scene', ['migration']),
+      fact('complexity', 'windchill', '多部门 BOM 变更和配置管理', 'organization', ['complexity']),
+    ] }), NOW).products.find(product => product.product === 'windchill');
+    expect(row?.level).toBe('中');
   });
 
   it.each([

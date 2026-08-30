@@ -4,6 +4,7 @@ export type ProductRule = Readonly<{
   product: ProductKey;
   displayName: string;
   positiveKeywords: readonly string[];
+  strongTargetKeywords: readonly string[];
   engineeringMethods: readonly string[];
   competitorKeywords: readonly string[];
   blockerKeywords: readonly string[];
@@ -13,6 +14,7 @@ export const PRODUCT_RULES: readonly ProductRule[] = [
   {
     product: 'windchill', displayName: 'PTC Windchill',
     positiveKeywords: ['ptc windchill', 'windchill', 'plm'],
+    strongTargetKeywords: ['ptc windchill', 'windchill'],
     engineeringMethods: ['bom 变更和配置管理', 'bom', 'ebom', 'mbom', '变更管理', '配置管理', '产品生命周期', 'plm/erp'],
     competitorKeywords: ['teamcenter', 'enovia', 'ar・as innovator', 'aras innovator'],
     blockerKeywords: ['集团统一 plm', '长期许可锁定'],
@@ -20,6 +22,7 @@ export const PRODUCT_RULES: readonly ProductRule[] = [
   {
     product: 'feigenbaum_qms', displayName: 'Feigenbaum QMS',
     positiveKeywords: ['feigenbaum qms', 'feigenbaum', 'qms', '质量管理系统'],
+    strongTargetKeywords: ['feigenbaum qms', 'feigenbaum'],
     engineeringMethods: ['capa 与质量追溯', 'capa', '质量追溯', '供应商质量', '质量审计', 'iatf 16949', 'as9100', 'iso 13485'],
     competitorKeywords: ['sap qm', 'mastercontrol', 'etq reliance', 'iqs qms'],
     blockerKeywords: ['集团统一 qms', '长期许可锁定'],
@@ -27,6 +30,7 @@ export const PRODUCT_RULES: readonly ProductRule[] = [
   {
     product: 'creo', displayName: 'PTC Creo',
     positiveKeywords: ['ptc creo', 'creo', 'pro/e', 'proe'],
+    strongTargetKeywords: ['ptc creo', 'creo', 'pro/e', 'proe'],
     engineeringMethods: ['参数化建模', '参数化机械设计', '复杂零部件', '工程变更'],
     competitorKeywords: ['siemens nx', 'ug nx', 'nx', 'solid edge'],
     blockerKeywords: ['集团统一 cad', '长期许可锁定'],
@@ -34,6 +38,7 @@ export const PRODUCT_RULES: readonly ProductRule[] = [
   {
     product: 'catia', displayName: 'Dassault Systèmes CATIA',
     positiveKeywords: ['dassault systèmes catia', 'catia', '3dexperience'],
+    strongTargetKeywords: ['dassault systèmes catia', 'catia', '3dexperience'],
     engineeringMethods: ['复杂曲面与大型装配', '复杂曲面', '大型装配', '整车建模', '航空建模'],
     competitorKeywords: ['siemens nx', 'ug nx', 'nx', 'solid edge'],
     blockerKeywords: ['集团统一 cad', '长期许可锁定'],
@@ -41,6 +46,7 @@ export const PRODUCT_RULES: readonly ProductRule[] = [
   {
     product: 'abaqus', displayName: 'Dassault Systèmes Abaqus',
     positiveKeywords: ['dassault systèmes abaqus', 'abaqus'],
+    strongTargetKeywords: ['dassault systèmes abaqus', 'abaqus'],
     engineeringMethods: ['非线性有限元分析', '有限元', '非线性分析', '碰撞仿真', '疲劳仿真', '材料仿真', '多物理场'],
     competitorKeywords: ['ansys', 'ls-dyna', 'nastran', 'comsol'],
     blockerKeywords: ['集团统一 cae', '长期许可锁定'],
@@ -48,6 +54,7 @@ export const PRODUCT_RULES: readonly ProductRule[] = [
   {
     product: 'cst', displayName: 'CST Studio Suite',
     positiveKeywords: ['cst studio suite', 'cst studio', 'cst'],
+    strongTargetKeywords: ['cst studio suite', 'cst studio', 'cst'],
     engineeringMethods: ['射频天线 emc/emi 仿真', '电磁仿真', '射频', '天线', '雷达', '微波', 'emc', 'emi'],
     competitorKeywords: ['hfss', 'altair feko', 'keysight ads'],
     blockerKeywords: ['集团统一电磁仿真', '长期许可锁定'],
@@ -55,6 +62,7 @@ export const PRODUCT_RULES: readonly ProductRule[] = [
   {
     product: 'solidworks', displayName: 'Dassault Systèmes SolidWorks',
     positiveKeywords: ['dassault systèmes solidworks', 'solidworks', 'solid works'],
+    strongTargetKeywords: ['dassault systèmes solidworks', 'solidworks', 'solid works'],
     engineeringMethods: ['通用机械设计', '通用设备三维建模', '设备设计', '三维建模', 'pdm'],
     competitorKeywords: ['autodesk inventor', 'inventor', 'solid edge'],
     blockerKeywords: ['集团统一 cad', '长期许可锁定'],
@@ -101,6 +109,12 @@ export const COMPETITOR_TO_TARGET_REPLACEMENT_PATTERN =
 export const TARGET_REPLACEMENT_ACTION_BEFORE_PATTERN = /(?:用|以|采用|使用)[\s：:]*$/u;
 export const TARGET_REPLACES_COMPETITOR_PATTERN = /^[\s，,：:、]*(?:替换|替代)[\s，,：:、]*$/u;
 export const TARGET_ENTRY_ACTION_BEFORE_PATTERN = /(?:改用|切换到|迁入)[\s：:]*$/u;
+
+export const DIRECTIONAL_REPLACEMENT_NEGATION_BEFORE_PATTERN =
+  /(?:尚未|并未|不会|不考虑|未计划|未决定)[\s]*(?:从|由|将|把|用|以|采用|使用)?[\s]*$/u;
+
+export const DIRECTIONAL_REPLACEMENT_INCOMPLETE_AFTER_PATTERN =
+  /^[\s，,：:]*(?:(?:工作|计划|项目|实施)[\s]*)?(?:尚未|并未|暂未)(?:开始|启动|实施|进行|完成|考虑)(?:\s|$)/u;
 
 export const GENERAL_BLOCKER_KEYWORDS = [
   '无预算', '没有预算', '预算冻结', '暂停采购', '暂无采购计划', '无采购计划',

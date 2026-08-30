@@ -11,6 +11,8 @@ import {
   BUDGET_NEGATION_CORRECTION_PATTERN,
   COMPETITOR_TO_TARGET_REPLACEMENT_PATTERN,
   CRITICAL_CONFLICT_KEYWORDS,
+  DIRECTIONAL_REPLACEMENT_INCOMPLETE_AFTER_PATTERN,
+  DIRECTIONAL_REPLACEMENT_NEGATION_BEFORE_PATTERN,
   GENERAL_BLOCKER_KEYWORDS,
   NEGATED_REPLACEMENT_COMPLETION_PATTERN,
   NEGATED_REPLACEMENT_PLAN_PATTERN,
@@ -256,6 +258,14 @@ function replacementTargetsProduct(rule: ProductRule, statement: string): boolea
   const targets = mostSpecificKeywordOccurrences(text, rule.positiveKeywords);
   const competitors = mostSpecificKeywordOccurrences(text, rule.competitorKeywords);
   return targets.some(target => competitors.some(competitor => {
+    const directionStart = Math.min(target.start, competitor.start);
+    const directionEnd = Math.max(target.end, competitor.end);
+    const negatedContext = DIRECTIONAL_REPLACEMENT_NEGATION_BEFORE_PATTERN.test(
+      text.slice(Math.max(0, directionStart - 24), directionStart),
+    ) || DIRECTIONAL_REPLACEMENT_INCOMPLETE_AFTER_PATTERN.test(
+      text.slice(directionEnd, directionEnd + 24),
+    );
+    if (negatedContext) return false;
     if (competitor.end <= target.start) {
       const between = text.slice(competitor.end, target.start);
       return COMPETITOR_TO_TARGET_REPLACEMENT_PATTERN.test(between)
@@ -336,23 +346,28 @@ export function evaluateProduct(
   const productFacts = relevantFacts.filter(fact => fact.productTags.includes(rule.product));
   const usableFacts = relevantFacts.filter(fact => isReliableConfirmedFact(fact, referencesById));
   const targetNamed = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(fact.statement, rule.positiveKeywords);
+  const strongTargetNamed = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(
+    fact.statement, rule.strongTargetKeywords,
+  );
   const methodNamed = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(fact.statement, rule.engineeringMethods);
   const competitorNamed = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(fact.statement, rule.competitorKeywords);
   const hasProductSignal = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(
     fact.statement, [...rule.positiveKeywords, ...rule.engineeringMethods],
   );
+  const hasTargetSceneSignal = (fact: EvidenceFact): boolean => hasProductSignal(fact)
+    && (!competitorNamed(fact) || strongTargetNamed(fact));
   const isPositiveProductFact = (fact: EvidenceFact): boolean => {
     if (!['product_scene', 'recruitment', 'software_ecosystem', 'procurement'].includes(fact.kind)) return false;
-    return hasProductSignal(fact) && !competitorNamed(fact);
+    return hasTargetSceneSignal(fact);
   };
   const confirmedProductFacts = productFacts.filter(fact => isConfirmedTargetFact(fact, referencesById));
   const recruitmentWithSignal = confirmedProductFacts.filter(fact =>
-    fact.kind === 'recruitment' && hasProductSignal(fact));
+    fact.kind === 'recruitment' && hasTargetSceneSignal(fact));
   const recentDirectRecruitment = recruitmentWithSignal.filter(fact => fact.strength === 'direct'
     && factPublicationState(fact, referencesById, nowMs) === 'recent');
   const directSceneFacts = confirmedProductFacts.filter(fact => fact.strength === 'direct'
-    && ((fact.kind === 'product_scene' && hasProductSignal(fact))
-      || (fact.kind === 'procurement' && hasProductSignal(fact))))
+    && ((fact.kind === 'product_scene' && hasTargetSceneSignal(fact))
+      || (fact.kind === 'procurement' && hasTargetSceneSignal(fact))))
     .concat(recentDirectRecruitment);
   const confirmedScene = directSceneFacts.length > 0;
 
@@ -360,8 +375,8 @@ export function evaluateProduct(
     && COMPLEXITY_KINDS.has(fact.kind))
     || (fact.kind === 'product_scene' && methodNamed(fact)));
   const targetEcosystemFacts = confirmedProductFacts.filter(fact => fact.strength !== 'weak'
-    && ((fact.kind === 'software_ecosystem' && hasProductSignal(fact))
-      || (fact.kind === 'recruitment' && hasProductSignal(fact))));
+    && ((fact.kind === 'software_ecosystem' && hasTargetSceneSignal(fact))
+      || (fact.kind === 'recruitment' && hasTargetSceneSignal(fact))));
   const blockers = blockerDescriptions(rule, relevantFacts, referencesById, nowMs);
   const strongBlocker = blockers.length > 0;
 
@@ -369,9 +384,9 @@ export function evaluateProduct(
     isRecentTimestamp(record.occurredAt, nowMs)
     && financingIsAttributedToTarget(record.evidenceIds, referencesById));
   const recentTimingFacts = usableFacts.filter(fact =>
-    ((fact.kind === 'recruitment' && fact.productTags.includes(rule.product) && hasProductSignal(fact)
+    ((fact.kind === 'recruitment' && fact.productTags.includes(rule.product) && hasTargetSceneSignal(fact)
       && factPublicationState(fact, referencesById, nowMs) === 'recent')
-      || (fact.kind === 'procurement' && fact.productTags.includes(rule.product) && hasProductSignal(fact)
+      || (fact.kind === 'procurement' && fact.productTags.includes(rule.product) && hasTargetSceneSignal(fact)
         && factPublicationState(fact, referencesById, nowMs) === 'recent')
       || (['organization', 'manufacturing'].includes(fact.kind)
         && factPublicationState(fact, referencesById, nowMs) === 'recent'
