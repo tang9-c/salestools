@@ -203,9 +203,12 @@ describe('evaluateOpportunities', () => {
 
   it.each([
     { label: 'explicit recent confirmed migration', statement: '公司正在将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
-    { label: 'soon planned migration', statement: '公司不久后计划迁移替换 Siemens NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
-    { label: 'proactive decided migration', statement: '公司未雨绸缪后决定迁移替换 Siemens NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
-    { label: 'necessary migration', statement: '公司不得不迁移替换 Siemens NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
+    { label: 'soon planned migration', statement: '公司不久后计划将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
+    { label: 'proactive decided migration', statement: '公司未雨绸缪后决定将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
+    { label: 'necessary migration', statement: '公司不得不将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
+    { label: 'reverse replacement', statement: '公司将 Creo 替换为 Siemens NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
+    { label: 'migrate from NX to Creo', statement: '公司从 NX 迁移到 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
+    { label: 'replace NX with Creo', statement: '公司用 Creo 替换 NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
     { label: 'explicit recent probable migration', statement: '公司正在将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'probable' as const, expected: '低' },
     { label: 'generic procurement', statement: '公司发布软件采购招标', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
     { label: 'negated migration', statement: '公司暂无迁移替换计划', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
@@ -246,6 +249,21 @@ describe('evaluateOpportunities', () => {
     expect(row?.level).toBe(scenario.expected);
     expect(row?.blockers.some(blocker => blocker.toLowerCase().includes('siemens nx')))
       .toBe(scenario.expected === '低');
+  });
+
+  it('does not treat an Abaqus server migration as replacing the confirmed ANSYS incumbent', () => {
+    const refs = [
+      reference('scene', 'company.example'), reference('complexity', 'association.example'),
+      reference('incumbent', 'jobs.example'), reference('replacement', 'notice.example'),
+    ];
+    const row = evaluateOpportunities(bundle({ evidence: refs, facts: [
+      fact('scene', 'abaqus', '公司开展 Abaqus 非线性有限元分析', 'product_scene', ['scene']),
+      fact('complexity', 'abaqus', '多材料碰撞仿真研发团队', 'organization', ['complexity']),
+      fact('incumbent', 'abaqus', '公司长期使用 ANSYS', 'software_ecosystem', ['incumbent']),
+      fact('replacement', 'abaqus', 'Abaqus 迁移到新服务器', 'procurement', ['replacement']),
+    ] }), NOW).products.find(product => product.product === 'abaqus');
+    expect(row?.level).toBe('低');
+    expect(row?.blockers.join('')).toMatch(/ansys/i);
   });
 
   it.each([

@@ -9,6 +9,7 @@ import {
 } from '../contracts/index.js';
 import {
   BUDGET_NEGATION_CORRECTION_PATTERN,
+  COMPETITOR_TO_TARGET_REPLACEMENT_PATTERN,
   CRITICAL_CONFLICT_KEYWORDS,
   GENERAL_BLOCKER_KEYWORDS,
   NEGATED_REPLACEMENT_COMPLETION_PATTERN,
@@ -18,8 +19,12 @@ import {
   NEGATIVE_DECISION_PATTERN,
   NEGATIVE_PRODUCT_ACTION_AFTER_PATTERN,
   NEGATIVE_PRODUCT_ACTION_BEFORE_PATTERN,
+  POSITIVE_PRODUCT_ACTION_AFTER_PATTERN,
   PRODUCT_ENUMERATION_CONNECTOR_PATTERN,
   REPLACEMENT_KEYWORDS,
+  TARGET_ENTRY_ACTION_BEFORE_PATTERN,
+  TARGET_REPLACEMENT_ACTION_BEFORE_PATTERN,
+  TARGET_REPLACES_COMPETITOR_PATTERN,
   type ProductRule,
 } from './product-rules.js';
 
@@ -78,22 +83,32 @@ function keywordOccurrences(text: string, keyword: string): number[] {
   return starts;
 }
 
-function containsAffirmativeKeyword(statement: string, keywords: readonly string[]): boolean {
-  const text = normalized(statement);
+type KeywordOccurrence = Readonly<{ start: number; end: number }>;
+
+function mostSpecificKeywordOccurrences(
+  text: string,
+  keywords: readonly string[],
+): KeywordOccurrence[] {
   const occurrences = keywords.flatMap(keyword => {
     const term = normalized(keyword);
     return term.length === 0 ? [] : keywordOccurrences(text, term)
       .map(start => ({ start, end: start + term.length }));
   });
-  const maximalOccurrences = occurrences.filter(candidate => !occurrences.some(other =>
+  return occurrences.filter(candidate => !occurrences.some(other =>
     other.start <= candidate.start && other.end >= candidate.end
       && other.end - other.start > candidate.end - candidate.start))
     .sort((left, right) => left.start - right.start || right.end - left.end);
+}
+
+function containsAffirmativeKeyword(statement: string, keywords: readonly string[]): boolean {
+  const text = normalized(statement);
+  const maximalOccurrences = mostSpecificKeywordOccurrences(text, keywords);
   let previous: Readonly<{ start: number; end: number; negated: boolean }> | undefined;
   for (const occurrence of maximalOccurrences) {
     const directlyNegated = NEGATIVE_PRODUCT_ACTION_BEFORE_PATTERN.test(text.slice(0, occurrence.start))
       || NEGATIVE_PRODUCT_ACTION_AFTER_PATTERN.test(text.slice(occurrence.end));
-    const inheritedNegation = previous?.negated === true
+    const affirmativePostAction = POSITIVE_PRODUCT_ACTION_AFTER_PATTERN.test(text.slice(occurrence.end));
+    const inheritedNegation = !affirmativePostAction && previous?.negated === true
       && PRODUCT_ENUMERATION_CONNECTOR_PATTERN.test(text.slice(previous.end, occurrence.start));
     const negated = directlyNegated || inheritedNegation;
     if (!negated) return true;
@@ -235,6 +250,25 @@ function explicitReplacement(statement: string): boolean {
   return containsAny(text, REPLACEMENT_KEYWORDS) && !negated;
 }
 
+function replacementTargetsProduct(rule: ProductRule, statement: string): boolean {
+  const text = normalized(statement);
+  if (!explicitReplacement(text)) return false;
+  const targets = mostSpecificKeywordOccurrences(text, rule.positiveKeywords);
+  const competitors = mostSpecificKeywordOccurrences(text, rule.competitorKeywords);
+  return targets.some(target => competitors.some(competitor => {
+    if (competitor.end <= target.start) {
+      const between = text.slice(competitor.end, target.start);
+      return COMPETITOR_TO_TARGET_REPLACEMENT_PATTERN.test(between)
+        || TARGET_ENTRY_ACTION_BEFORE_PATTERN.test(text.slice(0, target.start));
+    }
+    if (target.end <= competitor.start) {
+      return TARGET_REPLACEMENT_ACTION_BEFORE_PATTERN.test(text.slice(0, target.start))
+        && TARGET_REPLACES_COMPETITOR_PATTERN.test(text.slice(target.end, competitor.start));
+    }
+    return false;
+  }));
+}
+
 function hasReplacementSignal(
   rule: ProductRule,
   facts: readonly EvidenceFact[],
@@ -243,8 +277,7 @@ function hasReplacementSignal(
 ): boolean {
   return facts.some(fact => isReliableConfirmedFact(fact, referencesById)
     && factPublicationState(fact, referencesById, nowMs) === 'recent'
-    && explicitReplacement(fact.statement)
-    && containsAny(fact.statement, [...rule.positiveKeywords, ...rule.engineeringMethods, ...rule.competitorKeywords]));
+    && replacementTargetsProduct(rule, fact.statement));
 }
 
 function blockerDescriptions(
@@ -263,8 +296,9 @@ function blockerDescriptions(
     const general = GENERAL_BLOCKER_KEYWORDS.find(keyword => containsKeyword(blockerStatement, keyword));
     const negativeKind = negativeSupportKind(fact);
     const productBlocker = rule.blockerKeywords.find(keyword => containsKeyword(fact.statement, keyword));
-    const competitor = rule.competitorKeywords.find(keyword =>
-      containsAffirmativeKeyword(fact.statement, [keyword]));
+    const competitor = containsAffirmativeKeyword(fact.statement, rule.competitorKeywords)
+      ? rule.competitorKeywords.find(keyword => containsKeyword(fact.statement, keyword))
+      : undefined;
     if (general !== undefined) blockers.push(`已知预算或决策阻碍：${general}`);
     if (general === undefined && negativeKind !== null) {
       blockers.push(negativeKind === 'budget' ? '已知预算阻碍：明确否定预算能力' : '已知决策阻碍：明确否定独立采购权');

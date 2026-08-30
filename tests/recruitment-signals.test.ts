@@ -126,6 +126,13 @@ describe('招聘信号', () => {
     expect(row?.level).toBe('低');
   });
 
+  it('stops inherited enumeration negation when the next alias has an affirmative post-action', () => {
+    const entry = products.find(product => product.product === 'creo')!;
+    const row = evaluateOpportunities(recruitmentBundle(entry, '不使用Creo，Pro/E已部署', recent), NOW)
+      .products.find(product => product.product === entry.product);
+    expect(row?.level).toBe('中');
+  });
+
   it.each(products)('$product: recent direct product naming is a strong scene signal but one publisher is only 中', entry => {
     const result = evaluateOpportunities(recruitmentBundle(entry, `${entry.named}，${entry.method}`, recent), NOW);
     const row = result.products.find(product => product.product === entry.product);
