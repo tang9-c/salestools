@@ -88,15 +88,23 @@ const ChineseContactSchema = z.object({
 const ChineseRiskFactorSchema = z.object({
   风险类型: OptionalChineseStringSchema,
   风险名称: OptionalChineseStringSchema,
+  风险因子: OptionalChineseStringSchema,
   数量: z.union([z.number().finite(), RequiredChineseStringSchema]).optional(),
+  条目数: z.union([z.number().finite(), RequiredChineseStringSchema]).optional(),
   风险等级: OptionalChineseStringSchema,
   描述: OptionalChineseStringSchema,
+  明细工具: OptionalChineseStringSchema,
 }).passthrough().refine(record => [
   record.风险类型,
   record.风险名称,
+  record.风险因子,
   record.风险等级,
   record.描述,
-].some(nonBlank) || typeof record.数量 === 'number' || nonBlank(record.数量));
+].some(nonBlank)
+  || typeof record.数量 === 'number'
+  || nonBlank(record.数量)
+  || typeof record.条目数 === 'number'
+  || nonBlank(record.条目数));
 
 const ChineseRiskSchema = z.object({
   企业名称: RequiredChineseStringSchema,
@@ -505,7 +513,9 @@ function chineseRiskSummary(record: Record<string, unknown>): string | null {
     const fields = [
       ['风险类型', factor.风险类型],
       ['风险名称', factor.风险名称],
+      ['风险因子', factor.风险因子],
       ['数量', factor.数量],
+      ['条目数', factor.条目数],
       ['风险等级', factor.风险等级],
       ['描述', factor.描述],
     ].filter((entry): entry is [string, string | number] => (

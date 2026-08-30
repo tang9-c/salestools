@@ -303,6 +303,19 @@ describe('QCC mapping and formal collection', () => {
     });
   });
 
+  it('maps the sanitized real QCC risk-factor field combination into a consumable summary', () => {
+    const mapped = mapQccToolResult(
+      'risk', 'get_company_risk_scan', fixture('qcc-real-risk-factor-valid.json'), identity,
+      new Date('2026-08-29T12:00:00.000Z'),
+    );
+
+    expect(mapped.items).toHaveLength(1);
+    expect(JSON.parse(mapped.items[0].content ?? '{}')).toMatchObject({
+      riskCount: 0,
+      summary: expect.stringContaining('经营异常'),
+    });
+  });
+
   it.each([
     ['qcc-real-financing-permission.json', 'partial', true],
     ['qcc-real-financing-candidates.json', 'partial', true],

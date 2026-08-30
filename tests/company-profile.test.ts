@@ -287,4 +287,25 @@ describe('CompanyProfileService', () => {
     });
     expect(profiles.findFreshByNormalizedName(normalizeLegalName(candidate.Name), now, 30)).toHaveLength(1);
   });
+
+  it('maps and caches the sanitized real QCC risk-factor field combination', async () => {
+    const service = new CompanyProfileService({
+      call: async (_server: string, tool: string) => {
+        if (tool === 'get_company_by_query') return fixture('qcc-real-company-search.json');
+        if (tool === 'get_company_registration_info') return fixture('qcc-real-company-registration.json');
+        if (tool === 'get_company_profile') return fixture('qcc-real-company-profile.json');
+        if (tool === 'get_contact_info') return { Data: { Website: 'https://www.example.cn' } };
+        if (tool === 'get_company_risk_scan') return fixture('qcc-real-risk-factor-valid.json');
+        throw new Error(`unexpected tool ${tool}`);
+      },
+    }, profiles, { profileCacheTtlDays: 30, maxQccCalls: 8, maxTotalCalls: 18, now: () => now });
+
+    const result = await service.get(candidate.Name);
+
+    expect(result).toMatchObject({
+      sourceStatus: 'completed',
+      basicProfile: { riskSummary: expect.stringContaining('经营异常') },
+    });
+    expect(profiles.findFreshByNormalizedName(normalizeLegalName(candidate.Name), now, 30)).toHaveLength(1);
+  });
 });
