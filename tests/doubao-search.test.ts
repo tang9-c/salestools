@@ -217,6 +217,37 @@ describe('DoubaoSearchClient', () => {
     });
   });
 
+  it('prioritizes a ResponseMetadata error over a legacy success Code and valid Result', async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      Code: 0,
+      ResponseMetadata: { Error: { Code: 'SanitizedError', Message: 'request rejected' } },
+      Result: {
+        LogId: 'sanitized-log-id',
+        WebResults: [{ Title: '网页结果', Url: 'https://example.cn/item', SortId: 1 }],
+      },
+    }), { status: 200 }));
+    const client = new DoubaoSearchClient({
+      url: 'https://open.feedcoopapi.com/search_api/web_search', apiKey: 'test-key', fetchFn,
+    });
+
+    await expect(client.search(buildSearchPlan(identity)[0])).rejects.toMatchObject({
+      source: 'doubao_search', code: 'REMOTE_BUSINESS_ERROR',
+    });
+  });
+
+  it('classifies a ResponseMetadata error without Result as a typed business error', async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      ResponseMetadata: { Error: { Code: 'SanitizedError', Message: 'request rejected' } },
+    }), { status: 200 }));
+    const client = new DoubaoSearchClient({
+      url: 'https://open.feedcoopapi.com/search_api/web_search', apiKey: 'test-key', fetchFn,
+    });
+
+    await expect(client.search(buildSearchPlan(identity)[0])).rejects.toMatchObject({
+      source: 'doubao_search', code: 'REMOTE_BUSINESS_ERROR',
+    });
+  });
+
   it('uses a stable Query-and-URL hash when LogId is absent without embedding source content', () => {
     const [firstQuery, secondQuery] = buildSearchPlan(identity);
     const firstPayload = searchPayload({ Url: 'https://news.example.net/item' });

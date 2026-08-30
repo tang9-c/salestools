@@ -9,6 +9,10 @@ const BusinessEnvelopeSchema = z.object({
   Message: z.string().optional(),
 }).passthrough();
 
+const ResponseMetadataPresenceSchema = z.object({
+  ResponseMetadata: z.object({ Error: z.unknown().optional() }).passthrough(),
+}).passthrough();
+
 const OfficialEnvelopeSchema = z.object({
   ResponseMetadata: z.object({ Error: z.unknown().optional() }).passthrough(),
   Result: z.record(z.string(), z.unknown()),
@@ -50,25 +54,29 @@ function businessError(code: number, message: string): UpstreamError {
 }
 
 function normalizeSuccessfulPayload(payload: unknown): unknown {
+  const metadata = ResponseMetadataPresenceSchema.safeParse(payload);
+  if (metadata.success
+    && metadata.data.ResponseMetadata.Error !== undefined
+    && metadata.data.ResponseMetadata.Error !== null) {
+    throw new UpstreamError('doubao_search', 'REMOTE_BUSINESS_ERROR', 'Doubao search metadata contains an error');
+  }
+
+  const official = OfficialEnvelopeSchema.safeParse(payload);
+  if (official.success) {
+    return {
+      Code: 0,
+      LogId: official.data.Result.LogId,
+      Result: official.data.Result,
+    };
+  }
+
   const legacy = BusinessEnvelopeSchema.safeParse(payload);
   if (legacy.success) {
     if (legacy.data.Code !== 0) throw businessError(legacy.data.Code, legacy.data.Message ?? '');
     return payload;
   }
 
-  const official = OfficialEnvelopeSchema.safeParse(payload);
-  if (!official.success) {
-    throw new UpstreamError('doubao_search', 'INVALID_RESPONSE', 'Doubao search response has no supported envelope');
-  }
-  if (official.data.ResponseMetadata.Error !== undefined
-    && official.data.ResponseMetadata.Error !== null) {
-    throw new UpstreamError('doubao_search', 'REMOTE_BUSINESS_ERROR', 'Doubao search metadata contains an error');
-  }
-  return {
-    Code: 0,
-    LogId: official.data.Result.LogId,
-    Result: official.data.Result,
-  };
+  throw new UpstreamError('doubao_search', 'INVALID_RESPONSE', 'Doubao search response has no supported envelope');
 }
 
 export class DoubaoSearchClient {
