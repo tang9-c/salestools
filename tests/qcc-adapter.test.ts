@@ -1,10 +1,17 @@
 import { readFileSync } from 'node:fs';
+import {
+  InsufficientScopeError,
+  SdkErrorCode,
+  SdkHttpError,
+  UnauthorizedError,
+} from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
 import type { IdentityProfile } from '../src/contracts/index.js';
 import { CallBudget } from '../src/orchestration/call-budget.js';
 import { UpstreamError } from '../src/orchestration/retry.js';
 import {
   QccGateway,
+  classifyQccSdkError,
   type QccConnection,
   type QccConnectionFactory,
 } from '../src/upstream/qcc/client.js';
@@ -32,6 +39,39 @@ const identity: IdentityProfile = {
 };
 
 describe('QccGateway', () => {
+  it('classifies SDK authentication, scope and HTTP handshake errors as typed remote errors', () => {
+    expect(classifyQccSdkError(new UnauthorizedError('missing token'))).toMatchObject({
+      code: 'AUTHENTICATION_ERROR',
+    });
+    expect(classifyQccSdkError(new InsufficientScopeError({ requiredScope: 'qcc.read' }))).toMatchObject({
+      code: 'AUTHENTICATION_ERROR',
+    });
+    expect(classifyQccSdkError(new SdkHttpError(
+      SdkErrorCode.ClientHttpAuthentication,
+      'handshake rejected',
+      { status: 401 },
+    ))).toMatchObject({ code: 'REMOTE_HTTP_ERROR' });
+    expect(classifyQccSdkError(new Error('socket reset'))).toBeNull();
+  });
+
+  it('removes a rejected handshake promise so a later call can rebuild the connection', async () => {
+    let created = 0;
+    const factory: QccConnectionFactory = {
+      create: async () => {
+        created += 1;
+        if (created === 1) throw new UpstreamError('qcc', 'AUTHENTICATION_ERROR', 'handshake rejected');
+        return { callTool: async () => ({ Data: [] }), close: async () => undefined };
+      },
+    };
+    const gateway = new QccGateway(config, factory);
+
+    await expect(gateway.call('company', 'get_company_by_query', {}))
+      .rejects.toMatchObject({ code: 'AUTHENTICATION_ERROR' });
+    await expect(gateway.call('company', 'get_company_by_query', {})).resolves.toEqual({ Data: [] });
+    expect(created).toBe(2);
+    await gateway.close();
+  });
+
   it('rejects non-allowlisted server/tool pairs before creating a network connection', async () => {
     let connections = 0;
     const factory: QccConnectionFactory = { create: async () => { connections += 1; throw new Error('network'); } };
@@ -160,6 +200,24 @@ describe('QCC mapping and formal collection', () => {
     expect(mapped.items).toHaveLength(1);
     expect(JSON.parse(mapped.items[0].content ?? '{}')).toEqual(expected);
     expect(mapped.items[0].url).toMatch(/^https:\/\//);
+  });
+
+  it.each([
+    ['operation', 'get_financing_records', {
+      Data: [{ Date: 'not-a-date', Round: '   ', Type: '', Amount: ' ', Investors: ['   '] }],
+    }],
+    ['operation', 'get_financing_records', {
+      Data: [{ Date: '2026-02-30', Round: null, Type: null, Amount: null, Investors: [] }],
+    }],
+    ['risk', 'get_company_risk_scan', {
+      Data: [{ RiskCount: null, ExceptionCount: null, PenaltyCount: null, JudicialCount: null, Summary: '   ' }],
+    }],
+    ['ipr', 'get_patent_info', {
+      Data: [{ PatentName: ' ', ApplicationNumber: '', ApplicationDate: '2026-99-99' }],
+    }],
+  ] as const)('rejects blank or invalid key fields for %s/%s', (server, tool, payload) => {
+    expect(() => mapQccToolResult(server, tool, payload, identity, new Date('2026-08-29T12:00:00.000Z')))
+      .toThrow(expect.objectContaining({ code: 'INVALID_RESPONSE' }));
   });
 
   it('starts financing first and recruitment second before any other call or retry', async () => {

@@ -12,9 +12,17 @@ import type { QccServer } from './tool-allowlist.js';
 
 const RawRootSchema = z.object({ Data: z.unknown() }).passthrough();
 const RawRecordSchema = z.record(z.string(), z.unknown());
+
+function nonBlank(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
 const OptionalStringSchema = z.string().nullable().optional();
 const OptionalNumberSchema = z.number().nullable().optional();
 const OptionalUrlSchema = OptionalStringSchema;
+const OptionalDateSchema = OptionalStringSchema.refine(
+  value => value == null || !nonBlank(value) || dateTimestamp(value) !== null,
+);
 
 const FormalProfileRecordSchema = z.object({
   Name: OptionalStringSchema,
@@ -23,27 +31,27 @@ const FormalProfileRecordSchema = z.object({
   EmployeeRange: OptionalStringSchema,
   Website: OptionalStringSchema,
   Url: OptionalUrlSchema,
-}).passthrough().refine(record => [record.Name, record.Industry, record.Introduction].some(value => value != null));
+}).passthrough().refine(record => [record.Name, record.Industry, record.Introduction].some(nonBlank));
 
 const FinancingRecordSchema = z.object({
-  Date: OptionalStringSchema,
+  Date: OptionalDateSchema,
   Round: OptionalStringSchema,
   Type: OptionalStringSchema,
   Amount: OptionalStringSchema,
   Investors: z.array(z.string()).optional(),
   Url: OptionalUrlSchema,
-}).passthrough().refine(record => [record.Date, record.Round, record.Type, record.Amount].some(value => value != null)
-  || (record.Investors?.length ?? 0) > 0);
+}).passthrough().refine(record => [record.Date, record.Round, record.Type, record.Amount].some(nonBlank)
+  || (record.Investors?.some(nonBlank) ?? false));
 
 const RecruitmentRecordSchema = z.object({
-  PublishDate: OptionalStringSchema,
+  PublishDate: OptionalDateSchema,
   JobName: OptionalStringSchema,
   Salary: OptionalStringSchema,
   Education: OptionalStringSchema,
   Experience: OptionalStringSchema,
   Location: OptionalStringSchema,
   Url: OptionalUrlSchema,
-}).passthrough().refine(record => record.JobName != null || record.PublishDate != null);
+}).passthrough().refine(record => nonBlank(record.JobName) || nonBlank(record.PublishDate));
 
 const RiskRecordSchema = z.object({
   RiskCount: OptionalNumberSchema,
@@ -54,33 +62,33 @@ const RiskRecordSchema = z.object({
   Url: OptionalUrlSchema,
 }).passthrough().refine(record => [
   record.RiskCount, record.ExceptionCount, record.PenaltyCount, record.JudicialCount, record.Summary,
-].some(value => value != null));
+].some(value => typeof value === 'number' || nonBlank(value)));
 
 const PatentRecordSchema = z.object({
   PatentName: OptionalStringSchema,
   PatentType: OptionalStringSchema,
   ApplicationNumber: OptionalStringSchema,
-  ApplicationDate: OptionalStringSchema,
+  ApplicationDate: OptionalDateSchema,
   Status: OptionalStringSchema,
   Url: OptionalUrlSchema,
-}).passthrough().refine(record => record.PatentName != null || record.ApplicationNumber != null);
+}).passthrough().refine(record => nonBlank(record.PatentName) || nonBlank(record.ApplicationNumber));
 
 const AnnualReportRecordSchema = z.object({
-  Year: OptionalStringSchema,
+  Year: z.string().trim().regex(/^\d{4}$/).nullable().optional(),
   EmployeeCount: OptionalNumberSchema,
   TotalAssets: OptionalStringSchema,
   Revenue: OptionalStringSchema,
   Url: OptionalUrlSchema,
-}).passthrough().refine(record => record.Year != null);
+}).passthrough().refine(record => nonBlank(record.Year));
 
 const BiddingRecordSchema = z.object({
   Title: OptionalStringSchema,
-  PublishDate: OptionalStringSchema,
+  PublishDate: OptionalDateSchema,
   Role: OptionalStringSchema,
   Amount: OptionalStringSchema,
   Purchaser: OptionalStringSchema,
   Url: OptionalUrlSchema,
-}).passthrough().refine(record => record.Title != null || record.PublishDate != null);
+}).passthrough().refine(record => nonBlank(record.Title) || nonBlank(record.PublishDate));
 
 const ShareholderRecordSchema = z.object({
   ShareholderName: OptionalStringSchema,
@@ -88,25 +96,25 @@ const ShareholderRecordSchema = z.object({
   SubscribedCapital: OptionalStringSchema,
   ShareholderType: OptionalStringSchema,
   Url: OptionalUrlSchema,
-}).passthrough().refine(record => record.ShareholderName != null);
+}).passthrough().refine(record => nonBlank(record.ShareholderName));
 
 const SoftwareCopyrightRecordSchema = z.object({
   SoftwareName: OptionalStringSchema,
   ShortName: OptionalStringSchema,
   RegistrationNumber: OptionalStringSchema,
-  RegistrationDate: OptionalStringSchema,
+  RegistrationDate: OptionalDateSchema,
   Version: OptionalStringSchema,
   Url: OptionalUrlSchema,
-}).passthrough().refine(record => record.SoftwareName != null || record.RegistrationNumber != null);
+}).passthrough().refine(record => nonBlank(record.SoftwareName) || nonBlank(record.RegistrationNumber));
 
 const QualificationRecordSchema = z.object({
   QualificationName: OptionalStringSchema,
   CertificateNumber: OptionalStringSchema,
-  IssuedAt: OptionalStringSchema,
-  ExpiresAt: OptionalStringSchema,
+  IssuedAt: OptionalDateSchema,
+  ExpiresAt: OptionalDateSchema,
   Issuer: OptionalStringSchema,
   Url: OptionalUrlSchema,
-}).passthrough().refine(record => record.QualificationName != null || record.CertificateNumber != null);
+}).passthrough().refine(record => nonBlank(record.QualificationName) || nonBlank(record.CertificateNumber));
 
 export interface MappedCandidate {
   legalName: string;
@@ -188,9 +196,11 @@ function numberValue(record: Record<string, unknown>, key: string): number | nul
 
 function dateTimestamp(value: unknown): string | null {
   if (typeof value !== 'string' || value.trim().length === 0) return null;
-  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00.000Z` : value;
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const normalized = dateOnly ? `${value}T00:00:00.000Z` : value;
   try {
-    return new Date(normalized).toISOString();
+    const timestamp = new Date(normalized).toISOString();
+    return dateOnly && timestamp.slice(0, 10) !== value ? null : timestamp;
   } catch {
     return null;
   }

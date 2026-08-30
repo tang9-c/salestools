@@ -23,6 +23,19 @@ export interface QccConnectionFactory {
   create(server: QccServer, url: string, apiKey: string): Promise<QccConnection>;
 }
 
+export function classifyQccSdkError(error: unknown): UpstreamError | null {
+  if (ProtocolError.isInstance(error)) {
+    return new UpstreamError('qcc', 'REMOTE_PROTOCOL_ERROR', error.message, { cause: error });
+  }
+  if (UnauthorizedError.isInstance(error) || InsufficientScopeError.isInstance(error)) {
+    return new UpstreamError('qcc', 'AUTHENTICATION_ERROR', error.message, { cause: error });
+  }
+  if (SdkHttpError.isInstance(error)) {
+    return new UpstreamError('qcc', 'REMOTE_HTTP_ERROR', error.message, { cause: error });
+  }
+  return null;
+}
+
 const sdkConnectionFactory: QccConnectionFactory = {
   async create(server, url, apiKey) {
     const client = new Client(
@@ -36,7 +49,7 @@ const sdkConnectionFactory: QccConnectionFactory = {
       await client.connect(transport);
     } catch (error) {
       await transport.close().catch(() => undefined);
-      throw error;
+      throw classifyQccSdkError(error) ?? error;
     }
 
     return {
@@ -45,16 +58,7 @@ const sdkConnectionFactory: QccConnectionFactory = {
         try {
           result = await client.callTool({ name: tool, arguments: input } as Parameters<Client['callTool']>[0]);
         } catch (error) {
-          if (ProtocolError.isInstance(error)) {
-            throw new UpstreamError('qcc', 'REMOTE_PROTOCOL_ERROR', error.message, { cause: error });
-          }
-          if (UnauthorizedError.isInstance(error) || InsufficientScopeError.isInstance(error)) {
-            throw new UpstreamError('qcc', 'AUTHENTICATION_ERROR', error.message, { cause: error });
-          }
-          if (SdkHttpError.isInstance(error)) {
-            throw new UpstreamError('qcc', 'REMOTE_HTTP_ERROR', error.message, { cause: error });
-          }
-          throw error;
+          throw classifyQccSdkError(error) ?? error;
         }
         if (result.isError === true) {
           const message = result.content
@@ -94,9 +98,15 @@ export class QccGateway {
       connection = await pending;
       return await connection.callTool(tool, input);
     } catch (error) {
+      if (connection === undefined) {
+        if (this.connections.get(server) === pending) this.connections.delete(server);
+        if (error instanceof UpstreamError) throw error;
+        const message = error instanceof Error ? error.message : 'QCC connection failed';
+        throw new UpstreamError('qcc', 'TRANSPORT', message, { cause: error });
+      }
       if (error instanceof UpstreamError && error.code !== 'TRANSPORT') throw error;
       if (this.connections.get(server) === pending) this.connections.delete(server);
-      if (connection !== undefined) await connection.close().catch(() => undefined);
+      await connection.close().catch(() => undefined);
       if (error instanceof UpstreamError) throw error;
       const message = error instanceof Error ? error.message : 'QCC transport failed';
       throw new UpstreamError('qcc', 'TRANSPORT', message, { cause: error });
