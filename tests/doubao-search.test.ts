@@ -19,8 +19,8 @@ const identity: IdentityProfile = {
   subsidiaryLegalNames: [],
 };
 
-function fixture(): unknown {
-  return JSON.parse(readFileSync(new URL('./fixtures/doubao-search.json', import.meta.url), 'utf8'));
+function fixture(name = 'doubao-search.json'): unknown {
+  return JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
 }
 
 function searchPayload(result: Record<string, unknown>, logId?: string): unknown {
@@ -178,6 +178,43 @@ describe('DoubaoSearchClient', () => {
       logId: 'doubao-log-123',
     });
     expect(client.search.length).toBe(1);
+  });
+
+  it('normalizes the sanitized real ResponseMetadata envelope before mapping results', async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      JSON.stringify(fixture('doubao-real-envelope.json')),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ));
+    const client = new DoubaoSearchClient({
+      url: 'https://open.feedcoopapi.com/search_api/web_search',
+      apiKey: 'test-search-key',
+      fetchFn,
+      now: () => new Date('2026-08-29T12:00:00.000Z'),
+    });
+
+    const items = await client.search(buildSearchPlan(identity)[0]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      evidenceId: 'doubao-sanitized-log-id-1',
+      title: '测试制造有限公司产品资料',
+      url: 'https://www.example.cn/products',
+      entityMatch: 'confirmed',
+    });
+  });
+
+  it('rejects an official ResponseMetadata error without treating Result as success', async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      ResponseMetadata: { Error: { Code: 'SanitizedError', Message: 'request rejected' } },
+      Result: { WebResults: [] },
+    }), { status: 200 }));
+    const client = new DoubaoSearchClient({
+      url: 'https://open.feedcoopapi.com/search_api/web_search', apiKey: 'test-key', fetchFn,
+    });
+
+    await expect(client.search(buildSearchPlan(identity)[0])).rejects.toMatchObject({
+      source: 'doubao_search', code: 'REMOTE_BUSINESS_ERROR',
+    });
   });
 
   it('uses a stable Query-and-URL hash when LogId is absent without embedding source content', () => {

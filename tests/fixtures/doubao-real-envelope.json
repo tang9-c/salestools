@@ -1,0 +1,24 @@
+{
+  "ResponseMetadata": {
+    "RequestId": "sanitized-request-id",
+    "Action": "WebSearch",
+    "Version": "2025-01-01",
+    "Service": "search",
+    "Region": "cn"
+  },
+  "Result": {
+    "LogId": "sanitized-log-id",
+    "ResultCount": 1,
+    "WebResults": [
+      {
+        "Title": "测试制造有限公司产品资料",
+        "SiteName": "测试制造官网",
+        "Url": "https://www.example.cn/products",
+        "Summary": "测试制造有限公司发布产品资料。",
+        "Content": "测试制造有限公司产品与技术中心。",
+        "PublishTime": "2026-08-28",
+        "SortId": 1
+      }
+    ]
+  }
+}

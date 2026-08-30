@@ -255,6 +255,36 @@ describe('QCC mapping and formal collection', () => {
     expect(financing.gaps).toContain('get_financing_records未查到或未披露数据');
   });
 
+  it('maps sanitized real Chinese bidding records with blank optional amounts', () => {
+    const mapped = mapQccToolResult(
+      'operation', 'get_bidding_info', fixture('qcc-real-bidding-blank-optional.json'), identity,
+      new Date('2026-08-29T12:00:00.000Z'),
+    );
+
+    expect(mapped.items).toHaveLength(1);
+    expect(JSON.parse(mapped.items[0].content ?? '{}')).toMatchObject({
+      title: '研发平台项目',
+      publishedAt: '2026-07-20T00:00:00.000Z',
+      amount: null,
+      purchaser: identity.legalName,
+    });
+  });
+
+  it('maps the sanitized real Chinese shareholder response', () => {
+    const mapped = mapQccToolResult(
+      'company', 'get_shareholder_info', fixture('qcc-real-shareholder.json'), identity,
+      new Date('2026-08-29T12:00:00.000Z'),
+    );
+
+    expect(mapped.items).toHaveLength(1);
+    expect(JSON.parse(mapped.items[0].content ?? '{}')).toEqual({
+      shareholderName: '测试控股有限公司',
+      shareholdingRatio: '62.5%',
+      subscribedCapital: '3125万元人民币',
+      shareholderType: null,
+    });
+  });
+
   it.each([
     'qcc-real-financing-permission.json',
     'qcc-real-financing-candidates.json',

@@ -154,7 +154,7 @@ const ChineseRecruitmentSchema = z.object({
 const ChineseBiddingRecordSchema = z.object({
   项目名称: RequiredChineseStringSchema,
   发布日期: OptionalChineseStringSchema,
-  中标金额: OptionalChineseStringSchema,
+  中标金额: z.string().optional(),
   招采单位: z.array(z.string()).optional(),
   中标单位: z.array(z.string()).optional(),
 }).passthrough();
@@ -163,6 +163,18 @@ const ChineseBiddingSchema = z.object({
   企业名称: RequiredChineseStringSchema,
   统一社会信用代码: OptionalChineseStringSchema,
   招投标信息: z.array(ChineseBiddingRecordSchema),
+}).passthrough();
+
+const ChineseShareholderRecordSchema = z.object({
+  股东名称: RequiredChineseStringSchema,
+  持股比例: OptionalChineseStringSchema,
+  认缴出资额: OptionalChineseStringSchema,
+}).passthrough();
+
+const ChineseShareholderSchema = z.object({
+  企业名称: RequiredChineseStringSchema,
+  统一社会信用代码: OptionalChineseStringSchema,
+  股东信息: z.array(ChineseShareholderRecordSchema),
 }).passthrough();
 
 const ChineseFinancingRecordSchema = z.object({
@@ -995,6 +1007,15 @@ function formalRecords(
       PublishDate: record.发布日期 ?? null,
       Amount: record.中标金额 ?? null,
       Purchaser: record.招采单位?.filter(nonBlank).join('、') || null,
+    }));
+  }
+  if (tool === 'get_shareholder_info') {
+    const parsed = parseChineseFormalRoot(ChineseShareholderSchema, root, tool);
+    return parsed.股东信息.map(record => ({
+      ShareholderName: record.股东名称,
+      ShareholdingRatio: record.持股比例 ?? null,
+      SubscribedCapital: record.认缴出资额 ?? null,
+      ShareholderType: null,
     }));
   }
   if (tool === 'get_financing_records') {

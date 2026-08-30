@@ -9,6 +9,11 @@ const BusinessEnvelopeSchema = z.object({
   Message: z.string().optional(),
 }).passthrough();
 
+const OfficialEnvelopeSchema = z.object({
+  ResponseMetadata: z.object({ Error: z.unknown().optional() }).passthrough(),
+  Result: z.record(z.string(), z.unknown()),
+}).passthrough();
+
 export interface DoubaoSearchClientOptions {
   url: string;
   apiKey: string;
@@ -42,6 +47,28 @@ function businessError(code: number, message: string): UpstreamError {
     return new UpstreamError('doubao_search', 'AUTHENTICATION_ERROR', `Doubao search business error ${code}`);
   }
   return new UpstreamError('doubao_search', 'REMOTE_BUSINESS_ERROR', `Doubao search business error ${code}`);
+}
+
+function normalizeSuccessfulPayload(payload: unknown): unknown {
+  const legacy = BusinessEnvelopeSchema.safeParse(payload);
+  if (legacy.success) {
+    if (legacy.data.Code !== 0) throw businessError(legacy.data.Code, legacy.data.Message ?? '');
+    return payload;
+  }
+
+  const official = OfficialEnvelopeSchema.safeParse(payload);
+  if (!official.success) {
+    throw new UpstreamError('doubao_search', 'INVALID_RESPONSE', 'Doubao search response has no supported envelope');
+  }
+  if (official.data.ResponseMetadata.Error !== undefined
+    && official.data.ResponseMetadata.Error !== null) {
+    throw new UpstreamError('doubao_search', 'REMOTE_BUSINESS_ERROR', 'Doubao search metadata contains an error');
+  }
+  return {
+    Code: 0,
+    LogId: official.data.Result.LogId,
+    Result: official.data.Result,
+  };
 }
 
 export class DoubaoSearchClient {
@@ -87,14 +114,6 @@ export class DoubaoSearchClient {
       throw new UpstreamError('doubao_search', 'INVALID_RESPONSE', 'Doubao search returned invalid JSON', { cause: error });
     }
 
-    const envelope = BusinessEnvelopeSchema.safeParse(payload);
-    if (!envelope.success) {
-      throw new UpstreamError('doubao_search', 'INVALID_RESPONSE', 'Doubao search response has no business code');
-    }
-    if (envelope.data.Code !== 0) {
-      throw businessError(envelope.data.Code, envelope.data.Message ?? '');
-    }
-
-    return mapDoubaoSearchResponse(payload, parsedQuery, this.now());
+    return mapDoubaoSearchResponse(normalizeSuccessfulPayload(payload), parsedQuery, this.now());
   }
 }
