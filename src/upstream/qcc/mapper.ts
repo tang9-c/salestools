@@ -159,9 +159,11 @@ function unwrapPayload(payload: unknown): unknown {
 }
 
 function dataOf(payload: unknown): unknown {
-  const parsed = RawRootSchema.safeParse(unwrapPayload(payload));
-  if (!parsed.success) throw invalidResponse('QCC result does not contain Data');
-  return parsed.data.Data;
+  const unwrapped = unwrapPayload(payload);
+  const parsed = RawRootSchema.safeParse(unwrapped);
+  if (parsed.success) return parsed.data.Data;
+  if (RawRecordSchema.safeParse(unwrapped).success) return unwrapped;
+  throw invalidResponse('QCC result does not contain an object payload');
 }
 
 function recordsOf(payload: unknown): Record<string, unknown>[] {
@@ -174,13 +176,39 @@ function recordsOf(payload: unknown): Record<string, unknown>[] {
 }
 
 export function validateQccPayload(payload: unknown): unknown {
-  recordsOf(payload);
+  const unwrapped = unwrapPayload(payload);
+  if (RawRootSchema.safeParse(unwrapped).success) {
+    recordsOf(payload);
+    return payload;
+  }
+  const chinese = RawRecordSchema.safeParse(unwrapped);
+  if (!chinese.success || (!Object.hasOwn(chinese.data, '企业名称') && !Object.hasOwn(chinese.data, '企业信息'))) {
+    throw invalidResponse('QCC result has an unsupported shape');
+  }
   return payload;
 }
 
 function stringValue(record: Record<string, unknown>, key: string): string | null {
   const value = record[key];
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+function stringValueFrom(record: Record<string, unknown>, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = stringValue(record, key);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function stringValuesFrom(record: Record<string, unknown>, keys: readonly string[]): string[] {
+  for (const key of keys) {
+    const values = stringArray(record, key);
+    if (values.length > 0) return values;
+    const value = stringValue(record, key);
+    if (value !== null) return [value];
+  }
+  return [];
 }
 
 function stringArray(record: Record<string, unknown>, key: string): string[] {
@@ -225,6 +253,29 @@ function safeUrl(value: string | null): string {
 }
 
 export function mapCompanyCandidates(payload: unknown): MappedCandidate[] {
+  const unwrapped = unwrapPayload(payload);
+  const chinese = RawRecordSchema.safeParse(unwrapped);
+  if (chinese.success && Object.hasOwn(chinese.data, '企业信息')) {
+    const rawInformation = chinese.data['企业信息'];
+    const information = Array.isArray(rawInformation) ? rawInformation : [rawInformation];
+    const parsed = z.array(RawRecordSchema).safeParse(information);
+    if (!parsed.success) throw invalidResponse('QCC company information has an unsupported shape');
+    const matchReason = stringValue(chinese.data, '匹配结果') ?? '企查查名称查询匹配';
+    return parsed.data.map(record => {
+      const legalName = stringValue(record, '企业名称');
+      const creditCode = stringValue(record, '统一社会信用代码');
+      if (legalName === null || creditCode === null) {
+        throw invalidResponse('QCC candidate is missing legal name or credit code');
+      }
+      return {
+        legalName,
+        creditCode,
+        status: stringValue(record, '登记状态'),
+        registeredAddress: stringValue(record, '注册地址'),
+        matchReason,
+      };
+    });
+  }
   return recordsOf(payload).map(record => {
     const legalName = stringValue(record, 'Name');
     const creditCode = stringValue(record, 'CreditCode');
@@ -244,6 +295,21 @@ function firstRecord(payload: unknown | null): Record<string, unknown> {
   return recordsOf(payload)[0] ?? {};
 }
 
+function websiteFromContact(record: Record<string, unknown>): string | null {
+  const direct = stringValue(record, 'Website');
+  if (direct !== null) return direct;
+  const contact = record['联系方式信息'];
+  if (typeof contact !== 'object' || contact === null || Array.isArray(contact)) return null;
+  const websites = (contact as Record<string, unknown>)['网址'];
+  if (!Array.isArray(websites)) return null;
+  for (const website of websites) {
+    if (typeof website !== 'object' || website === null || Array.isArray(website)) continue;
+    const value = stringValue(website as Record<string, unknown>, '网址');
+    if (value !== null) return value;
+  }
+  return null;
+}
+
 export function mapCompanyDetails(
   candidate: MappedCandidate,
   registrationPayload: unknown | null,
@@ -256,7 +322,7 @@ export function mapCompanyDetails(
   const profile = firstRecord(profilePayload);
   const contact = firstRecord(contactPayload);
   const risk = firstRecord(riskPayload);
-  const website = stringValue(contact, 'Website') ?? stringValue(profile, 'Website');
+  const website = websiteFromContact(contact) ?? stringValueFrom(profile, ['Website', '网址']);
   const officialDomains: string[] = [];
   if (website !== null) {
     try {
@@ -267,27 +333,32 @@ export function mapCompanyDetails(
   }
 
   const identity = IdentityProfileSchema.parse({
-    legalName: stringValue(registration, 'Name') ?? candidate.legalName,
-    creditCode: stringValue(registration, 'CreditCode') ?? candidate.creditCode,
-    formerNames: stringArray(registration, 'FormerNames'),
-    aliases: stringArray(profile, 'ShortNames'),
-    englishNames: stringArray(registration, 'EnglishNames'),
+    legalName: stringValueFrom(registration, ['Name', '企业名称']) ?? candidate.legalName,
+    creditCode: stringValueFrom(registration, ['CreditCode', '统一社会信用代码']) ?? candidate.creditCode,
+    formerNames: stringValuesFrom(registration, ['FormerNames', '曾用名']),
+    aliases: [
+      ...stringValuesFrom(profile, ['ShortNames', '企业简称']),
+      ...stringValuesFrom(registration, ['企业简称']),
+    ],
+    englishNames: stringValuesFrom(registration, ['EnglishNames', '英文名']),
     brands: stringArray(profile, 'Brands'),
     officialDomains,
-    registeredAddress: stringValue(registration, 'Address') ?? candidate.registeredAddress,
+    registeredAddress: stringValueFrom(registration, ['Address', '注册地址']) ?? candidate.registeredAddress,
     parentLegalName: stringValue(registration, 'ParentLegalName'),
     subsidiaryLegalNames: stringArray(registration, 'SubsidiaryLegalNames'),
   });
   const basicProfile = BasicProfileSchema.parse({
-    industry: stringValue(registration, 'Industry') ?? stringValue(profile, 'Industry'),
-    region: stringValue(registration, 'Province'),
-    company_type: stringValue(registration, 'EconKind'),
-    founded_year: yearOf(stringValue(registration, 'StartDate')),
-    registered_capital: stringValue(registration, 'RegistCapi'),
-    legal_representative: stringValue(registration, 'OperName'),
+    industry: stringValueFrom(registration, ['Industry', '国标行业'])
+      ?? stringValueFrom(profile, ['Industry', '企查查行业']),
+    region: stringValueFrom(registration, ['Province', '所属地区']),
+    company_type: stringValueFrom(registration, ['EconKind', '企业类型']),
+    founded_year: yearOf(stringValueFrom(registration, ['StartDate', '成立日期'])),
+    registered_capital: stringValueFrom(registration, ['RegistCapi', '注册资本']),
+    legal_representative: stringValueFrom(registration, ['OperName', '法定代表人']),
     website,
-    employee_range: stringValue(profile, 'EmployeeRange'),
-    risk_summary: stringValue(risk, 'Summary'),
+    employee_range: stringValueFrom(profile, ['EmployeeRange', '人员规模'])
+      ?? stringValueFrom(registration, ['人员规模']),
+    risk_summary: stringValueFrom(risk, ['Summary', '摘要']),
     collected_at: collectedAt.toISOString(),
   });
   return { identity, basicProfile };
@@ -493,6 +564,74 @@ function safeMappedRecord(tool: string, record: Record<string, unknown>): {
   throw invalidResponse(`QCC tool has no v0.1 mapper: ${tool}`);
 }
 
+function recordArray(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
+  const value = record[key];
+  if (!Array.isArray(value)) return [];
+  const parsed = z.array(RawRecordSchema).safeParse(value);
+  if (!parsed.success) throw invalidResponse(`QCC ${key} has an unsupported shape`);
+  return parsed.data;
+}
+
+function joinedStringArray(record: Record<string, unknown>, key: string): string | null {
+  const values = stringArray(record, key);
+  return values.length === 0 ? null : values.join('、');
+}
+
+function formalRecords(tool: string, payload: unknown): Record<string, unknown>[] {
+  const unwrapped = unwrapPayload(payload);
+  if (RawRootSchema.safeParse(unwrapped).success) return recordsOf(payload);
+  const chinese = RawRecordSchema.safeParse(unwrapped);
+  if (!chinese.success || !Object.hasOwn(chinese.data, '企业名称')) return recordsOf(payload);
+  const root = chinese.data;
+
+  if (tool === 'get_company_profile') {
+    return [{
+      Name: stringValue(root, '企业名称'),
+      Industry: stringValue(root, '企查查行业'),
+      Introduction: stringValue(root, '简介'),
+      EmployeeRange: stringValue(root, '人员规模'),
+      Website: stringValue(root, '网址'),
+    }];
+  }
+  if (tool === 'get_company_risk_scan') {
+    return [{
+      RiskCount: numberValue(root, '有记录因子数'),
+      Summary: stringValue(root, '摘要'),
+    }];
+  }
+  if (tool === 'get_patent_info') {
+    return recordArray(root, '专利信息').map(record => ({
+      PatentName: stringValue(record, '发明名称'),
+      PatentType: stringValue(record, '专利类型'),
+      ApplicationNumber: stringValue(record, '申请号'),
+      ApplicationDate: stringValue(record, '申请日期'),
+      Status: stringValue(record, '法律状态'),
+    }));
+  }
+  if (tool === 'get_recruitment_info') {
+    return recordArray(root, '招聘信息').map(record => ({
+      PublishDate: stringValue(record, '发布日期'),
+      JobName: stringValue(record, '招聘职位'),
+      Salary: stringValue(record, '月薪'),
+      Education: stringValue(record, '学历'),
+      Experience: stringValue(record, '经验'),
+      Location: stringValue(record, '办公地点'),
+    }));
+  }
+  if (tool === 'get_bidding_info') {
+    return recordArray(root, '招投标信息').map(record => ({
+      Title: stringValue(record, '项目名称'),
+      PublishDate: stringValue(record, '发布日期'),
+      Amount: stringValue(record, '中标金额'),
+      Purchaser: joinedStringArray(record, '招采单位'),
+    }));
+  }
+  if (tool === 'get_financing_records' && Object.hasOwn(root, '搜索结果')) {
+    return [];
+  }
+  return recordsOf(payload);
+}
+
 export function mapQccToolResult(
   server: QccServer,
   tool: string,
@@ -500,7 +639,7 @@ export function mapQccToolResult(
   identity: IdentityProfile,
   collectedAt: Date,
 ): MappedQccResult {
-  const records = recordsOf(payload);
+  const records = formalRecords(tool, payload);
   if (records.length === 0) return { items: [], gaps: [`${tool}未查到或未披露数据`] };
   const sourceKind = server === 'company' ? 'company' : server === 'risk' ? 'risk' : server === 'ipr' ? 'ipr' : 'operation';
   const items = records.map((record, index) => {

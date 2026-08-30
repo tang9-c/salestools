@@ -125,9 +125,11 @@ describe('CompanyProfileService', () => {
 
   it('maps, caches and then reuses a unique QCC profile', async () => {
     let calls = 0;
+    const inputs: Array<{ tool: string; input: Record<string, unknown> }> = [];
     const gateway = {
-      call: async (_server: string, tool: string) => {
+      call: async (_server: string, tool: string, input: Record<string, unknown>) => {
         calls += 1;
+        inputs.push({ tool, input });
         if (tool === 'get_company_by_query') return { Data: [candidate] };
         if (tool === 'get_company_registration_info') return { Data: {
           ...candidate, Province: '上海', EconKind: '有限责任公司', StartDate: '2020-03-04',
@@ -158,6 +160,13 @@ describe('CompanyProfileService', () => {
     });
     expect(second).toMatchObject({ sourceStatus: 'completed', cacheHit: true });
     expect(calls).toBe(callsAfterFirst);
+    expect(inputs).toEqual([
+      { tool: 'get_company_by_query', input: { searchKey: candidate.Name } },
+      { tool: 'get_company_registration_info', input: { searchKey: candidate.CreditCode } },
+      { tool: 'get_company_profile', input: { searchKey: candidate.CreditCode } },
+      { tool: 'get_contact_info', input: { searchKey: candidate.CreditCode } },
+      { tool: 'get_company_risk_scan', input: { searchKey: candidate.CreditCode } },
+    ]);
   });
 
   it('returns a failed business result when a required mapped detail has an unsupported shape', async () => {
@@ -172,6 +181,58 @@ describe('CompanyProfileService', () => {
     await expect(service.get(candidate.Name)).resolves.toEqual({
       sourceStatus: 'failed', candidates: [], basicProfile: null, cacheHit: false,
       message: '企查查暂不可用，请稍后重试',
+    });
+  });
+
+  it('maps the real QCC Chinese response shape without retaining raw payloads', async () => {
+    const service = new CompanyProfileService({
+      call: async (_server: string, tool: string) => {
+        if (tool === 'get_company_by_query') return {
+          企业信息: { 企业名称: candidate.Name, 统一社会信用代码: candidate.CreditCode },
+          匹配结果: '精确匹配',
+          摘要: '查询摘要',
+          检索关键字: candidate.Name,
+        };
+        if (tool === 'get_company_registration_info') return {
+          企业名称: candidate.Name,
+          统一社会信用代码: candidate.CreditCode,
+          登记状态: '存续',
+          注册地址: candidate.Address,
+          所属地区: '上海',
+          企业类型: '有限责任公司',
+          成立日期: '2020-03-04',
+          注册资本: '5000万元人民币',
+          法定代表人: '张三',
+          国标行业: '专用设备制造业',
+        };
+        if (tool === 'get_company_profile') return {
+          企业名称: candidate.Name,
+          企查查行业: '专用设备制造业',
+          简介: '测试简介',
+        };
+        if (tool === 'get_contact_info') return {
+          企业名称: candidate.Name,
+          联系方式信息: { 网址: [{ 网址: 'https://www.example.cn', 是否是官网: '是' }] },
+        };
+        if (tool === 'get_company_risk_scan') return {
+          企业名称: candidate.Name,
+          摘要: '未发现明显经营异常',
+          有记录因子数: 0,
+          无记录因子数: 35,
+        };
+        throw new Error(`unexpected tool ${tool}`);
+      },
+    }, profiles, { profileCacheTtlDays: 30, maxQccCalls: 8, maxTotalCalls: 18, now: () => now });
+
+    const result = await service.get(candidate.Name, '上海');
+
+    expect(result).toMatchObject({
+      sourceStatus: 'completed',
+      candidates: [{ legalName: candidate.Name, creditCode: candidate.CreditCode, matchReason: '精确匹配' }],
+      basicProfile: {
+        industry: '专用设备制造业', region: '上海', companyType: '有限责任公司', foundedYear: 2020,
+        website: 'https://www.example.cn', riskSummary: '未发现明显经营异常',
+      },
     });
   });
 });

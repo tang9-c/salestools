@@ -66,7 +66,7 @@ export class QccResearchCollector {
     let successfulCalls = 0;
     let failedCalls = 0;
     let stoppedByBudget = false;
-    const input = { credit_code: identity.creditCode, company_name: identity.legalName };
+    const input = { searchKey: identity.creditCode };
 
     const start = (call: PlannedCall): Promise<RetryResult<MappedQccResult>> => retryOnce(
       'qcc',

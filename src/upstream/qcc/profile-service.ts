@@ -153,10 +153,7 @@ export class CompanyProfileService {
       total: this.options.maxTotalCalls,
     });
     const lookup = await retryOnce('qcc', budget, async () => mapCompanyCandidates(
-      await this.gateway.call('company', 'get_company_by_query', {
-        query,
-        ...(regionHint === undefined ? {} : { region_hint: regionHint }),
-      }),
+      await this.gateway.call('company', 'get_company_by_query', { searchKey: query }),
     ));
     if (lookup.status === 'failed') {
       return {
@@ -173,7 +170,7 @@ export class CompanyProfileService {
     }
 
     const selected = candidates[0];
-    const input = { credit_code: selected.creditCode, company_name: selected.legalName };
+    const input = { searchKey: selected.creditCode };
     const detailRequests = [
       ['company', 'get_company_registration_info'],
       ['company', 'get_company_profile'],

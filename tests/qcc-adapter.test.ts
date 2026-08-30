@@ -205,6 +205,56 @@ describe('QCC mapping and formal collection', () => {
     expect(financing.gaps).toEqual([]);
   });
 
+  it('normalizes the real QCC Chinese formal-response shapes conservatively', () => {
+    const now = new Date('2026-08-29T12:00:00.000Z');
+    const profile = mapQccToolResult('company', 'get_company_profile', {
+      企业名称: identity.legalName, 企查查行业: '专用设备制造业', 简介: '测试简介',
+    }, identity, now);
+    const risk = mapQccToolResult('risk', 'get_company_risk_scan', {
+      企业名称: identity.legalName, 摘要: '存在需复核风险', 有记录因子数: 3, 无记录因子数: 32,
+    }, identity, now);
+    const patent = mapQccToolResult('ipr', 'get_patent_info', {
+      企业名称: identity.legalName,
+      专利信息: [{
+        发明名称: '测试专利', 专利类型: '发明专利', 申请号: 'CN202610000001.0',
+        申请日期: '2026-02-03', 法律状态: '实质审查',
+      }],
+    }, identity, now);
+    const recruitment = mapQccToolResult('operation', 'get_recruitment_info', {
+      企业名称: identity.legalName,
+      招聘信息: [{
+        招聘职位: '机械设计工程师', 发布日期: '2026-07-01', 月薪: '面议',
+        学历: '本科', 经验: '3年', 办公地点: '上海',
+      }],
+    }, identity, now);
+    const bidding = mapQccToolResult('operation', 'get_bidding_info', {
+      企业名称: identity.legalName,
+      招投标信息: [{
+        项目名称: '研发平台项目', 发布日期: '2026-07-20', 中标金额: '未披露',
+        招采单位: [identity.legalName], 中标单位: ['测试供应商有限公司'],
+      }],
+    }, identity, now);
+    const financing = mapQccToolResult('operation', 'get_financing_records', {
+      企业名称: identity.legalName, 搜索结果: '未返回结构化融资记录',
+    }, identity, now);
+
+    expect(JSON.parse(profile.items[0].content ?? '{}')).toMatchObject({
+      name: identity.legalName, industry: '专用设备制造业', introduction: '测试简介',
+    });
+    expect(JSON.parse(risk.items[0].content ?? '{}')).toMatchObject({ riskCount: 3, summary: '存在需复核风险' });
+    expect(JSON.parse(patent.items[0].content ?? '{}')).toMatchObject({
+      patentName: '测试专利', applicationDate: '2026-02-03T00:00:00.000Z',
+    });
+    expect(JSON.parse(recruitment.items[0].content ?? '{}')).toMatchObject({
+      jobName: '机械设计工程师', publishedAt: '2026-07-01T00:00:00.000Z', location: '上海',
+    });
+    expect(JSON.parse(bidding.items[0].content ?? '{}')).toMatchObject({
+      title: '研发平台项目', purchaser: identity.legalName,
+    });
+    expect(financing.items).toEqual([]);
+    expect(financing.gaps).toContain('get_financing_records未查到或未披露数据');
+  });
+
   it.each([
     ['risk', 'get_company_risk_scan', 'qcc-risk.json', {
       riskCount: 3, exceptionCount: 1, penaltyCount: 1, judicialCount: 1,
@@ -260,10 +310,12 @@ describe('QCC mapping and formal collection', () => {
 
   it('starts financing first and recruitment second before any other call or retry', async () => {
     const events: string[] = [];
+    const inputs: Record<string, unknown>[] = [];
     const attempts = new Map<string, number>();
     const gateway = {
-      call: async (_server: string, tool: string) => {
+      call: async (_server: string, tool: string, input: Record<string, unknown>) => {
         events.push(tool);
+        inputs.push(input);
         const count = (attempts.get(tool) ?? 0) + 1;
         attempts.set(tool, count);
         if ((tool === 'get_financing_records' || tool === 'get_recruitment_info') && count === 1) {
@@ -281,6 +333,7 @@ describe('QCC mapping and formal collection', () => {
     expect(events).toHaveLength(8);
     expect(events.filter(event => event === 'get_financing_records')).toHaveLength(2);
     expect(events.filter(event => event === 'get_recruitment_info')).toHaveLength(2);
+    expect(inputs).toEqual(Array.from({ length: 8 }, () => ({ searchKey: identity.creditCode })));
   });
 
   it('marks financing failure as a gap and QCC partial when other calls remain usable', async () => {
