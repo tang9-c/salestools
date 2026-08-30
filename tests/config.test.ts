@@ -88,6 +88,12 @@ describe('loadConfig', () => {
     }
   });
 
+  it('rejects fractional call limits after numeric coercion', () => {
+    const env = { ...valid, MAX_QCC_CALLS: '1.5' } as NodeJS.ProcessEnv;
+
+    expect(() => loadConfig(env)).toThrow('Invalid configuration: MAX_QCC_CALLS');
+  });
+
   it('rejects origins that are not complete HTTPS origins', () => {
     const env = { ...valid, ALLOWED_ORIGINS: 'https://codex.example.cn/path' } as NodeJS.ProcessEnv;
 
