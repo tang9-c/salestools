@@ -48,6 +48,9 @@ export function validateArkEvidence(researchInput: ResearchBundle, candidate: un
   if (JSON.stringify(evidence.identity) !== JSON.stringify(research.identity)) {
     invalid('Ark output changed the confirmed identity profile');
   }
+  if (evidence.collectedAt !== research.collectedAt) {
+    invalid('Ark output changed the ResearchBundle collectedAt timestamp');
+  }
 
   try {
     validateEvidenceProvenance(research, evidence);
@@ -79,14 +82,15 @@ export function validateArkEvidence(researchInput: ResearchBundle, candidate: un
   for (const fact of evidence.facts) {
     if (fact.evidenceIds.length === 0) invalid(`Fact ${fact.factId} requires evidence`);
     requireMatchBasis(`Fact ${fact.factId}`, fact.matchBasis);
-    const matchingReferences = fact.evidenceIds
+    const citedReferences = fact.evidenceIds
       .map(evidenceId => referenceById.get(evidenceId))
-      .filter(reference => reference !== undefined)
-      .filter(reference => reference.entityScope === fact.entityScope && reference.entityMatch === fact.entityMatch);
-    if (matchingReferences.length === 0) {
+      .filter(reference => reference !== undefined);
+    if (citedReferences.some(
+      reference => reference.entityScope !== fact.entityScope || reference.entityMatch !== fact.entityMatch,
+    )) {
       invalid(`Fact ${fact.factId} promotes or changes source attribution`);
     }
-    const sourceMatchBasis = new Set(matchingReferences.flatMap(reference => reference.matchBasis));
+    const sourceMatchBasis = new Set(citedReferences.flatMap(reference => reference.matchBasis));
     if (fact.matchBasis.some(basis => !sourceMatchBasis.has(basis))) {
       invalid(`Fact ${fact.factId} contains invented matchBasis`);
     }

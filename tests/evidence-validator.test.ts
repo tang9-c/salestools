@@ -142,6 +142,43 @@ describe('validateArkEvidence', () => {
     }, research);
   });
 
+  it('rejects washing a mixed confirmed and unverified citation set into one confirmed fact', () => {
+    const candidate = fixture();
+    const research = researchBundle();
+    const unverifiedItem = {
+      ...research.items[0],
+      evidenceId: 'web-2',
+      title: '简称相关转载',
+      url: 'https://news.example.net/repost',
+      originalPublisher: '转载站',
+      originalDomain: 'news.example.net',
+      mentionedName: '测试制造',
+      entityScope: 'unknown' as const,
+      entityMatch: 'unverified' as const,
+      matchBasis: ['网页仅提及简称'],
+    };
+    research.items.push(unverifiedItem);
+    const unverifiedReference = {
+      evidenceId: unverifiedItem.evidenceId,
+      title: unverifiedItem.title,
+      url: unverifiedItem.url,
+      originalPublisher: unverifiedItem.originalPublisher,
+      originalDomain: unverifiedItem.originalDomain,
+      publishedAt: unverifiedItem.publishedAt,
+      collectedAt: unverifiedItem.collectedAt,
+      mentionedName: unverifiedItem.mentionedName,
+      entityScope: unverifiedItem.entityScope,
+      entityMatch: unverifiedItem.entityMatch,
+      matchBasis: unverifiedItem.matchBasis,
+    };
+
+    expectInvalid({
+      ...candidate,
+      evidence: [...candidate.evidence, unverifiedReference],
+      facts: [{ ...candidate.facts[0], evidenceIds: ['web-1', 'web-2'] }],
+    }, research);
+  });
+
   it('rejects fact match basis invented outside its cited references', () => {
     const candidate = fixture();
     expectInvalid({
@@ -171,6 +208,13 @@ describe('validateArkEvidence', () => {
       evidence: [unverifiedReference],
       facts: [],
     }, research);
+  });
+
+  it.each([
+    '2026-08-30T12:00:00.000Z',
+    '2026-08-28T12:00:00.000Z',
+  ])('rejects an Ark-collected timestamp that differs from ResearchBundle.collectedAt: %s', collectedAt => {
+    expectInvalid({ ...fixture(), collectedAt });
   });
 
   it('allows an empty research bundle only as an unverified, fact-free result', () => {

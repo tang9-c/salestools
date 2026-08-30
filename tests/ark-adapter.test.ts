@@ -64,6 +64,21 @@ describe('ARK_SYSTEM_PROMPT', () => {
       expect(ARK_SYSTEM_PROMPT).toContain(`\"${field}\"`);
     }
   });
+
+  it('freezes the project P1, P2, non-target, and unverified classification policy', () => {
+    const p1 = ['机器人', '电子高科技', '新能源汽车三电', '新能源装备'];
+    const p2 = [
+      '汽车整车', '汽车零部件', '航空航天', '军工', '工业装备', '半导体',
+      '通信/RF', '医疗器械', '家电', '船舶', '轨道交通',
+    ];
+
+    for (const industry of p1) expect(ARK_SYSTEM_PROMPT).toContain(industry);
+    for (const industry of p2) expect(ARK_SYSTEM_PROMPT).toContain(industry);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/非目标.*不在.*范围.*充分证据/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/证据不足.*冲突.*unverified/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/通信\/RF.*P2.*CST.*高机会/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/不得.*自行.*猜.*P1.*P2/s);
+  });
 });
 
 describe('ArkEvidenceService', () => {
