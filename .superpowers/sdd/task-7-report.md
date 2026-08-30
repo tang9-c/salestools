@@ -6,6 +6,7 @@
   - `3d2bcbb feat: add deterministic seven-product opportunity rules`
   - `df47c0a fix: harden opportunity evidence gates`
   - `b5fac1e fix: reject negated opportunity signals`
+  - `75c889d fix: bind opportunity negation to actions`
 - 新增 `PRODUCT_RULES`，覆盖 Windchill、Feigenbaum QMS、Creo、CATIA、Abaqus、CST 和 SolidWorks 的固定产品词、工程方法、竞品词和阻碍词。
 - 新增 `evaluateProduct` 与 `evaluateOpportunities`，仅使用 `EvidenceBundle` 和显式 `now`，按固定四档顺序返回七产品结果。
 - 融资只在已有产品场景且来源归属已确认时增强预算/时机；不创建场景，不单独产生“高”。
@@ -27,14 +28,16 @@
 4. 场景必须同时命中当前产品明确词或工程方法；`productTags` 只用于路由，不能单独建立场景。
 5. 主体归属门槛改为每产品计算，且 fact 与所有 `EvidenceReference` 的 scope/match 必须一致。独立发布方只从当前产品的已确认场景、已标签匹配复杂度、近期时机和有效融资引用计数；风险、普通预算和无关复杂度不计数。
 6. 时间判断显式区分 `recent/expired/future/missing`；恰好 365 天仍为近期，再早 1ms 为过期，null 和未来日期使用各自缺口文案。
-7. 第二轮复审先用七产品表驱动 RED 锁定“不使用/无需/已停用/未开展/暂不建设”误报，再以短句分隔和命中词前后窗口排除否定语义；不同短句中的肯定场景仍可独立成立，否定竞品也不会形成竞品阻碍。
+7. 第二轮复审先用七产品表驱动 RED 锁定“不使用/无需/已停用/未开展/暂不建设”误报，再以产品或方法命中词关联的动作结构排除否定语义；不同短句中的肯定场景仍可独立成立，否定竞品也不会形成竞品阻碍。
 8. 补齐“未获预算批准、预算不充足、资金不足、不具有独立采购权、未获采购决策权”等明确否定；这些事实形成阻碍，绝不提供预算或决策正向支持。
 9. 为七产品逐项验证专属集团统一平台阻碍；无日期和未来日期的正向招聘仅保留历史软件生态价值，不产生最近 365 天时机。
+10. 最终复审移除产品后固定字数窗口，改为同一短句内“动作直接支配首个相关产品/方法，后续肯定动作终止否定作用域”的确定性规则；`Creo无需出差`、`CATIA不需要五年经验`、`Siemens NX无需夜班`、`停用旧系统后部署Creo` 和无关旧项目均不再误判。
+11. 替换否定仅匹配“暂无迁移计划、未计划、未决定、未迁移、不替换”等完整结构；`不久后计划`、`未雨绸缪后决定`、`不得不迁移`保持肯定。预算纠正显式处理“并非没有预算”和“没有预算问题，资金充足”，避免双重否定形成 blocker。
 
 ## 验证
 
-- Focused: `tests/opportunity.test.ts` + `tests/recruitment-signals.test.ts` 共 `165 passed`。
-- Full suite: `15` test files, `308 passed`。
+- Focused: `tests/opportunity.test.ts` + `tests/recruitment-signals.test.ts` 共 `175 passed`。
+- Full suite: `15` test files, `318 passed`。
 - Typecheck: `tsc --noEmit` 退出码 `0`。
 - Diff check: `git diff --check` 与提交前 `git diff --cached --check` 退出码均为 `0`。
 - 禁用输出/非确定性扫描：机会模块中无分数、星级、模型调用、`Math.random` 或隐式 `new Date()`。
