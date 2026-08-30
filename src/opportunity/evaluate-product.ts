@@ -11,12 +11,9 @@ import {
   BUDGET_NEGATION_CORRECTION_PATTERN,
   COMPETITOR_TO_TARGET_REPLACEMENT_PATTERN,
   CRITICAL_CONFLICT_KEYWORDS,
-  DIRECTIONAL_REPLACEMENT_INCOMPLETE_AFTER_PATTERN,
-  DIRECTIONAL_REPLACEMENT_NEGATION_BEFORE_PATTERN,
+  DIRECTIONAL_NEGATIVE_MARKER_PATTERN,
+  DIRECTIONAL_POSITIVE_EXCEPTION_MARKER_PATTERN,
   GENERAL_BLOCKER_KEYWORDS,
-  NEGATED_REPLACEMENT_COMPLETION_PATTERN,
-  NEGATED_REPLACEMENT_PLAN_PATTERN,
-  NEGATED_REPLACEMENT_PREFIX_PATTERN,
   NEGATIVE_BUDGET_PATTERN,
   NEGATIVE_DECISION_PATTERN,
   NEGATIVE_PRODUCT_ACTION_AFTER_PATTERN,
@@ -244,28 +241,44 @@ function negativeSupportKind(fact: EvidenceFact): 'budget' | 'decision' | null {
   return null;
 }
 
-function explicitReplacement(statement: string): boolean {
-  const text = normalized(statement);
-  const negated = NEGATED_REPLACEMENT_PLAN_PATTERN.test(text)
-    || NEGATED_REPLACEMENT_PREFIX_PATTERN.test(text)
-    || NEGATED_REPLACEMENT_COMPLETION_PATTERN.test(text);
-  return containsAny(text, REPLACEMENT_KEYWORDS) && !negated;
+function directionalContext(
+  text: string,
+  directionStart: number,
+  directionEnd: number,
+): string {
+  const prefix = text.slice(0, directionStart);
+  const clauseStart = Math.max(
+    prefix.lastIndexOf('。'), prefix.lastIndexOf('；'), prefix.lastIndexOf(';'),
+    prefix.lastIndexOf('！'), prefix.lastIndexOf('!'), prefix.lastIndexOf('？'),
+    prefix.lastIndexOf('?'), prefix.lastIndexOf('\n'),
+  ) + 1;
+  const suffix = text.slice(directionEnd);
+  const nextBoundaries = ['。', '；', ';', '！', '!', '？', '?', '\n']
+    .map(boundary => suffix.indexOf(boundary))
+    .filter(index => index >= 0);
+  const clauseEnd = nextBoundaries.length === 0
+    ? text.length
+    : directionEnd + Math.min(...nextBoundaries);
+  return text.slice(
+    Math.max(clauseStart, directionStart - 48),
+    Math.min(clauseEnd, directionEnd + 48),
+  );
+}
+
+function directionalContextIsNegative(context: string): boolean {
+  const withoutPositiveExceptions = context.replace(DIRECTIONAL_POSITIVE_EXCEPTION_MARKER_PATTERN, '');
+  return DIRECTIONAL_NEGATIVE_MARKER_PATTERN.test(withoutPositiveExceptions);
 }
 
 function replacementTargetsProduct(rule: ProductRule, statement: string): boolean {
   const text = normalized(statement);
-  if (!explicitReplacement(text)) return false;
+  if (!containsAny(text, REPLACEMENT_KEYWORDS)) return false;
   const targets = mostSpecificKeywordOccurrences(text, rule.positiveKeywords);
   const competitors = mostSpecificKeywordOccurrences(text, rule.competitorKeywords);
   return targets.some(target => competitors.some(competitor => {
     const directionStart = Math.min(target.start, competitor.start);
     const directionEnd = Math.max(target.end, competitor.end);
-    const negatedContext = DIRECTIONAL_REPLACEMENT_NEGATION_BEFORE_PATTERN.test(
-      text.slice(Math.max(0, directionStart - 24), directionStart),
-    ) || DIRECTIONAL_REPLACEMENT_INCOMPLETE_AFTER_PATTERN.test(
-      text.slice(directionEnd, directionEnd + 24),
-    );
-    if (negatedContext) return false;
+    if (directionalContextIsNegative(directionalContext(text, directionStart, directionEnd))) return false;
     if (competitor.end <= target.start) {
       const between = text.slice(competitor.end, target.start);
       return COMPETITOR_TO_TARGET_REPLACEMENT_PATTERN.test(between)

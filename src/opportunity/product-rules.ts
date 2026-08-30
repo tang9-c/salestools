@@ -94,15 +94,6 @@ export const BUDGET_NEGATION_CORRECTION_PATTERN =
 export const NEGATIVE_DECISION_PATTERN =
   /(?:无|没有|并无|并非|并不|不具备|不具有|缺少|暂无|未有|未获).{0,12}(?:独立|自主)?.{0,8}(?:采购|决策|审批)(?:权)?/u;
 
-export const NEGATED_REPLACEMENT_PLAN_PATTERN =
-  /(?:(?:暂无|尚无|没有).{0,8}(?:替换|替代|迁移|切换|改用|迁入|重新选型|重选|换型).{0,4}计划|无(?:替换|替代|迁移|切换|改用|迁入|重新选型|重选|换型).{0,4}计划|(?:不计划|未计划|尚未计划|未决定|尚未决定|暂无计划).{0,12}(?:替换|替代|迁移|切换|改用|迁入|重新选型|重选|换型))/u;
-
-export const NEGATED_REPLACEMENT_PREFIX_PATTERN =
-  /(?:(?:并未|尚未|暂不|未|(?<!得)不)(?:开始|启动|实施|进行|完成|考虑)?|不再)(?:替换|替代|迁移|切换|改用|迁入|重新选型|重选|换型)/u;
-
-export const NEGATED_REPLACEMENT_COMPLETION_PATTERN =
-  /(?:替换|替代|迁移|切换|改用|迁入|重新选型|重选|换型)(?:工作|项目|实施)?(?:尚未|并未|暂未)(?:开始|启动|实施|进行|完成|考虑)/u;
-
 export const COMPETITOR_TO_TARGET_REPLACEMENT_PATTERN =
   /^[\s，,：:、]*(?:(?:正在|计划|开始|启动|已)?(?:迁移(?:替换)?|切换|替换|替代)(?:为|到)|改用|迁入|切换到)[\s，,：:、]*$/u;
 
@@ -110,11 +101,11 @@ export const TARGET_REPLACEMENT_ACTION_BEFORE_PATTERN = /(?:用|以|采用|使�
 export const TARGET_REPLACES_COMPETITOR_PATTERN = /^[\s，,：:、]*(?:替换|替代)[\s，,：:、]*$/u;
 export const TARGET_ENTRY_ACTION_BEFORE_PATTERN = /(?:改用|切换到|迁入)[\s：:]*$/u;
 
-export const DIRECTIONAL_REPLACEMENT_NEGATION_BEFORE_PATTERN =
-  /(?:尚未|并未|不会|不考虑|未计划|未决定)[\s]*(?:从|由|将|把|用|以|采用|使用)?[\s]*$/u;
+export const DIRECTIONAL_POSITIVE_EXCEPTION_MARKER_PATTERN =
+  /(?:不得不(?=.{0,24}(?:替换|替代|迁移|切换|改用|迁入|重新选型|重选|换型))|不久后(?=(?:计划|决定).{0,24}(?:替换|替代|迁移|切换|改用|迁入|重新选型|重选|换型))|未雨绸缪后(?=(?:计划|决定).{0,24}(?:替换|替代|迁移|切换|改用|迁入|重新选型|重选|换型)))/gu;
 
-export const DIRECTIONAL_REPLACEMENT_INCOMPLETE_AFTER_PATTERN =
-  /^[\s，,：:]*(?:(?:工作|计划|项目|实施)[\s]*)?(?:尚未|并未|暂未)(?:开始|启动|实施|进行|完成|考虑)(?:\s|$)/u;
+export const DIRECTIONAL_NEGATIVE_MARKER_PATTERN =
+  /(?:拒绝|放弃|尚未|仍未|还未|没有完成|[不未无])/u;
 
 export const GENERAL_BLOCKER_KEYWORDS = [
   '无预算', '没有预算', '预算冻结', '暂停采购', '暂无采购计划', '无采购计划',
