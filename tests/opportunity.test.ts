@@ -1,0 +1,284 @@
+import { describe, expect, it } from 'vitest';
+import {
+  ProductKeySchema,
+  type EvidenceBundle,
+  type EvidenceFact,
+  type EvidenceReference,
+  type ProductKey,
+} from '../src/contracts/index.js';
+import { evaluateOpportunities } from '../src/opportunity/evaluate-all.js';
+
+const NOW = new Date('2026-08-30T12:00:00.000Z');
+const RECENT = '2026-08-01T12:00:00.000Z';
+const identity = {
+  legalName: '测试制造有限公司',
+  creditCode: '91310000TEST000001',
+  formerNames: [], aliases: ['测试制造'], englishNames: [], brands: [],
+  officialDomains: ['company.example'], registeredAddress: null,
+  parentLegalName: null, subsidiaryLegalNames: [],
+};
+
+const cases: ReadonlyArray<{
+  product: ProductKey;
+  named: string;
+  method: string;
+  complexityKind: EvidenceFact['kind'];
+  complexity: string;
+}> = [
+  { product: 'windchill', named: 'Windchill PLM 管理员', method: 'BOM 变更和配置管理', complexityKind: 'organization', complexity: '多部门研发使用 EBOM/MBOM 协同' },
+  { product: 'feigenbaum_qms', named: 'Feigenbaum QMS 实施顾问', method: 'CAPA 和质量追溯', complexityKind: 'quality', complexity: 'IATF 16949 体系与供应商质量审计' },
+  { product: 'creo', named: 'Creo 机械设计工程师', method: '参数化机械设计', complexityKind: 'organization', complexity: '研发团队负责复杂零部件工程变更' },
+  { product: 'catia', named: 'CATIA 设计工程师', method: '复杂曲面与大型装配', complexityKind: 'manufacturing', complexity: '整车大型装配和复杂曲面设计' },
+  { product: 'abaqus', named: 'Abaqus 仿真工程师', method: '有限元非线性分析', complexityKind: 'organization', complexity: '材料疲劳与碰撞仿真研发团队' },
+  { product: 'cst', named: 'CST Studio Suite 电磁仿真工程师', method: '射频天线 EMC/EMI 电磁仿真', complexityKind: 'organization', complexity: '雷达微波与天线研发团队' },
+  { product: 'solidworks', named: 'SolidWorks 机械设计工程师', method: '通用设备三维建模', complexityKind: 'manufacturing', complexity: '多型号非标设备设计与 PDM 协同' },
+];
+
+function reference(id: string, domain: string, publishedAt: string | null = RECENT,
+  entityMatch: EvidenceReference['entityMatch'] = 'confirmed'): EvidenceReference {
+  return {
+    evidenceId: id, title: `证据 ${id}`, url: `https://${domain}/${id}`,
+    originalPublisher: domain, originalDomain: domain, publishedAt,
+    collectedAt: NOW.toISOString(), mentionedName: identity.legalName,
+    entityScope: entityMatch === 'unverified' ? 'unknown' : 'legal_entity', entityMatch,
+    matchBasis: [entityMatch === 'unverified' ? '仅提及简称' : '官方域名与全称一致'],
+  };
+}
+
+function fact(
+  id: string,
+  product: ProductKey,
+  statement: string,
+  kind: EvidenceFact['kind'],
+  evidenceIds: string[],
+  options: Partial<Pick<EvidenceFact, 'strength' | 'entityMatch' | 'entityScope'>> = {},
+): EvidenceFact {
+  return {
+    factId: id, statement, kind, productTags: [product],
+    strength: options.strength ?? 'direct', evidenceIds,
+    entityScope: options.entityScope ?? 'legal_entity',
+    entityMatch: options.entityMatch ?? 'confirmed',
+    matchBasis: ['官方域名与全称一致'],
+  };
+}
+
+function bundle(options: {
+  product?: ProductKey;
+  evidence?: EvidenceReference[];
+  facts?: EvidenceFact[];
+  financing?: EvidenceBundle['financingRecords'];
+  industry?: EvidenceBundle['industryClassification'];
+  conflicts?: string[];
+} = {}): EvidenceBundle {
+  const evidence = options.evidence ?? [];
+  return {
+    identity,
+    industryClassification: options.industry ?? 'P1',
+    industryEvidenceIds: evidence.length === 0 ? [] : [evidence[0]!.evidenceId],
+    evidence,
+    facts: options.facts ?? [],
+    financingRecords: options.financing ?? [],
+    conflicts: options.conflicts ?? [], gaps: [], collectedAt: NOW.toISOString(),
+  };
+}
+
+function completeHighCase(entry: typeof cases[number]): EvidenceBundle {
+  const refs = [
+    reference('recruitment', 'jobs.company.example'),
+    reference('complexity', 'industry-association.example'),
+    reference('decision', 'company.example'),
+    reference('financing', 'exchange.example'),
+  ];
+  return bundle({
+    evidence: refs,
+    facts: [
+      fact('scene', entry.product, `${entry.named}，${entry.method}`, 'recruitment', ['recruitment']),
+      fact('complexity', entry.product, entry.complexity, entry.complexityKind, ['complexity']),
+      fact('decision', entry.product, '目标法定主体具有独立采购决策权', 'decision_power', ['decision']),
+    ],
+    financing: [{
+      occurredAt: RECENT, typeOrRound: 'A 轮', disclosedAmount: '1 亿元',
+      investors: ['测试基金'], evidenceIds: ['financing'],
+    }],
+  });
+}
+
+describe('evaluateOpportunities', () => {
+  it.each(cases)('$product: two independent publishers, complexity, recent timing and budget produce 高', entry => {
+    const result = evaluateOpportunities(completeHighCase(entry), NOW);
+    expect(result.products.find(row => row.product === entry.product)?.level).toBe('高');
+  });
+
+  it.each(cases)('$product: financing strengthens an existing complete scene but never creates one', entry => {
+    const withFinancing = completeHighCase(entry);
+    const withoutFinancing = { ...withFinancing, financingRecords: [] };
+    expect(evaluateOpportunities(withoutFinancing, NOW).products
+      .find(row => row.product === entry.product)?.level).toBe('中');
+    expect(evaluateOpportunities(withFinancing, NOW).products
+      .find(row => row.product === entry.product)?.level).toBe('高');
+
+    const financingOnly = bundle({ evidence: withFinancing.evidence, financing: withFinancing.financingRecords });
+    expect(evaluateOpportunities(financingOnly, NOW).products
+      .find(row => row.product === entry.product)?.level).toBe('低');
+  });
+
+  it.each(cases)('$product: duplicate repost domains count once and cannot pass the high threshold', entry => {
+    const input = completeHighCase(entry);
+    input.evidence = input.evidence.map(item => ({
+      ...item,
+      originalPublisher: '同一发布方',
+      originalDomain: 'same-publisher.example',
+    }));
+    expect(evaluateOpportunities(input, NOW).products
+      .find(row => row.product === entry.product)?.level).toBe('中');
+  });
+
+  it('keeps P1 industry matching at 低 when no product scene exists', () => {
+    const ev = reference('industry', 'company.example');
+    const result = evaluateOpportunities(bundle({ evidence: [ev] }), NOW);
+    expect(result.products.every(row => row.level === '低')).toBe(true);
+  });
+
+  it('allows a confirmed P2 RF engineering scene to make CST the medium-priority product', () => {
+    const refs = [reference('rf', 'company.example'), reference('team', 'jobs.example')];
+    const result = evaluateOpportunities(bundle({
+      industry: 'P2', evidence: refs,
+      facts: [
+        fact('rf-scene', 'cst', '公司开展射频天线和 EMC/EMI 电磁仿真', 'product_scene', ['rf']),
+        fact('rf-team', 'cst', '建有雷达微波研发团队', 'organization', ['team']),
+      ],
+    }), NOW);
+    expect(result.products.find(row => row.product === 'cst')?.level).toBe('中');
+    expect(result.recommendedProduct).toBe('cst');
+    expect(result.overallOpportunity).toBe('中');
+  });
+
+  it('downgrades a strong incumbent without a replacement signal to 低', () => {
+    const refs = [reference('scene', 'company.example'), reference('incumbent', 'jobs.example')];
+    const result = evaluateOpportunities(bundle({ evidence: refs, facts: [
+      fact('scene', 'creo', '公司开展参数化机械设计', 'product_scene', ['scene']),
+      fact('incumbent', 'creo', '公司长期统一使用 Siemens NX 并已锁定集团许可', 'software_ecosystem', ['incumbent']),
+    ] }), NOW);
+    const creo = result.products.find(row => row.product === 'creo');
+    expect(creo?.level).toBe('低');
+    expect(creo?.blockers.join('')).toMatch(/NX|替代|锁定/);
+  });
+
+  it('does not treat direct competitor evidence as positive evidence in the overall tie-break', () => {
+    const incumbent = reference('incumbent-only', 'jobs.example');
+    const result = evaluateOpportunities(bundle({ evidence: [incumbent], facts: [
+      fact('incumbent-only', 'creo', '招聘 Siemens NX 设计工程师', 'recruitment', ['incumbent-only']),
+    ] }), NOW);
+    expect(result.products.find(product => product.product === 'creo')?.level).toBe('低');
+    expect(result.recommendedProduct).toBe('windchill');
+  });
+
+  it.each([
+    { label: 'unverified industry', input: bundle({ industry: 'unverified' }) },
+    { label: 'critical identity conflict', input: bundle({ conflicts: ['法定主体归属冲突'] }) },
+  ])('returns all pending for $label', ({ input }) => {
+    const result = evaluateOpportunities(input, NOW);
+    expect(result.products.every(row => row.level === '待核实')).toBe(true);
+    expect(result).toMatchObject({ overallOpportunity: '待核实', recommendedProduct: null });
+  });
+
+  it('does not promote evidence whose supporting entity matches are all unverified', () => {
+    const ev = reference('unverified', 'unknown.example', RECENT, 'unverified');
+    const unsupported = fact('scene', 'windchill', 'Windchill PLM 实施', 'product_scene', ['unverified'], {
+      entityMatch: 'unverified', entityScope: 'unknown',
+    });
+    unsupported.matchBasis = ['仅提及简称'];
+    const result = evaluateOpportunities(bundle({ evidence: [ev], facts: [unsupported] }), NOW);
+    expect(result.products.find(row => row.product === 'windchill')?.level).toBe('待核实');
+    expect(result.recommendedProduct).toBeNull();
+  });
+
+  it('keeps the aggregate pending when the only positive product support is probable', () => {
+    const ev = reference('probable', 'jobs.example', RECENT, 'probable');
+    const probable = fact('scene', 'cst', 'CST Studio Suite 电磁仿真工程师', 'recruitment', ['probable'], {
+      entityMatch: 'probable', entityScope: 'legal_entity',
+    });
+    const result = evaluateOpportunities(bundle({ evidence: [ev], facts: [probable] }), NOW);
+    expect(result).toMatchObject({ overallOpportunity: '待核实', recommendedProduct: null });
+  });
+
+  it('keeps the aggregate pending when the only positive product support is weak', () => {
+    const ev = reference('weak', 'company.example');
+    const weak = fact('weak-scene', 'cst', '公司可能存在电磁仿真场景', 'product_scene', ['weak'], {
+      strength: 'weak',
+    });
+    const result = evaluateOpportunities(bundle({ evidence: [ev], facts: [weak] }), NOW);
+    expect(result).toMatchObject({ overallOpportunity: '待核实', recommendedProduct: null });
+  });
+
+  it('does not use financing whose cited source is not attributed to the legal entity', () => {
+    const entry = cases[0]!;
+    const input = completeHighCase(entry);
+    input.evidence = input.evidence.map(item => item.evidenceId === 'financing'
+      ? { ...item, entityScope: 'unknown', entityMatch: 'unverified', matchBasis: ['无法确认融资主体'] }
+      : item);
+    const row = evaluateOpportunities(input, NOW).products.find(product => product.product === entry.product);
+    expect(row?.level).toBe('中');
+    expect(row?.evidenceIds).not.toContain('financing');
+  });
+
+  it('does not treat a generic recent recruitment as product timing', () => {
+    const refs = [
+      reference('scene', 'company.example'), reference('complexity', 'association.example'),
+      reference('generic-job', 'jobs.example'), reference('budget', 'finance.example'),
+      reference('decision', 'company.example'),
+    ];
+    const result = evaluateOpportunities(bundle({ evidence: refs, facts: [
+      fact('scene', 'creo', '公司开展参数化机械设计', 'product_scene', ['scene']),
+      fact('complexity', 'creo', '多型号复杂零部件研发', 'organization', ['complexity']),
+      fact('generic-job', 'creo', '招聘机械工程师', 'recruitment', ['generic-job']),
+      fact('budget', 'creo', '公司已批准研发软件预算', 'budget', ['budget']),
+      fact('decision', 'creo', '目标法定主体具有独立采购决策权', 'decision_power', ['decision']),
+    ] }), NOW);
+    expect(result.products.find(product => product.product === 'creo')?.level).toBe('中');
+  });
+
+  it('does not mistake unknown budget and decision statements for positive support', () => {
+    const input = completeHighCase(cases[0]!);
+    input.financingRecords = [];
+    input.evidence.push(reference('budget-unknown', 'finance.example'));
+    input.facts = [
+      ...input.facts.filter(item => item.kind !== 'decision_power'),
+      fact('budget-unknown', 'windchill', '项目预算尚未确认，待核实', 'budget', ['budget-unknown']),
+      fact('decision-unknown', 'windchill', '独立采购决策权待核实', 'decision_power', ['decision']),
+    ];
+    expect(evaluateOpportunities(input, NOW).products
+      .find(product => product.product === 'windchill')?.level).toBe('中');
+  });
+
+  it('returns the schema order and uses direct evidence, blocker count, then fixed order for ties', () => {
+    const windchill = completeHighCase(cases[0]!);
+    const creo = completeHighCase(cases[2]!);
+    const merged: EvidenceBundle = {
+      ...windchill,
+      evidence: [...windchill.evidence, ...creo.evidence.map(item => ({ ...item, evidenceId: `creo-${item.evidenceId}` }))],
+      facts: [...windchill.facts, ...creo.facts.map(item => ({
+        ...item, factId: `creo-${item.factId}`, evidenceIds: item.evidenceIds.map(id => `creo-${id}`),
+      }))],
+      financingRecords: windchill.financingRecords,
+    };
+    const result = evaluateOpportunities(merged, NOW);
+    expect(result.products.map(row => row.product)).toEqual(ProductKeySchema.options);
+    expect(result.recommendedProduct).toBe('windchill');
+  });
+
+  it('is deterministic for an explicit clock and does not mutate the input', () => {
+    const input = completeHighCase(cases[0]!);
+    const snapshot = structuredClone(input);
+    const first = evaluateOpportunities(input, NOW);
+    expect(evaluateOpportunities(input, NOW)).toEqual(first);
+    expect(input).toEqual(snapshot);
+  });
+
+  it('returns a gaps-only aggregate result for empty evidence', () => {
+    const result = evaluateOpportunities(bundle({ industry: 'unverified' }), NOW);
+    expect(result.products).toHaveLength(7);
+    expect(result.products.every(row => row.level === '待核实')).toBe(true);
+    expect(result).toMatchObject({ overallOpportunity: '待核实', recommendedProduct: null });
+  });
+});
