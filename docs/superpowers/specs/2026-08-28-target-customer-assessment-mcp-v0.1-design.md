@@ -241,7 +241,7 @@ Token 仅用于：
   "status": "completed",
   "legal_name": "...",
   "overall_opportunity": "高",
-  "recommended_product": "Windchill",
+  "recommended_product": "windchill",
   "collected_at": "2026-08-29T10:00:00.000Z",
   "dynamic_signal_freshness": "current",
   "source_status": {
@@ -361,7 +361,7 @@ v0.1 直接调用豆包搜索 Custom 版 HTTP API，不部署或连接豆包搜�
 
 适配器固定 `SearchType=web` 和 `Filter.NeedUrl=true`，不启用图片搜索。每条查询必须满足 API 的 1～100 字符限制，`Count` 不得超过 50；首版搜索计划默认每次最多取 10 条结果。近期招聘、采购、扩产等动态查询使用 `TimeRange=OneYear`；官网、产品、软件生态等非时效性查询不设置 `TimeRange`。招聘和需要正文的技术场景查询设置 `Filter.NeedContent=true`，其他发现型查询设置为 `false`，避免因为正文缺失而过早排除有效链接。
 
-适配器只接收搜索计划生成的明确查询，不让模型在调用过程中自行追加查询。它保留标题、站点名、URL、正文或摘要、发布时间、排序位置、搜索原始 Query、采集时间和日志 ID，并将原始发布方与 URL 域名分别映射为 `originalPublisher`、`originalDomain`；缺少正文、发布时间或原始发布方时明确留空，不由模型补写。API 参数错误、鉴权失败、额度不足、QPS 限制和服务端错误统一映射为来源错误；适配器单次调用只发起一次 HTTP 请求，重试统一由任务编排的 `retryOnce` 执行，每个 attempt 分别计入 `MAX_SEARCH_CALLS` 和总调用预算。
+适配器只接收搜索计划生成的明确查询，不让模型在调用过程中自行追加查询。它保留标题、站点名、URL、正文或摘要、发布时间、排序位置、搜索原始 Query、采集时间和日志 ID，并将原始发布方与 URL 域名分别映射为 `originalPublisher`、`originalDomain`；缺少正文、发布时间或原始发布方时明确留空，不由模型补写。API 参数错误、鉴权失败、额度不足、QPS 限制和服务端错误统一映射为来源错误。`DoubaoSearchClient.search(query)` 是不接收预算的单次 HTTP attempt；只有任务编排把预算交给 `retryOnce`，后者在每个 attempt 前计入 `MAX_SEARCH_CALLS` 和总调用预算。预算耗尽时编排不得调用 client。
 
 ### 模块二：机会判断
 
@@ -557,7 +557,7 @@ type ReportModel = {
   sourceStatus: {
     qcc: 'completed' | 'partial' | 'failed';
     doubaoSearch: 'completed' | 'partial' | 'failed';
-    ark: 'completed' | 'failed';
+    ark: 'completed';
   };
   collectedAt: UtcTimestamp;
   dynamicSignalFreshness: 'current' | 'stale';
@@ -867,7 +867,8 @@ P1 行业：
 - 搜索请求固定为 `SearchType=web`、`NeedUrl=true`，并校验 Query 长度、Count 上限、招聘查询的 `NeedContent=true` 和 `TimeRange=OneYear`。
 - 四个工具的输入、输出、有效和无效 Bearer Token。
 - 四个工具输出严格匹配冻结字段；`cache_hit` 只允许出现在 `get_company_profile` 和 `submit_assessment`，报告输出拒绝该字段。
-- 每个 POST 请求使用官方 `NodeStreamableHTTPServerTransport` 创建无状态 transport；模拟 MCP 客户端完成四工具闭环后，`client.getProtocolEra()` 必须为 `modern`。
+- HTTP 服务使用官方 v2 `createMcpHandler(factory)`，经 `toNodeHandler(handler)` 挂载到 `createMcpExpressApp`；Bearer 认证 middleware 位于 handler 前，验证后的 `authInfo` 传入每请求 factory，由 `authInfo.clientId` 构造 caller services，不手工创建服务端 transport。
+- 模拟 MCP 客户端显式设置 `versionNegotiation: { mode: 'auto' }`，完成连接和四工具闭环后，`client.getProtocolEra()` 必须为 `modern`。
 - `get_company_profile` 的企查查调用重试后仍失败时，返回 `source_status: "failed"` 和空候选，不返回泛化内部错误。
 - 缺失字段、错误类型、超长字符串、非法信用代码、非法 UUID 和未知字段返回参数错误。
 - Token CLI 创建、禁用和列表不泄露明文或哈希。
@@ -885,7 +886,8 @@ P1 行业：
 
 - 企查查和豆包搜索分别覆盖 `completed`、`partial`、`failed`。
 - `retryOnce` 是所有上游请求的唯一重试入口；上游失败只重试一次，所有 attempt 计入分项和总调用预算，QCC transport error 关闭连接但当前 attempt 不内部重发，下一 attempt 才重连。
-- 方舟超时、空响应、非法 JSON、悬空引用或结构校验失败，在一次重试后令任务 `failed`，不生成正式报告。
+- 方舟超时、空响应、非法 JSON、悬空引用或结构校验失败，在一次重试后令任务 `failed`，只记录任务错误元数据，不创建 `ReportModel` 或正式报告；因此 `ReportModel.sourceStatus.ark` 只能是 `completed`。
+- 豆包搜索 client 单次调用不接收预算且只发起一次请求；搜索预算耗尽由编排测试证明不会启动 client。
 - 企查查和豆包搜索均失败、方舟可用时，任务 `completed`，七项均为“待核实”，`recommended_product` 为 `null`。
 - SQLite 无法保存最终报告时任务 `failed`。
 

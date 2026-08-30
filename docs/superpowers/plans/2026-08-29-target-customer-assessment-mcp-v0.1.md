@@ -131,9 +131,20 @@ Expected: FAIL because `src/config.ts` does not exist.
 Use ESM, `engines.node >=24`, scripts `build`, `typecheck`, `test`, `start`, `dev`, `tokens`. In `src/config.ts`, define the declared key list once, pick only those keys from the supplied `NodeJS.ProcessEnv`, and pass that new object to one strict Zod schema; never strict-parse the complete `process.env`. Parse comma-separated origins; validate all upstream URLs with `.url().startsWith('https://')`; use integer coercion with defaults `8/8/2/18/30/30/1`; throw `Invalid configuration: <comma-separated declared field names>` only. Tests must prove `PATH` and other extra keys do not fail validation and no error contains an environment value, unknown process key, or serialized environment object.
 
 ```ts
+const CONFIG_KEYS = [
+  'PORT', 'PUBLIC_MCP_HOST', 'ALLOWED_ORIGINS', 'SQLITE_PATH',
+  'QCC_MCP_COMPANY_URL', 'QCC_MCP_RISK_URL', 'QCC_MCP_IPR_URL', 'QCC_MCP_OPERATION_URL', 'QCC_API_KEY',
+  'DOUBAO_SEARCH_API_URL', 'DOUBAO_SEARCH_API_KEY', 'ARK_API_URL', 'ARK_MODEL', 'ARK_CREDENTIAL',
+  'MAX_QCC_CALLS', 'MAX_SEARCH_CALLS', 'MAX_ARK_CALLS', 'MAX_TOTAL_UPSTREAM_CALLS',
+  'PROFILE_CACHE_TTL_DAYS', 'ASSESSMENT_CACHE_TTL_DAYS', 'MAX_CONCURRENT_ASSESSMENTS'
+] as const;
+
 export type AppConfig = z.infer<typeof configSchema> & { allowedOrigins: Set<string> };
 export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
-  const parsed = configSchema.safeParse(env);
+  const declaredOnly = Object.fromEntries(
+    CONFIG_KEYS.flatMap(key => env[key] === undefined ? [] : [[key, env[key]]])
+  );
+  const parsed = configSchema.safeParse(declaredOnly);
   if (!parsed.success) throw new Error(`Invalid configuration: ${[...new Set(parsed.error.issues.map(i => String(i.path[0])))].join(', ')}`);
   return { ...parsed.data, allowedOrigins: new Set(parsed.data.ALLOWED_ORIGINS.split(',').map(v => v.trim()).filter(Boolean)) };
 }
@@ -210,7 +221,7 @@ Define `UtcTimestampSchema` as an ISO 8601 UTC string emitted by `Date.toISOStri
 - `ResearchBundle`: `identity:IdentityProfile`, `items:ResearchItem[]`, `sourceStatus:{qcc:{status:ResearchSourceStatus,error:string|null},doubaoSearch:{status:ResearchSourceStatus,error:string|null}}`, `gaps:string[]`, `collectedAt:UtcTimestamp`. `ResearchItem` is exactly `evidenceId:string`, `source:'qcc'|'doubao_search'`, `sourceKind:'company'|'risk'|'ipr'|'operation'|'web'`, `title:string`, `url:string`, `originalPublisher:string|null`, `originalDomain:string|null`, `summary:string|null`, `content:string|null`, `publishedAt:UtcTimestamp|null`, `collectedAt:UtcTimestamp`, `mentionedName:string`, `entityScope:EntityScope`, `entityMatch:EntityMatch`, `matchBasis:string[]`, `query:string|null`, `position:number|null`, `logId:string|null`.
 - `EvidenceBundle`: `identity:IdentityProfile`, `industryClassification:'P1'|'P2'|'non_target'|'unverified'`, `industryEvidenceIds:string[]`, `evidence:EvidenceReference[]`, `facts:EvidenceFact[]`, `financingRecords:FinancingRecord[]`, `conflicts:string[]`, `gaps:string[]`, `collectedAt:UtcTimestamp`. `EvidenceReference` is exactly `evidenceId`, `title`, `url`, nullable `originalPublisher/originalDomain/publishedAt`, `collectedAt`, `mentionedName`, `entityScope`, `entityMatch`, `matchBasis`; `EvidenceFact` is exactly `factId:string`, `statement:string`, `kind:FactKind`, `productTags:ProductKey[]`, `strength:'direct'|'supporting'|'weak'`, `evidenceIds:string[]`, `entityScope:EntityScope`, `entityMatch:EntityMatch`, `matchBasis:string[]`; `FinancingRecord` is exactly `occurredAt:UtcTimestamp|null`, `typeOrRound:string|null`, `disclosedAmount:string|null`, `investors:string[]`, `evidenceIds:string[]`.
 - `OpportunityAssessment`: `products:ProductOpportunity[]`, `overallOpportunity:OpportunityLevel`, `recommendedProduct:ProductKey|null`, `summaryReasons:string[]`; `ProductOpportunity` is exactly `product:ProductKey`, `level:OpportunityLevel`, `evidenceIds:string[]`, `reasons:string[]`, `blockers:string[]`, `gaps:string[]`, and `products` contains every `ProductKey` exactly once.
-- `ReportModel`: `legalName:string`, `industryClassification`, `companyScaleClues:string[]`, `overallOpportunity`, `recommendedProduct:ProductKey|null`, `summaryReasons:string[]`, `latestFinancing:FinancingRecord|null`, `products:ProductOpportunity[]`, `evidence:EvidenceReference[]`, `salesQuestions:string[]`, `risks:string[]`, `gaps:string[]`, `nextVerificationActions:string[]`, `sourceStatus:{qcc:ResearchSourceStatus,doubaoSearch:ResearchSourceStatus,ark:ArkSourceStatus}`, `collectedAt:UtcTimestamp`, `dynamicSignalFreshness:'current'|'stale'`. Tests reject `ark:'partial'`.
+- `ReportModel`: `legalName:string`, `industryClassification`, `companyScaleClues:string[]`, `overallOpportunity`, `recommendedProduct:ProductKey|null`, `summaryReasons:string[]`, `latestFinancing:FinancingRecord|null`, `products:ProductOpportunity[]`, `evidence:EvidenceReference[]`, `salesQuestions:string[]`, `risks:string[]`, `gaps:string[]`, `nextVerificationActions:string[]`, `sourceStatus:{qcc:ResearchSourceStatus,doubaoSearch:ResearchSourceStatus,ark:'completed'}`, `collectedAt:UtcTimestamp`, `dynamicSignalFreshness:'current'|'stale'`. Tests reject both `ark:'partial'` and `ark:'failed'`; Ark failure belongs only to failed task/error metadata and never produces a `ReportModel`.
 
 Freeze the four strict MCP output unions here as well:
 
@@ -255,7 +266,7 @@ rtk git commit -m "feat: add data contracts and sqlite repositories"
 
 - [ ] **Step 1: 写失败测试**
 
-Test one-time plaintext output, stored SHA-256 hash only, disabled rejection, invalid Bearer rejection, valid no-Origin acceptance, invalid Host/Origin rejection, unknown MCP input fields, and the four Task 2 response unions. Assert only profile and submit schemas permit `cache_hit`, completed-cache submit includes `cached_at`, report rejects cache metadata, and a valid user can read an assessment created by another user. Also inspect registered tool descriptions: `get_company_profile` must say it is the default for basic or ambiguous requests; `submit_assessment` must say it is only for explicit formal assessment after the user confirms `legal_name` and `credit_code`.
+Test one-time plaintext output, stored SHA-256 hash only, disabled rejection, invalid Bearer rejection, valid no-Origin acceptance, invalid Host/Origin rejection, unknown MCP input fields, and the four Task 2 response unions. Assert authentication middleware runs before the MCP handler, forwards verified `req.auth` as factory `authInfo`, and `servicesFor(authInfo.clientId)` selects the caller. Assert only profile and submit schemas permit `cache_hit`, completed-cache submit includes `cached_at`, report rejects cache metadata, and a valid user can read an assessment created by another user. Also inspect registered tool descriptions: `get_company_profile` must say it is the default for basic or ambiguous requests; `submit_assessment` must say it is only for explicit formal assessment after the user confirms `legal_name` and `credit_code`.
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -269,17 +280,23 @@ Generate 32 random bytes as base64url; store `createHash('sha256').update(token)
 
 - [ ] **Step 4: 注册四个工具和安全 HTTP 路由**
 
-Use `McpServer` from `@modelcontextprotocol/server`, the official `NodeStreamableHTTPServerTransport` from `@modelcontextprotocol/node`, and `createMcpExpressApp` from `@modelcontextprotocol/express`. Preserve the official per-request stateless pattern: for each POST create a transport with `sessionIdGenerator: undefined`, connect a fresh server, and close both on response close. Do not replace it with a custom transport or shared session. Reject GET/DELETE `/mcp` with 405 JSON-RPC response.
+Use the modern v2 HTTP entry: `createMcpHandler` and `McpServer` from `@modelcontextprotocol/server`, `toNodeHandler` from `@modelcontextprotocol/node`, and `createMcpExpressApp` from `@modelcontextprotocol/express`. Authentication is an Express middleware mounted before the MCP route; after verifying the Bearer Token it writes an SDK `AuthInfo` to `req.auth`. `toNodeHandler` forwards that value to the per-request factory as `authInfo`; the factory requires `authInfo.clientId` and calls `servicesFor(authInfo.clientId)` before building a fresh server. Do not manually construct or connect a server transport.
 
 ```ts
-app.post('/mcp', authMiddleware, async (req, res) => {
-  const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const server = buildMcpServer(servicesFor(res.locals.user.userId));
-  res.on('close', () => { void transport.close(); void server.close(); });
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
+const handler = createMcpHandler(({ authInfo }) => {
+  if (!authInfo?.clientId) throw new Error('Authenticated caller is required');
+  return buildMcpServer(servicesFor(authInfo.clientId));
 });
+const nodeHandler = toNodeHandler(handler);
+const app = createMcpExpressApp({
+  host: '0.0.0.0',
+  allowedHosts: [config.publicMcpHost],
+  allowedOrigins: [...config.allowedOrigins]
+});
+app.all('/mcp', authMiddleware, (req, res) => void nodeHandler(req, res, req.body));
 ```
+
+The handler creates a fresh `McpServer` per request and serves modern requests plus the default stateless legacy fallback. The auth middleware applies to every `/mcp` method; unauthenticated negotiation probes must receive the same authentication challenge as tool calls. Close `handler` during application shutdown.
 
 Tool handlers return both text `content` and the same small JSON as `structuredContent`; business `processing/failed` states are successful tool calls, not thrown protocol errors.
 Each registration declares both strict input and output schemas so `structuredContent` is contract-checked. External field names follow the design (`assessment_id`, `overall_opportunity`, `recommended_product`); conversion from internal camelCase happens only in `src/mcp/tools.ts`.
@@ -342,24 +359,23 @@ rtk git commit -m "feat: integrate qcc profile and research adapters"
 ### Task 5: 豆包搜索计划、HTTP 适配器和调用预算
 
 **Files:**
-- Modify: `src/orchestration/call-budget.ts`, `retry.ts`
 - Create: `src/upstream/search/search-plan.ts`, `doubao-client.ts`, `mapper.ts`
 - Create: `tests/fixtures/doubao-search.json`
-- Test: `tests/call-budget.test.ts`, `tests/doubao-search.test.ts`
+- Test: `tests/doubao-search.test.ts`
 
 **Interfaces:**
-- Produces: `CallBudget.tryConsume(source): boolean` and counters.
+- Consumes: Task 4 `CallBudget` and `retryOnce`; budget is never passed into the search client.
 - Produces: `buildSearchPlan(identity): SearchQuery[]`.
-- Produces: `DoubaoSearchClient.search(query, budget): Promise<ResearchItem[]>`.
+- Produces: `DoubaoSearchClient.search(query): Promise<ResearchItem[]>`; one call is exactly one HTTP attempt and has no budget parameter.
 
 - [ ] **Step 1: 写失败测试**
 
-Assert: all Query values are 1–100 chars; `SearchType='web'`; `NeedUrl=true`; recruitment queries use `NeedContent=true` and `TimeRange='OneYear'`; generic company/product queries omit TimeRange; Count defaults 10 and rejects >50; orchestration retry consumes a second search and total call; exhausted budget starts no fetch; one `DoubaoSearchClient.search` call performs exactly one fetch and never retries internally.
+Assert: all Query values are 1–100 chars; `SearchType='web'`; `NeedUrl=true`; recruitment queries use `NeedContent=true` and `TimeRange='OneYear'`; generic company/product queries omit TimeRange; Count defaults 10 and rejects >50; one `DoubaoSearchClient.search(query)` call performs exactly one fetch, never retries internally, and accepts no budget. Search-budget exhaustion belongs to Task 9 orchestration tests.
 
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-rtk npm test -- --run tests/call-budget.test.ts tests/doubao-search.test.ts
+rtk npm test -- --run tests/doubao-search.test.ts
 ```
 
 - [ ] **Step 3: 实现固定搜索计划**
@@ -368,14 +384,14 @@ Generate no more than eight explicit queries: official website/products, enginee
 
 - [ ] **Step 4: 实现 API client 和结果映射**
 
-POST JSON to configured URL with Bearer Key. Map `Result.WebResults` into evidence items preserving `Title`, `SiteName` as `originalPublisher`, URL hostname as `originalDomain`, `Url`, content/summary, `PublishTime`, `SortId`, origin Query, collected timestamp and `LogId`. Error codes, 401/403, quota/QPS and 5xx become typed errors. One client call performs one fetch; callers use the already-created orchestration `retryOnce`, and neither client nor mapper retries.
+POST JSON to configured URL with Bearer Key. Map `Result.WebResults` into evidence items preserving `Title`, `SiteName` as `originalPublisher`, URL hostname as `originalDomain`, `Url`, content/summary, `PublishTime`, `SortId`, origin Query, collected timestamp and `LogId`. Error codes, 401/403, quota/QPS and 5xx become typed errors. One client call performs one fetch; only orchestration calls `retryOnce('doubao_search', budget, () => client.search(query))`, and neither client nor mapper receives a budget or retries.
 
 - [ ] **Step 5: 运行测试并提交**
 
 ```bash
-rtk npm test -- --run tests/call-budget.test.ts tests/doubao-search.test.ts
+rtk npm test -- --run tests/doubao-search.test.ts
 rtk npm run typecheck
-rtk git add src/orchestration/call-budget.ts src/orchestration/retry.ts src/upstream/search tests/fixtures/doubao-search.json tests/call-budget.test.ts tests/doubao-search.test.ts
+rtk git add src/upstream/search tests/fixtures/doubao-search.json tests/doubao-search.test.ts
 rtk git commit -m "feat: add deterministic doubao search collection"
 ```
 
@@ -513,7 +529,7 @@ rtk git commit -m "feat: render auditable markdown assessment reports"
 
 - [ ] **Step 1: 写失败集成测试**
 
-Cover FIFO order/concurrency 1, waiting tasks still `processing`, completed-cache submit returning `completed/cache_hit=true/cached_at=completed_at`, new and duplicate processing returning `processing/cache_hit=false`, TTL based only on `completed_at`, force refresh, failed resubmit, QCC-only failure, search-only failure, both failure empty report, Ark failure, SQLite completion failure, call-budget stopping, startup interruption marking, and exactly two attempts maximum for every QCC/search/Ark request with no adapter-internal resend.
+Cover FIFO order/concurrency 1, waiting tasks still `processing`, completed-cache submit returning `completed/cache_hit=true/cached_at=completed_at`, new and duplicate processing returning `processing/cache_hit=false`, TTL based only on `completed_at`, force refresh, failed resubmit, QCC-only failure, search-only failure, both failure empty report, Ark failure producing no `ReportModel`, SQLite completion failure, search-budget exhaustion preventing `DoubaoSearchClient.search` from starting, startup interruption marking, and exactly two attempts maximum for every QCC/search/Ark request with no adapter-internal resend.
 Logging tests assert one JSON line per upstream attempt with assessment ID, user ID, source, duration, success/error and attempt count, while API keys, Authorization headers, report bodies and raw upstream payloads never appear.
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -552,7 +568,7 @@ rtk git commit -m "feat: orchestrate cached assessments with fifo execution"
 
 - [ ] **Step 1: 写模拟端到端失败测试**
 
-Start app on ephemeral localhost port with in-memory SQLite and fake QCC/search/Ark. Use `Client` + `StreamableHTTPClientTransport` from `@modelcontextprotocol/client` to call profile, submit, poll, and report; assert Markdown/source status, cross-user UUID read, exact cache-field placement, and `client.getProtocolEra() === 'modern'` after the first successful MCP call.
+Start app on ephemeral localhost port with in-memory SQLite and fake QCC/search/Ark. Construct `const client = new Client({ name:'e2e', version:'1.0.0' }, { versionNegotiation:{ mode:'auto' } })`, connect through `StreamableHTTPClientTransport`, then call profile, submit, poll, and report. Assert Markdown/source status, cross-user UUID read, exact cache-field placement, and `client.getProtocolEra() === 'modern'` immediately after `connect()` and after the first successful MCP call.
 
 - [ ] **Step 2: 运行测试确认失败**
 
