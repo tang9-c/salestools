@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Target customer assessment MCP service",
   "scripts": {
-    "build": "tsc --outDir dist",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "start": "node dist/index.js",

@@ -59,6 +59,9 @@ export function createHttpApp(
     next();
   };
 
+  app.get('/healthz', (_request, response) => {
+    response.json({ status: 'ok' });
+  });
   app.all('/mcp', exactOriginMiddleware, authMiddleware, (request, response, next) => {
     void nodeHandler(request, response, request.body).catch(next);
   });

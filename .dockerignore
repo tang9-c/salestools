@@ -1,0 +1,10 @@
+.git
+.worktrees
+.superpowers
+.env
+*.sqlite*
+node_modules
+dist
+coverage
+docs
+tests
