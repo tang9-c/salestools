@@ -62,11 +62,12 @@ export const PRODUCT_RULES: readonly ProductRule[] = [
 ] as const;
 
 export const REPLACEMENT_KEYWORDS = [
-  '替换', '替代', '迁移', '重新选型', '换型', '升级改造', '招标', '采购',
+  '替换', '替代', '迁移', '重新选型', '重选', '换型',
 ] as const;
 
 export const GENERAL_BLOCKER_KEYWORDS = [
-  '无预算', '预算冻结', '暂停采购', '无独立决策权', '集团统一采购',
+  '无预算', '没有预算', '预算冻结', '暂停采购', '暂无采购计划', '无采购计划',
+  '无独立决策权', '没有独立采购权', '不具备独立采购权', '集团统一采购',
   '经营困难', '资不抵债', '长期合同锁定', '长期许可锁定',
 ] as const;
 

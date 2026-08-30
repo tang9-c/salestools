@@ -22,8 +22,14 @@ const SUPPORT_KINDS = new Set<EvidenceFact['kind']>([
   'manufacturing', 'procurement', 'budget', 'decision_power', 'risk',
 ]);
 const UNKNOWN_SIGNAL_KEYWORDS = ['待核实', '未知', '未确认', '未披露', '无法确认', '不明确', '尚未'] as const;
-const POSITIVE_BUDGET_KEYWORDS = ['预算已批准', '预算充足', '有预算', '专项预算', '资金充足', '融资到账'] as const;
-const POSITIVE_DECISION_KEYWORDS = ['独立决策权', '独立采购', '自主采购', '采购决策权', '采购审批权'] as const;
+const POSITIVE_BUDGET_KEYWORDS = ['预算已批准', '预算充足', '专项预算已落实', '资金充足', '融资到账'] as const;
+const POSITIVE_DECISION_KEYWORDS = ['具有独立决策权', '独立采购决策权', '拥有独立采购权', '可自主采购', '采购审批权归属目标主体'] as const;
+const NEGATIVE_BUDGET_PATTERN = /(?:(?:无|没有|并无|并非|不具备|缺少|暂无|未有).{0,8}(?:预算|资金))|(?:(?:预算|资金).{0,6}(?:不足|未落实|未批准|冻结))/u;
+const NEGATIVE_DECISION_PATTERN = /(?:无|没有|并无|并非|并不|不具备|缺少|暂无|未有).{0,12}(?:独立|自主)?.{0,8}(?:采购|决策|审批)(?:权)?/u;
+const NEGATED_REPLACEMENT_PATTERN = /(?:暂无|尚无|没有|无|不|暂不|不计划).{0,8}(?:替换|替代|迁移|重新选型|重选|换型)/u;
+
+type PublicationState = 'recent' | 'expired' | 'future' | 'missing';
+type AttributionState = 'confirmed' | 'probable' | 'unverified';
 
 function normalized(value: string): string {
   return value.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -58,19 +64,63 @@ function citedReferences(
   });
 }
 
-function isRecentTimestamp(timestamp: string | null, nowMs: number): boolean {
-  if (timestamp === null) return false;
-  const occurredAt = Date.parse(timestamp);
-  return occurredAt <= nowMs && nowMs - occurredAt <= RECENT_DAYS * DAY_MS;
+function publicationState(timestamp: string | null, nowMs: number): PublicationState {
+  if (timestamp === null) return 'missing';
+  const publishedAt = Date.parse(timestamp);
+  if (publishedAt > nowMs) return 'future';
+  return nowMs - publishedAt <= RECENT_DAYS * DAY_MS ? 'recent' : 'expired';
 }
 
-function factHasRecentReference(
+function factPublicationState(
   fact: EvidenceFact,
   referencesById: ReadonlyMap<string, EvidenceReference>,
   nowMs: number,
+): PublicationState {
+  const states = citedReferences(fact, referencesById)
+    .map(reference => publicationState(reference.publishedAt, nowMs));
+  if (states.includes('recent')) return 'recent';
+  if (states.includes('future')) return 'future';
+  if (states.includes('expired')) return 'expired';
+  return 'missing';
+}
+
+function isRecentTimestamp(timestamp: string | null, nowMs: number): boolean {
+  return publicationState(timestamp, nowMs) === 'recent';
+}
+
+function factAttribution(
+  fact: EvidenceFact,
+  referencesById: ReadonlyMap<string, EvidenceReference>,
+): AttributionState {
+  if (fact.entityScope !== 'legal_entity' || fact.entityMatch === 'unverified') return 'unverified';
+  const references = citedReferences(fact, referencesById);
+  if (references.length !== fact.evidenceIds.length || references.length === 0) return 'unverified';
+  const agrees = references.every(reference =>
+    reference.entityScope === fact.entityScope && reference.entityMatch === fact.entityMatch);
+  return agrees ? fact.entityMatch : 'unverified';
+}
+
+function isConfirmedTargetFact(
+  fact: EvidenceFact,
+  referencesById: ReadonlyMap<string, EvidenceReference>,
 ): boolean {
-  return citedReferences(fact, referencesById)
-    .some(reference => isRecentTimestamp(reference.publishedAt, nowMs));
+  return factAttribution(fact, referencesById) === 'confirmed';
+}
+
+function isReliableConfirmedFact(
+  fact: EvidenceFact,
+  referencesById: ReadonlyMap<string, EvidenceReference>,
+): boolean {
+  return fact.strength !== 'weak' && isConfirmedTargetFact(fact, referencesById);
+}
+
+function isReliableTargetFact(
+  fact: EvidenceFact,
+  referencesById: ReadonlyMap<string, EvidenceReference>,
+): boolean {
+  const attribution = factAttribution(fact, referencesById);
+  return fact.strength !== 'weak'
+    && (attribution === 'confirmed' || (attribution === 'probable' && fact.strength === 'direct'));
 }
 
 function financingIsAttributedToTarget(
@@ -84,14 +134,6 @@ function financingIsAttributedToTarget(
   });
 }
 
-function isAttributedToTarget(fact: EvidenceFact): boolean {
-  return fact.entityScope === 'legal_entity' && fact.entityMatch === 'confirmed';
-}
-
-function isReliable(fact: EvidenceFact): boolean {
-  return fact.strength !== 'weak' && fact.entityMatch !== 'unverified';
-}
-
 function isRelevant(fact: EvidenceFact, product: ProductKey): boolean {
   return fact.productTags.includes(product)
     || (fact.productTags.length === 0 && SUPPORT_KINDS.has(fact.kind));
@@ -101,35 +143,72 @@ function uniqueInOrder(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
 
-function positiveDecisionFact(fact: EvidenceFact): boolean {
-  if (fact.kind !== 'decision_power' || !isAttributedToTarget(fact) || !isReliable(fact)) return false;
-  return !containsAny(fact.statement, [...GENERAL_BLOCKER_KEYWORDS, ...UNKNOWN_SIGNAL_KEYWORDS])
+function positiveDecisionFact(
+  fact: EvidenceFact,
+  referencesById: ReadonlyMap<string, EvidenceReference>,
+): boolean {
+  if (fact.kind !== 'decision_power' || !isReliableConfirmedFact(fact, referencesById)) return false;
+  return !NEGATIVE_DECISION_PATTERN.test(normalized(fact.statement))
+    && !containsAny(fact.statement, [...GENERAL_BLOCKER_KEYWORDS, ...UNKNOWN_SIGNAL_KEYWORDS])
     && containsAny(fact.statement, POSITIVE_DECISION_KEYWORDS);
 }
 
-function positiveBudgetFact(fact: EvidenceFact): boolean {
-  if (fact.kind !== 'budget' || !isAttributedToTarget(fact) || !isReliable(fact)) return false;
-  return !containsAny(fact.statement, [...GENERAL_BLOCKER_KEYWORDS, ...UNKNOWN_SIGNAL_KEYWORDS])
+function positiveBudgetFact(
+  fact: EvidenceFact,
+  referencesById: ReadonlyMap<string, EvidenceReference>,
+): boolean {
+  if (fact.kind !== 'budget' || !isReliableConfirmedFact(fact, referencesById)) return false;
+  return !NEGATIVE_BUDGET_PATTERN.test(normalized(fact.statement))
+    && !containsAny(fact.statement, [...GENERAL_BLOCKER_KEYWORDS, ...UNKNOWN_SIGNAL_KEYWORDS])
     && containsAny(fact.statement, POSITIVE_BUDGET_KEYWORDS);
 }
 
-function hasReplacementSignal(facts: readonly EvidenceFact[]): boolean {
-  return facts.some(fact => containsAny(fact.statement, REPLACEMENT_KEYWORDS));
+function negativeSupportKind(fact: EvidenceFact): 'budget' | 'decision' | null {
+  const statement = normalized(fact.statement);
+  if (fact.kind === 'budget' && NEGATIVE_BUDGET_PATTERN.test(statement)) return 'budget';
+  if (fact.kind === 'decision_power' && NEGATIVE_DECISION_PATTERN.test(statement)) return 'decision';
+  return null;
 }
 
-function blockerDescriptions(rule: ProductRule, facts: readonly EvidenceFact[]): string[] {
-  const hasReplacement = hasReplacementSignal(facts);
+function explicitReplacement(statement: string): boolean {
+  const text = normalized(statement);
+  return !NEGATED_REPLACEMENT_PATTERN.test(text) && containsAny(text, REPLACEMENT_KEYWORDS);
+}
+
+function hasReplacementSignal(
+  rule: ProductRule,
+  facts: readonly EvidenceFact[],
+  referencesById: ReadonlyMap<string, EvidenceReference>,
+  nowMs: number,
+): boolean {
+  return facts.some(fact => isReliableTargetFact(fact, referencesById)
+    && factPublicationState(fact, referencesById, nowMs) === 'recent'
+    && explicitReplacement(fact.statement)
+    && containsAny(fact.statement, [...rule.positiveKeywords, ...rule.engineeringMethods, ...rule.competitorKeywords]));
+}
+
+function blockerDescriptions(
+  rule: ProductRule,
+  facts: readonly EvidenceFact[],
+  referencesById: ReadonlyMap<string, EvidenceReference>,
+  nowMs: number,
+): string[] {
+  const replacement = hasReplacementSignal(rule, facts, referencesById, nowMs);
   const blockers: string[] = [];
   for (const fact of facts) {
-    if (!isAttributedToTarget(fact) || fact.strength === 'weak') continue;
+    if (!isReliableTargetFact(fact, referencesById)) continue;
     const general = GENERAL_BLOCKER_KEYWORDS.find(keyword => containsKeyword(fact.statement, keyword));
+    const negativeKind = negativeSupportKind(fact);
     const productBlocker = rule.blockerKeywords.find(keyword => containsKeyword(fact.statement, keyword));
     const competitor = rule.competitorKeywords.find(keyword => containsKeyword(fact.statement, keyword));
     if (general !== undefined) blockers.push(`已知预算或决策阻碍：${general}`);
+    if (general === undefined && negativeKind !== null) {
+      blockers.push(negativeKind === 'budget' ? '已知预算阻碍：明确否定预算能力' : '已知决策阻碍：明确否定独立采购权');
+    }
     if (productBlocker !== undefined) blockers.push(`已知系统阻碍：${productBlocker}`);
-    if (competitor !== undefined && !hasReplacement
+    if (competitor !== undefined && !replacement
       && ['recruitment', 'software_ecosystem', 'product_scene'].includes(fact.kind)) {
-      blockers.push(`已发现竞品或替代生态 ${competitor}，未发现替换信号`);
+      blockers.push(`已发现竞品或替代生态 ${competitor}，未发现有效替换信号`);
     }
   }
   return uniqueInOrder(blockers);
@@ -156,70 +235,74 @@ export function evaluateProduct(
 
   const referencesById = new Map(evidence.evidence.map(reference => [reference.evidenceId, reference]));
   const relevantFacts = evidence.facts.filter(fact => isRelevant(fact, rule.product));
-  const usableFacts = relevantFacts.filter(isReliable);
   const productFacts = relevantFacts.filter(fact => fact.productTags.includes(rule.product));
-  const attributedProductFacts = productFacts.filter(isAttributedToTarget);
-  const oldRecruitment = attributedProductFacts.filter(fact => fact.kind === 'recruitment'
-    && containsAny(fact.statement, [...rule.positiveKeywords, ...rule.engineeringMethods])
-    && !factHasRecentReference(fact, referencesById, nowMs));
-
+  const usableFacts = relevantFacts.filter(fact => isReliableConfirmedFact(fact, referencesById));
   const targetNamed = (fact: EvidenceFact): boolean => containsAny(fact.statement, rule.positiveKeywords);
   const methodNamed = (fact: EvidenceFact): boolean => containsAny(fact.statement, rule.engineeringMethods);
   const competitorNamed = (fact: EvidenceFact): boolean => containsAny(fact.statement, rule.competitorKeywords);
+  const hasProductSignal = (fact: EvidenceFact): boolean => targetNamed(fact) || methodNamed(fact);
   const isPositiveProductFact = (fact: EvidenceFact): boolean => {
-    if (fact.kind === 'product_scene') return !competitorNamed(fact);
-    if (!['recruitment', 'software_ecosystem', 'procurement'].includes(fact.kind)) return false;
-    return targetNamed(fact) || methodNamed(fact);
+    if (!['product_scene', 'recruitment', 'software_ecosystem', 'procurement'].includes(fact.kind)) return false;
+    return hasProductSignal(fact) && !competitorNamed(fact);
   };
-  const recentDirectRecruitment = attributedProductFacts.filter(fact => fact.kind === 'recruitment'
-    && fact.strength === 'direct'
-    && (targetNamed(fact) || methodNamed(fact))
-    && factHasRecentReference(fact, referencesById, nowMs));
-  const directSceneFacts = attributedProductFacts.filter(fact => fact.strength === 'direct'
-    && ((fact.kind === 'product_scene')
-      || (fact.kind === 'procurement' && (targetNamed(fact) || methodNamed(fact)))))
+  const confirmedProductFacts = productFacts.filter(fact => isConfirmedTargetFact(fact, referencesById));
+  const recruitmentWithSignal = confirmedProductFacts.filter(fact =>
+    fact.kind === 'recruitment' && hasProductSignal(fact));
+  const recentDirectRecruitment = recruitmentWithSignal.filter(fact => fact.strength === 'direct'
+    && factPublicationState(fact, referencesById, nowMs) === 'recent');
+  const directSceneFacts = confirmedProductFacts.filter(fact => fact.strength === 'direct'
+    && ((fact.kind === 'product_scene' && hasProductSignal(fact))
+      || (fact.kind === 'procurement' && hasProductSignal(fact))))
     .concat(recentDirectRecruitment);
   const confirmedScene = directSceneFacts.length > 0;
 
-  const complexityFacts = usableFacts.filter(fact => isAttributedToTarget(fact)
-    && (COMPLEXITY_KINDS.has(fact.kind)
-      || (fact.kind === 'product_scene' && methodNamed(fact))));
-  const targetEcosystemFacts = attributedProductFacts.filter(fact => fact.strength !== 'weak'
-    && ((fact.kind === 'software_ecosystem' && (targetNamed(fact) || methodNamed(fact)))
-      || (fact.kind === 'recruitment' && (targetNamed(fact) || methodNamed(fact)))));
-  const blockers = blockerDescriptions(rule, relevantFacts);
+  const complexityFacts = usableFacts.filter(fact => (fact.productTags.includes(rule.product)
+    && COMPLEXITY_KINDS.has(fact.kind))
+    || (fact.kind === 'product_scene' && methodNamed(fact)));
+  const targetEcosystemFacts = confirmedProductFacts.filter(fact => fact.strength !== 'weak'
+    && ((fact.kind === 'software_ecosystem' && hasProductSignal(fact))
+      || (fact.kind === 'recruitment' && hasProductSignal(fact))));
+  const blockers = blockerDescriptions(rule, relevantFacts, referencesById, nowMs);
   const strongBlocker = blockers.length > 0;
 
   const recentFinancing = evidence.financingRecords.filter(record =>
     isRecentTimestamp(record.occurredAt, nowMs)
     && financingIsAttributedToTarget(record.evidenceIds, referencesById));
-  const recentTimingFacts = usableFacts.filter(fact => isAttributedToTarget(fact)
-    && ((fact.kind === 'recruitment'
-      && (targetNamed(fact) || methodNamed(fact))
-      && factHasRecentReference(fact, referencesById, nowMs))
-      || (fact.kind === 'procurement' && factHasRecentReference(fact, referencesById, nowMs))
-      || (['organization', 'manufacturing', 'budget'].includes(fact.kind)
-        && factHasRecentReference(fact, referencesById, nowMs)
+  const recentTimingFacts = usableFacts.filter(fact =>
+    ((fact.kind === 'recruitment' && fact.productTags.includes(rule.product) && hasProductSignal(fact)
+      && factPublicationState(fact, referencesById, nowMs) === 'recent')
+      || (fact.kind === 'procurement' && fact.productTags.includes(rule.product) && hasProductSignal(fact)
+        && factPublicationState(fact, referencesById, nowMs) === 'recent')
+      || (['organization', 'manufacturing'].includes(fact.kind)
+        && factPublicationState(fact, referencesById, nowMs) === 'recent'
         && containsAny(fact.statement, ['扩产', '新建', '新增', '升级', '数字化', '研发中心']))));
   const recentTiming = recentTimingFacts.length > 0 || recentFinancing.length > 0;
-  const budgetSupport = usableFacts.some(positiveBudgetFact) || recentFinancing.length > 0;
-  const decisionSupport = usableFacts.some(positiveDecisionFact);
+  const budgetSupport = usableFacts.some(fact => positiveBudgetFact(fact, referencesById))
+    || recentFinancing.length > 0;
+  const decisionSupport = usableFacts.some(fact => positiveDecisionFact(fact, referencesById));
 
+  const publisherFactIds = uniqueInOrder([
+    ...directSceneFacts,
+    ...complexityFacts,
+    ...recentTimingFacts,
+  ].flatMap(fact => fact.evidenceIds));
   const supportingEvidenceIds = uniqueInOrder([
-    ...usableFacts.flatMap(fact => fact.evidenceIds),
+    ...publisherFactIds,
     ...(confirmedScene ? recentFinancing.flatMap(record => record.evidenceIds) : []),
   ]);
   const supportingReferences = supportingEvidenceIds.flatMap(id => {
     const reference = referencesById.get(id);
-    return reference === undefined ? [] : [reference];
+    if (reference?.entityScope !== 'legal_entity' || reference.entityMatch !== 'confirmed') return [];
+    return [reference];
   });
   const publisherCount = countIndependentPublishers(supportingReferences);
 
+  const positiveFacts = productFacts.filter(isPositiveProductFact);
+  const allSupportingUnverified = positiveFacts.length > 0
+    && positiveFacts.every(fact => factAttribution(fact, referencesById) === 'unverified');
   let level: OpportunityLevel;
   const reasons: string[] = [];
   const gaps: string[] = [];
-  const allSupportingUnverified = evidence.facts.length > 0
-    && evidence.facts.every(fact => fact.entityMatch === 'unverified');
 
   if (evidence.industryClassification === 'unverified'
     || criticalConflict(evidence.conflicts)
@@ -227,7 +310,7 @@ export function evaluateProduct(
     level = '待核实';
     if (evidence.industryClassification === 'unverified') gaps.push('行业尚未核实');
     if (criticalConflict(evidence.conflicts)) gaps.push('存在关键主体或来源冲突');
-    if (allSupportingUnverified) gaps.push('相关证据的主体归属均未核实');
+    if (allSupportingUnverified) gaps.push('当前产品相关证据的主体归属均未核实');
   } else if (confirmedScene
     && publisherCount >= 2
     && complexityFacts.length > 0
@@ -263,13 +346,16 @@ export function evaluateProduct(
     gaps.push('证据不足，无法形成稳定判断');
   }
 
-  if (oldRecruitment.length > 0) gaps.push('招聘信息超过 365 天，仅作历史软件生态证据');
+  const recruitmentStates = recruitmentWithSignal.map(fact =>
+    factPublicationState(fact, referencesById, nowMs));
+  if (recruitmentStates.includes('expired')) gaps.push('招聘信息超过 365 天，仅作历史软件生态证据');
+  if (recruitmentStates.includes('missing')) gaps.push('招聘信息发布时间缺失，无法作为近期时机信号');
+  if (recruitmentStates.includes('future')) gaps.push('招聘信息发布时间晚于评估时间，无法作为当前信号');
+
   const outputEvidenceIds = uniqueInOrder([
     ...relevantFacts.flatMap(fact => fact.evidenceIds),
     ...(confirmedScene ? recentFinancing.flatMap(record => record.evidenceIds) : []),
   ]);
-  const positiveFacts = productFacts.filter(isPositiveProductFact);
-
   return {
     opportunity: {
       product: rule.product,
@@ -279,11 +365,11 @@ export function evaluateProduct(
       blockers,
       gaps: uniqueInOrder(gaps),
     },
-    directConfirmedEvidenceCount: productFacts.filter(fact => fact.strength === 'direct'
-      && isAttributedToTarget(fact)
-      && isPositiveProductFact(fact)).length,
+    directConfirmedEvidenceCount: positiveFacts.filter(fact => fact.strength === 'direct'
+      && isConfirmedTargetFact(fact, referencesById)).length,
     hasPositiveSupport: positiveFacts.length > 0,
     onlyWeakOrProbablePositiveSupport: positiveFacts.length > 0
-      && positiveFacts.every(fact => fact.strength === 'weak' || !isAttributedToTarget(fact)),
+      && positiveFacts.every(fact => fact.strength === 'weak'
+        || factAttribution(fact, referencesById) !== 'confirmed'),
   };
 }

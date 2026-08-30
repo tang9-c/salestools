@@ -133,6 +133,15 @@ describe('evaluateOpportunities', () => {
       .find(row => row.product === entry.product)?.level).toBe('中');
   });
 
+  it.each(cases)('$product: a direct product_scene tag without a keyword or method cannot establish the scene', entry => {
+    const refs = [reference('tag-only', 'company.example'), reference('complexity-only', 'association.example')];
+    const result = evaluateOpportunities(bundle({ evidence: refs, facts: [
+      fact('tag-only', entry.product, '公司开展相关研发活动', 'product_scene', ['tag-only']),
+      fact('complexity-only', entry.product, entry.complexity, entry.complexityKind, ['complexity-only']),
+    ] }), NOW);
+    expect(result.products.find(product => product.product === entry.product)?.level).toBe('低');
+  });
+
   it('keeps P1 industry matching at 低 when no product scene exists', () => {
     const ev = reference('industry', 'company.example');
     const result = evaluateOpportunities(bundle({ evidence: [ev] }), NOW);
@@ -174,6 +183,52 @@ describe('evaluateOpportunities', () => {
   });
 
   it.each([
+    { statement: '公司没有预算', kind: 'budget' as const },
+    { statement: '公司并非预算充足', kind: 'budget' as const },
+    { statement: '目标主体不具备独立采购权', kind: 'decision_power' as const },
+    { statement: '目标主体并不拥有独立采购权', kind: 'decision_power' as const },
+  ])('treats explicit negative support as a blocker: $statement', ({ statement, kind }) => {
+    const input = completeHighCase(cases[0]!);
+    input.evidence.push(reference('negative', 'company.example'));
+    input.facts.push(fact('negative', 'windchill', statement, kind, ['negative']));
+    const row = evaluateOpportunities(input, NOW).products.find(product => product.product === 'windchill');
+    expect(row?.level).toBe('低');
+    expect(row?.blockers.join('')).toContain(statement.includes('预算') ? '预算' : '决策');
+  });
+
+  it.each([
+    { label: 'explicit recent confirmed migration', statement: '公司正在将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
+    { label: 'explicit recent probable migration', statement: '公司正在将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'probable' as const, expected: '中' },
+    { label: 'generic procurement', statement: '公司发布软件采购招标', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
+    { label: 'negated migration', statement: '公司暂无迁移替换计划', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
+    { label: 'old migration', statement: '公司计划迁移替换 Siemens NX', publishedAt: '2025-08-29T11:59:59.999Z', match: 'confirmed' as const, expected: '低' },
+    { label: 'future migration', statement: '公司计划迁移替换 Siemens NX', publishedAt: '2026-08-31T12:00:00.000Z', match: 'confirmed' as const, expected: '低' },
+    { label: 'undated migration', statement: '公司计划迁移替换 Siemens NX', publishedAt: null, match: 'confirmed' as const, expected: '低' },
+    { label: 'unverified migration', statement: '公司计划迁移替换 Siemens NX', publishedAt: RECENT, match: 'unverified' as const, expected: '低' },
+  ])('only an explicit, attributed and recent replacement clears an incumbent: $label', scenario => {
+    const refs = [
+      reference('scene', 'company.example'), reference('complexity', 'association.example'),
+      reference('incumbent', 'jobs.example'),
+      reference('replacement', 'notice.example', scenario.publishedAt, scenario.match),
+    ];
+    const replacement = fact('replacement', 'creo', scenario.statement, 'procurement', ['replacement'], {
+      entityMatch: scenario.match,
+      entityScope: scenario.match === 'unverified' ? 'unknown' : 'legal_entity',
+    });
+    if (scenario.match === 'unverified') replacement.matchBasis = ['仅提及简称'];
+    const result = evaluateOpportunities(bundle({ evidence: refs, facts: [
+      fact('scene', 'creo', '公司开展 Creo 参数化机械设计', 'product_scene', ['scene']),
+      fact('complexity', 'creo', '多型号复杂零部件研发', 'organization', ['complexity']),
+      fact('incumbent', 'creo', '公司长期使用 Siemens NX', 'software_ecosystem', ['incumbent']),
+      replacement,
+    ] }), NOW);
+    const row = result.products.find(product => product.product === 'creo');
+    expect(row?.level).toBe(scenario.expected);
+    expect(row?.blockers.some(blocker => blocker.toLowerCase().includes('siemens nx')))
+      .toBe(scenario.expected === '低');
+  });
+
+  it.each([
     { label: 'unverified industry', input: bundle({ industry: 'unverified' }) },
     { label: 'critical identity conflict', input: bundle({ conflicts: ['法定主体归属冲突'] }) },
   ])('returns all pending for $label', ({ input }) => {
@@ -191,6 +246,28 @@ describe('evaluateOpportunities', () => {
     const result = evaluateOpportunities(bundle({ evidence: [ev], facts: [unsupported] }), NOW);
     expect(result.products.find(row => row.product === 'windchill')?.level).toBe('待核实');
     expect(result.recommendedProduct).toBeNull();
+  });
+
+  it('applies the unverified-support gate per product instead of letting another product wash it', () => {
+    const wind = reference('wind-unverified', 'unknown.example', RECENT, 'unverified');
+    const creo = reference('creo-confirmed', 'company.example');
+    const windFact = fact('wind-unverified', 'windchill', 'Windchill PLM 实施', 'product_scene', ['wind-unverified'], {
+      entityMatch: 'unverified', entityScope: 'unknown',
+    });
+    windFact.matchBasis = ['仅提及简称'];
+    const result = evaluateOpportunities(bundle({ evidence: [wind, creo], facts: [
+      windFact,
+      fact('creo-confirmed', 'creo', 'Creo 参数化机械设计', 'product_scene', ['creo-confirmed']),
+    ] }), NOW);
+    expect(result.products.find(product => product.product === 'windchill')?.level).toBe('待核实');
+  });
+
+  it('does not promote a confirmed fact whose cited reference is unverified', () => {
+    const unverifiedReference = reference('mismatched', 'unknown.example', RECENT, 'unverified');
+    const result = evaluateOpportunities(bundle({ evidence: [unverifiedReference], facts: [
+      fact('mismatched', 'windchill', 'Windchill PLM 实施和 BOM 变更管理', 'product_scene', ['mismatched']),
+    ] }), NOW);
+    expect(result.products.find(product => product.product === 'windchill')?.level).toBe('待核实');
   });
 
   it('keeps the aggregate pending when the only positive product support is probable', () => {
@@ -220,6 +297,43 @@ describe('evaluateOpportunities', () => {
     const row = evaluateOpportunities(input, NOW).products.find(product => product.product === entry.product);
     expect(row?.level).toBe('中');
     expect(row?.evidenceIds).not.toContain('financing');
+  });
+
+  it('does not let unrelated risk evidence satisfy the two-publisher high threshold', () => {
+    const input = completeHighCase(cases[0]!);
+    input.evidence = input.evidence.map(item => ({
+      ...item, originalPublisher: '同一发布方', originalDomain: 'same.example',
+    }));
+    input.evidence.push(reference('unrelated-risk', 'risk-publisher.example'));
+    input.facts.push(fact('unrelated-risk', 'creo', '未发现重大经营异常', 'risk', ['unrelated-risk']));
+    expect(evaluateOpportunities(input, NOW).products
+      .find(product => product.product === 'windchill')?.level).toBe('中');
+  });
+
+  it('does not treat untagged generic quality complexity as matching a Windchill scene', () => {
+    const refs = [reference('scene', 'company.example'), reference('generic-quality', 'quality.example')];
+    const genericQuality = fact('generic-quality', 'windchill', '公司设有质量团队', 'quality', ['generic-quality']);
+    genericQuality.productTags = [];
+    const result = evaluateOpportunities(bundle({ evidence: refs, facts: [
+      fact('scene', 'windchill', '公司开展 Windchill PLM 实施', 'product_scene', ['scene']),
+      genericQuality,
+    ] }), NOW);
+    expect(result.products.find(product => product.product === 'windchill')?.level).toBe('低');
+  });
+
+  it('counts only supporting references whose attribution agrees with their facts', () => {
+    const input = completeHighCase(cases[0]!);
+    input.evidence = input.evidence.map(item => {
+      if (item.evidenceId === 'complexity') {
+        return {
+          ...item, originalPublisher: '行业协会', originalDomain: 'association.example',
+          entityScope: 'unknown' as const, entityMatch: 'unverified' as const, matchBasis: ['无法确认主体'],
+        };
+      }
+      return { ...item, originalPublisher: '目标公司', originalDomain: 'same.example' };
+    });
+    expect(evaluateOpportunities(input, NOW).products
+      .find(product => product.product === 'windchill')?.level).toBe('中');
   });
 
   it('does not treat a generic recent recruitment as product timing', () => {

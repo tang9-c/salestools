@@ -5,6 +5,8 @@ import { evaluateOpportunities } from '../src/opportunity/evaluate-all.js';
 const NOW = new Date('2026-08-30T12:00:00.000Z');
 const recent = '2026-08-01T12:00:00.000Z';
 const old = '2025-08-29T11:59:59.999Z';
+const exactly365Days = '2025-08-30T12:00:00.000Z';
+const olderByOneMillisecond = '2025-08-30T11:59:59.999Z';
 const identity = {
   legalName: '测试制造有限公司', creditCode: '91310000TEST000001',
   formerNames: [], aliases: [], englishNames: [], brands: [], officialDomains: [],
@@ -89,5 +91,52 @@ describe('招聘信号', () => {
     const row = result.products.find(product => product.product === entry.product);
     expect(row?.level).toBe('低');
     expect(row?.gaps.join('')).toMatch(/365|历史|过期/);
+  });
+
+  it.each(products)('$product: unverified direct recruitment remains pending even when another product is confirmed', entry => {
+    const input = recruitmentBundle(entry, `${entry.named}，${entry.method}`, recent);
+    const otherProduct = entry.product === 'creo' ? 'windchill' : 'creo';
+    const otherStatement = otherProduct === 'creo'
+      ? 'Creo 参数化机械设计'
+      : 'Windchill PLM BOM 变更管理';
+    input.evidence[0] = {
+      ...input.evidence[0]!, entityScope: 'unknown', entityMatch: 'unverified', matchBasis: ['仅提及简称'],
+    };
+    input.facts[0] = {
+      ...input.facts[0]!, entityScope: 'unknown', entityMatch: 'unverified', matchBasis: ['仅提及简称'],
+    };
+    input.evidence.push({
+      ...input.evidence[0]!, evidenceId: 'other-product', url: 'https://company.example/creo',
+      entityScope: 'legal_entity', entityMatch: 'confirmed', matchBasis: ['官方域名与全称一致'],
+    });
+    input.facts.push({
+      ...input.facts[0]!, factId: 'other-product', statement: otherStatement,
+      productTags: [otherProduct], evidenceIds: ['other-product'], entityScope: 'legal_entity', entityMatch: 'confirmed',
+      matchBasis: ['官方域名与全称一致'],
+    });
+    expect(evaluateOpportunities(input, NOW).products
+      .find(product => product.product === entry.product)?.level).toBe('待核实');
+  });
+
+  it.each(products)('$product: exactly 365 days is recent, while one millisecond older is historical', entry => {
+    const boundary = evaluateOpportunities(recruitmentBundle(entry, `${entry.named}，${entry.method}`, exactly365Days), NOW);
+    expect(boundary.products.find(product => product.product === entry.product)?.level).toBe('中');
+
+    const expired = evaluateOpportunities(recruitmentBundle(entry, `${entry.named}，${entry.method}`, olderByOneMillisecond), NOW);
+    expect(expired.products.find(product => product.product === entry.product)?.level).toBe('低');
+    expect(expired.products.find(product => product.product === entry.product)?.gaps.join('')).toMatch(/365|历史|过期/);
+  });
+
+  it.each([
+    { label: 'missing', publishedAt: null, expectedGap: /缺失|无日期/ },
+    { label: 'future', publishedAt: '2026-08-31T12:00:00.000Z', expectedGap: /晚于|未来/ },
+  ])('does not call a $label recruitment older than 365 days', ({ publishedAt, expectedGap }) => {
+    const entry = products[0]!;
+    const input = recruitmentBundle(entry, `${entry.named}，${entry.method}`, recent);
+    input.evidence[0] = { ...input.evidence[0]!, publishedAt };
+    const row = evaluateOpportunities(input, NOW).products.find(product => product.product === entry.product);
+    expect(row?.level).toBe('低');
+    expect(row?.gaps.join('')).toMatch(expectedGap);
+    expect(row?.gaps.join('')).not.toContain('超过 365 天');
   });
 });
