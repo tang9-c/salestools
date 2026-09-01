@@ -17,8 +17,9 @@ const DYNAMIC_SIGNAL_MAX_AGE_MS = 7 * DAY_MS;
 
 export type ReportGapCategory = 'rating' | 'enhancement' | 'audit';
 
-const AUDIT_GAP_PATTERN = /来源|链接|url|网址|容量|字节|裁剪|压缩|上游|获取失败|调用失败|企查查|豆包|年报|链接不可用|\d+\/\d+/iu;
-const ENHANCEMENT_GAP_PATTERN = /预算|融资|时机|时间|周期|决策|审批|采购计划|扩容|替换/iu;
+const ARK_INPUT_CAPACITY_GAP_PATTERN = /方舟输入.*容量.*\d+\/\d+/u;
+const ENHANCEMENT_GAP_PATTERN = /预算|时机|时间|周期|决策|审批|采购计划|扩容|替换/iu;
+const AUDIT_GAP_PATTERN = /来源|链接|url|网址|上游|获取失败|调用失败|企查查|豆包|年报|链接不可用/iu;
 
 /**
  * Categorizes an already-recorded gap for Markdown presentation only.
@@ -26,8 +27,9 @@ const ENHANCEMENT_GAP_PATTERN = /预算|融资|时机|时间|周期|决策|审�
  * consult this function.
  */
 export function classifyReportGap(gap: string): ReportGapCategory {
-  if (AUDIT_GAP_PATTERN.test(gap)) return 'audit';
+  if (ARK_INPUT_CAPACITY_GAP_PATTERN.test(gap)) return 'audit';
   if (ENHANCEMENT_GAP_PATTERN.test(gap)) return 'enhancement';
+  if (AUDIT_GAP_PATTERN.test(gap)) return 'audit';
   return 'rating';
 }
 

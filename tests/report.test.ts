@@ -309,10 +309,15 @@ describe('assessment report', () => {
     expect(model.products.every(product => product.level === '待核实')).toBe(true);
   });
 
-  it('classifies report gaps for presentation without changing opportunity levels', () => {
-    expect(classifyReportGap('主体归属存在冲突，需核实')).toBe('rating');
-    expect(classifyReportGap('预算能力待核实')).toBe('enhancement');
-    expect(classifyReportGap('企查查来源链接不可用：industry')).toBe('audit');
+  it.each([
+    ['行业和产品技术场景待核实', 'rating'],
+    ['预算审批时间为 2026/09，待核实', 'enhancement'],
+    ['决策权待核实', 'enhancement'],
+    ['方舟输入容量已裁剪：6/12', 'audit'],
+    ['融资信息获取失败', 'audit'],
+    ['年报信息获取失败', 'audit'],
+  ] as const)('classifies %s as %s for presentation only', (gap, category) => {
+    expect(classifyReportGap(gap)).toBe(category);
   });
 
   it('rejects identity mismatches and every dangling evidence reference', () => {
