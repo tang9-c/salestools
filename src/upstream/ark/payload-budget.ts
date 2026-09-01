@@ -504,11 +504,8 @@ export function compactResearchBundleForArk(
     );
   };
 
-  const fitCandidate = (
-    selected: readonly ItemState[],
-    item: ResearchItem,
-  ): ItemState[] | null => {
-    const trial = [...selected.map(cloneState), buildState(item, purposes)];
+  const fitStates = (candidateStates: readonly ItemState[]): ItemState[] | null => {
+    const trial = candidateStates.map(cloneState);
     while (measureBytes(compactFor(trial)) > requestMaxBytes) {
       let shrunk = false;
       for (let index = trial.length - 1; index >= 0; index -= 1) {
@@ -530,6 +527,20 @@ export function compactResearchBundleForArk(
       }
     }
     return trial;
+  };
+  const fitCandidate = (
+    selected: readonly ItemState[],
+    item: ResearchItem,
+  ): ItemState[] | null => fitStates([...selected, buildState(item, purposes)]);
+  const minimumState = (item: ResearchItem): ItemState => {
+    const state = buildState(item, purposes);
+    while (shrinkContent(state)) {
+      // Reduce each candidate once to its minimum legal footprint before mask comparison.
+    }
+    while (shrinkSummary(state)) {
+      // Financing content remains intact because shrinkContent respects preserveFinancingContent.
+    }
+    return state;
   };
 
   const reservationCategories = ['industry', 'technology', 'timing', 'capacity'] as const;
@@ -561,27 +572,36 @@ export function compactResearchBundleForArk(
     timing: 4,
     capacity: 8,
   };
-  type Reservation = { readonly states: ItemState[]; readonly requestBytes: number };
+  type Reservation = {
+    readonly items: ResearchItem[];
+    readonly minimumStates: ItemState[];
+    readonly requestBytes: number;
+  };
   const reservations: Array<Reservation | null> = Array.from({ length: 16 }, () => null);
-  reservations[0] = { states: [], requestBytes: measureBytes(compactFor([])) };
-
-  // Four category bits yield exactly 16 states. Each candidate transitions a snapshot of those
-  // masks once, so reservation work is O(candidate count * 16), never a Cartesian product.
-  for (const item of orderedItems) {
+  reservations[0] = { items: [], minimumStates: [], requestBytes: measureBytes(compactFor([])) };
+  const reservationCandidates = orderedItems.flatMap(item => {
     const category = evidenceCategory(item, purposes);
-    if (category === null) continue;
-    const bit = categoryBits[category];
+    return category === null ? [] : [{ item, bit: categoryBits[category], minimum: minimumState(item) }];
+  });
+
+  // Stage A has exactly 16 masks and uses precomputed minimum footprints, making byte dominance
+  // safe. Each candidate transitions a snapshot once: O(candidate count * 16), not Cartesian.
+  for (const candidate of reservationCandidates) {
     const previous = reservations.slice();
     for (let mask = 0; mask < previous.length; mask += 1) {
       const reservation = previous[mask];
-      if (reservation === null || (mask & bit) !== 0) continue;
-      const trial = fitCandidate(reservation.states, item);
-      if (trial === null) continue;
-      const requestBytes = measureBytes(compactFor(trial));
-      const nextMask = mask | bit;
+      if (reservation === null || (mask & candidate.bit) !== 0) continue;
+      const minimumStates = [...reservation.minimumStates, candidate.minimum];
+      const requestBytes = measureBytes(compactFor(minimumStates));
+      if (requestBytes > requestMaxBytes) continue;
+      const nextMask = mask | candidate.bit;
       const current = reservations[nextMask];
       if (current === null || requestBytes < current.requestBytes) {
-        reservations[nextMask] = { states: trial, requestBytes };
+        reservations[nextMask] = {
+          items: [...reservation.items, candidate.item],
+          minimumStates,
+          requestBytes,
+        };
       }
     }
   }
@@ -596,9 +616,15 @@ export function compactResearchBundleForArk(
     if (reservations[mask] !== null && coverage(mask) > coverage(bestMask)) bestMask = mask;
   }
   const bestReservation = reservations[bestMask];
-  let states = coverage(bestMask) > greedyCoverage && bestReservation !== null
-    ? bestReservation.states.map(cloneState)
-    : greedyStates;
+  const reservedItems = coverage(bestMask) > greedyCoverage && bestReservation !== null
+    ? bestReservation.items
+    : greedyStates.map(state => state.original);
+  // Stage B restores normal content, then shrinks the chosen reservation as a whole. Since Stage A
+  // proved the minimum footprints fit, this never needs to drop a reserved category.
+  let states = fitStates(reservedItems.map(item => buildState(item, purposes)));
+  if (states === null) {
+    throw new RangeError('Ark reserved evidence cannot fit its proven minimum footprints');
+  }
   const selectedIds = new Set(states.map(state => state.original.evidenceId));
   for (const item of orderedItems) {
     if (selectedIds.has(item.evidenceId)) continue;

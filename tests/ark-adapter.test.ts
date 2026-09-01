@@ -620,6 +620,101 @@ describe('ArkEvidenceService', () => {
     expect(Object.values(selection.categoryCounts).filter(count => count > 0)).toHaveLength(3);
   });
 
+  it('dominates reservation masks by minimum legal footprint instead of current size', () => {
+    const base: ResearchBundle = {
+      ...minimumResearchBundle(),
+      collectedAt: '2026-09-01T00:00:00.000Z',
+    };
+    const queries = new Map(buildSearchPlan(base.identity).map(query => [query.purpose, query.Query]));
+    const common = {
+      url: null,
+      originalPublisher: null,
+      originalDomain: null,
+      summary: null,
+      content: null,
+      publishedAt: null,
+      collectedAt: base.collectedAt,
+      mentionedName: 'a',
+      entityScope: 'legal_entity' as const,
+      entityMatch: 'confirmed' as const,
+      matchBasis: ['name'],
+      query: null,
+      position: null,
+      logId: null,
+    };
+    const qcc = (
+      evidenceId: string,
+      sourceKind: 'company' | 'ipr' | 'risk',
+      title: string,
+    ): ResearchItem => ({ ...common, evidenceId, source: 'qcc', sourceKind, title });
+    const search = (
+      evidenceId: string,
+      purpose: 'official_products' | 'expansion_financing',
+      title: string,
+      content: string | null = null,
+    ): ResearchItem => ({
+      ...common,
+      evidenceId,
+      source: 'doubao_search',
+      sourceKind: 'web',
+      title,
+      content,
+      url: `https://example.com/${evidenceId}`,
+      originalPublisher: 'x',
+      originalDomain: 'example.com',
+      query: queries.get(purpose)!,
+      position: 1,
+      logId: 'log',
+    });
+    const industryA = qcc('qcc-company-get_company_profile-A', 'company', 'A'.repeat(1_750));
+    const technology = qcc('qcc-ipr-get_patent_info-T', 'ipr', 'T');
+    const unfitCapacity = qcc('qcc-risk-get_company_risk_scan-C1', 'risk', 'X'.repeat(20_000));
+    const industryB = search('search-official-B', 'official_products', 'B', 'z'.repeat(2_500));
+    const capacityC2 = search(
+      'search-expansion-C2',
+      'expansion_financing',
+      'C'.repeat(4_000),
+    );
+    const research = {
+      ...base,
+      items: [industryA, technology, unfitCapacity, industryB, capacityC2],
+    };
+    const requestBytes = (candidate: ResearchBundle): number => (
+      Buffer.byteLength(serializedRequest('ep-test', candidate), 'utf8')
+    );
+    expect(requestBytes({ ...base, items: [industryA, technology] })).toBe(7_960);
+    expect(requestBytes({ ...base, items: [industryB, technology] })).toBe(8_772);
+    expect(requestBytes({ ...base, items: [industryA, technology, capacityC2] })).toBe(12_459);
+
+    const measurementLimit = research.items.length * 16 + research.items.length * 4;
+    const run = (): { selection: ReturnType<typeof compactResearchBundleForArk>; calls: number } => {
+      let calls = 0;
+      const selection = compactResearchBundleForArk(research, 12_288, candidate => {
+        calls += 1;
+        return requestBytes(candidate);
+      });
+      return { selection, calls };
+    };
+    const first = run();
+    const second = run();
+    const expectedIds = [technology.evidenceId, industryB.evidenceId, capacityC2.evidenceId];
+
+    expect(first.selection.bundle.items.map(item => item.evidenceId)).toEqual(expectedIds);
+    expect(first.selection).toMatchObject({
+      originalCount: 5,
+      selectedCount: 3,
+      excludedCount: 2,
+      categoryCounts: { industry: 1, technology: 1, timing: 0, capacity: 1 },
+    });
+    expect(requestBytes(first.selection.bundle)).toBe(11_906);
+    expect(first.calls).toBeLessThanOrEqual(measurementLimit);
+    expect(second.selection.bundle.items.map(item => item.evidenceId)).toEqual(expectedIds);
+    expect(second.selection.categoryCounts).toEqual(first.selection.categoryCounts);
+    expect(second.selection.bundle.gaps).toEqual(first.selection.bundle.gaps);
+    expect(requestBytes(second.selection.bundle)).toBe(requestBytes(first.selection.bundle));
+    expect(second.calls).toBe(first.calls);
+  });
+
   it('can exclude the final oversized item at the minimum legal request budget', async () => {
     const base = minimumResearchBundle();
     const oversized: ResearchItem = {
