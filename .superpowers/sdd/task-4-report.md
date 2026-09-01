@@ -40,3 +40,5 @@ README 曾错误地把推荐产品与整体机会列入 `result_json`。实现�
 当前批准规范 `docs/superpowers/specs/2026-09-01-ark-evidence-report-fix-design.md` 也有同一字段归属错误，现已同步校正。检查同分支实现计划后未发现同类表述，因此未修改计划。
 
 规范日志段曾错误声明新增“综合机会和推荐产品”字段，现已缩减为实现实际记录的 assessment ID、证据数量、类别覆盖、请求字节数、行业分类和七产品等级。检查 README 与实现计划后未发现同类生产日志声明，因此未修改它们。
+
+规范的 `result_json` 字段说明也已从 snake_case 平铺列表改为与 `AssessmentResultAuditSchema` 一致的 camelCase 嵌套结构。README 只描述审计内容及其存储边界，未承诺字段形状，核对后无需修改。

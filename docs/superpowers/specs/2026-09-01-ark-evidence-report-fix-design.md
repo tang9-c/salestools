@@ -53,14 +53,13 @@
 
 ### 3. 精简结果审计
 
-`assessments` 增加可空的 `result_json`。SQLite 启动迁移使用 `ALTER TABLE` 兼容已有数据库。JSON 固定保存：
+`assessments` 增加可空的 `result_json`。SQLite 启动迁移使用 `ALTER TABLE` 兼容已有数据库。JSON 固定保存与 `AssessmentResultAuditSchema` 一致的 camelCase 嵌套结构：
 
-- `industry_classification`、`industry_evidence_ids`；
-- 七项 `opportunities`；
-- `selected_evidence_ids`；
-- `original_evidence_count`、`selected_evidence_count`、`excluded_evidence_count`；
-- `selected_category_counts`；
-- `ark_research_bytes`、`ark_request_bytes`。
+- `industryClassification`、`industryEvidenceIds`；
+- 七项 `opportunities`，每项为 `product`、`level`、`evidenceIds`；
+- `evidenceSelection.selectedEvidenceIds`、`evidenceSelection.originalCount`、`evidenceSelection.selectedCount`、`evidenceSelection.excludedCount`；
+- `evidenceSelection.categoryCounts`，包含 `industry`、`technology`、`timing`、`capacity`；
+- `evidenceSelection.researchBytes`、`evidenceSelection.requestBytes`。
 
 `recommended_product` 与 `overall_opportunity` 继续保存于 `assessments` 的独立列，不属于 `result_json`。不保存证据正文。任务服务仍以原有少量顶层字段响应，避免扩大 MCP 契约。
 
