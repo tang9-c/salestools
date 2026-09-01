@@ -486,6 +486,71 @@ describe('ArkEvidenceService', () => {
     expect(second.requestBytes).toBe(first.requestBytes);
   });
 
+  it('replaces a fitting timing candidate when a smaller one maximizes category coverage', async () => {
+    const template = researchBundle().items[0];
+    const qccItem = (
+      evidenceId: string,
+      sourceKind: ResearchItem['sourceKind'],
+      title: string,
+    ): ResearchItem => ({
+      ...template,
+      evidenceId,
+      source: 'qcc',
+      sourceKind,
+      title,
+      summary: null,
+      content: null,
+      query: null,
+      position: null,
+      logId: null,
+    });
+    const expectedIds = [
+      'qcc-company-get_company_profile-1',
+      'qcc-ipr-get_patent_info-1',
+      'qcc-risk-get_company_risk_scan-1',
+      'qcc-operation-get_bidding_info-1',
+    ];
+    const research: ResearchBundle = {
+      ...minimumResearchBundle(),
+      items: [
+        qccItem(expectedIds[0]!, 'company', '企业简介'),
+        qccItem(expectedIds[1]!, 'ipr', '专利信息'),
+        qccItem(
+          'qcc-operation-get_recruitment_info-large-but-fitting',
+          'operation',
+          '巨型时机'.repeat(400),
+        ),
+        qccItem(expectedIds[2]!, 'risk', '风险信息'),
+        qccItem(expectedIds[3]!, 'operation', '招投标信息'),
+      ],
+    };
+    const fetchFn = vi.fn<typeof fetch>(async () => (
+      responseWithContent(JSON.stringify(factFreeEvidence(research)))
+    ));
+    const service = client(fetchFn, 12_288);
+
+    const first = await service.extractWithAudit(research);
+    const second = await service.extractWithAudit(research);
+
+    expect(first.selection.bundle.items.map(item => item.evidenceId)).toEqual(expectedIds);
+    expect(first.selection).toMatchObject({
+      originalCount: 5,
+      selectedCount: 4,
+      excludedCount: 1,
+      categoryCounts: { industry: 1, technology: 1, timing: 1, capacity: 1 },
+    });
+    expect(second.selection.bundle.items.map(item => item.evidenceId)).toEqual(expectedIds);
+    expect(second.selection).toMatchObject({
+      originalCount: 5,
+      selectedCount: 4,
+      excludedCount: 1,
+      categoryCounts: { industry: 1, technology: 1, timing: 1, capacity: 1 },
+    });
+    expect(second.selection.bundle.gaps).toEqual(first.selection.bundle.gaps);
+    expect(first.requestBytes).toBeLessThanOrEqual(12_288);
+    expect(second.requestBytes).toBe(first.requestBytes);
+  });
+
   it('can exclude the final oversized item at the minimum legal request budget', async () => {
     const base = minimumResearchBundle();
     const oversized: ResearchItem = {

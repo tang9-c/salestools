@@ -504,14 +504,11 @@ export function compactResearchBundleForArk(
     );
   };
 
-  let states: ItemState[] = [];
-  const selectedIds = new Set<string>();
-  const rejectedIds = new Set<string>();
-  const trySelect = (item: ResearchItem | undefined): boolean => {
-    if (item === undefined || selectedIds.has(item.evidenceId) || rejectedIds.has(item.evidenceId)) {
-      return false;
-    }
-    const trial = [...states.map(cloneState), buildState(item, purposes)];
+  const fitCandidate = (
+    selected: readonly ItemState[],
+    item: ResearchItem,
+  ): ItemState[] | null => {
+    const trial = [...selected.map(cloneState), buildState(item, purposes)];
     while (measureBytes(compactFor(trial)) > requestMaxBytes) {
       let shrunk = false;
       for (let index = trial.length - 1; index >= 0; index -= 1) {
@@ -529,23 +526,76 @@ export function compactResearchBundleForArk(
         }
       }
       if (!shrunk) {
-        rejectedIds.add(item.evidenceId);
-        return false;
+        return null;
       }
     }
-    states = trial;
-    selectedIds.add(item.evidenceId);
-    return true;
+    return trial;
   };
 
-  trySelect(orderedItems.find(item => qccTool(item, 'get_financing_records')));
-  for (const category of ['industry', 'technology', 'timing', 'capacity'] as const) {
-    if (states.some(state => evidenceCategory(state.original, purposes) === category)) continue;
-    for (const item of orderedItems) {
-      if (evidenceCategory(item, purposes) === category && trySelect(item)) break;
+  const reservationCategories = ['industry', 'technology', 'timing', 'capacity'] as const;
+  const categoryCandidates = reservationCategories.map(category => (
+    orderedItems.filter(item => evidenceCategory(item, purposes) === category)
+  ));
+  const availableCategoryCount = categoryCandidates.filter(candidates => candidates.length > 0).length;
+  let greedyStates: ItemState[] = [];
+  const greedyIds = new Set<string>();
+  const tryGreedyReservation = (item: ResearchItem | undefined): boolean => {
+    if (item === undefined || greedyIds.has(item.evidenceId)) return false;
+    const trial = fitCandidate(greedyStates, item);
+    if (trial === null) return false;
+    greedyStates = trial;
+    greedyIds.add(item.evidenceId);
+    return true;
+  };
+  tryGreedyReservation(orderedItems.find(item => qccTool(item, 'get_financing_records')));
+  for (const [categoryIndex, category] of reservationCategories.entries()) {
+    if (greedyStates.some(state => evidenceCategory(state.original, purposes) === category)) continue;
+    for (const item of categoryCandidates[categoryIndex]!) {
+      if (tryGreedyReservation(item)) break;
     }
   }
-  for (const item of orderedItems) trySelect(item);
+
+  const greedyCoverage = greedyStates.length;
+  let states = greedyStates.map(cloneState);
+  let reservationComplete = states.length === availableCategoryCount;
+  // The greedy result is the stable tie winner; DFS replaces it only for strictly greater coverage.
+  const searchReservations = (categoryIndex: number, selected: readonly ItemState[]): void => {
+    if (reservationComplete
+      || selected.length + reservationCategories.length - categoryIndex <= states.length) return;
+    if (categoryIndex === reservationCategories.length) {
+      states = selected.map(cloneState);
+      reservationComplete = states.length === availableCategoryCount;
+      return;
+    }
+
+    // Candidate-first DFS visits every category in fixed order and every item in orderedItems priority.
+    for (const item of categoryCandidates[categoryIndex]!) {
+      const trial = fitCandidate(selected, item);
+      if (trial !== null) searchReservations(categoryIndex + 1, trial);
+      if (reservationComplete) return;
+    }
+    searchReservations(categoryIndex + 1, selected);
+  };
+  searchReservations(0, []);
+
+  if (states.length === greedyCoverage) {
+    states = greedyStates;
+  } else {
+    // A coverage-improving replacement keeps the surviving evidence in its original relative order.
+    const inputOrder = new Map(uniqueItems.map((item, index) => [item.evidenceId, index]));
+    states = stableSort(
+      states,
+      state => inputOrder.get(state.original.evidenceId) ?? Number.MAX_SAFE_INTEGER,
+    );
+  }
+  const selectedIds = new Set(states.map(state => state.original.evidenceId));
+  for (const item of orderedItems) {
+    if (selectedIds.has(item.evidenceId)) continue;
+    const trial = fitCandidate(states, item);
+    if (trial === null) continue;
+    states = trial;
+    selectedIds.add(item.evidenceId);
+  }
 
   const compact = compactFor(states);
   if (measureBytes(compact) > requestMaxBytes) {
