@@ -10,7 +10,6 @@ export const ARK_HISTORICAL_FINANCING_GAP = '方舟融资专槽有日期时仅�
 export const ARK_COMPACT_BUNDLE_MAX_BYTES = 6_656;
 export const ARK_REQUEST_MAX_BYTES = 12_288;
 
-const ARK_REQUEST_OVERHEAD_BYTES = ARK_REQUEST_MAX_BYTES - ARK_COMPACT_BUNDLE_MAX_BYTES;
 const INITIAL_SUMMARY_BYTES = 512;
 const INITIAL_DEMAND_CONTENT_BYTES = 1_536;
 const INITIAL_SUPPORT_CONTENT_BYTES = 1_024;
@@ -373,6 +372,19 @@ function buildState(
   };
 }
 
+function buildUnchangedState(
+  item: ResearchItem,
+  purposes: ReadonlyMap<string, SearchQuery['purpose']>,
+): ItemState {
+  const state = buildState(item, purposes);
+  return {
+    ...state,
+    item,
+    contentBudget: item.content === null ? 0 : utf8Bytes(item.content),
+    summaryBudget: item.summary === null ? 0 : utf8Bytes(item.summary),
+  };
+}
+
 function bundleBytes(bundle: ResearchBundle): number {
   return utf8Bytes(JSON.stringify(bundle));
 }
@@ -439,72 +451,105 @@ function shrinkSummary(state: ItemState): boolean {
   return true;
 }
 
+function cloneState(state: ItemState): ItemState {
+  return {
+    ...state,
+    item: { ...state.item },
+  };
+}
+
+function stateChanged(state: ItemState): boolean {
+  return state.item.summary !== state.original.summary
+    || state.item.content !== state.original.content;
+}
+
 export function compactResearchBundleForArk(
   bundleInput: ResearchBundle,
   requestMaxBytes = ARK_REQUEST_MAX_BYTES,
+  measureBytes: (bundle: ResearchBundle) => number = bundleBytes,
 ): ArkPayloadSelection {
   const bundle = ResearchBundleSchema.parse(bundleInput);
   const purposes = purposeByQuery(bundle);
-  const uniqueCount = new Set(bundle.items.map(item => item.evidenceId)).size;
-  const financingCount = new Set(bundle.items
-    .filter(item => qccTool(item, 'get_financing_records'))
-    .map(item => item.evidenceId)).size;
-  const includeHistoricalFinancingGap = financingCount > 1;
-  const states = selectItems(bundle).map(item => buildState(item, purposes));
-  const researchMaxBytes = requestMaxBytes - ARK_REQUEST_OVERHEAD_BYTES;
-  if (researchMaxBytes <= 0) {
-    throw new RangeError('Ark request byte budget cannot contain the immutable request');
-  }
-  let capacityChanged = uniqueCount > states.length || states.some(state => (
-    state.item.summary !== state.original.summary || state.item.content !== state.original.content
+  const uniqueItems = bundle.items.filter((item, index, items) => (
+    items.findIndex(candidate => candidate.evidenceId === item.evidenceId) === index
   ));
-  let compact = materialize(
-    bundle,
-    states,
-    capacityChanged ? arkInputBudgetGap(states.length, uniqueCount) : null,
-    includeHistoricalFinancingGap,
-  );
-
-  while (bundleBytes(compact) > researchMaxBytes) {
-    let shrunk = false;
-    for (let index = states.length - 1; index >= 0; index -= 1) {
-      if (shrinkContent(states[index]!)) {
-        shrunk = true;
-        capacityChanged = true;
-        break;
-      }
-    }
-    if (!shrunk) {
-      for (let index = states.length - 1; index >= 0; index -= 1) {
-        if (shrinkSummary(states[index]!)) {
-          shrunk = true;
-          capacityChanged = true;
-          break;
-        }
-      }
-    }
-    if (!shrunk && states.length > 0) {
-      states.pop();
-      capacityChanged = true;
-      shrunk = true;
-    }
-    if (!shrunk) {
-      throw new RangeError('Ark compact ResearchBundle exceeds the immutable provenance byte budget');
-    }
-    compact = materialize(
-      bundle,
-      states,
-      capacityChanged ? arkInputBudgetGap(states.length, uniqueCount) : null,
-      includeHistoricalFinancingGap,
-    );
-  }
-
-  return {
+  const uniqueCount = uniqueItems.length;
+  const result = (states: readonly ItemState[], compact: ResearchBundle): ArkPayloadSelection => ({
     bundle: compact,
     originalCount: uniqueCount,
     selectedCount: states.length,
     excludedCount: uniqueCount - states.length,
     categoryCounts: categoryCounts(states, purposes),
     researchBytes: bundleBytes(compact),
+  });
+
+  const allStates = uniqueItems.map(item => buildUnchangedState(item, purposes));
+  const allCompact = materialize(bundle, allStates, null, false);
+  if (measureBytes(allCompact) <= requestMaxBytes) {
+    return result(allStates, allCompact);
+  }
+
+  const financingCount = new Set(bundle.items
+    .filter(item => qccTool(item, 'get_financing_records'))
+    .map(item => item.evidenceId)).size;
+  const includeHistoricalFinancingGap = financingCount > 1;
+  const orderedItems = selectItems(bundle);
+  const compactFor = (states: readonly ItemState[]): ResearchBundle => {
+    const capacityChanged = uniqueCount > states.length || states.some(stateChanged);
+    return materialize(
+      bundle,
+      states,
+      capacityChanged ? arkInputBudgetGap(states.length, uniqueCount) : null,
+      includeHistoricalFinancingGap,
+    );
   };
+
+  let states: ItemState[] = [];
+  const selectedIds = new Set<string>();
+  const rejectedIds = new Set<string>();
+  const trySelect = (item: ResearchItem | undefined): boolean => {
+    if (item === undefined || selectedIds.has(item.evidenceId) || rejectedIds.has(item.evidenceId)) {
+      return false;
+    }
+    const trial = [...states.map(cloneState), buildState(item, purposes)];
+    while (measureBytes(compactFor(trial)) > requestMaxBytes) {
+      let shrunk = false;
+      for (let index = trial.length - 1; index >= 0; index -= 1) {
+        if (shrinkContent(trial[index]!)) {
+          shrunk = true;
+          break;
+        }
+      }
+      if (!shrunk) {
+        for (let index = trial.length - 1; index >= 0; index -= 1) {
+          if (shrinkSummary(trial[index]!)) {
+            shrunk = true;
+            break;
+          }
+        }
+      }
+      if (!shrunk) {
+        rejectedIds.add(item.evidenceId);
+        return false;
+      }
+    }
+    states = trial;
+    selectedIds.add(item.evidenceId);
+    return true;
+  };
+
+  trySelect(orderedItems.find(item => qccTool(item, 'get_financing_records')));
+  for (const category of ['industry', 'technology', 'timing', 'capacity'] as const) {
+    if (states.some(state => evidenceCategory(state.original, purposes) === category)) continue;
+    for (const item of orderedItems) {
+      if (evidenceCategory(item, purposes) === category && trySelect(item)) break;
+    }
+  }
+  for (const item of orderedItems) trySelect(item);
+
+  const compact = compactFor(states);
+  if (measureBytes(compact) > requestMaxBytes) {
+    throw new RangeError('Ark compact ResearchBundle exceeds the immutable provenance byte budget');
+  }
+  return result(states, compact);
 }

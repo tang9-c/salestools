@@ -87,16 +87,13 @@ export class ArkEvidenceService {
     let requestBody: string;
     let requestBytes: number;
     try {
-      let compactionBudget = requestMaxBytes;
-      selection = compactResearchBundleForArk(bundle, compactionBudget);
+      selection = compactResearchBundleForArk(
+        bundle,
+        requestMaxBytes,
+        compactBundle => Buffer.byteLength(serializeArkRequest(this.options.model, compactBundle), 'utf8'),
+      );
       requestBody = serializeArkRequest(this.options.model, selection.bundle);
       requestBytes = Buffer.byteLength(requestBody, 'utf8');
-      while (requestBytes > requestMaxBytes && compactionBudget > 0) {
-        compactionBudget -= requestBytes - requestMaxBytes;
-        selection = compactResearchBundleForArk(bundle, compactionBudget);
-        requestBody = serializeArkRequest(this.options.model, selection.bundle);
-        requestBytes = Buffer.byteLength(requestBody, 'utf8');
-      }
     } catch (error) {
       if (error instanceof RangeError) {
         throw new ArkInvalidOutputError(
