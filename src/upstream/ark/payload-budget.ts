@@ -536,7 +536,6 @@ export function compactResearchBundleForArk(
   const categoryCandidates = reservationCategories.map(category => (
     orderedItems.filter(item => evidenceCategory(item, purposes) === category)
   ));
-  const availableCategoryCount = categoryCandidates.filter(candidates => candidates.length > 0).length;
   let greedyStates: ItemState[] = [];
   const greedyIds = new Set<string>();
   const tryGreedyReservation = (item: ResearchItem | undefined): boolean => {
@@ -556,38 +555,50 @@ export function compactResearchBundleForArk(
   }
 
   const greedyCoverage = greedyStates.length;
-  let states = greedyStates.map(cloneState);
-  let reservationComplete = states.length === availableCategoryCount;
-  // The greedy result is the stable tie winner; DFS replaces it only for strictly greater coverage.
-  const searchReservations = (categoryIndex: number, selected: readonly ItemState[]): void => {
-    if (reservationComplete
-      || selected.length + reservationCategories.length - categoryIndex <= states.length) return;
-    if (categoryIndex === reservationCategories.length) {
-      states = selected.map(cloneState);
-      reservationComplete = states.length === availableCategoryCount;
-      return;
-    }
-
-    // Candidate-first DFS visits every category in fixed order and every item in orderedItems priority.
-    for (const item of categoryCandidates[categoryIndex]!) {
-      const trial = fitCandidate(selected, item);
-      if (trial !== null) searchReservations(categoryIndex + 1, trial);
-      if (reservationComplete) return;
-    }
-    searchReservations(categoryIndex + 1, selected);
+  const categoryBits: Record<ArkEvidenceCategory, number> = {
+    industry: 1,
+    technology: 2,
+    timing: 4,
+    capacity: 8,
   };
-  searchReservations(0, []);
+  type Reservation = { readonly states: ItemState[]; readonly requestBytes: number };
+  const reservations: Array<Reservation | null> = Array.from({ length: 16 }, () => null);
+  reservations[0] = { states: [], requestBytes: measureBytes(compactFor([])) };
 
-  if (states.length === greedyCoverage) {
-    states = greedyStates;
-  } else {
-    // A coverage-improving replacement keeps the surviving evidence in its original relative order.
-    const inputOrder = new Map(uniqueItems.map((item, index) => [item.evidenceId, index]));
-    states = stableSort(
-      states,
-      state => inputOrder.get(state.original.evidenceId) ?? Number.MAX_SAFE_INTEGER,
-    );
+  // Four category bits yield exactly 16 states. Each candidate transitions a snapshot of those
+  // masks once, so reservation work is O(candidate count * 16), never a Cartesian product.
+  for (const item of orderedItems) {
+    const category = evidenceCategory(item, purposes);
+    if (category === null) continue;
+    const bit = categoryBits[category];
+    const previous = reservations.slice();
+    for (let mask = 0; mask < previous.length; mask += 1) {
+      const reservation = previous[mask];
+      if (reservation === null || (mask & bit) !== 0) continue;
+      const trial = fitCandidate(reservation.states, item);
+      if (trial === null) continue;
+      const requestBytes = measureBytes(compactFor(trial));
+      const nextMask = mask | bit;
+      const current = reservations[nextMask];
+      if (current === null || requestBytes < current.requestBytes) {
+        reservations[nextMask] = { states: trial, requestBytes };
+      }
+    }
   }
+
+  const coverage = (mask: number): number => reservationCategories.reduce(
+    (count, _category, index) => count + ((mask & (1 << index)) === 0 ? 0 : 1),
+    0,
+  );
+  let bestMask = 0;
+  // Ascending masks make equal-coverage category ties follow the fixed bit/category order above.
+  for (let mask = 1; mask < reservations.length; mask += 1) {
+    if (reservations[mask] !== null && coverage(mask) > coverage(bestMask)) bestMask = mask;
+  }
+  const bestReservation = reservations[bestMask];
+  let states = coverage(bestMask) > greedyCoverage && bestReservation !== null
+    ? bestReservation.states.map(cloneState)
+    : greedyStates;
   const selectedIds = new Set(states.map(state => state.original.evidenceId));
   for (const item of orderedItems) {
     if (selectedIds.has(item.evidenceId)) continue;

@@ -551,6 +551,75 @@ describe('ArkEvidenceService', () => {
     expect(second.requestBytes).toBe(first.requestBytes);
   });
 
+  it('bounds reservation measurements for twenty candidates in each category', () => {
+    const template = researchBundle().items[0];
+    const candidatesPerCategory = 20;
+    const categoryItems = (
+      category: 'industry' | 'technology' | 'timing' | 'capacity',
+    ): ResearchItem[] => Array.from({ length: candidatesPerCategory }, (_, index) => {
+      const identity = `${category}-${index}`;
+      const fields = {
+        industry: {
+          evidenceId: `qcc-company-get_company_profile-${identity}`,
+          sourceKind: 'company' as const,
+        },
+        technology: {
+          evidenceId: `qcc-ipr-get_patent_info-${identity}`,
+          sourceKind: 'ipr' as const,
+        },
+        timing: {
+          evidenceId: `qcc-operation-get_recruitment_info-${identity}`,
+          sourceKind: 'operation' as const,
+        },
+        capacity: {
+          evidenceId: `qcc-risk-get_company_risk_scan-${identity}`,
+          sourceKind: 'risk' as const,
+        },
+      }[category];
+      return {
+        ...template,
+        ...fields,
+        source: 'qcc',
+        title: `${identity}-${'候选'.repeat(220)}`,
+        summary: null,
+        content: null,
+        query: null,
+        position: null,
+        logId: null,
+      };
+    });
+    const groups = [
+      categoryItems('industry'),
+      categoryItems('technology'),
+      categoryItems('timing'),
+      categoryItems('capacity'),
+    ];
+    const research: ResearchBundle = {
+      ...minimumResearchBundle(),
+      items: groups.flat(),
+    };
+    const threeCategories = { ...research, items: groups.slice(0, 3).map(group => group[0]!) };
+    const fourCategories = { ...research, items: groups.map(group => group[0]!) };
+    expect(Buffer.byteLength(serializedRequest('ep-test', threeCategories), 'utf8'))
+      .toBeLessThanOrEqual(12_288);
+    expect(Buffer.byteLength(serializedRequest('ep-test', fourCategories), 'utf8'))
+      .toBeGreaterThan(12_288);
+
+    let measureCalls = 0;
+    const categoryMaskCount = 1 << groups.length;
+    const measurementLimit = research.items.length * categoryMaskCount + research.items.length * 4;
+    const selection = compactResearchBundleForArk(research, 12_288, candidate => {
+      measureCalls += 1;
+      if (measureCalls > measurementLimit) {
+        throw new Error(`Ark reservation exceeded ${measurementLimit} request measurements`);
+      }
+      return Buffer.byteLength(serializedRequest('ep-test', candidate), 'utf8');
+    });
+
+    expect(measureCalls).toBeLessThanOrEqual(measurementLimit);
+    expect(Object.values(selection.categoryCounts).filter(count => count > 0)).toHaveLength(3);
+  });
+
   it('can exclude the final oversized item at the minimum legal request budget', async () => {
     const base = minimumResearchBundle();
     const oversized: ResearchItem = {
