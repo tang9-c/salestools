@@ -83,15 +83,29 @@ export class ArkEvidenceService {
 
   async extractWithAudit(bundle: ResearchBundle): Promise<ArkEvidenceExtraction> {
     const requestMaxBytes = this.options.requestMaxBytes ?? ARK_REQUEST_MAX_BYTES;
-    let compactionBudget = requestMaxBytes;
-    let selection = compactResearchBundleForArk(bundle, compactionBudget);
-    let requestBody = serializeArkRequest(this.options.model, selection.bundle);
-    let requestBytes = Buffer.byteLength(requestBody, 'utf8');
-    while (requestBytes > requestMaxBytes && compactionBudget > 0) {
-      compactionBudget -= requestBytes - requestMaxBytes;
+    let selection: ArkPayloadSelection;
+    let requestBody: string;
+    let requestBytes: number;
+    try {
+      let compactionBudget = requestMaxBytes;
       selection = compactResearchBundleForArk(bundle, compactionBudget);
       requestBody = serializeArkRequest(this.options.model, selection.bundle);
       requestBytes = Buffer.byteLength(requestBody, 'utf8');
+      while (requestBytes > requestMaxBytes && compactionBudget > 0) {
+        compactionBudget -= requestBytes - requestMaxBytes;
+        selection = compactResearchBundleForArk(bundle, compactionBudget);
+        requestBody = serializeArkRequest(this.options.model, selection.bundle);
+        requestBytes = Buffer.byteLength(requestBody, 'utf8');
+      }
+    } catch (error) {
+      if (error instanceof RangeError) {
+        throw new ArkInvalidOutputError(
+          'INPUT_TOO_LARGE',
+          'Ark request exceeds the UTF-8 byte budget',
+          { cause: error },
+        );
+      }
+      throw error;
     }
     if (requestBytes > requestMaxBytes) {
       throw new ArkInvalidOutputError('INPUT_TOO_LARGE', 'Ark request exceeds the UTF-8 byte budget');

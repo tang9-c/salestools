@@ -6,7 +6,7 @@
 - 校准只调用 Ark；未调用 QCC 或豆包，也没有重复采集任何真实企业资料。
 - 使用仓库脱敏 `ark-evidence.json` fixture 的主体字段，在临时文件中构造 8 条跨四类的长内容 `ResearchBundle`：`industry`、`technology`、`timing`、`capacity` 各两条。
 - 临时校准器直接复用 `ArkEvidenceService.extractWithAudit`，因此同时验证请求的最终 UTF-8 字节预算、Ark HTTP 成功和 `EvidenceBundle` 严格合同。它不输出或保存凭据、Ark URL/模型标识、请求正文、研究正文或模型正文；临时文件未纳入版本控制。
-- 使用主工作区 `/Users/tang-codeing/code/salestools/.env` 仅在进程内读取 Ark 配置。仓库中不存在可复用的真实上游 assessment harness，因此此记录是 Ark 适配器的脱敏容量校准，不是完整 QCC/豆包/MCP 端到端验收。
+- 使用主工作区未提交的本地 `.env` 仅在进程内读取 Ark 配置。仓库中不存在可复用的真实上游 assessment harness，因此此记录是 Ark 适配器的脱敏容量校准，不是完整 QCC/豆包/MCP 端到端验收。
 
 ## 校准结果
 

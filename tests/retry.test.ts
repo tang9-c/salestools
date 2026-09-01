@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CallBudget } from '../src/orchestration/call-budget.js';
-import { retryOnce, UpstreamError } from '../src/orchestration/retry.js';
+import { retryOnce, safeUpstreamErrorMessage, UpstreamError } from '../src/orchestration/retry.js';
 
 describe('retryOnce', () => {
   it('stops after the first successful attempt', async () => {
@@ -40,6 +40,7 @@ describe('retryOnce', () => {
     ['doubao_search', 'QUOTA_EXCEEDED'],
     ['ark', 'INVALID_JSON'],
     ['ark', 'INVALID_EVIDENCE'],
+    ['ark', 'INPUT_TOO_LARGE'],
   ] as const)('does not retry deterministic %s/%s failures', async (source, code) => {
     const budget = new CallBudget({ qcc: 2, doubaoSearch: 2, ark: 2, total: 6 });
     let calls = 0;
@@ -53,6 +54,11 @@ describe('retryOnce', () => {
     expect(result).toEqual({ status: 'failed', error });
     expect(calls).toBe(1);
     expect(budget.usage().total).toBe(1);
+  });
+
+  it('maps Ark input capacity failures to a fixed safe message', () => {
+    expect(safeUpstreamErrorMessage('ark', 'INPUT_TOO_LARGE'))
+      .toBe('Ark request exceeds the configured input capacity');
   });
 
   it('returns the second typed error and never makes a third attempt', async () => {

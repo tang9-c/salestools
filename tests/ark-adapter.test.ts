@@ -250,6 +250,31 @@ function bytePressureBundle(): ResearchBundle {
   };
 }
 
+function minimumResearchBundle(): ResearchBundle {
+  const base = researchBundle();
+  return {
+    ...base,
+    identity: {
+      legalName: 'a',
+      creditCode: '',
+      formerNames: [],
+      aliases: [],
+      englishNames: [],
+      brands: [],
+      officialDomains: [],
+      registeredAddress: null,
+      parentLegalName: null,
+      subsidiaryLegalNames: [],
+    },
+    items: [],
+    sourceStatus: {
+      qcc: { status: 'completed', error: null },
+      doubaoSearch: { status: 'completed', error: null },
+    },
+    gaps: [],
+  };
+}
+
 describe('ARK_SYSTEM_PROMPT', () => {
   it('does not claim a fixed four-item evidence limit', () => {
     expect(ARK_SYSTEM_PROMPT).not.toMatch(/最多包含4条/);
@@ -292,6 +317,96 @@ describe('ARK_SYSTEM_PROMPT', () => {
 });
 
 describe('ArkEvidenceService', () => {
+  it('can exclude the final oversized item at the minimum legal request budget', async () => {
+    const base = minimumResearchBundle();
+    const oversized: ResearchItem = {
+      ...researchBundle().items[0],
+      evidenceId: 'oversized-only-item',
+      title: '不可截断标题'.repeat(400),
+      summary: '摘要'.repeat(400),
+      content: '正文'.repeat(800),
+    };
+
+    const research = { ...base, items: [oversized] };
+    const selection = compactResearchBundleForArk(research, 6_144);
+
+    expect(selection.bundle.items).toEqual([]);
+    expect(selection).toMatchObject({
+      originalCount: 1,
+      selectedCount: 0,
+      excludedCount: 1,
+      categoryCounts: { industry: 0, technology: 0, timing: 0, capacity: 0 },
+    });
+    expect(selection.bundle.gaps).toContain(arkInputBudgetGap(0, 1));
+
+    const fetchFn = vi.fn<typeof fetch>();
+    const service = client(fetchFn, 6_144, `ep-${'immutable-model-envelope-'.repeat(300)}`);
+    await expect(service.extractWithAudit(research)).rejects.toMatchObject({
+      name: 'ArkInvalidOutputError',
+      source: 'ark',
+      code: 'INPUT_TOO_LARGE',
+    });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty bundle with an oversized immutable request before fetch', async () => {
+    const fetchFn = vi.fn<typeof fetch>();
+    const service = client(fetchFn, 6_144, `ep-${'immutable-model-envelope-'.repeat(300)}`);
+
+    await expect(service.extractWithAudit(minimumResearchBundle())).rejects.toMatchObject({
+      name: 'ArkInvalidOutputError',
+      source: 'ark',
+      code: 'INPUT_TOO_LARGE',
+    });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['risk', 'qcc-risk-get_company_risk_scan-1', 'risk'],
+    ['qualification', 'qcc-operation-get_qualifications-1', 'operation'],
+    ['annual report', 'qcc-operation-get_annual_reports-1', 'operation'],
+  ] as const)('reserves %s evidence as capacity without financing under byte pressure', (
+    _name,
+    evidenceId,
+    sourceKind,
+  ) => {
+    const base = minimumResearchBundle();
+    const template = researchBundle().items[0];
+    const qccItem = (
+      itemEvidenceId: string,
+      itemSourceKind: ResearchItem['sourceKind'],
+    ): ResearchItem => ({
+      ...template,
+      evidenceId: itemEvidenceId,
+      source: 'qcc',
+      sourceKind: itemSourceKind,
+      query: null,
+      position: null,
+      logId: null,
+      title: `${itemEvidenceId}-${'不可截断'.repeat(50)}`,
+      summary: `${itemEvidenceId}-${'摘要'.repeat(500)}`,
+      content: `${itemEvidenceId}-${'正文'.repeat(1_000)}`,
+    });
+    const items = [
+      qccItem('qcc-company-get_company_profile-1', 'company'),
+      qccItem('qcc-ipr-get_patent_info-1', 'ipr'),
+      qccItem('qcc-operation-get_recruitment_info-1', 'operation'),
+      qccItem(evidenceId, sourceKind),
+      qccItem('qcc-operation-get_unknown_capacity_competitor-1', 'operation'),
+      qccItem('qcc-operation-get_unknown_capacity_competitor-2', 'operation'),
+    ];
+
+    const selection = compactResearchBundleForArk({ ...base, items }, 12_288);
+
+    expect(selection.excludedCount).toBeGreaterThan(0);
+    expect(selection.categoryCounts.capacity).toBeGreaterThan(0);
+    expect(selection.bundle.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ evidenceId }),
+    ]));
+    expect(selection.bundle.items.map(item => item.evidenceId))
+      .not.toContain('qcc-operation-get_unknown_capacity_competitor-2');
+  });
+
   it('dynamically reserves industry, technology, timing, and capacity evidence before byte fitting', () => {
     const research = categoryCoverageBundle();
     const first = compactResearchBundleForArk(research, 30_000);
@@ -808,7 +923,7 @@ describe('ArkEvidenceService', () => {
     });
   });
 
-  it('falls back deterministically with two-source fairness when financing is absent', async () => {
+  it('reserves categories then falls back deterministically across sources when financing is absent', async () => {
     const full = budgetResearchBundle();
     const research = {
       ...full,
@@ -826,16 +941,17 @@ describe('ArkEvidenceService', () => {
       responseWithContent(JSON.stringify(factFreeEvidence(research))),
     );
 
-    await client(fetchFn).extract(research);
+    const audited = await client(fetchFn).extractWithAudit(research);
 
     expect(requestResearch(fetchFn).items.map(item => item.evidenceId)).toEqual([
       'qcc-ipr-get_patent_info-1',
       'qcc-operation-get_recruitment_info-1',
+      'qcc-risk-get_company_risk_scan-1',
       'search-procurement-1',
       'qcc-operation-get_bidding_info-1',
       'search-engineering-1',
-      'qcc-risk-get_company_risk_scan-1',
     ]);
+    expect(audited.selection.categoryCounts.capacity).toBe(1);
   });
 
   it('validates model provenance against the compact bundle rather than omitted research items', async () => {

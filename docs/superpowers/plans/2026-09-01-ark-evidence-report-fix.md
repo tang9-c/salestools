@@ -106,4 +106,3 @@
 - [ ] Document `ARK_REQUEST_MAX_BYTES`, the always-visible matrix, `result_json`, and the single-replica SQLite constraint in `README.md`.
 - [ ] Re-run the full verification commands after documentation/config changes.
 - [ ] Commit with `git commit -m "docs: document ark evidence audit controls"`.
-

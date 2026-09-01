@@ -258,7 +258,11 @@ function evidenceCategory(
   purposes: ReadonlyMap<string, SearchQuery['purpose']>,
 ): ArkEvidenceCategory | null {
   const purpose = searchPurpose(item, purposes);
-  if (qccTool(item, 'get_financing_records') || purpose === 'expansion_financing') return 'capacity';
+  if ((item.source === 'qcc' && item.sourceKind === 'risk')
+    || qccTool(item, 'get_financing_records')
+    || qccTool(item, 'get_qualifications')
+    || qccTool(item, 'get_annual_reports')
+    || purpose === 'expansion_financing') return 'capacity';
   if (qccTool(item, 'get_recruitment_info')
     || qccTool(item, 'get_bidding_info')
     || purpose === 'recruitment'
@@ -479,7 +483,7 @@ export function compactResearchBundleForArk(
         }
       }
     }
-    if (!shrunk && states.length > 1) {
+    if (!shrunk && states.length > 0) {
       states.pop();
       capacityChanged = true;
       shrunk = true;
