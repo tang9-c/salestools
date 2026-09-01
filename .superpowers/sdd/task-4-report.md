@@ -32,3 +32,7 @@
 - `git diff --check`：通过。
 
 文档变更后已重新运行以上检查，结果仍全部通过；凭据模式检查也通过。该检查仅扫描工作区差异，不读取或显示 `.env` 内容。
+
+## 后续文档校正
+
+README 曾错误地把推荐产品与整体机会列入 `result_json`。实现中的 `AssessmentResultAuditSchema` 只包含行业分类、证据选择审计和七项产品等级/证据 ID；`recommended_product` 与 `overall_opportunity` 始终是 `assessments` 的独立列。已据此校正 README，未改动运行时 schema。
