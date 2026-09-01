@@ -83,6 +83,7 @@ describe('SQLite repositories', () => {
 
   it('idempotently migrates a legacy assessments table and round-trips a compact result audit', () => {
     const legacyPath = join(directory, 'legacy.sqlite');
+    const legacyAssessmentId = '10bd94c4-724a-4ca9-87fb-f474f563d475';
     const legacy = new DatabaseSync(legacyPath);
     legacy.exec(`
       CREATE TABLE assessments (
@@ -104,13 +105,45 @@ describe('SQLite repositories', () => {
         failed_at TEXT
       );
     `);
+    legacy.prepare(`
+      INSERT INTO assessments (
+        assessment_id, cache_key, requested_by, legal_name, credit_code, status,
+        report_markdown, recommended_product, overall_opportunity, source_status_json,
+        collected_at, created_at, completed_at, cached_at
+      ) VALUES (?, ?, ?, ?, ?, 'completed', ?, NULL, ?, ?, ?, ?, ?, ?)
+    `).run(
+      legacyAssessmentId,
+      assessmentInput.creditCode,
+      assessmentInput.requestedBy,
+      assessmentInput.legalName,
+      assessmentInput.creditCode,
+      '# 旧版报告',
+      '中',
+      JSON.stringify(completedResult.sourceStatus),
+      now.toISOString(),
+      now.toISOString(),
+      now.toISOString(),
+      now.toISOString(),
+    );
     legacy.close();
 
     const migrated = openDatabase(legacyPath);
     expect(migrated.prepare('PRAGMA table_info(assessments)').all())
       .toEqual(expect.arrayContaining([expect.objectContaining({ name: 'result_json', type: 'TEXT' })]));
     const assessments = new AssessmentRepository(migrated);
-    const created = assessments.createOrReuseAssessment(assessmentInput, false, now, 30);
+    expect(assessments.get(legacyAssessmentId)).toMatchObject({
+      assessmentId: legacyAssessmentId,
+      status: 'completed',
+      reportMarkdown: '# 旧版报告',
+      resultAudit: null,
+    });
+    expect(assessments.createOrReuseAssessment(assessmentInput, false, now, 30)).toMatchObject({
+      created: false,
+      cacheHit: true,
+      record: { assessmentId: legacyAssessmentId, resultAudit: null },
+    });
+
+    const created = assessments.createOrReuseAssessment(assessmentInput, true, now, 30);
     const completed = assessments.completeAssessment(created.record.assessmentId, completedResult, now);
 
     expect(completed.resultAudit).toEqual(resultAudit);

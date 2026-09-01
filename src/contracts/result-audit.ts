@@ -18,11 +18,22 @@ const EvidenceSelectionAuditSchema = z.object({
   researchBytes: z.number().int().nonnegative(),
   requestBytes: z.number().int().nonnegative(),
 }).strict().superRefine((selection, context) => {
+  if (new Set(selection.selectedEvidenceIds).size !== selection.selectedEvidenceIds.length) {
+    context.addIssue({ code: 'custom', message: 'selected evidence IDs must be unique' });
+  }
   if (selection.selectedEvidenceIds.length !== selection.selectedCount) {
     context.addIssue({ code: 'custom', message: 'selected evidence IDs must match selected count' });
   }
   if (selection.selectedCount + selection.excludedCount !== selection.originalCount) {
     context.addIssue({ code: 'custom', message: 'selected and excluded counts must match original count' });
+  }
+  const categorizedCount = Object.values(selection.categoryCounts)
+    .reduce((total, count) => total + count, 0);
+  if (categorizedCount > selection.selectedCount) {
+    context.addIssue({ code: 'custom', message: 'category counts cannot exceed selected count' });
+  }
+  if (selection.researchBytes > selection.requestBytes) {
+    context.addIssue({ code: 'custom', message: 'research bytes cannot exceed request bytes' });
   }
 });
 

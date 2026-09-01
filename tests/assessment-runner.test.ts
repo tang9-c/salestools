@@ -229,6 +229,31 @@ describe('AssessmentRunner', () => {
     expect(resultJson).not.toMatch(/summary|content|raw|response|reportMarkdown/iu);
   });
 
+  it('keeps the completed report and result audit when the decision log sink throws', async () => {
+    const write = vi.fn((line: string) => {
+      if (line.includes('"assessment_decision"')) throw new Error('log sink unavailable');
+    });
+    const runtime = setup({ logger: new JsonlLogger({ write }, () => NOW) });
+
+    await expect(new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId))
+      .resolves.toBeUndefined();
+
+    const stored = runtime.assessments.get(runtime.task.assessmentId)!;
+    expect(stored).toMatchObject({
+      status: 'completed',
+      errorMessage: null,
+      failedAt: null,
+    });
+    expect(stored.reportMarkdown).toContain('# 目标客户体检报告');
+    expect(stored.resultAudit).not.toBeNull();
+    expect(runtime.database.prepare(`
+      SELECT report_markdown IS NOT NULL AS has_report,
+             result_json IS NOT NULL AS has_result
+      FROM assessments WHERE assessment_id = ?
+    `).get(runtime.task.assessmentId)).toEqual({ has_report: 1, has_result: 1 });
+    expect(write.mock.calls.filter(([line]) => line.includes('"assessment_decision"'))).toHaveLength(1);
+  });
+
   it('retains financing, annual-report, and Ark input-budget gaps in the final report', async () => {
     const financingGap = '融资结果无法结构化验证（适配器契约缺口）';
     const annualReportGap = '年报信息获取失败';

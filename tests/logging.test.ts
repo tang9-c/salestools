@@ -18,7 +18,7 @@ describe('JsonlLogger', () => {
           originalCount: 3,
           selectedCount: 2,
           excludedCount: 1,
-          categoryCounts: { industry: 1, technology: 1, timing: 1, capacity: 0 },
+          categoryCounts: { industry: 1, technology: 1, timing: 0, capacity: 0 },
           researchBytes: 2_048,
           requestBytes: 4_096,
         },
@@ -47,7 +47,7 @@ describe('JsonlLogger', () => {
       original_evidence_count: 3,
       selected_evidence_count: 2,
       excluded_evidence_count: 1,
-      category_counts: { industry: 1, technology: 1, timing: 1, capacity: 0 },
+      category_counts: { industry: 1, technology: 1, timing: 0, capacity: 0 },
       research_bytes: 2_048,
       request_bytes: 4_096,
       product_levels: {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AssessmentReportOutputSchema,
+  AssessmentResultAuditSchema,
   AssessmentStatusOutputSchema,
   CompanyProfileOutputSchema,
   countIndependentPublishers,
@@ -75,6 +76,25 @@ const products = productKeys.map(product => ({
   gaps: [],
 }));
 
+const resultAudit = {
+  industryClassification: 'P1' as const,
+  industryEvidenceIds: ['ev-1'],
+  evidenceSelection: {
+    selectedEvidenceIds: ['ev-1', 'ev-2'],
+    originalCount: 3,
+    selectedCount: 2,
+    excludedCount: 1,
+    categoryCounts: { industry: 1, technology: 1, timing: 0, capacity: 0 },
+    researchBytes: 2_048,
+    requestBytes: 4_096,
+  },
+  opportunities: productKeys.map(product => ({
+    product,
+    level: '待核实' as const,
+    evidenceIds: [],
+  })),
+};
+
 const researchBundle = {
   identity,
   items: [item],
@@ -85,6 +105,28 @@ const researchBundle = {
   gaps: [],
   collectedAt: timestamp,
 };
+
+describe('assessment result audit', () => {
+  it.each([
+    ['duplicate selected evidence IDs', {
+      selectedEvidenceIds: ['ev-1', 'ev-1'],
+    }],
+    ['category counts above selected count', {
+      categoryCounts: { industry: 1, technology: 1, timing: 1, capacity: 0 },
+    }],
+    ['research bytes above request bytes', {
+      researchBytes: 4_097,
+    }],
+  ] as const)('rejects %s', (_name, invalidSelection) => {
+    expect(AssessmentResultAuditSchema.safeParse({
+      ...resultAudit,
+      evidenceSelection: {
+        ...resultAudit.evidenceSelection,
+        ...invalidSelection,
+      },
+    }).success).toBe(false);
+  });
+});
 
 const evidenceBundle = {
   identity,
