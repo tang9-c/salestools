@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { AssessmentResultAudit } from '../src/contracts/index.js';
 import { AssessmentRepository } from '../src/db/assessment-repository.js';
 import { initializeDatabase } from '../src/db/database.js';
 import { AssessmentService } from '../src/orchestration/assessment-service.js';
@@ -12,6 +13,19 @@ const COMPANY = {
 };
 const SOURCE_STATUS = { qcc: 'completed', doubaoSearch: 'completed', ark: 'completed' } as const;
 const MARKDOWN = '# 目标客户体检报告\n\n> 信息采集时间：2026-08-01T00:00:00.000Z\n\n## 证据缺口\n\n- 待核实';
+const PRODUCT_KEYS = [
+  'windchill', 'feigenbaum_qms', 'creo', 'catia', 'abaqus', 'cst', 'solidworks',
+] as const;
+const RESULT_AUDIT: AssessmentResultAudit = {
+  industryClassification: 'unverified' as const,
+  industryEvidenceIds: [],
+  evidenceSelection: {
+    selectedEvidenceIds: [], originalCount: 0, selectedCount: 0, excludedCount: 0,
+    categoryCounts: { industry: 0, technology: 0, timing: 0, capacity: 0 },
+    researchBytes: 0, requestBytes: 0,
+  },
+  opportunities: PRODUCT_KEYS.map(product => ({ product, level: '待核实' as const, evidenceIds: [] })),
+};
 
 describe('AssessmentService', () => {
   const databases: DatabaseSync[] = [];
@@ -91,6 +105,7 @@ describe('AssessmentService', () => {
       overallOpportunity: '待核实',
       sourceStatus: SOURCE_STATUS,
       collectedAt: '2026-08-29T00:00:00.000Z',
+      resultAudit: RESULT_AUDIT,
     }, current);
     current = new Date('2026-08-30T00:00:00.000Z');
 
@@ -115,6 +130,7 @@ describe('AssessmentService', () => {
       overallOpportunity: '待核实',
       sourceStatus: SOURCE_STATUS,
       collectedAt: current.toISOString(),
+      resultAudit: RESULT_AUDIT,
     }, current);
 
     current = new Date('2026-08-08T00:00:00.000Z');
@@ -140,6 +156,7 @@ describe('AssessmentService', () => {
     assessments.completeAssessment(completed.assessmentId, {
       reportMarkdown: MARKDOWN, recommendedProduct: null, overallOpportunity: '待核实',
       sourceStatus: SOURCE_STATUS, collectedAt: current.toISOString(),
+      resultAudit: RESULT_AUDIT,
     }, current);
     current = new Date('2026-08-02T00:00:00.000Z');
 

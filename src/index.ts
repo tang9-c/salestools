@@ -23,7 +23,7 @@ import { DoubaoSearchClient } from './upstream/search/doubao-client.js';
 
 type QccDependency = Pick<QccGateway, 'call' | 'close'>;
 type SearchDependency = Pick<DoubaoSearchClient, 'search'> & { close?: () => Promise<void> };
-type ArkDependency = Pick<ArkEvidenceService, 'extract'> & { close?: () => Promise<void> };
+type ArkDependency = Pick<ArkEvidenceService, 'extractWithAudit'> & { close?: () => Promise<void> };
 
 export interface ApplicationOverrides {
   database?: DatabaseSync;

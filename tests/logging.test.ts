@@ -4,6 +4,65 @@ import { retryOnce, type RetryAttemptEvent, UpstreamError } from '../src/orchest
 import { JsonlLogger } from '../src/logging/logger.js';
 
 describe('JsonlLogger', () => {
+  it('writes one sanitized assessment decision with counts, byte sizes, and product levels', () => {
+    const lines: string[] = [];
+    const logger = new JsonlLogger({ write: line => lines.push(line) }, () => new Date('2026-08-30T00:00:00.000Z'));
+    logger.logAssessmentDecision({
+      assessmentId: 'assessment-1',
+      userId: 'sales-1',
+      resultAudit: {
+        industryClassification: 'P1',
+        industryEvidenceIds: ['qcc-profile'],
+        evidenceSelection: {
+          selectedEvidenceIds: ['qcc-profile', 'doubao_search-web'],
+          originalCount: 3,
+          selectedCount: 2,
+          excludedCount: 1,
+          categoryCounts: { industry: 1, technology: 1, timing: 1, capacity: 0 },
+          researchBytes: 2_048,
+          requestBytes: 4_096,
+        },
+        opportunities: [
+          { product: 'windchill', level: '高', evidenceIds: ['qcc-profile'] },
+          { product: 'feigenbaum_qms', level: '中', evidenceIds: [] },
+          { product: 'creo', level: '低', evidenceIds: [] },
+          { product: 'catia', level: '待核实', evidenceIds: [] },
+          { product: 'abaqus', level: '待核实', evidenceIds: [] },
+          { product: 'cst', level: '待核实', evidenceIds: [] },
+          { product: 'solidworks', level: '待核实', evidenceIds: [] },
+        ],
+      },
+      sourceContent: 'customer-source-content',
+      summary: 'customer-summary',
+      rawResponse: 'ark-raw-response',
+    } as never);
+
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toEqual({
+      event: 'assessment_decision',
+      timestamp: '2026-08-30T00:00:00.000Z',
+      assessment_id: 'assessment-1',
+      user_id: 'sales-1',
+      industry_classification: 'P1',
+      original_evidence_count: 3,
+      selected_evidence_count: 2,
+      excluded_evidence_count: 1,
+      category_counts: { industry: 1, technology: 1, timing: 1, capacity: 0 },
+      research_bytes: 2_048,
+      request_bytes: 4_096,
+      product_levels: {
+        windchill: '高',
+        feigenbaum_qms: '中',
+        creo: '低',
+        catia: '待核实',
+        abaqus: '待核实',
+        cst: '待核实',
+        solidworks: '待核实',
+      },
+    });
+    expect(lines[0]).not.toMatch(/customer-source-content|customer-summary|ark-raw-response|evidenceIds/iu);
+  });
+
   it('serializes only allowlisted attempt fields and redacts authorization-shaped error text', () => {
     const lines: string[] = [];
     const logger = new JsonlLogger({ write: line => lines.push(line) }, () => new Date('2026-08-30T00:00:00.000Z'));

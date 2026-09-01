@@ -149,7 +149,7 @@ describe('application shutdown lifecycle', () => {
         close: async () => { qccClosed = true; },
       },
       searchClient: { search: async () => [] },
-      ark: { extract: async () => { throw new Error('unused'); } },
+      ark: { extractWithAudit: async () => { throw new Error('unused'); } },
       logSink: { write: () => undefined },
     });
     runtimes.push(runtime);
@@ -209,7 +209,7 @@ describe('application shutdown lifecycle', () => {
           blockedSearches.splice(0).forEach(blocked => blocked.reject(new Error('search aborted')));
         },
       },
-      ark: { extract: async () => { throw new Error('Ark must not start after shutdown abort'); } },
+      ark: { extractWithAudit: async () => { throw new Error('Ark must not start after shutdown abort'); } },
       logSink: { write: () => undefined },
     });
     runtimes.push(runtime);
@@ -260,7 +260,7 @@ describe('application shutdown lifecycle', () => {
         },
       },
       searchClient: { search: async () => [] },
-      ark: { extract: async () => { throw new Error('unused'); } },
+      ark: { extractWithAudit: async () => { throw new Error('unused'); } },
       logSink: { write: () => undefined },
     });
     runtimes.push(runtime);
@@ -302,7 +302,7 @@ describe('application shutdown lifecycle', () => {
       database,
       qccGateway: { call: async () => ({ Data: [] }), close: async () => { events.push('qcc-close'); } },
       searchClient: { search: async () => [] },
-      ark: { extract: async () => { throw new Error('unused'); } },
+      ark: { extractWithAudit: async () => { throw new Error('unused'); } },
       logSink: { write: () => undefined },
     });
     runtimes.push(runtime);

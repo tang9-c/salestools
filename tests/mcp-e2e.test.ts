@@ -110,6 +110,22 @@ function fakeArkEvidence(bundle: ResearchBundle) {
   };
 }
 
+function fakeArkExtraction(bundle: ResearchBundle) {
+  const selectedItems = [...new Map(bundle.items.map(item => [item.evidenceId, item])).values()];
+  return {
+    evidence: fakeArkEvidence(bundle),
+    selection: {
+      bundle: { ...bundle, items: selectedItems },
+      originalCount: selectedItems.length,
+      selectedCount: selectedItems.length,
+      excludedCount: 0,
+      categoryCounts: { industry: 0, technology: 0, timing: 0, capacity: 0 },
+      researchBytes: Buffer.byteLength(JSON.stringify(bundle), 'utf8'),
+    },
+    requestBytes: Buffer.byteLength(JSON.stringify(bundle), 'utf8'),
+  };
+}
+
 async function connect(endpoint: string, token: string, name: string): Promise<Client> {
   const client = new Client(
     { name, version: '1.0.0' },
@@ -147,7 +163,7 @@ describe('MCP HTTP simulated end-to-end', () => {
         close: async () => undefined,
       },
       searchClient: { search: async query => [fakeSearchItem(query)] },
-      ark: { extract: async bundle => fakeArkEvidence(bundle) },
+      ark: { extractWithAudit: async bundle => fakeArkExtraction(bundle) },
       logSink: { write: () => undefined },
     });
     const firstToken = runtime.tokenService.create('sales-a');

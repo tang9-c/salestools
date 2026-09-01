@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS assessments (
   recommended_product TEXT,
   overall_opportunity TEXT,
   source_status_json TEXT,
+  result_json TEXT,
   collected_at TEXT,
   error_message TEXT,
   created_at TEXT NOT NULL,

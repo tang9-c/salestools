@@ -61,6 +61,25 @@ function evidence(bundle: ResearchBundle): EvidenceBundle {
   };
 }
 
+function auditedExtraction(bundle: ResearchBundle, extractedEvidence: EvidenceBundle = evidence(bundle)) {
+  const selectedItems = [...new Map(bundle.items.map(researchItem => [
+    researchItem.evidenceId,
+    researchItem,
+  ])).values()];
+  return {
+    evidence: extractedEvidence,
+    selection: {
+      bundle: { ...bundle, items: selectedItems },
+      originalCount: selectedItems.length,
+      selectedCount: selectedItems.length,
+      excludedCount: 0,
+      categoryCounts: { industry: 0, technology: 0, timing: 0, capacity: 0 },
+      researchBytes: Buffer.byteLength(JSON.stringify(bundle), 'utf8'),
+    },
+    requestBytes: Buffer.byteLength(JSON.stringify(bundle), 'utf8'),
+  };
+}
+
 describe('AssessmentRunner', () => {
   const databases: DatabaseSync[] = [];
   afterEach(() => { databases.splice(0).forEach(database => database.close()); });
@@ -87,7 +106,7 @@ describe('AssessmentRunner', () => {
       collectQccResearch: vi.fn(async () => collection('completed', [item('qcc', 'profile')])),
     };
     const searchClient = { search: vi.fn(async () => [item('doubao_search', 'web')]) };
-    const ark = { extract: vi.fn(async (bundle: ResearchBundle) => evidence(bundle)) };
+    const ark = { extractWithAudit: vi.fn(async (bundle: ResearchBundle) => auditedExtraction(bundle)) };
     const logger = new JsonlLogger({ write: () => undefined }, () => NOW);
     const dependencies = {
       assessments,
@@ -134,11 +153,11 @@ describe('AssessmentRunner', () => {
       searchClient: { search: vi.fn(async () => { throw new UpstreamError('doubao_search', 'DOWN', 'down'); }) },
       budgetLimits: { qcc: 8, doubaoSearch: 2, ark: 2, total: 12 },
     });
-    const ark = { extract: vi.fn(async (bundle: ResearchBundle) => {
+    const ark = { extractWithAudit: vi.fn(async (bundle: ResearchBundle) => {
       expect(bundle.items).toEqual([]);
       expect(bundle.sourceStatus.qcc.status).toBe('failed');
       expect(bundle.sourceStatus.doubaoSearch.status).toBe('failed');
-      return evidence(bundle);
+      return auditedExtraction(bundle);
     }) };
     runtime.dependencies.ark = ark;
 
@@ -158,6 +177,56 @@ describe('AssessmentRunner', () => {
       'CST Studio Suite',
       'Dassault Systèmes SolidWorks',
     ]) expect(stored.reportMarkdown).toContain(product);
+  });
+
+  it('persists only compact Ark selection metadata and all seven opportunity decisions', async () => {
+    const runtime = setup();
+    runtime.dependencies.ark = {
+      extractWithAudit: vi.fn(async (bundle: ResearchBundle) => ({
+        evidence: evidence(bundle),
+        selection: {
+          bundle: { ...bundle, items: [bundle.items[0]!, bundle.items[1]!] },
+          originalCount: 2,
+          selectedCount: 2,
+          excludedCount: 0,
+          categoryCounts: { industry: 1, technology: 1, timing: 0, capacity: 0 },
+          researchBytes: 2_048,
+        },
+        requestBytes: 4_096,
+      })),
+    };
+
+    await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
+
+    const stored = runtime.assessments.get(runtime.task.assessmentId)!;
+    expect(stored.resultAudit).toMatchObject({
+      industryClassification: 'unverified',
+      industryEvidenceIds: [],
+      evidenceSelection: {
+        selectedEvidenceIds: ['qcc-profile', 'doubao_search-web'],
+        originalCount: 2,
+        selectedCount: 2,
+        excludedCount: 0,
+        categoryCounts: { industry: 1, technology: 1, timing: 0, capacity: 0 },
+        researchBytes: 2_048,
+        requestBytes: 4_096,
+      },
+    });
+    expect(stored.resultAudit?.opportunities).toHaveLength(7);
+    expect(stored.resultAudit?.opportunities.map(({ product, level, evidenceIds }) => ({
+      product, level, evidenceIds,
+    }))).toEqual([
+      { product: 'windchill', level: '待核实', evidenceIds: [] },
+      { product: 'feigenbaum_qms', level: '待核实', evidenceIds: [] },
+      { product: 'creo', level: '待核实', evidenceIds: [] },
+      { product: 'catia', level: '待核实', evidenceIds: [] },
+      { product: 'abaqus', level: '待核实', evidenceIds: [] },
+      { product: 'cst', level: '待核实', evidenceIds: [] },
+      { product: 'solidworks', level: '待核实', evidenceIds: [] },
+    ]);
+    const resultJson = (runtime.database.prepare('SELECT result_json FROM assessments WHERE assessment_id = ?')
+      .get(runtime.task.assessmentId) as { result_json: string }).result_json;
+    expect(resultJson).not.toMatch(/summary|content|raw|response|reportMarkdown/iu);
   });
 
   it('retains financing, annual-report, and Ark input-budget gaps in the final report', async () => {
@@ -236,14 +305,14 @@ describe('AssessmentRunner', () => {
 
   it('retries Ark exactly once, fails the task, and never builds or persists a report', async () => {
     const ark = {
-      extract: vi.fn(async () => { throw new UpstreamError('ark', 'DOWN', 'ark down'); }),
+      extractWithAudit: vi.fn(async () => { throw new UpstreamError('ark', 'DOWN', 'ark down'); }),
     };
     const reportModelBuilder = vi.fn(() => { throw new Error('must not be called'); });
     const runtime = setup({ ark, reportModelBuilder });
 
     await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
 
-    expect(ark.extract).toHaveBeenCalledTimes(2);
+    expect(ark.extractWithAudit).toHaveBeenCalledTimes(2);
     expect(reportModelBuilder).not.toHaveBeenCalled();
     expect(runtime.assessments.get(runtime.task.assessmentId)).toMatchObject({
       status: 'failed', reportMarkdown: null, errorMessage: '模型事实整理不可用',
@@ -353,10 +422,10 @@ describe('AssessmentRunner', () => {
     };
     let arkAttempts = 0;
     const ark = {
-      extract: vi.fn(async (bundle: ResearchBundle) => {
+      extractWithAudit: vi.fn(async (bundle: ResearchBundle) => {
         arkAttempts += 1;
         if (arkAttempts === 1) throw new UpstreamError('ark', 'NETWORK_ERROR', 'raw ark body');
-        return evidence(bundle);
+        return auditedExtraction(bundle);
       }),
     };
     const runtime = setup({
@@ -369,7 +438,7 @@ describe('AssessmentRunner', () => {
     await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
 
     expect(qccAttempts + searchClient.search.mock.calls.length).toBe(8);
-    expect(ark.extract).toHaveBeenCalledTimes(2);
+    expect(ark.extractWithAudit).toHaveBeenCalledTimes(2);
     expect(qccAttempts + searchClient.search.mock.calls.length + arkAttempts).toBe(10);
     expect(runtime.assessments.get(runtime.task.assessmentId)?.status).toBe('completed');
   });
@@ -386,9 +455,9 @@ describe('AssessmentRunner', () => {
         search: vi.fn(async () => { throw new UpstreamError('doubao_search', 'NETWORK_ERROR', rawSearch); }),
       },
       ark: {
-        extract: vi.fn(async (bundle: ResearchBundle) => {
+        extractWithAudit: vi.fn(async (bundle: ResearchBundle) => {
           arkInputs.push(bundle);
-          return evidence(bundle);
+          return auditedExtraction(bundle);
         }),
       },
       budgetLimits: { qcc: 4, doubaoSearch: 2, ark: 2, total: 8 },

@@ -1,3 +1,7 @@
+import {
+  AssessmentResultAuditSchema,
+  type AssessmentResultAudit,
+} from '../contracts/index.js';
 import type { RetryAttemptEvent } from '../orchestration/retry.js';
 
 export interface LogSink {
@@ -7,6 +11,12 @@ export interface LogSink {
 export type UpstreamAttemptLog = RetryAttemptEvent & Readonly<{
   assessmentId: string;
   userId: string;
+}>;
+
+export type AssessmentDecisionLog = Readonly<{
+  assessmentId: string;
+  userId: string;
+  resultAudit: AssessmentResultAudit;
 }>;
 
 const AUTHORIZATION_PATTERN = /(authorization["']?\s*[:=]\s*)(?:bearer\s+)?[^\s,;}\]]+/giu;
@@ -25,6 +35,28 @@ export class JsonlLogger {
     private readonly sink: LogSink,
     private readonly now: () => Date = () => new Date(),
   ) {}
+
+  logAssessmentDecision(event: AssessmentDecisionLog): void {
+    const audit = AssessmentResultAuditSchema.parse(event.resultAudit);
+    const line = {
+      event: 'assessment_decision',
+      timestamp: this.now().toISOString(),
+      assessment_id: event.assessmentId,
+      user_id: event.userId,
+      industry_classification: audit.industryClassification,
+      original_evidence_count: audit.evidenceSelection.originalCount,
+      selected_evidence_count: audit.evidenceSelection.selectedCount,
+      excluded_evidence_count: audit.evidenceSelection.excludedCount,
+      category_counts: audit.evidenceSelection.categoryCounts,
+      research_bytes: audit.evidenceSelection.researchBytes,
+      request_bytes: audit.evidenceSelection.requestBytes,
+      product_levels: Object.fromEntries(audit.opportunities.map(opportunity => [
+        opportunity.product,
+        opportunity.level,
+      ])),
+    };
+    this.sink.write(`${JSON.stringify(line)}\n`);
+  }
 
   logUpstreamAttempt(event: UpstreamAttemptLog): void {
     const line = {

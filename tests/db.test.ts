@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../src/db/database.js';
 import {
@@ -23,12 +23,35 @@ const basicProfile = {
   collected_at: now.toISOString(),
 };
 const assessmentInput = { requestedBy: 'user-1', legalName: identity.legalName, creditCode: identity.creditCode };
+const resultAudit = {
+  industryClassification: 'P1' as const,
+  industryEvidenceIds: ['qcc-profile'],
+  evidenceSelection: {
+    selectedEvidenceIds: ['qcc-profile', 'doubao_search-web'],
+    originalCount: 3,
+    selectedCount: 2,
+    excludedCount: 1,
+    categoryCounts: { industry: 1, technology: 1, timing: 0, capacity: 0 },
+    researchBytes: 2_048,
+    requestBytes: 4_096,
+  },
+  opportunities: [
+    { product: 'windchill' as const, level: '高' as const, evidenceIds: ['qcc-profile'] },
+    { product: 'feigenbaum_qms' as const, level: '中' as const, evidenceIds: ['qcc-profile'] },
+    { product: 'creo' as const, level: '低' as const, evidenceIds: [] },
+    { product: 'catia' as const, level: '待核实' as const, evidenceIds: [] },
+    { product: 'abaqus' as const, level: '待核实' as const, evidenceIds: [] },
+    { product: 'cst' as const, level: '待核实' as const, evidenceIds: [] },
+    { product: 'solidworks' as const, level: '待核实' as const, evidenceIds: [] },
+  ],
+};
 const completedResult = {
   reportMarkdown: '# 报告',
   recommendedProduct: null,
   overallOpportunity: '中' as const,
   sourceStatus: { qcc: 'completed' as const, doubaoSearch: 'partial' as const, ark: 'completed' as const },
   collectedAt: now.toISOString(),
+  resultAudit,
 };
 
 describe('SQLite repositories', () => {
@@ -56,6 +79,48 @@ describe('SQLite repositories', () => {
     const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all()
       .map(row => (row as { name: string }).name);
     expect(indexes).toContain('one_processing_per_company');
+  });
+
+  it('idempotently migrates a legacy assessments table and round-trips a compact result audit', () => {
+    const legacyPath = join(directory, 'legacy.sqlite');
+    const legacy = new DatabaseSync(legacyPath);
+    legacy.exec(`
+      CREATE TABLE assessments (
+        assessment_id TEXT PRIMARY KEY,
+        cache_key TEXT NOT NULL,
+        requested_by TEXT NOT NULL,
+        legal_name TEXT NOT NULL,
+        credit_code TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('processing', 'completed', 'failed')),
+        report_markdown TEXT,
+        recommended_product TEXT,
+        overall_opportunity TEXT,
+        source_status_json TEXT,
+        collected_at TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        cached_at TEXT,
+        failed_at TEXT
+      );
+    `);
+    legacy.close();
+
+    const migrated = openDatabase(legacyPath);
+    expect(migrated.prepare('PRAGMA table_info(assessments)').all())
+      .toEqual(expect.arrayContaining([expect.objectContaining({ name: 'result_json', type: 'TEXT' })]));
+    const assessments = new AssessmentRepository(migrated);
+    const created = assessments.createOrReuseAssessment(assessmentInput, false, now, 30);
+    const completed = assessments.completeAssessment(created.record.assessmentId, completedResult, now);
+
+    expect(completed.resultAudit).toEqual(resultAudit);
+    const stored = migrated.prepare('SELECT result_json FROM assessments WHERE assessment_id = ?')
+      .get(created.record.assessmentId) as { result_json: string };
+    expect(JSON.parse(stored.result_json)).toEqual(resultAudit);
+    expect(stored.result_json).not.toMatch(/summary|content|raw|response|reportMarkdown/iu);
+    migrated.close();
+
+    expect(() => openDatabase(legacyPath).close()).not.toThrow();
   });
 
   it('stores token hashes but only lists safe metadata', () => {

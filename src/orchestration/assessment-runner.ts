@@ -1,6 +1,7 @@
 import {
   EvidenceBundleSchema,
   ResearchBundleSchema,
+  type AssessmentResultAudit,
   type EvidenceBundle,
   type IdentityProfile,
   type ReportModel,
@@ -18,6 +19,7 @@ import { evaluateOpportunities } from '../opportunity/evaluate-all.js';
 import { buildReportModel } from '../report/build-report-model.js';
 import { renderMarkdown } from '../report/render-markdown.js';
 import type { SourceCollection } from '../upstream/qcc/assessment-research.js';
+import type { ArkEvidenceExtraction } from '../upstream/ark/client.js';
 import { buildSearchPlan } from '../upstream/search/search-plan.js';
 import { CallBudget, type CallBudgetLimits, type UpstreamSource } from './call-budget.js';
 import {
@@ -46,7 +48,7 @@ interface SearchClient {
 }
 
 interface ArkSource {
-  extract(bundle: ResearchBundle): Promise<EvidenceBundle>;
+  extractWithAudit(bundle: ResearchBundle): Promise<ArkEvidenceExtraction>;
 }
 
 export interface AssessmentRunnerOptions {
@@ -146,7 +148,12 @@ export class AssessmentRunner {
         collectedAt: this.now().toISOString(),
       });
 
-      const extracted = await retryOnce('ark', budget, () => this.options.ark.extract(research), retryOptions);
+      const extracted = await retryOnce(
+        'ark',
+        budget,
+        () => this.options.ark.extractWithAudit(research),
+        retryOptions,
+      );
       if (this.stopIfAborted(task)) return;
       if (extracted.status === 'failed') {
         this.fail(task, '模型事实整理不可用');
@@ -154,7 +161,7 @@ export class AssessmentRunner {
       }
 
       try {
-        const evidence = EvidenceBundleSchema.parse(extracted.value);
+        const evidence = EvidenceBundleSchema.parse(extracted.value.evidence);
         const assessment = this.opportunityEvaluator(evidence, this.now());
         const sourceStatus: ReportModel['sourceStatus'] = {
           qcc: qcc.sourceStatus.status,
@@ -163,6 +170,24 @@ export class AssessmentRunner {
         };
         const model = this.reportModelBuilder(profile.identity, evidence, assessment, sourceStatus);
         const markdown = this.markdownRenderer(model);
+        const resultAudit: AssessmentResultAudit = {
+          industryClassification: evidence.industryClassification,
+          industryEvidenceIds: evidence.industryEvidenceIds,
+          evidenceSelection: {
+            selectedEvidenceIds: [...new Set(extracted.value.selection.bundle.items.map(item => item.evidenceId))],
+            originalCount: extracted.value.selection.originalCount,
+            selectedCount: extracted.value.selection.selectedCount,
+            excludedCount: extracted.value.selection.excludedCount,
+            categoryCounts: extracted.value.selection.categoryCounts,
+            researchBytes: extracted.value.selection.researchBytes,
+            requestBytes: extracted.value.requestBytes,
+          },
+          opportunities: assessment.products.map(product => ({
+            product: product.product,
+            level: product.level,
+            evidenceIds: product.evidenceIds,
+          })),
+        };
         if (this.stopIfAborted(task)) return;
         this.options.assessments.completeAssessment(task.assessmentId, {
           reportMarkdown: markdown,
@@ -170,7 +195,17 @@ export class AssessmentRunner {
           overallOpportunity: model.overallOpportunity,
           sourceStatus: model.sourceStatus,
           collectedAt: model.collectedAt,
+          resultAudit,
         }, this.now());
+        try {
+          this.options.logger.logAssessmentDecision({
+            assessmentId: task.assessmentId,
+            userId: task.requestedBy,
+            resultAudit,
+          });
+        } catch {
+          // Assessment persistence is authoritative; logging failures must not reverse completion.
+        }
       } catch {
         this.fail(task, '体检报告生成或保存失败');
       }
