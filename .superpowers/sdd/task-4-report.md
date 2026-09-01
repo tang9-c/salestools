@@ -36,3 +36,5 @@
 ## 后续文档校正
 
 README 曾错误地把推荐产品与整体机会列入 `result_json`。实现中的 `AssessmentResultAuditSchema` 只包含行业分类、证据选择审计和七项产品等级/证据 ID；`recommended_product` 与 `overall_opportunity` 始终是 `assessments` 的独立列。已据此校正 README，未改动运行时 schema。
+
+当前批准规范 `docs/superpowers/specs/2026-09-01-ark-evidence-report-fix-design.md` 也有同一字段归属错误，现已同步校正。检查同分支实现计划后未发现同类表述，因此未修改计划。

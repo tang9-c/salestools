@@ -57,13 +57,12 @@
 
 - `industry_classification`、`industry_evidence_ids`；
 - 七项 `opportunities`；
-- `recommended_product`、`overall_opportunity`；
 - `selected_evidence_ids`；
 - `original_evidence_count`、`selected_evidence_count`、`excluded_evidence_count`；
 - `selected_category_counts`；
 - `ark_research_bytes`、`ark_request_bytes`。
 
-不保存证据正文。任务服务仍以原有少量顶层字段响应，避免扩大 MCP 契约。
+`recommended_product` 与 `overall_opportunity` 继续保存于 `assessments` 的独立列，不属于 `result_json`。不保存证据正文。任务服务仍以原有少量顶层字段响应，避免扩大 MCP 契约。
 
 ### 4. 日志
 
@@ -85,4 +84,3 @@
 - QCC 链接缺失、融资失败或年报失败不会在报告层隐藏产品判断。
 - SQLite 可查询精简 `result_json`，其中不含来源正文。
 - 12KB、24KB、48KB 真实调用分别记录成功、延迟、选样数和 JSON 合同结果；只有用户已配置真实凭据时执行。
-
