@@ -1,5 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { DatabaseSync } from 'node:sqlite';
+import { describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
+import type { ArkEvidenceServiceOptions } from '../src/upstream/ark/client.js';
+
+const arkConstruction = vi.hoisted(() => vi.fn());
+
+vi.mock('../src/upstream/ark/client.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/upstream/ark/client.js')>();
+  return {
+    ...actual,
+    ArkEvidenceService: class extends actual.ArkEvidenceService {
+      constructor(options: ArkEvidenceServiceOptions) {
+        arkConstruction(options);
+        super(options);
+      }
+    },
+  };
+});
+
+const { createApplication } = await import('../src/index.js');
 
 const valid = {
   PUBLIC_MCP_HOST: 'mcp.example.cn',
@@ -43,6 +62,19 @@ describe('loadConfig', () => {
       ...valid,
       ARK_REQUEST_MAX_BYTES: '6143',
     } as NodeJS.ProcessEnv)).toThrow('Invalid configuration: ARK_REQUEST_MAX_BYTES');
+  });
+
+  it('passes a valid custom Ark request budget from configuration into application construction', async () => {
+    arkConstruction.mockClear();
+    const config = loadConfig({ ...valid, ARK_REQUEST_MAX_BYTES: '10240' } as NodeJS.ProcessEnv);
+    const application = createApplication(config, { database: new DatabaseSync(':memory:') });
+
+    expect(arkConstruction).toHaveBeenCalledWith(expect.objectContaining({
+      requestMaxBytes: 10_240,
+      model: config.arkModel,
+    }));
+
+    await application.close();
   });
 
   it('keeps exact origin URLs and derives SDK hostnames', () => {

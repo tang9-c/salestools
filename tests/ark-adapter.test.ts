@@ -8,6 +8,7 @@ import {
   type ResearchBundle,
   type ResearchItem,
 } from '../src/contracts/index.js';
+import { loadConfig } from '../src/config.js';
 import {
   ArkEvidenceService,
   ArkInvalidOutputError,
@@ -20,7 +21,7 @@ import {
   arkInputBudgetGap,
   compactResearchBundleForArk,
 } from '../src/upstream/ark/payload-budget.js';
-import { ARK_SYSTEM_PROMPT } from '../src/upstream/ark/prompt.js';
+import { ARK_SYSTEM_PROMPT, buildArkMessages } from '../src/upstream/ark/prompt.js';
 import { mapQccToolResult } from '../src/upstream/qcc/mapper.js';
 import { buildSearchPlan, type SearchQuery } from '../src/upstream/search/search-plan.js';
 
@@ -173,14 +174,37 @@ function requestResearch(fetchFn: ReturnType<typeof vi.fn<typeof fetch>>): Resea
   return JSON.parse(userMessage.content);
 }
 
-function client(fetchFn: typeof fetch, requestMaxBytes = ARK_REQUEST_MAX_BYTES): ArkEvidenceService {
+function client(
+  fetchFn: typeof fetch,
+  requestMaxBytes = ARK_REQUEST_MAX_BYTES,
+  model = 'ep-test',
+): ArkEvidenceService {
   return new ArkEvidenceService({
     url: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
-    model: 'ep-test',
+    model,
     credential: 'ark-test-secret',
     fetchFn,
     requestMaxBytes,
   });
+}
+
+function configEnv(arkRequestMaxBytes: number): NodeJS.ProcessEnv {
+  return {
+    PUBLIC_MCP_HOST: 'mcp.example.cn',
+    ALLOWED_ORIGINS: 'https://codex.example.cn',
+    SQLITE_PATH: ':memory:',
+    QCC_MCP_COMPANY_URL: 'https://agent.qcc.com/mcp/company/stream',
+    QCC_MCP_RISK_URL: 'https://agent.qcc.com/mcp/risk/stream',
+    QCC_MCP_IPR_URL: 'https://agent.qcc.com/mcp/ipr/stream',
+    QCC_MCP_OPERATION_URL: 'https://agent.qcc.com/mcp/operation/stream',
+    QCC_API_KEY: 'qcc-secret',
+    DOUBAO_SEARCH_API_URL: 'https://open.feedcoopapi.com/search_api/web_search',
+    DOUBAO_SEARCH_API_KEY: 'search-secret',
+    ARK_API_URL: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+    ARK_MODEL: 'ep-test',
+    ARK_CREDENTIAL: 'ark-secret',
+    ARK_REQUEST_MAX_BYTES: String(arkRequestMaxBytes),
+  };
 }
 
 function categoryCoverageBundle(): ResearchBundle {
@@ -211,6 +235,18 @@ function categoryCoverageBundle(): ResearchBundle {
       item('industry-quality', 'quality'),
       item('capacity-financing', 'expansion_financing'),
     ],
+  };
+}
+
+function bytePressureBundle(): ResearchBundle {
+  const base = categoryCoverageBundle();
+  return {
+    ...base,
+    items: base.items.map(item => ({
+      ...item,
+      summary: `${item.evidenceId} 摘要 ${'摘要😀'.repeat(700)}`,
+      content: `${item.evidenceId} 正文 ${'正文😀'.repeat(1_400)}`,
+    })),
   };
 }
 
@@ -290,6 +326,42 @@ describe('ArkEvidenceService', () => {
     expect(audited.selection.selectedCount).toBeGreaterThan(4);
     expect(audited.requestBytes).toBeLessThanOrEqual(30_000);
     expect(Buffer.byteLength(String(fetchFn.mock.calls[0]?.[1]?.body), 'utf8')).toBe(audited.requestBytes);
+  });
+
+  it('uses a configured budget to preserve every reserved category under byte pressure and re-packs for a long model name', async () => {
+    const configured = loadConfig(configEnv(10_240));
+    const research = bytePressureBundle();
+    const longModel = `ep-${'long-model-name-'.repeat(120)}`;
+    const initial = compactResearchBundleForArk(research, configured.arkRequestMaxBytes);
+    const initialBody = JSON.stringify({
+      model: longModel,
+      messages: buildArkMessages(initial.bundle),
+      response_format: { type: 'json_object' },
+      temperature: 0,
+    });
+    expect(Buffer.byteLength(initialBody, 'utf8')).toBeGreaterThan(configured.arkRequestMaxBytes);
+
+    const fetchFn = vi.fn<typeof fetch>(async () => (
+      responseWithContent(JSON.stringify(factFreeEvidence(research)))
+    ));
+    const service = client(fetchFn, configured.arkRequestMaxBytes, longModel);
+    const first = await service.extractWithAudit(research);
+    const second = await service.extractWithAudit(research);
+    const originalById = new Map(research.items.map(item => [item.evidenceId, item]));
+
+    expect(first.selection.bundle.items.some(item => (
+      item.content !== originalById.get(item.evidenceId)?.content
+    ))).toBe(true);
+    for (const category of ['industry', 'technology', 'timing', 'capacity'] as const) {
+      expect(first.selection.categoryCounts[category]).toBeGreaterThanOrEqual(1);
+    }
+    expect(first.selection.bundle.items.map(item => item.evidenceId))
+      .toEqual(second.selection.bundle.items.map(item => item.evidenceId));
+    expect(first.requestBytes).toBeLessThanOrEqual(configured.arkRequestMaxBytes);
+    expect(second.requestBytes).toBeLessThanOrEqual(configured.arkRequestMaxBytes);
+    expect(first.selection.researchBytes).toBeLessThan(initial.researchBytes);
+    expect(Buffer.byteLength(String(fetchFn.mock.calls[0]?.[1]?.body), 'utf8'))
+      .toBeLessThanOrEqual(configured.arkRequestMaxBytes);
   });
 
   it('threads AbortSignal into fetch and maps cancellation to a typed unavailable error', async () => {
