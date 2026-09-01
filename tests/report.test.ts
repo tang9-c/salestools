@@ -314,7 +314,9 @@ describe('assessment report', () => {
     ['预算审批时间为 2026/09，待核实', 'enhancement'],
     ['决策权待核实', 'enhancement'],
     ['方舟输入容量已裁剪：6/12', 'audit'],
+    ['近期融资情况待核实', 'enhancement'],
     ['融资信息获取失败', 'audit'],
+    ['融资结果无法结构化验证（适配器契约缺口）', 'audit'],
     ['年报信息获取失败', 'audit'],
   ] as const)('classifies %s as %s for presentation only', (gap, category) => {
     expect(classifyReportGap(gap)).toBe(category);
