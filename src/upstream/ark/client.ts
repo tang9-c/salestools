@@ -5,6 +5,7 @@ import { ArkEvidenceValidationError, validateArkEvidence } from './evidence-vali
 import {
   ARK_REQUEST_MAX_BYTES,
   compactResearchBundleForArk,
+  type ArkPayloadSelection,
 } from './payload-budget.js';
 import { buildArkMessages } from './prompt.js';
 
@@ -22,6 +23,13 @@ export interface ArkEvidenceServiceOptions {
   credential: string;
   fetchFn?: typeof fetch;
   signal?: AbortSignal;
+  requestMaxBytes?: number;
+}
+
+export interface ArkEvidenceExtraction {
+  readonly evidence: EvidenceBundle;
+  readonly selection: ArkPayloadSelection;
+  readonly requestBytes: number;
 }
 
 export class ArkUnavailableError extends UpstreamError {
@@ -53,6 +61,15 @@ function jsonContent(content: string): unknown {
   }
 }
 
+function serializeArkRequest(model: string, bundle: ResearchBundle): string {
+  return JSON.stringify({
+    model,
+    messages: buildArkMessages(bundle),
+    response_format: { type: 'json_object' },
+    temperature: 0,
+  });
+}
+
 export class ArkEvidenceService {
   private readonly fetchFn: typeof fetch;
 
@@ -61,16 +78,25 @@ export class ArkEvidenceService {
   }
 
   async extract(bundle: ResearchBundle): Promise<EvidenceBundle> {
-    const compactBundle = compactResearchBundleForArk(bundle);
-    const requestBody = JSON.stringify({
-      model: this.options.model,
-      messages: buildArkMessages(compactBundle),
-      response_format: { type: 'json_object' },
-      temperature: 0,
-    });
-    if (Buffer.byteLength(requestBody, 'utf8') > ARK_REQUEST_MAX_BYTES) {
+    return (await this.extractWithAudit(bundle)).evidence;
+  }
+
+  async extractWithAudit(bundle: ResearchBundle): Promise<ArkEvidenceExtraction> {
+    const requestMaxBytes = this.options.requestMaxBytes ?? ARK_REQUEST_MAX_BYTES;
+    let compactionBudget = requestMaxBytes;
+    let selection = compactResearchBundleForArk(bundle, compactionBudget);
+    let requestBody = serializeArkRequest(this.options.model, selection.bundle);
+    let requestBytes = Buffer.byteLength(requestBody, 'utf8');
+    while (requestBytes > requestMaxBytes && compactionBudget > 0) {
+      compactionBudget -= requestBytes - requestMaxBytes;
+      selection = compactResearchBundleForArk(bundle, compactionBudget);
+      requestBody = serializeArkRequest(this.options.model, selection.bundle);
+      requestBytes = Buffer.byteLength(requestBody, 'utf8');
+    }
+    if (requestBytes > requestMaxBytes) {
       throw new ArkInvalidOutputError('INPUT_TOO_LARGE', 'Ark request exceeds the UTF-8 byte budget');
     }
+    const compactBundle = selection.bundle;
     let response: Response;
     try {
       response = await this.fetchFn(this.options.url, {
@@ -109,8 +135,12 @@ export class ArkEvidenceService {
     try {
       const validated = validateArkEvidence(compactBundle, candidate);
       return {
-        ...validated,
-        gaps: [...new Set([...validated.gaps, ...bundle.gaps, ...compactBundle.gaps])],
+        evidence: {
+          ...validated,
+          gaps: [...new Set([...validated.gaps, ...bundle.gaps, ...compactBundle.gaps])],
+        },
+        selection,
+        requestBytes,
       };
     } catch (error) {
       if (error instanceof ArkEvidenceValidationError) {

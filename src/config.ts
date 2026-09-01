@@ -4,13 +4,14 @@ const CONFIG_KEYS = [
   'PORT', 'PUBLIC_MCP_HOST', 'ALLOWED_ORIGINS', 'SQLITE_PATH',
   'QCC_MCP_COMPANY_URL', 'QCC_MCP_RISK_URL', 'QCC_MCP_IPR_URL', 'QCC_MCP_OPERATION_URL', 'QCC_API_KEY',
   'DOUBAO_SEARCH_API_URL', 'DOUBAO_SEARCH_API_KEY', 'ARK_API_URL', 'ARK_MODEL', 'ARK_CREDENTIAL',
-  'MAX_QCC_CALLS', 'MAX_SEARCH_CALLS', 'MAX_ARK_CALLS', 'MAX_TOTAL_UPSTREAM_CALLS',
+  'ARK_REQUEST_MAX_BYTES', 'MAX_QCC_CALLS', 'MAX_SEARCH_CALLS', 'MAX_ARK_CALLS', 'MAX_TOTAL_UPSTREAM_CALLS',
   'PROFILE_CACHE_TTL_DAYS', 'ASSESSMENT_CACHE_TTL_DAYS', 'MAX_CONCURRENT_ASSESSMENTS',
 ] as const;
 
 const nonEmptyString = z.string().trim().min(1);
 const httpsUrl = nonEmptyString.url().startsWith('https://');
 const positiveInteger = z.coerce.number().int().min(1);
+const minimumArkRequestBytes = 6_144;
 
 function isCompleteHttpsOrigin(value: string): boolean {
   if (!value.startsWith('https://')) return false;
@@ -48,6 +49,7 @@ const configSchema = z.object({
   ARK_API_URL: httpsUrl,
   ARK_MODEL: nonEmptyString,
   ARK_CREDENTIAL: nonEmptyString,
+  ARK_REQUEST_MAX_BYTES: positiveInteger.min(minimumArkRequestBytes).default(12_288),
   MAX_QCC_CALLS: positiveInteger.default(8),
   MAX_SEARCH_CALLS: positiveInteger.default(8),
   MAX_ARK_CALLS: positiveInteger.default(2),
@@ -82,6 +84,7 @@ export type AppConfig = ParsedConfig & {
   arkApiUrl: string;
   arkModel: string;
   arkCredential: string;
+  arkRequestMaxBytes: number;
   maxQccCalls: number;
   maxSearchCalls: number;
   maxArkCalls: number;
@@ -120,6 +123,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     arkApiUrl: parsed.data.ARK_API_URL,
     arkModel: parsed.data.ARK_MODEL,
     arkCredential: parsed.data.ARK_CREDENTIAL,
+    arkRequestMaxBytes: parsed.data.ARK_REQUEST_MAX_BYTES,
     maxQccCalls: parsed.data.MAX_QCC_CALLS,
     maxSearchCalls: parsed.data.MAX_SEARCH_CALLS,
     maxArkCalls: parsed.data.MAX_ARK_CALLS,

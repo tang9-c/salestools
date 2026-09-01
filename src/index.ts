@@ -97,6 +97,7 @@ export function createApplication(
     url: config.arkApiUrl,
     model: config.arkModel,
     credential: config.arkCredential,
+    requestMaxBytes: config.arkRequestMaxBytes,
     signal: abortController.signal,
   });
   const profileService = new CompanyProfileService(qccGateway, profiles, {

@@ -28,11 +28,21 @@ describe('loadConfig', () => {
       maxQccCalls: 8,
       maxSearchCalls: 8,
       maxArkCalls: 2,
+      arkRequestMaxBytes: 12_288,
       maxTotalUpstreamCalls: 18,
       profileCacheTtlDays: 30,
       assessmentCacheTtlDays: 30,
       maxConcurrentAssessments: 1,
     });
+  });
+
+  it('defaults the Ark request byte budget and rejects a budget below its immutable request', () => {
+    expect(loadConfig(valid as NodeJS.ProcessEnv).ARK_REQUEST_MAX_BYTES).toBe(12_288);
+    expect(loadConfig(valid as NodeJS.ProcessEnv).arkRequestMaxBytes).toBe(12_288);
+    expect(() => loadConfig({
+      ...valid,
+      ARK_REQUEST_MAX_BYTES: '6143',
+    } as NodeJS.ProcessEnv)).toThrow('Invalid configuration: ARK_REQUEST_MAX_BYTES');
   });
 
   it('keeps exact origin URLs and derives SDK hostnames', () => {

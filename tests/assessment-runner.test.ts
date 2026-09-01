@@ -13,6 +13,7 @@ import { JsonlLogger } from '../src/logging/logger.js';
 import { AssessmentRunner, AssessmentWorkerError } from '../src/orchestration/assessment-runner.js';
 import { retryOnce, UpstreamError } from '../src/orchestration/retry.js';
 import { ArkEvidenceService } from '../src/upstream/ark/client.js';
+import { arkInputBudgetGap } from '../src/upstream/ark/payload-budget.js';
 import { QccResearchCollector, type SourceCollection } from '../src/upstream/qcc/assessment-research.js';
 
 const NOW = new Date('2026-08-30T00:00:00.000Z');
@@ -152,7 +153,7 @@ describe('AssessmentRunner', () => {
   it('retains financing, annual-report, and Ark input-budget gaps in the final report', async () => {
     const financingGap = '融资结果无法结构化验证（适配器契约缺口）';
     const annualReportGap = '年报信息获取失败';
-    const budgetGap = '方舟输入受网关容量限制，仅选取4条代表证据，未选数据不代表不存在';
+    const budgetGap = arkInputBudgetGap(11, 11);
     const qccItems = [
       item('qcc', 'company-get_company_profile-1'),
       item('qcc', 'operation-get_recruitment_info-1'),

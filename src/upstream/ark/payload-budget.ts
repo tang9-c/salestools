@@ -6,12 +6,11 @@ import {
 } from '../../contracts/index.js';
 import { buildSearchPlan, type SearchQuery } from '../search/search-plan.js';
 
-export const ARK_INPUT_BUDGET_GAP = '方舟输入受网关容量限制，仅选取4条代表证据，未选数据不代表不存在';
 export const ARK_HISTORICAL_FINANCING_GAP = '方舟融资专槽有日期时仅保留最新记录、均无日期时按来源顺序保留一条；其他融资记录未送入整理，未选不代表不存在';
 export const ARK_COMPACT_BUNDLE_MAX_BYTES = 6_656;
 export const ARK_REQUEST_MAX_BYTES = 12_288;
 
-const MAX_ITEMS = 4;
+const ARK_REQUEST_OVERHEAD_BYTES = ARK_REQUEST_MAX_BYTES - ARK_COMPACT_BUNDLE_MAX_BYTES;
 const INITIAL_SUMMARY_BYTES = 512;
 const INITIAL_DEMAND_CONTENT_BYTES = 1_536;
 const INITIAL_SUPPORT_CONTENT_BYTES = 1_024;
@@ -20,6 +19,16 @@ const MAX_EXCERPT_WINDOWS = 4;
 const MIN_WINDOW_BYTES = 256;
 
 type EvidenceTextCategory = 'financing' | 'procurement' | 'recruitment' | 'technical' | 'support';
+export type ArkEvidenceCategory = 'industry' | 'technology' | 'timing' | 'capacity';
+
+export interface ArkPayloadSelection {
+  readonly bundle: ResearchBundle;
+  readonly originalCount: number;
+  readonly selectedCount: number;
+  readonly excludedCount: number;
+  readonly categoryCounts: Readonly<Record<ArkEvidenceCategory, number>>;
+  readonly researchBytes: number;
+}
 
 type KeywordRule = {
   readonly pattern: RegExp;
@@ -244,6 +253,24 @@ function latestFinancing(items: readonly ResearchItem[]): ResearchItem | undefin
     })[0]?.item;
 }
 
+function evidenceCategory(
+  item: ResearchItem,
+  purposes: ReadonlyMap<string, SearchQuery['purpose']>,
+): ArkEvidenceCategory | null {
+  const purpose = searchPurpose(item, purposes);
+  if (qccTool(item, 'get_financing_records') || purpose === 'expansion_financing') return 'capacity';
+  if (qccTool(item, 'get_recruitment_info')
+    || qccTool(item, 'get_bidding_info')
+    || purpose === 'recruitment'
+    || purpose === 'procurement') return 'timing';
+  if (item.sourceKind === 'ipr'
+    || purpose === 'engineering'
+    || purpose === 'software_ecosystem'
+    || purpose === 'quality') return 'technology';
+  if (qccTool(item, 'get_company_profile') || purpose === 'official_products') return 'industry';
+  return null;
+}
+
 function selectItems(bundle: ResearchBundle): ResearchItem[] {
   const purposes = purposeByQuery(bundle);
   const unique = bundle.items.filter((item, index, items) => (
@@ -263,30 +290,31 @@ function selectItems(bundle: ResearchBundle): ResearchItem[] {
       return purpose === null ? 8 : SEARCH_PRIORITY[purpose];
     },
   );
-  const selected = financing === undefined ? [] : [financing];
-  const sourceOrder: ResearchItem['source'][] = financing === undefined
-    ? ['qcc', 'doubao_search', 'qcc', 'doubao_search']
-    : ['doubao_search', 'qcc', 'doubao_search'];
-
-  for (const source of sourceOrder) {
-    if (selected.length >= MAX_ITEMS) break;
-    const pool = source === 'qcc' ? qcc : search;
-    const next = pool.find(item => !used.has(item.evidenceId));
-    if (next === undefined) continue;
-    selected.push(next);
-    used.add(next.evidenceId);
+  const candidates = [
+    ...(financing === undefined ? [] : [financing]),
+    ...qcc,
+    ...search,
+  ];
+  const selected: ResearchItem[] = [];
+  const selectedIds = new Set<string>();
+  const select = (item: ResearchItem | undefined): void => {
+    if (item === undefined || selectedIds.has(item.evidenceId)) return;
+    selected.push(item);
+    selectedIds.add(item.evidenceId);
+  };
+  select(financing);
+  for (const category of ['industry', 'technology', 'timing', 'capacity'] as const) {
+    select(candidates.find(item => evidenceCategory(item, purposes) === category));
   }
 
   const fallback = stableSort(
-    unique.filter(item => !used.has(item.evidenceId)),
+    candidates.filter(item => !selectedIds.has(item.evidenceId)),
     item => item.source === 'qcc'
       ? qccPriority(item) * 2
       : ((searchPurpose(item, purposes) === null ? 8 : SEARCH_PRIORITY[searchPurpose(item, purposes)!]) * 2 + 1),
   );
   for (const item of fallback) {
-    if (selected.length >= MAX_ITEMS) break;
-    selected.push(item);
-    used.add(item.evidenceId);
+    select(item);
   }
   return selected;
 }
@@ -348,7 +376,7 @@ function bundleBytes(bundle: ResearchBundle): number {
 function materialize(
   bundle: ResearchBundle,
   states: readonly ItemState[],
-  includeCapacityGap: boolean,
+  capacityGap: string | null,
   includeHistoricalFinancingGap: boolean,
 ): ResearchBundle {
   return ResearchBundleSchema.parse({
@@ -356,10 +384,31 @@ function materialize(
     items: states.map(state => state.item),
     gaps: [...new Set([
       ...bundle.gaps.filter(gap => !isQccUnavailableLinkAuditGap(gap)),
-      ...(includeCapacityGap ? [ARK_INPUT_BUDGET_GAP] : []),
+      ...(capacityGap === null ? [] : [capacityGap]),
       ...(includeHistoricalFinancingGap ? [ARK_HISTORICAL_FINANCING_GAP] : []),
     ])],
   });
+}
+
+export function arkInputBudgetGap(selectedCount: number, originalCount: number): string {
+  return `方舟输入受网关容量限制，仅保留 ${selectedCount}/${originalCount} 条代表证据，未选或缩短内容不代表不存在`;
+}
+
+function categoryCounts(
+  states: readonly ItemState[],
+  purposes: ReadonlyMap<string, SearchQuery['purpose']>,
+): Record<ArkEvidenceCategory, number> {
+  const counts: Record<ArkEvidenceCategory, number> = {
+    industry: 0,
+    technology: 0,
+    timing: 0,
+    capacity: 0,
+  };
+  for (const state of states) {
+    const category = evidenceCategory(state.original, purposes);
+    if (category !== null) counts[category] += 1;
+  }
+  return counts;
 }
 
 function shrinkContent(state: ItemState): boolean {
@@ -386,7 +435,10 @@ function shrinkSummary(state: ItemState): boolean {
   return true;
 }
 
-export function compactResearchBundleForArk(bundleInput: ResearchBundle): ResearchBundle {
+export function compactResearchBundleForArk(
+  bundleInput: ResearchBundle,
+  requestMaxBytes = ARK_REQUEST_MAX_BYTES,
+): ArkPayloadSelection {
   const bundle = ResearchBundleSchema.parse(bundleInput);
   const purposes = purposeByQuery(bundle);
   const uniqueCount = new Set(bundle.items.map(item => item.evidenceId)).size;
@@ -395,12 +447,21 @@ export function compactResearchBundleForArk(bundleInput: ResearchBundle): Resear
     .map(item => item.evidenceId)).size;
   const includeHistoricalFinancingGap = financingCount > 1;
   const states = selectItems(bundle).map(item => buildState(item, purposes));
+  const researchMaxBytes = requestMaxBytes - ARK_REQUEST_OVERHEAD_BYTES;
+  if (researchMaxBytes <= 0) {
+    throw new RangeError('Ark request byte budget cannot contain the immutable request');
+  }
   let capacityChanged = uniqueCount > states.length || states.some(state => (
     state.item.summary !== state.original.summary || state.item.content !== state.original.content
   ));
-  let compact = materialize(bundle, states, capacityChanged, includeHistoricalFinancingGap);
+  let compact = materialize(
+    bundle,
+    states,
+    capacityChanged ? arkInputBudgetGap(states.length, uniqueCount) : null,
+    includeHistoricalFinancingGap,
+  );
 
-  while (bundleBytes(compact) > ARK_COMPACT_BUNDLE_MAX_BYTES) {
+  while (bundleBytes(compact) > researchMaxBytes) {
     let shrunk = false;
     for (let index = states.length - 1; index >= 0; index -= 1) {
       if (shrinkContent(states[index]!)) {
@@ -426,8 +487,20 @@ export function compactResearchBundleForArk(bundleInput: ResearchBundle): Resear
     if (!shrunk) {
       throw new RangeError('Ark compact ResearchBundle exceeds the immutable provenance byte budget');
     }
-    compact = materialize(bundle, states, capacityChanged, includeHistoricalFinancingGap);
+    compact = materialize(
+      bundle,
+      states,
+      capacityChanged ? arkInputBudgetGap(states.length, uniqueCount) : null,
+      includeHistoricalFinancingGap,
+    );
   }
 
-  return compact;
+  return {
+    bundle: compact,
+    originalCount: uniqueCount,
+    selectedCount: states.length,
+    excludedCount: uniqueCount - states.length,
+    categoryCounts: categoryCounts(states, purposes),
+    researchBytes: bundleBytes(compact),
+  };
 }

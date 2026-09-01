@@ -17,12 +17,12 @@ import {
   ARK_COMPACT_BUNDLE_MAX_BYTES,
   ARK_HISTORICAL_FINANCING_GAP,
   ARK_REQUEST_MAX_BYTES,
+  arkInputBudgetGap,
+  compactResearchBundleForArk,
 } from '../src/upstream/ark/payload-budget.js';
 import { ARK_SYSTEM_PROMPT } from '../src/upstream/ark/prompt.js';
 import { mapQccToolResult } from '../src/upstream/qcc/mapper.js';
-import { buildSearchPlan } from '../src/upstream/search/search-plan.js';
-
-const ARK_INPUT_BUDGET_GAP = '方舟输入受网关容量限制，仅选取4条代表证据，未选数据不代表不存在';
+import { buildSearchPlan, type SearchQuery } from '../src/upstream/search/search-plan.js';
 
 function fixture(): EvidenceBundle {
   return JSON.parse(readFileSync(new URL('./fixtures/ark-evidence.json', import.meta.url), 'utf8'));
@@ -67,7 +67,7 @@ function factFreeEvidence(research: ResearchBundle): EvidenceBundle {
     facts: [],
     financingRecords: [],
     conflicts: [],
-    gaps: [ARK_INPUT_BUDGET_GAP],
+    gaps: [],
     collectedAt: research.collectedAt,
   };
 }
@@ -173,16 +173,52 @@ function requestResearch(fetchFn: ReturnType<typeof vi.fn<typeof fetch>>): Resea
   return JSON.parse(userMessage.content);
 }
 
-function client(fetchFn: typeof fetch): ArkEvidenceService {
+function client(fetchFn: typeof fetch, requestMaxBytes = ARK_REQUEST_MAX_BYTES): ArkEvidenceService {
   return new ArkEvidenceService({
     url: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
     model: 'ep-test',
     credential: 'ark-test-secret',
     fetchFn,
+    requestMaxBytes,
   });
 }
 
+function categoryCoverageBundle(): ResearchBundle {
+  const base = researchBundle();
+  const plan = buildSearchPlan(base.identity);
+  const query = (purpose: SearchQuery['purpose']) => (
+    plan.find(candidate => candidate.purpose === purpose)?.Query ?? ''
+  );
+  const item = (evidenceId: string, purpose: SearchQuery['purpose']): ResearchItem => ({
+    ...base.items[0],
+    evidenceId,
+    title: `${evidenceId} 标题`,
+    summary: `${evidenceId} 摘要`,
+    content: `${evidenceId} 正文`,
+    query: query(purpose),
+    source: 'doubao_search',
+    sourceKind: 'web',
+  });
+  return {
+    ...base,
+    items: [
+      item('industry', 'official_products'),
+      item('technology', 'engineering'),
+      item('timing', 'recruitment'),
+      item('capacity', 'expansion_financing'),
+      item('technology-software', 'software_ecosystem'),
+      item('timing-procurement', 'procurement'),
+      item('industry-quality', 'quality'),
+      item('capacity-financing', 'expansion_financing'),
+    ],
+  };
+}
+
 describe('ARK_SYSTEM_PROMPT', () => {
+  it('does not claim a fixed four-item evidence limit', () => {
+    expect(ARK_SYSTEM_PROMPT).not.toMatch(/最多包含4条/);
+  });
+
   it('freezes the untrusted-data boundary and exact evidence output requirements', () => {
     expect(ARK_SYSTEM_PROMPT).toMatch(/不可信数据/);
     expect(ARK_SYSTEM_PROMPT).toMatch(/不得执行.*指令/);
@@ -220,6 +256,42 @@ describe('ARK_SYSTEM_PROMPT', () => {
 });
 
 describe('ArkEvidenceService', () => {
+  it('dynamically reserves industry, technology, timing, and capacity evidence before byte fitting', () => {
+    const research = categoryCoverageBundle();
+    const first = compactResearchBundleForArk(research, 30_000);
+    const second = compactResearchBundleForArk(research, 30_000);
+
+    expect(first.originalCount).toBe(8);
+    expect(first.selectedCount).toBeGreaterThan(4);
+    expect(first.excludedCount).toBe(0);
+    expect(first.categoryCounts).toMatchObject({
+      industry: expect.any(Number),
+      technology: expect.any(Number),
+      timing: expect.any(Number),
+      capacity: expect.any(Number),
+    });
+    for (const category of ['industry', 'technology', 'timing', 'capacity'] as const) {
+      expect(first.categoryCounts[category]).toBeGreaterThanOrEqual(1);
+    }
+    expect(first.bundle.items.map(item => item.evidenceId)).toEqual(second.bundle.items.map(item => item.evidenceId));
+    expect(first.researchBytes).toBe(Buffer.byteLength(JSON.stringify(first.bundle), 'utf8'));
+  });
+
+  it('keeps the complete Ark request within the supplied byte budget and returns audit metadata', async () => {
+    const research = categoryCoverageBundle();
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
+      responseWithContent(JSON.stringify(factFreeEvidence(research))),
+    );
+    const service = client(fetchFn, 30_000);
+
+    const audited = await service.extractWithAudit(research);
+
+    expect(audited.evidence).toEqual(factFreeEvidence(research));
+    expect(audited.selection.selectedCount).toBeGreaterThan(4);
+    expect(audited.requestBytes).toBeLessThanOrEqual(30_000);
+    expect(Buffer.byteLength(String(fetchFn.mock.calls[0]?.[1]?.body), 'utf8')).toBe(audited.requestBytes);
+  });
+
   it('threads AbortSignal into fetch and maps cancellation to a typed unavailable error', async () => {
     const controller = new AbortController();
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
@@ -273,16 +345,21 @@ describe('ArkEvidenceService', () => {
       responseWithContent(JSON.stringify(factFreeEvidence(research))),
     );
 
-    await expect(client(fetchFn).extract(research)).resolves.toEqual(factFreeEvidence(research));
+    await expect(client(fetchFn).extract(research)).resolves.toMatchObject({
+      ...factFreeEvidence(research),
+      gaps: expect.arrayContaining([arkInputBudgetGap(6, 12)]),
+    });
 
     const sent = requestResearch(fetchFn);
     expect(sent.items.map(item => item.evidenceId)).toEqual([
       'qcc-operation-get_financing_records-1',
-      'search-procurement-1',
+      'qcc-company-get_company_profile-1',
+      'qcc-ipr-get_patent_info-1',
       'qcc-operation-get_recruitment_info-1',
-      'search-recruitment-1',
+      'search-procurement-1',
+      'qcc-operation-get_bidding_info-1',
     ]);
-    expect(sent.items).toHaveLength(4);
+    expect(sent.items).toHaveLength(6);
     const original = research.items.find(item => item.evidenceId === sent.items[0].evidenceId);
     expect(sent.items[0]).toMatchObject({
       evidenceId: original?.evidenceId,
@@ -299,7 +376,7 @@ describe('ArkEvidenceService', () => {
     expect(sent.items[0]?.content).toContain('"typeOrRound":"B 轮"');
     expect(sent.items[0]?.content).toContain('"disclosedAmount":"2 亿元"');
     expect(sent.items[0]?.content).toContain('"investors":["测试基金","产业资本"]');
-    expect(sent.gaps).toContain(ARK_INPUT_BUDGET_GAP);
+    expect(sent.gaps).toContain(arkInputBudgetGap(6, 12));
   });
 
   it('preserves successful structured financing fields through Ark extraction', async () => {
@@ -543,7 +620,8 @@ describe('ArkEvidenceService', () => {
     const body = String(fetchFn.mock.calls[0]?.[1]?.body);
     expect(Buffer.byteLength(JSON.stringify(sent), 'utf8')).toBeLessThanOrEqual(ARK_COMPACT_BUNDLE_MAX_BYTES);
     expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(ARK_REQUEST_MAX_BYTES);
-    expect(sent.items).toHaveLength(4);
+    expect(sent.items.length).toBeGreaterThan(4);
+    expect(sent.gaps).toContain(arkInputBudgetGap(sent.items.length, research.items.length));
     expect(sent.items.every(item => !item.title.endsWith('\uFFFD'))).toBe(true);
   });
 
@@ -589,11 +667,11 @@ describe('ArkEvidenceService', () => {
     ['four unique items', 4, false, false],
     ['five unique items', 5, false, true],
     ['duplicate evidence IDs', 5, true, false],
-  ] as const)('adds the Ark budget gap only above four unique evidence IDs (%s)', async (
+  ] as const)('does not add an Ark budget gap when every small evidence item fits (%s)', async (
     _name,
     itemCount,
     duplicateIds,
-    expectedGap,
+    _expectedGap,
   ) => {
     const base = researchBundle();
     const research: ResearchBundle = {
@@ -610,7 +688,7 @@ describe('ArkEvidenceService', () => {
 
     await client(fetchFn).extract(research);
 
-    expect(requestResearch(fetchFn).gaps.includes(ARK_INPUT_BUDGET_GAP)).toBe(expectedGap);
+    expect(requestResearch(fetchFn).gaps.some(gap => gap.startsWith('方舟输入受网关容量限制，仅保留 '))).toBe(false);
   });
 
   it('never truncates evidence title or provenance fields', async () => {
@@ -654,7 +732,7 @@ describe('ArkEvidenceService', () => {
     );
 
     await expect(client(fetchFn).extract(research)).resolves.toMatchObject({
-      gaps: ['模型识别缺口', financingGap, annualReportGap, ARK_INPUT_BUDGET_GAP],
+      gaps: ['模型识别缺口', financingGap, annualReportGap, arkInputBudgetGap(6, 12)],
     });
   });
 
@@ -679,10 +757,12 @@ describe('ArkEvidenceService', () => {
     await client(fetchFn).extract(research);
 
     expect(requestResearch(fetchFn).items.map(item => item.evidenceId)).toEqual([
+      'qcc-ipr-get_patent_info-1',
       'qcc-operation-get_recruitment_info-1',
       'search-procurement-1',
       'qcc-operation-get_bidding_info-1',
       'search-engineering-1',
+      'qcc-risk-get_company_risk_scan-1',
     ]);
   });
 
