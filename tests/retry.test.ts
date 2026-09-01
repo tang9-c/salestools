@@ -31,6 +31,30 @@ describe('retryOnce', () => {
     expect(budget.usage()).toEqual({ qcc: 2, doubaoSearch: 0, ark: 0, total: 2 });
   });
 
+  it.each([
+    ['qcc', 'UNMAPPABLE_DATASET'],
+    ['qcc', 'INVALID_RESPONSE'],
+    ['qcc', 'REMOTE_TOOL_ERROR'],
+    ['qcc', 'AUTHENTICATION_ERROR'],
+    ['doubao_search', 'INVALID_RESPONSE'],
+    ['doubao_search', 'QUOTA_EXCEEDED'],
+    ['ark', 'INVALID_JSON'],
+    ['ark', 'INVALID_EVIDENCE'],
+  ] as const)('does not retry deterministic %s/%s failures', async (source, code) => {
+    const budget = new CallBudget({ qcc: 2, doubaoSearch: 2, ark: 2, total: 6 });
+    let calls = 0;
+    const error = new UpstreamError(source, code, 'deterministic failure');
+
+    const result = await retryOnce(source, budget, async () => {
+      calls += 1;
+      throw error;
+    });
+
+    expect(result).toEqual({ status: 'failed', error });
+    expect(calls).toBe(1);
+    expect(budget.usage().total).toBe(1);
+  });
+
   it('returns the second typed error and never makes a third attempt', async () => {
     const budget = new CallBudget({ qcc: 5, doubaoSearch: 1, ark: 1, total: 5 });
     let calls = 0;

@@ -87,6 +87,26 @@ function safeAttemptError(error: UpstreamError): RetryAttemptEvent['error'] {
   return { code: error.code, message: safeUpstreamErrorMessage(error.source, error.code) };
 }
 
+const NON_RETRYABLE_CODES = new Set([
+  'ABORTED',
+  'AUTHENTICATION_ERROR',
+  'EMPTY_RESPONSE',
+  'INVALID_EVIDENCE',
+  'INVALID_JSON',
+  'INVALID_RESPONSE',
+  'QUOTA_EXCEEDED',
+  'REMOTE_BUSINESS_ERROR',
+  'REMOTE_PROTOCOL_ERROR',
+  'REMOTE_TOOL_ERROR',
+  'SUBJECT_MISMATCH',
+  'TOOL_NOT_ALLOWED',
+  'UNMAPPABLE_DATASET',
+]);
+
+function isRetryable(error: UpstreamError): boolean {
+  return !NON_RETRYABLE_CODES.has(error.code);
+}
+
 export async function retryOnce<T>(
   source: UpstreamSource,
   budget: CallBudget,
@@ -121,7 +141,9 @@ export async function retryOnce<T>(
         attempt: attemptNumber,
         error: safeAttemptError(upstreamError),
       });
-      if (attemptNumber === 2) return { status: 'failed', error: upstreamError };
+      if (attemptNumber === 2 || !isRetryable(upstreamError)) {
+        return { status: 'failed', error: upstreamError };
+      }
     }
   }
 

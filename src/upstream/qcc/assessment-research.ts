@@ -32,12 +32,30 @@ const recruitmentCall: PlannedCall = {
   server: 'operation', tool: 'get_recruitment_info', failureGap: '招聘信息获取失败',
 };
 const coreCalls: PlannedCall[] = [
+  { server: 'operation', tool: 'get_bidding_info', failureGap: '招投标信息获取失败' },
   { server: 'company', tool: 'get_company_profile', failureGap: '企业简介获取失败' },
   { server: 'risk', tool: 'get_company_risk_scan', failureGap: '企业风险获取失败' },
   { server: 'ipr', tool: 'get_patent_info', failureGap: '专利信息获取失败' },
-  { server: 'operation', tool: 'get_annual_reports', failureGap: '年报信息获取失败' },
-  { server: 'operation', tool: 'get_bidding_info', failureGap: '招投标信息获取失败' },
 ];
+const annualReportCall: PlannedCall = {
+  server: 'operation', tool: 'get_annual_reports', failureGap: '年报信息获取失败',
+};
+
+function failureGap(call: PlannedCall, errorCode: string): string {
+  if (call.tool === 'get_financing_records' && errorCode === 'UNMAPPABLE_DATASET') {
+    return '融资结果无法结构化验证（适配器契约缺口）';
+  }
+  if (errorCode === 'BUDGET_EXHAUSTED') {
+    return `${call.failureGap}（调用预算已用尽，未调用）`;
+  }
+  if (errorCode === 'REMOTE_TOOL_ERROR' || errorCode === 'TOOL_NOT_ALLOWED') {
+    return `${call.failureGap}（工具不可用，未重试）`;
+  }
+  if (errorCode === 'UNMAPPABLE_DATASET' || errorCode === 'INVALID_RESPONSE') {
+    return `${call.failureGap}（返回数据无法结构化验证，未重试）`;
+  }
+  return call.failureGap;
+}
 
 function selectEighthCall(identity: IdentityProfile, currentItems: ResearchItem[]): PlannedCall {
   if (identity.parentLegalName === null) {
@@ -85,9 +103,7 @@ export class QccResearchCollector {
       if (result.status === 'failed') {
         failedCalls += 1;
         if (result.error.code === 'BUDGET_EXHAUSTED') stoppedByBudget = true;
-        gaps.push(call.tool === 'get_financing_records' && result.error.code === 'UNMAPPABLE_DATASET'
-          ? '融资结果无法结构化验证（适配器契约缺口）'
-          : call.failureGap);
+        gaps.push(failureGap(call, result.error.code));
         errors.push(safeUpstreamErrorMessage('qcc', result.error.code));
         return;
       }
@@ -118,8 +134,8 @@ export class QccResearchCollector {
     for (const call of coreCalls) {
       if (!budget.canConsume('qcc')) {
         stoppedByBudget = true;
-        gaps.push(`${call.failureGap}（调用预算已用尽）`);
-        break;
+        gaps.push(`${call.failureGap}（调用预算已用尽，未调用）`);
+        continue;
       }
       accept(call, await start(call));
     }
@@ -129,7 +145,14 @@ export class QccResearchCollector {
       accept(eighthCall, await start(eighthCall));
     } else if (successfulCalls + failedCalls < 8) {
       stoppedByBudget = true;
-      gaps.push(`${eighthCall.failureGap}（调用预算已用尽）`);
+      gaps.push(`${eighthCall.failureGap}（调用预算已用尽，未调用）`);
+    }
+
+    if (budget.canConsume('qcc')) {
+      accept(annualReportCall, await start(annualReportCall));
+    } else if (successfulCalls + failedCalls < 8) {
+      stoppedByBudget = true;
+      gaps.push(`${annualReportCall.failureGap}（调用预算已用尽，未调用）`);
     }
 
     const status: ResearchSourceStatus = items.length === 0

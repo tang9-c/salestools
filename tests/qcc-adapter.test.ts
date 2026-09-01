@@ -651,7 +651,8 @@ describe('QCC mapping and formal collection', () => {
     expect(result).not.toHaveProperty('financingStatus');
   });
 
-  it('marks a missing operation get_annual_reports tool as an annual-report gap and QCC partial', async () => {
+  it('calls bidding and shareholder before a missing annual-report tool, without retrying that tool', async () => {
+    const events: string[] = [];
     let annualAttempts = 0;
     const byTool: Record<string, string> = {
       get_financing_records: 'qcc-financing.json',
@@ -660,9 +661,11 @@ describe('QCC mapping and formal collection', () => {
       get_company_risk_scan: 'qcc-risk.json',
       get_patent_info: 'qcc-patent.json',
       get_bidding_info: 'qcc-bidding.json',
+      get_shareholder_info: 'qcc-shareholder.json',
     };
     const collector = new QccResearchCollector({
       call: async (_server, tool) => {
+        events.push(tool);
         if (tool === 'get_annual_reports') {
           annualAttempts += 1;
           throw new UpstreamError('qcc', 'REMOTE_TOOL_ERROR', 'tool is not available');
@@ -676,10 +679,44 @@ describe('QCC mapping and formal collection', () => {
       new CallBudget({ qcc: 8, doubaoSearch: 1, ark: 1, total: 8 }),
     );
 
-    expect(annualAttempts).toBe(2);
+    expect(annualAttempts).toBe(1);
+    expect(events.indexOf('get_bidding_info')).toBeLessThan(events.indexOf('get_annual_reports'));
+    expect(events.indexOf('get_shareholder_info')).toBeLessThan(events.indexOf('get_annual_reports'));
     expect(result.sourceStatus.status).toBe('partial');
-    expect(result.gaps).toContain('年报信息获取失败');
+    expect(result.gaps).toContain('年报信息获取失败（工具不可用，未重试）');
+    expect(result.gaps).not.toContain('股东信息获取失败（调用预算已用尽，未调用）');
     expect(result.items.length).toBeGreaterThan(0);
+  });
+
+  it('does not let deterministic financing and recruitment failures starve later QCC calls', async () => {
+    const events: string[] = [];
+    const collector = new QccResearchCollector({
+      call: async (_server, tool) => {
+        events.push(tool);
+        if (tool === 'get_financing_records') {
+          throw new UpstreamError('qcc', 'UNMAPPABLE_DATASET', 'unmappable financing response');
+        }
+        if (tool === 'get_recruitment_info') {
+          throw new UpstreamError('qcc', 'INVALID_RESPONSE', 'invalid recruitment response');
+        }
+        if (tool === 'get_annual_reports') {
+          throw new UpstreamError('qcc', 'REMOTE_TOOL_ERROR', 'tool is not available');
+        }
+        return { Data: [{ Name: identity.legalName }] };
+      },
+    }, () => new Date('2026-08-29T12:00:00.000Z'));
+
+    const result = await collector.collectQccResearch(
+      identity,
+      new CallBudget({ qcc: 8, doubaoSearch: 1, ark: 1, total: 8 }),
+    );
+
+    expect(events.filter(tool => tool === 'get_financing_records')).toHaveLength(1);
+    expect(events.filter(tool => tool === 'get_recruitment_info')).toHaveLength(1);
+    expect(events).toContain('get_bidding_info');
+    expect(events).toContain('get_shareholder_info');
+    expect(result.gaps).toContain('融资结果无法结构化验证（适配器契约缺口）');
+    expect(result.gaps).toContain('招聘信息获取失败（返回数据无法结构化验证，未重试）');
   });
 
   it('never places raw upstream error text in QCC source status', async () => {
@@ -753,5 +790,11 @@ describe('QCC mapping and formal collection', () => {
     expect(result.items).toHaveLength(2);
     expect(result.sourceStatus.status).toBe('partial');
     expect(result.gaps).toContain('招聘信息获取失败');
+    expect(result.gaps).toContain('招投标信息获取失败（调用预算已用尽，未调用）');
+    expect(result.gaps).toContain('企业简介获取失败（调用预算已用尽，未调用）');
+    expect(result.gaps).toContain('企业风险获取失败（调用预算已用尽，未调用）');
+    expect(result.gaps).toContain('专利信息获取失败（调用预算已用尽，未调用）');
+    expect(result.gaps).toContain('股东信息获取失败（调用预算已用尽，未调用）');
+    expect(result.gaps).toContain('年报信息获取失败（调用预算已用尽，未调用）');
   });
 });
