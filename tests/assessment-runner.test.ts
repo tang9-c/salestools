@@ -128,7 +128,7 @@ describe('AssessmentRunner', () => {
     });
   });
 
-  it('passes an empty bundle to Ark and completes a gaps-only report when both research sources fail', async () => {
+  it('passes an empty bundle to Ark and completes a full unverified report when both research sources fail', async () => {
     const runtime = setup({
       qccResearch: { collectQccResearch: vi.fn(async () => collection('failed')) },
       searchClient: { search: vi.fn(async () => { throw new UpstreamError('doubao_search', 'DOWN', 'down'); }) },
@@ -147,7 +147,17 @@ describe('AssessmentRunner', () => {
     const stored = runtime.assessments.get(runtime.task.assessmentId)!;
     expect(stored).toMatchObject({ status: 'completed', overallOpportunity: '待核实', recommendedProduct: null });
     expect(stored.reportMarkdown).toContain('未获得可用证据，不能形成销售判断');
-    expect(stored.reportMarkdown).not.toMatch(/Windchill|CATIA|Abaqus|SolidWorks/);
+    expect(stored.reportMarkdown).toContain('- 最佳切入产品：暂不推荐');
+    expect(stored.reportMarkdown).toContain('## 七项产品机会');
+    for (const product of [
+      'PTC Windchill',
+      'Feigenbaum QMS',
+      'PTC Creo',
+      'Dassault Systèmes CATIA',
+      'Dassault Systèmes Abaqus',
+      'CST Studio Suite',
+      'Dassault Systèmes SolidWorks',
+    ]) expect(stored.reportMarkdown).toContain(product);
   });
 
   it('retains financing, annual-report, and Ark input-budget gaps in the final report', async () => {

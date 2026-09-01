@@ -13,6 +13,7 @@ import {
 } from '../src/contracts/index.js';
 import { buildReportModel } from '../src/report/build-report-model.js';
 import {
+  classifyReportGap,
   hasDirectLinkCoverageForKeyConclusions,
   presentStoredReport,
   renderMarkdown,
@@ -226,12 +227,22 @@ describe('assessment report', () => {
         - 核实集团采购边界尚未确认
         - 核实预算能力待核实
 
-      ## 风险与缺口
+      ## 风险
 
-      - 风险：存在一项经营风险，需在接触前复核
-      - 缺口：现有 PLM 版本待核实
-      - 缺口：集团采购边界尚未确认
-      - 缺口：预算能力待核实
+      - 存在一项经营风险，需在接触前复核
+
+      ## 评级缺口
+
+      - 现有 PLM 版本待核实
+      - 集团采购边界尚未确认
+
+      ## 增强缺口
+
+      - 预算能力待核实
+
+      ## 审计缺口
+
+      - 暂无来源、链接或容量告警
 
       ## 来源状态
 
@@ -255,52 +266,53 @@ describe('assessment report', () => {
     expect(model.sourceStatus.qcc).toBe('partial');
     expect(model).not.toHaveProperty('financingStatus');
     expect(markdown).toContain('- 最近融资：融资信息获取失败');
-    expect(markdown).toContain('- 缺口：融资信息获取失败');
+    expect(markdown).toContain('## 审计缺口');
+    expect(markdown).toContain('- 融资信息获取失败');
   });
 
-  it('renders only gaps, source status and verification actions when no product is recommended', () => {
+  it('renders the full assessment with layered gaps when no product is recommended', () => {
     const model = buildReportModel(
       identity,
       evidenceBundle({
         industryClassification: 'unverified',
-        industryEvidenceIds: [],
-        evidence: [],
-        facts: [],
+        industryEvidenceIds: ['industry'],
+        evidence: [reference('industry', { title: '企业官网简介' })],
+        facts: [fact('industry-fact', '企业行业和产品技术场景仍待核实', 'industry', ['industry'])],
         financingRecords: [],
-        conflicts: [],
-        gaps: ['未获得可用证据，不能形成销售判断'],
+        conflicts: ['主体归属存在冲突，需核实'],
+        gaps: ['预算能力待核实', '企查查来源链接不可用：industry'],
       }),
       assessment(null),
       { qcc: 'failed', doubaoSearch: 'failed', ark: 'completed' },
     );
     const markdown = renderMarkdown(model);
 
-    expect(markdown).toMatchInlineSnapshot(`
-      "# 目标客户体检报告
+    expect(markdown).toContain('## 客户摘要');
+    expect(markdown).toContain('- 最佳切入产品：暂不推荐');
+    for (const product of [
+      'PTC Windchill',
+      'Feigenbaum QMS',
+      'PTC Creo',
+      'Dassault Systèmes CATIA',
+      'Dassault Systèmes Abaqus',
+      'CST Studio Suite',
+      'Dassault Systèmes SolidWorks',
+    ]) expect(markdown).toContain(product);
+    expect(markdown).toContain('## 关键证据');
+    expect(markdown).toContain('企业行业和产品技术场景仍待核实');
+    expect(markdown).toContain('## 评级缺口');
+    expect(markdown).toContain('## 增强缺口');
+    expect(markdown).toContain('## 审计缺口');
+    expect(markdown).toContain('- 暂不推荐：当前证据不足以给出产品切入建议。');
+    expect(markdown).not.toContain('建议联系岗位');
+    expect(markdown).not.toContain('首轮访谈问题');
+    expect(model.products.every(product => product.level === '待核实')).toBe(true);
+  });
 
-      > 信息采集时间：2026-08-29T12:00:00.000Z
-
-      ## 证据缺口
-
-      - 未获得可用证据，不能形成销售判断
-      - 未获得足够的可归属证据
-      - 行业和产品技术场景待核实
-
-      ## 来源状态
-
-      | 来源 | 状态 |
-      | --- | --- |
-      | 企查查 | failed |
-      | 豆包搜索 | failed |
-      | 火山方舟 | completed |
-
-      ## 下一步核实
-
-      - 核实未获得可用证据，不能形成销售判断
-      - 核实未获得足够的可归属证据
-      - 核实行业和产品技术场景待核实"
-    `);
-    expect(markdown).not.toMatch(/产品机会|Windchill|QMS|Creo|CATIA|Abaqus|CST|SolidWorks|建议联系岗位|销售建议|切入产品/);
+  it('classifies report gaps for presentation without changing opportunity levels', () => {
+    expect(classifyReportGap('主体归属存在冲突，需核实')).toBe('rating');
+    expect(classifyReportGap('预算能力待核实')).toBe('enhancement');
+    expect(classifyReportGap('企查查来源链接不可用：industry')).toBe('audit');
   });
 
   it('rejects identity mismatches and every dangling evidence reference', () => {

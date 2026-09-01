@@ -15,6 +15,22 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const DYNAMIC_SIGNAL_MAX_AGE_MS = 7 * DAY_MS;
 
+export type ReportGapCategory = 'rating' | 'enhancement' | 'audit';
+
+const AUDIT_GAP_PATTERN = /来源|链接|url|网址|容量|字节|裁剪|压缩|上游|获取失败|调用失败|企查查|豆包|年报|链接不可用|\d+\/\d+/iu;
+const ENHANCEMENT_GAP_PATTERN = /预算|融资|时机|时间|周期|决策|审批|采购计划|扩容|替换/iu;
+
+/**
+ * Categorizes an already-recorded gap for Markdown presentation only.
+ * Opportunity evaluation happens before report-model construction and does not
+ * consult this function.
+ */
+export function classifyReportGap(gap: string): ReportGapCategory {
+  if (AUDIT_GAP_PATTERN.test(gap)) return 'audit';
+  if (ENHANCEMENT_GAP_PATTERN.test(gap)) return 'enhancement';
+  return 'rating';
+}
+
 const SALES_QUESTIONS: Readonly<Record<ProductKey, readonly string[]>> = {
   windchill: [
     '当前 BOM、工程变更和配置管理分别由哪些系统或表格承载？',

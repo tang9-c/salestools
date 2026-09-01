@@ -7,6 +7,12 @@ import {
   type ProductKey,
   type ReportModel,
 } from '../contracts/index.js';
+import {
+  classifyReportGap,
+  type ReportGapCategory,
+} from './build-report-model.js';
+
+export { classifyReportGap } from './build-report-model.js';
 
 const DYNAMIC_SIGNAL_WARNING = '> ⚠️ 动态信号已超过 7 天，招聘、采购、诉讼和经营风险可能已经变化。';
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -203,42 +209,55 @@ function evidenceRows(model: ReportModel): string[] {
   ];
 }
 
-function renderDegraded(model: ReportModel): string {
-  const gaps = model.gaps.length === 0 ? ['证据不足，无法形成销售判断'] : model.gaps;
-  const actions = model.nextVerificationActions.length === 0
-    ? ['补充可归属于法定主体的产品技术场景证据']
-    : model.nextVerificationActions;
-  return [
-    '# 目标客户体检报告',
+const GAP_SECTION_TITLES: Readonly<Record<ReportGapCategory, string>> = {
+  rating: '评级缺口',
+  enhancement: '增强缺口',
+  audit: '审计缺口',
+};
+
+const GAP_SECTION_EMPTY_MESSAGES: Readonly<Record<ReportGapCategory, string>> = {
+  rating: '暂无影响评级的信息缺口',
+  enhancement: '暂无影响高机会条件的信息缺口',
+  audit: '暂无来源、链接或容量告警',
+};
+
+function layeredGapSections(model: ReportModel): string[] {
+  const gaps: Record<ReportGapCategory, string[]> = {
+    rating: [],
+    enhancement: [],
+    audit: [],
+  };
+  for (const gap of model.gaps) gaps[classifyReportGap(gap)].push(gap);
+  return (['rating', 'enhancement', 'audit'] as const).flatMap(category => [
+    `## ${GAP_SECTION_TITLES[category]}`,
     '',
-    ...freshnessHeader(model),
+    ...(gaps[category].length === 0
+      ? [`- ${GAP_SECTION_EMPTY_MESSAGES[category]}`]
+      : gaps[category].map(gap => `- ${escapeInline(gap)}`)),
     '',
-    '## 证据缺口',
-    '',
-    ...gaps.map(gap => `- ${escapeInline(gap)}`),
-    '',
-    ...sourceStatusSection(model),
-    '',
-    '## 下一步核实',
-    '',
-    ...actions.map(action => `- ${escapeInline(action)}`),
-  ].join('\n');
+  ]);
 }
 
-function renderNormal(model: ReportModel): string {
-  const recommendedProduct = model.recommendedProduct!;
-  const recommended = model.products.find(product => product.product === recommendedProduct)!;
-  const barriers = recommended.blockers.length === 0
+function renderAssessment(model: ReportModel): string {
+  const recommended = model.recommendedProduct === null
+    ? null
+    : model.products.find(product => product.product === model.recommendedProduct) ?? null;
+  const barriers = recommended === null || recommended.blockers.length === 0
     ? '暂未发现已确认的系统壁垒'
     : recommended.blockers.join('；');
   const scaleClues = model.companyScaleClues.length === 0
     ? '未获得可靠规模线索'
     : model.companyScaleClues.join('；');
   const summaryReasons = model.summaryReasons.length === 0 ? '暂无' : model.summaryReasons.join('；');
-  const riskAndGapLines = [
-    ...model.risks.map(risk => `- 风险：${escapeInline(risk)}`),
-    ...model.gaps.map(gap => `- 缺口：${escapeInline(gap)}`),
-  ];
+  const salesRecommendationLines = recommended === null
+    ? ['- 暂不推荐：当前证据不足以给出产品切入建议。']
+    : [
+      `- 建议切入产品：${PRODUCT_LABELS[recommended.product]}`,
+      `- 建议联系岗位：${TARGET_ROLES[recommended.product]}`,
+      '- 首轮访谈问题：',
+      ...model.salesQuestions.map(question => `  - ${escapeInline(question)}`),
+      `- 主要系统壁垒：${escapeInline(barriers)}`,
+    ];
 
   return [
     '# 目标客户体检报告',
@@ -251,7 +270,7 @@ function renderNormal(model: ReportModel): string {
     `- 行业优先级：${model.industryClassification}`,
     `- 企业规模线索：${escapeInline(scaleClues)}`,
     `- 最近融资：${financingSummary(model)}`,
-    `- 最佳切入产品：${PRODUCT_LABELS[recommendedProduct]}`,
+    `- 最佳切入产品：${recommended === null ? '暂不推荐' : PRODUCT_LABELS[recommended.product]}`,
     `- 综合机会：${model.overallOpportunity}`,
     `- 核心判断理由：${escapeInline(summaryReasons)}`,
     '',
@@ -269,25 +288,22 @@ function renderNormal(model: ReportModel): string {
     '',
     '## 销售建议',
     '',
-    `- 建议切入产品：${PRODUCT_LABELS[recommendedProduct]}`,
-    `- 建议联系岗位：${TARGET_ROLES[recommendedProduct]}`,
-    '- 首轮访谈问题：',
-    ...model.salesQuestions.map(question => `  - ${escapeInline(question)}`),
-    `- 主要系统壁垒：${escapeInline(barriers)}`,
+    ...salesRecommendationLines,
     '- 下一步行动：',
     ...model.nextVerificationActions.map(action => `  - ${escapeInline(action)}`),
     '',
-    '## 风险与缺口',
+    '## 风险',
     '',
-    ...(riskAndGapLines.length === 0 ? ['- 暂无已确认风险或关键缺口'] : riskAndGapLines),
+    ...(model.risks.length === 0 ? ['- 暂无已确认风险'] : model.risks.map(risk => `- ${escapeInline(risk)}`)),
     '',
+    ...layeredGapSections(model),
     ...sourceStatusSection(model),
   ].join('\n');
 }
 
 export function renderMarkdown(modelInput: ReportModel): string {
   const model = ReportModelSchema.parse(modelInput);
-  return model.recommendedProduct === null ? renderDegraded(model) : renderNormal(model);
+  return renderAssessment(model);
 }
 
 export type StoredReportPresentation = Readonly<{
