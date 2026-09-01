@@ -7,7 +7,6 @@ import {
 import { buildSearchPlan, type SearchQuery } from '../search/search-plan.js';
 
 export const ARK_HISTORICAL_FINANCING_GAP = '方舟融资专槽有日期时仅保留最新记录、均无日期时按来源顺序保留一条；其他融资记录未送入整理，未选不代表不存在';
-export const ARK_COMPACT_BUNDLE_MAX_BYTES = 6_656;
 export const ARK_REQUEST_MAX_BYTES = 12_288;
 
 const INITIAL_SUMMARY_BYTES = 512;
