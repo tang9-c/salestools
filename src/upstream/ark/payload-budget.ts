@@ -80,7 +80,7 @@ type ItemState = {
   contentBudget: number;
   summaryBudget: number;
   readonly preferredContentBytes: number;
-  readonly preserveFinancingContent: boolean;
+  readonly minimumContentBytes: number;
   readonly textCategory: EvidenceTextCategory;
 };
 
@@ -174,21 +174,6 @@ function evidenceExcerpt(
     usedBytes += separatorBytes + utf8Bytes(fragment);
   }
   return fragments.length === 0 ? null : fragments.join(separator);
-}
-
-function financingContent(value: string | null): string | null {
-  if (value === null) return null;
-  try {
-    const parsed = JSON.parse(value) as Record<string, unknown>;
-    return JSON.stringify({
-      occurredAt: parsed['occurredAt'] ?? null,
-      typeOrRound: parsed['typeOrRound'] ?? null,
-      disclosedAmount: parsed['disclosedAmount'] ?? null,
-      investors: Array.isArray(parsed['investors']) ? parsed['investors'] : [],
-    });
-  } catch {
-    return evidenceExcerpt(value, INITIAL_DEMAND_CONTENT_BYTES, 'financing');
-  }
 }
 
 function qccTool(item: ResearchItem, tool: string): boolean {
@@ -351,22 +336,17 @@ function buildState(
   item: ResearchItem,
   purposes: ReadonlyMap<string, SearchQuery['purpose']>,
 ): ItemState {
-  const preserveFinancingContent = qccTool(item, 'get_financing_records');
   const textCategory = evidenceTextCategory(item, purposes);
   const preferredContentBytes = isDemandItem(item, purposes)
     ? INITIAL_DEMAND_CONTENT_BYTES
     : INITIAL_SUPPORT_CONTENT_BYTES;
-  const compactedFinancingContent = preserveFinancingContent ? financingContent(item.content) : item.content;
   return {
     original: item,
-    item: {
-      ...item,
-      content: compactedFinancingContent,
-    },
-    contentBudget: compactedFinancingContent === null ? 0 : utf8Bytes(compactedFinancingContent),
+    item,
+    contentBudget: item.content === null ? 0 : utf8Bytes(item.content),
     summaryBudget: item.summary === null ? 0 : utf8Bytes(item.summary),
     preferredContentBytes,
-    preserveFinancingContent,
+    minimumContentBytes: qccTool(item, 'get_financing_records') ? MIN_WINDOW_BYTES : 0,
     textCategory,
   };
 }
@@ -427,10 +407,10 @@ function categoryCounts(
 }
 
 function shrinkContent(state: ItemState): boolean {
-  if (state.preserveFinancingContent || state.original.content === null || state.contentBudget <= 0) return false;
+  if (state.original.content === null || state.contentBudget <= state.minimumContentBytes) return false;
   state.contentBudget = state.contentBudget > state.preferredContentBytes
     ? state.preferredContentBytes
-    : Math.max(0, state.contentBudget - SHRINK_STEP_BYTES);
+    : Math.max(state.minimumContentBytes, state.contentBudget - SHRINK_STEP_BYTES);
   state.item = {
     ...state.item,
     content: evidenceExcerpt(state.original.content, state.contentBudget, state.textCategory),
@@ -537,7 +517,6 @@ export function compactResearchBundleForArk(
       // Reduce each candidate once to its minimum legal footprint before mask comparison.
     }
     while (shrinkSummary(state)) {
-      // Financing content remains intact because shrinkContent respects preserveFinancingContent.
     }
     return state;
   };

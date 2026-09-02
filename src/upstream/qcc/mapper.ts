@@ -178,36 +178,6 @@ const ChineseShareholderSchema = z.object({
   股东信息: z.array(ChineseShareholderRecordSchema),
 }).passthrough();
 
-const ChineseFinancingRecordSchema = z.object({
-  融资日期: OptionalChineseStringSchema,
-  日期: OptionalChineseStringSchema,
-  融资轮次: OptionalChineseStringSchema,
-  轮次: OptionalChineseStringSchema,
-  融资类型: OptionalChineseStringSchema,
-  类型: OptionalChineseStringSchema,
-  融资金额: OptionalChineseStringSchema,
-  金额: OptionalChineseStringSchema,
-  投资方: z.array(z.string()).optional(),
-  来源链接: OptionalChineseStringSchema,
-  链接: OptionalChineseStringSchema,
-}).passthrough().refine(record => [
-  record.融资日期,
-  record.日期,
-  record.融资轮次,
-  record.轮次,
-  record.融资类型,
-  record.类型,
-  record.融资金额,
-  record.金额,
-].some(nonBlank) || (record.投资方?.some(nonBlank) ?? false));
-
-const ChineseFinancingSchema = z.object({
-  企业名称: RequiredChineseStringSchema,
-  统一社会信用代码: OptionalChineseStringSchema,
-  融资信息: z.array(RawRecordSchema).optional(),
-  搜索结果: OptionalChineseStringSchema,
-}).passthrough().refine(record => Array.isArray(record.融资信息) || nonBlank(record.搜索结果));
-
 const ChineseCandidateSchema = z.object({
   企业名称: RequiredChineseStringSchema,
   统一社会信用代码: RequiredChineseStringSchema,
@@ -272,16 +242,6 @@ const FormalProfileRecordSchema = z.object({
   record.Industry, record.Introduction, record.EmployeeRange, record.Website,
 ].some(nonBlank));
 
-const FinancingRecordSchema = z.object({
-  Date: OptionalDateSchema,
-  Round: OptionalStringSchema,
-  Type: OptionalStringSchema,
-  Amount: OptionalStringSchema,
-  Investors: z.array(z.string()).optional(),
-  Url: OptionalUrlSchema,
-}).passthrough().refine(record => [record.Date, record.Round, record.Type, record.Amount].some(nonBlank)
-  || (record.Investors?.some(nonBlank) ?? false));
-
 const RecruitmentRecordSchema = z.object({
   PublishDate: OptionalDateSchema,
   JobName: OptionalStringSchema,
@@ -312,14 +272,6 @@ const PatentRecordSchema = z.object({
   Url: OptionalUrlSchema,
 }).passthrough().refine(record => nonBlank(record.PatentName) || nonBlank(record.ApplicationNumber));
 
-const AnnualReportRecordSchema = z.object({
-  Year: z.string().trim().regex(/^\d{4}$/).nullable().optional(),
-  EmployeeCount: OptionalNumberSchema,
-  TotalAssets: OptionalStringSchema,
-  Revenue: OptionalStringSchema,
-  Url: OptionalUrlSchema,
-}).passthrough().refine(record => nonBlank(record.Year));
-
 const BiddingRecordSchema = z.object({
   Title: OptionalStringSchema,
   PublishDate: OptionalDateSchema,
@@ -346,14 +298,13 @@ const SoftwareCopyrightRecordSchema = z.object({
   Url: OptionalUrlSchema,
 }).passthrough().refine(record => nonBlank(record.SoftwareName) || nonBlank(record.RegistrationNumber));
 
-const QualificationRecordSchema = z.object({
-  QualificationName: OptionalStringSchema,
-  CertificateNumber: OptionalStringSchema,
-  IssuedAt: OptionalDateSchema,
-  ExpiresAt: OptionalDateSchema,
-  Issuer: OptionalStringSchema,
+const MaterialRecordSchema = z.object({
+  Material: z.string().trim().min(1),
   Url: OptionalUrlSchema,
-}).passthrough().refine(record => nonBlank(record.QualificationName) || nonBlank(record.CertificateNumber));
+}).passthrough();
+
+const MATERIAL_MAX_BYTES = 4096;
+const MATERIAL_TOOLS = new Set(['get_financing_records', 'get_annual_reports', 'get_qualifications']);
 
 export interface MappedCandidate {
   legalName: string;
@@ -705,18 +656,17 @@ function safeMappedRecord(tool: string, record: Record<string, unknown>): {
   publishedAt: string | null;
   url: string | null;
 } {
-  if (tool === 'get_financing_records') {
-    const parsed = FinancingRecordSchema.safeParse(record);
-    if (!parsed.success) throw invalidResponse('QCC financing record has an unsupported shape');
-    const occurredAt = dateTimestamp(parsed.data.Date);
-    const typeOrRound = stringValue(parsed.data, 'Round') ?? stringValue(parsed.data, 'Type');
-    const disclosedAmount = stringValue(parsed.data, 'Amount');
-    const investors = stringArray(parsed.data, 'Investors');
+  if (MATERIAL_TOOLS.has(tool)) {
+    const parsed = MaterialRecordSchema.safeParse(record);
+    if (!parsed.success) throw invalidResponse(`QCC ${tool} material has an unsupported shape`);
+    const label = tool === 'get_financing_records'
+      ? '融资概况'
+      : tool === 'get_annual_reports' ? '年报概况' : '资质概况';
     return {
-      titleDetail: typeOrRound ?? '融资记录',
-      summary: [typeOrRound, disclosedAmount].filter(Boolean).join('，') || null,
-      content: { occurredAt, typeOrRound, disclosedAmount, investors },
-      publishedAt: occurredAt,
+      titleDetail: label,
+      summary: `${label}（企查查材料，待模型整理）`,
+      content: { material: parsed.data.Material },
+      publishedAt: null,
       url: safeUrl(stringValue(parsed.data, 'Url')),
     };
   }
@@ -799,24 +749,6 @@ function safeMappedRecord(tool: string, record: Record<string, unknown>): {
     };
   }
 
-  if (tool === 'get_annual_reports') {
-    const parsed = AnnualReportRecordSchema.safeParse(record);
-    if (!parsed.success) throw invalidResponse('QCC annual report has an unsupported shape');
-    const year = stringValue(parsed.data, 'Year');
-    return {
-      titleDetail: `${year ?? '未知年度'}年报`,
-      summary: year === null ? null : `${year}年度公开年报信息`,
-      content: {
-        year,
-        employeeCount: numberValue(parsed.data, 'EmployeeCount'),
-        totalAssets: stringValue(parsed.data, 'TotalAssets'),
-        revenue: stringValue(parsed.data, 'Revenue'),
-      },
-      publishedAt: null,
-      url: safeUrl(stringValue(parsed.data, 'Url')),
-    };
-  }
-
   if (tool === 'get_bidding_info') {
     const parsed = BiddingRecordSchema.safeParse(record);
     if (!parsed.success) throw invalidResponse('QCC bidding record has an unsupported shape');
@@ -875,26 +807,6 @@ function safeMappedRecord(tool: string, record: Record<string, unknown>): {
     };
   }
 
-  if (tool === 'get_qualifications') {
-    const parsed = QualificationRecordSchema.safeParse(record);
-    if (!parsed.success) throw invalidResponse('QCC qualification record has an unsupported shape');
-    const qualificationName = stringValue(parsed.data, 'QualificationName');
-    const issuedAt = dateTimestamp(parsed.data.IssuedAt);
-    return {
-      titleDetail: qualificationName ?? '资质记录',
-      summary: [qualificationName, stringValue(parsed.data, 'Issuer')].filter(Boolean).join('，') || null,
-      content: {
-        qualificationName,
-        certificateNumber: stringValue(parsed.data, 'CertificateNumber'),
-        issuedAt,
-        expiresAt: dateTimestamp(parsed.data.ExpiresAt),
-        issuer: stringValue(parsed.data, 'Issuer'),
-      },
-      publishedAt: issuedAt,
-      url: safeUrl(stringValue(parsed.data, 'Url')),
-    };
-  }
-
   throw invalidResponse(`QCC tool has no v0.1 mapper: ${tool}`);
 }
 
@@ -915,33 +827,78 @@ function normalizedStatusText(value: string): string {
   return value.replace(/[\s。！!，,；;：:]/gu, '');
 }
 
-function chineseFinancingRecords(root: Record<string, unknown>): Record<string, unknown>[] {
-  const structured = root['融资信息'];
-  const searchResult = stringValue(root, '搜索结果');
-  if (Array.isArray(structured)) {
-    if (structured.length === 0) {
-      if (searchResult === null || EXPLICIT_EMPTY_FINANCING_RESULTS.has(normalizedStatusText(searchResult))) return [];
-      throw unmappableDataset('QCC empty financing records conflict with an unverifiable search result');
-    }
-    if (searchResult !== null) {
-      throw unmappableDataset('QCC financing records conflict with an unverifiable search result');
-    }
-    const parsed = z.array(ChineseFinancingRecordSchema).safeParse(structured);
-    if (!parsed.success) throw unmappableDataset('QCC financing records have an unsupported shape');
-    return parsed.data.map(record => ({
-      Date: stringValueFrom(record, ['融资日期', '日期']),
-      Round: stringValueFrom(record, ['融资轮次', '轮次']),
-      Type: stringValueFrom(record, ['融资类型', '类型']),
-      Amount: stringValueFrom(record, ['融资金额', '金额']),
-      Investors: stringArray(record, '投资方'),
-      Url: stringValueFrom(record, ['来源链接', '链接']),
-    }));
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  const suffix = '…';
+  const contentLimit = maxBytes - Buffer.byteLength(suffix, 'utf8');
+  let output = '';
+  let used = 0;
+  for (const codePoint of value) {
+    const bytes = Buffer.byteLength(codePoint, 'utf8');
+    if (used + bytes > contentLimit) break;
+    output += codePoint;
+    used += bytes;
   }
+  return `${output}${suffix}`;
+}
 
-  if (searchResult !== null && EXPLICIT_EMPTY_FINANCING_RESULTS.has(normalizedStatusText(searchResult))) {
-    return [];
+function materialArray(value: unknown, tool: string): Record<string, unknown>[] {
+  if (!Array.isArray(value)) throw unmappableDataset(`QCC ${tool} material container is not an array`);
+  const parsed = z.array(RawRecordSchema).safeParse(value);
+  if (!parsed.success) throw unmappableDataset(`QCC ${tool} material records are not objects`);
+  return parsed.data;
+}
+
+function materialSourceUrl(records: readonly Record<string, unknown>[]): string | null {
+  for (const record of records) {
+    const candidate = stringValueFrom(record, ['Url', '来源链接', '链接', '来源']);
+    const url = safeUrl(candidate);
+    if (url !== null) return url;
   }
-  throw unmappableDataset('QCC financing result cannot be structurally verified');
+  return null;
+}
+
+function knownMaterialRecords(
+  tool: string,
+  payload: unknown,
+  expected: ExpectedQccSubject,
+): Record<string, unknown>[] {
+  const unwrapped = unwrapPayload(payload);
+  const standard = RawRootSchema.safeParse(unwrapped);
+  let records: Record<string, unknown>[];
+  let note: string | null = null;
+  if (standard.success) {
+    records = recordsOf(payload);
+    for (const record of records) assertExpectedSubject(record, expected);
+  } else {
+    const parsed = RawRecordSchema.safeParse(unwrapped);
+    if (!parsed.success) throw invalidResponse(`QCC ${tool} result has an unsupported shape`);
+    const root = parsed.data;
+    assertExpectedSubject(root, expected);
+    if (tool === 'get_financing_records') {
+      const equity = RawRecordSchema.safeParse(root['股权融资']);
+      const container = equity.success ? equity.data['创投融资'] : root['融资信息'];
+      note = stringValue(root, '搜索结果');
+      if (container === undefined) {
+        if (note !== null && EXPLICIT_EMPTY_FINANCING_RESULTS.has(normalizedStatusText(note))) return [];
+        throw unmappableDataset('QCC financing material container is unavailable');
+      }
+      records = materialArray(container, tool);
+    } else if (tool === 'get_annual_reports') {
+      if (root['企业年报信息'] === undefined) throw unmappableDataset('QCC annual-report material container is unavailable');
+      records = materialArray(root['企业年报信息'], tool);
+    } else if (tool === 'get_qualifications') {
+      if (root['资质证书信息'] === undefined) throw unmappableDataset('QCC qualification material container is unavailable');
+      records = materialArray(root['资质证书信息'], tool);
+    } else {
+      throw invalidResponse(`QCC ${tool} has no material adapter`);
+    }
+  }
+  if (records.length === 0) return [];
+  return [{
+    Material: truncateUtf8(JSON.stringify({ records, ...(note === null ? {} : { note }) }), MATERIAL_MAX_BYTES),
+    Url: materialSourceUrl(records),
+  }];
 }
 
 function parseChineseFormalRoot<T extends z.ZodType>(
@@ -959,6 +916,7 @@ function formalRecords(
   payload: unknown,
   expected: ExpectedQccSubject,
 ): Record<string, unknown>[] {
+  if (MATERIAL_TOOLS.has(tool)) return knownMaterialRecords(tool, payload, expected);
   const unwrapped = unwrapPayload(payload);
   if (RawRootSchema.safeParse(unwrapped).success) {
     const records = recordsOf(payload);
@@ -1025,10 +983,6 @@ function formalRecords(
       SubscribedCapital: record.认缴出资额 ?? null,
       ShareholderType: null,
     }));
-  }
-  if (tool === 'get_financing_records') {
-    const parsed = parseChineseFormalRoot(ChineseFinancingSchema, root, tool);
-    return chineseFinancingRecords(parsed);
   }
   throw invalidResponse(`QCC ${tool} has no Chinese response contract`);
 }

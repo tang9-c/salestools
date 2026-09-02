@@ -125,6 +125,25 @@ describe('QccGateway', () => {
     expect(connections).toBe(0);
   });
 
+  it('routes annual reports through company instead of operation', async () => {
+    const calls: Array<[string, string]> = [];
+    const gateway = new QccGateway(config, {
+      create: async server => ({
+        callTool: async tool => {
+          calls.push([server, tool]);
+          return { Data: [] };
+        },
+        close: async () => undefined,
+      }),
+    });
+
+    await expect(gateway.call('company', 'get_annual_reports', {})).resolves.toEqual({ Data: [] });
+    await expect(gateway.call('operation', 'get_annual_reports', {}))
+      .rejects.toMatchObject({ code: 'TOOL_NOT_ALLOWED' });
+    expect(calls).toEqual([['company', 'get_annual_reports']]);
+    await gateway.close();
+  });
+
   it('performs exactly one callTool per call and clears a failed connection for the next outer attempt', async () => {
     let created = 0;
     let calls = 0;
@@ -184,7 +203,7 @@ describe('QccGateway', () => {
     await expect(financing).rejects.toMatchObject({ code: 'REMOTE_TOOL_ERROR' });
     releaseRecruitment();
     await expect(recruitment).resolves.toEqual({ Data: [{ JobName: '研发工程师' }] });
-    await expect(gateway.call('operation', 'get_annual_reports', {})).resolves.toEqual({ Data: [{ JobName: '研发工程师' }] });
+    await expect(gateway.call('operation', 'get_qualifications', {})).resolves.toEqual({ Data: [{ JobName: '研发工程师' }] });
     expect({ created, closes }).toEqual({ created: 1, closes: 0 });
     await gateway.close();
   });
@@ -196,19 +215,15 @@ describe('QCC mapping and formal collection', () => {
     const financing = mapQccToolResult('operation', 'get_financing_records', fixture('qcc-financing.json'), identity, now);
     const recruitment = mapQccToolResult('operation', 'get_recruitment_info', fixture('qcc-recruitment.json'), identity, now);
 
-    expect(JSON.parse(financing.items[0].content ?? '{}')).toEqual({
-      occurredAt: '2026-06-15T00:00:00.000Z', typeOrRound: 'A轮', disclosedAmount: null,
-      investors: ['示例创投', '产业基金'],
-    });
-    expect(JSON.parse(financing.items[1].content ?? '{}')).toEqual({
-      occurredAt: null, typeOrRound: '定向增发', disclosedAmount: null, investors: [],
-    });
+    expect(financing.items).toHaveLength(1);
+    const financingMaterial = JSON.parse(financing.items[0]!.content ?? '{}') as { material: string };
+    expect(financingMaterial.material).toContain('A轮');
+    expect(financingMaterial.material).toContain('定向增发');
     expect(JSON.parse(recruitment.items[0].content ?? '{}')).toMatchObject({
       publishedAt: '2026-07-01T00:00:00.000Z', jobName: 'Creo机械设计工程师', location: '上海',
     });
     expect(financing.items[0].url).toBe('https://www.qcc.com/example/financing-1');
-    expect(financing.items[1].url).toBeNull();
-    expect(financing.gaps).toContain(qccUnavailableLinkAuditGap('qcc-operation-get_financing_records-2'));
+    expect(financing.gaps).not.toContain(qccUnavailableLinkAuditGap('qcc-operation-get_financing_records-2'));
   });
 
   it('normalizes the real QCC Chinese formal-response shapes conservatively', () => {
@@ -311,8 +326,6 @@ describe('QCC mapping and formal collection', () => {
   it.each([
     'qcc-real-financing-permission.json',
     'qcc-real-financing-candidates.json',
-    'qcc-real-financing-structured-invalid.json',
-    'qcc-real-financing-conflict.json',
   ])('rejects an unstructured financing dataset from %s instead of reporting a verified empty result', file => {
     expect(() => mapQccToolResult(
       'operation',
@@ -335,12 +348,58 @@ describe('QCC mapping and formal collection', () => {
     expect(empty.items).toEqual([]);
     expect(empty.gaps).toContain('get_financing_records未查到或未披露数据');
     expect(valid.items).toHaveLength(1);
-    expect(JSON.parse(valid.items[0].content ?? '{}')).toEqual({
-      occurredAt: '2026-06-15T00:00:00.000Z',
-      typeOrRound: 'A轮',
-      disclosedAmount: '未披露',
-      investors: ['脱敏投资方'],
-    });
+    const material = JSON.parse(valid.items[0]!.content ?? '{}') as { material: string };
+    expect(material.material).toContain('A轮');
+    expect(material.material).toContain('未披露');
+  });
+
+  it('keeps real financing, annual-report and qualification records as bounded summary material', () => {
+    const now = new Date('2026-08-29T12:00:00.000Z');
+    const financing = mapQccToolResult('operation', 'get_financing_records', {
+      企业名称: identity.legalName,
+      统一社会信用代码: identity.creditCode,
+      股权融资: {
+        创投融资: [{ 摘要: '完成战略融资并引入产业投资者', 上游新增字段: { 任意: true } }],
+      },
+    }, identity, now);
+    const annual = mapQccToolResult('company', 'get_annual_reports', {
+      企业名称: identity.legalName,
+      统一社会信用代码: identity.creditCode,
+      企业年报信息: [{ 年报年度: '2025', 企业基本信息: { 从业人数: '286人' }, 新字段: '允许' }],
+    }, identity, now);
+    const qualification = mapQccToolResult('operation', 'get_qualifications', {
+      企业名称: identity.legalName,
+      统一社会信用代码: identity.creditCode,
+      资质证书信息: [{ 资质名称: 'IATF 16949', 未知字段: ['允许'] }],
+    }, identity, now);
+
+    for (const mapped of [financing, annual, qualification]) {
+      expect(mapped.items).toHaveLength(1);
+      const content = JSON.parse(mapped.items[0]!.content ?? '{}') as { material?: string };
+      expect(content.material).toBeTypeOf('string');
+      expect(Buffer.byteLength(content.material ?? '', 'utf8')).toBeLessThanOrEqual(4096);
+      expect(mapped.items[0]!.url).toBeNull();
+    }
+    expect(financing.items[0]!.content).toContain('完成战略融资并引入产业投资者');
+    expect(annual.items[0]!.content).toContain('从业人数');
+    expect(qualification.items[0]!.content).toContain('IATF 16949');
+  });
+
+  it('treats known empty QCC material containers as success but rejects unlocatable material', () => {
+    const now = new Date('2026-08-29T12:00:00.000Z');
+    const empty = mapQccToolResult('operation', 'get_financing_records', {
+      企业名称: identity.legalName,
+      统一社会信用代码: identity.creditCode,
+      股权融资: { 创投融资: [] },
+    }, identity, now);
+
+    expect(empty.items).toEqual([]);
+    expect(empty.gaps).toContain('get_financing_records未查到或未披露数据');
+    expect(() => mapQccToolResult('operation', 'get_financing_records', {
+      企业名称: identity.legalName,
+      统一社会信用代码: identity.creditCode,
+      未知融资结构: [{ 摘要: '不可猜测' }],
+    }, identity, now)).toThrow(expect.objectContaining({ code: 'UNMAPPABLE_DATASET' }));
   });
 
   it('maps a substantive Chinese risk factor into a consumable summary', () => {
@@ -495,7 +554,7 @@ describe('QCC mapping and formal collection', () => {
   it.each([
     ['qcc-real-financing-permission.json', 'partial', true],
     ['qcc-real-financing-candidates.json', 'partial', true],
-    ['qcc-real-financing-conflict.json', 'partial', true],
+    ['qcc-real-financing-conflict.json', 'completed', false],
     ['qcc-real-financing-empty.json', 'completed', false],
   ] as const)('classifies collector financing dataset %s as %s', async (file, expectedStatus, adapterGap) => {
     const byTool: Record<string, string> = {
@@ -519,7 +578,7 @@ describe('QCC mapping and formal collection', () => {
     );
 
     expect(result.sourceStatus.status).toBe(expectedStatus);
-    expect(result.gaps.includes('融资结果无法结构化验证（适配器契约缺口）')).toBe(adapterGap);
+    expect(result.gaps.includes('融资信息获取失败（返回数据无法读取，未重试）')).toBe(adapterGap);
   });
 
   it.each([
@@ -560,8 +619,8 @@ describe('QCC mapping and formal collection', () => {
       patentName: '一种精密传动装置', patentType: '发明专利', applicationNumber: 'CN202610000001.0',
       applicationDate: '2026-02-03T00:00:00.000Z', status: '实质审查',
     }],
-    ['operation', 'get_annual_reports', 'qcc-annual-report.json', {
-      year: '2025', employeeCount: 286, totalAssets: '8.2亿元', revenue: null,
+    ['company', 'get_annual_reports', 'qcc-annual-report.json', {
+      material: expect.stringContaining('EmployeeCount'),
     }],
     ['operation', 'get_bidding_info', 'qcc-bidding.json', {
       title: '研发数据管理平台采购项目', publishedAt: '2026-07-20T00:00:00.000Z', role: '采购方',
@@ -576,8 +635,7 @@ describe('QCC mapping and formal collection', () => {
       registrationDate: '2026-04-08T00:00:00.000Z', version: 'V1.0',
     }],
     ['operation', 'get_qualifications', 'qcc-qualification.json', {
-      qualificationName: 'IATF 16949质量管理体系认证', certificateNumber: 'IATF-TEST-001',
-      issuedAt: '2025-09-01T00:00:00.000Z', expiresAt: '2028-08-31T00:00:00.000Z', issuer: '示例认证机构',
+      material: expect.stringContaining('IATF 16949质量管理体系认证'),
     }],
   ] as const)('validates and maps %s/%s with its tool-level contract', (server, tool, file, expected) => {
     const mapped = mapQccToolResult(server, tool, fixture(file), identity, new Date('2026-08-29T12:00:00.000Z'));
@@ -587,12 +645,6 @@ describe('QCC mapping and formal collection', () => {
   });
 
   it.each([
-    ['operation', 'get_financing_records', {
-      Data: [{ Date: 'not-a-date', Round: '   ', Type: '', Amount: ' ', Investors: ['   '] }],
-    }],
-    ['operation', 'get_financing_records', {
-      Data: [{ Date: '2026-02-30', Round: null, Type: null, Amount: null, Investors: [] }],
-    }],
     ['risk', 'get_company_risk_scan', {
       Data: [{ RiskCount: null, ExceptionCount: null, PenaltyCount: null, JudicialCount: null, Summary: '   ' }],
     }],
@@ -715,8 +767,8 @@ describe('QCC mapping and formal collection', () => {
     expect(events.filter(tool => tool === 'get_recruitment_info')).toHaveLength(1);
     expect(events).toContain('get_bidding_info');
     expect(events).toContain('get_shareholder_info');
-    expect(result.gaps).toContain('融资结果无法结构化验证（适配器契约缺口）');
-    expect(result.gaps).toContain('招聘信息获取失败（返回数据无法结构化验证，未重试）');
+    expect(result.gaps).toContain('融资信息获取失败（返回数据无法读取，未重试）');
+    expect(result.gaps).toContain('招聘信息获取失败（返回数据无法读取，未重试）');
   });
 
   it('never places raw upstream error text in QCC source status', async () => {
@@ -787,7 +839,7 @@ describe('QCC mapping and formal collection', () => {
     );
 
     expect(events).toEqual(['get_financing_records']);
-    expect(result.items).toHaveLength(2);
+    expect(result.items).toHaveLength(1);
     expect(result.sourceStatus.status).toBe('partial');
     expect(result.gaps).toContain('招聘信息获取失败');
     expect(result.gaps).toContain('招投标信息获取失败（调用预算已用尽，未调用）');

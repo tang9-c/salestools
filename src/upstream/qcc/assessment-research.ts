@@ -38,13 +38,10 @@ const coreCalls: PlannedCall[] = [
   { server: 'ipr', tool: 'get_patent_info', failureGap: '专利信息获取失败' },
 ];
 const annualReportCall: PlannedCall = {
-  server: 'operation', tool: 'get_annual_reports', failureGap: '年报信息获取失败',
+  server: 'company', tool: 'get_annual_reports', failureGap: '年报信息获取失败',
 };
 
 function failureGap(call: PlannedCall, errorCode: string): string {
-  if (call.tool === 'get_financing_records' && errorCode === 'UNMAPPABLE_DATASET') {
-    return '融资结果无法结构化验证（适配器契约缺口）';
-  }
   if (errorCode === 'BUDGET_EXHAUSTED') {
     return `${call.failureGap}（调用预算已用尽，未调用）`;
   }
@@ -52,7 +49,7 @@ function failureGap(call: PlannedCall, errorCode: string): string {
     return `${call.failureGap}（工具不可用，未重试）`;
   }
   if (errorCode === 'UNMAPPABLE_DATASET' || errorCode === 'INVALID_RESPONSE') {
-    return `${call.failureGap}（返回数据无法结构化验证，未重试）`;
+    return `${call.failureGap}（返回数据无法读取，未重试）`;
   }
   return call.failureGap;
 }
