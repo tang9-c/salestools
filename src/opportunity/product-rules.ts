@@ -114,5 +114,5 @@ export const GENERAL_BLOCKER_KEYWORDS = [
 ] as const;
 
 export const CRITICAL_CONFLICT_KEYWORDS = [
-  '法定主体', '主体归属', '同名企业', '统一社会信用代码', '关键来源冲突', '行业分类冲突',
+  '法定主体', '主体归属', '同名企业', '统一社会信用代码', '关键来源冲突', '行业信息冲突',
 ] as const;

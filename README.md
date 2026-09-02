@@ -53,7 +53,7 @@ codex mcp add salestools \
 
 每份已完成报告都显示客户摘要、完整七产品机会矩阵、关键证据、销售建议（无推荐时显示“暂不推荐”）、风险与分层缺口以及来源状态。`recommended_product` 为 `null` 不会隐藏这七项判断。
 
-SQLite 的 `assessments.result_json` 只保存可审计的派生结果：行业分类及其证据 ID、七项产品机会等级与证据 ID、入选证据 ID、原始/入选/排除数量、四类入选数量、紧凑研究包字节数和最终请求字节数。`recommended_product` 与 `overall_opportunity` 仍分别保存于 `assessments` 的独立列，不属于 `result_json`。`result_json` 不保存研究正文、网页正文、原始上游响应或凭据；MCP 响应仍保持既有精简契约。
+SQLite 的 `assessments.result_json` 只保存可审计的派生结果：有证据支持的自由文本行业标签及其证据 ID、七项产品机会等级与证据 ID、入选证据 ID、原始/入选/排除数量、四类入选数量、紧凑研究包字节数和最终请求字节数。行业标签只用于报告展示，不参与机会等级、推荐产品或置信度。`recommended_product` 与 `overall_opportunity` 仍分别保存于 `assessments` 的独立列，不属于 `result_json`。`result_json` 不保存研究正文、网页正文、原始上游响应或凭据；MCP 响应仍保持既有精简契约。
 
 ## 部署
 
