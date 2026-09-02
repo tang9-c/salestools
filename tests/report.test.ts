@@ -270,6 +270,24 @@ describe('assessment report', () => {
     expect(markdown).toContain('- 融资信息获取失败');
   });
 
+  it('renders an LLM financing summary when precise fields are unavailable', () => {
+    const input = evidenceBundle({
+      financingRecords: [{
+        occurredAt: null,
+        typeOrRound: null,
+        disclosedAmount: null,
+        investors: [],
+        summary: '公司曾完成战略融资并引入产业投资者，具体轮次和金额未披露。',
+        evidenceIds: ['financing'],
+      }],
+    });
+    const markdown = renderMarkdown(buildReportModel(identity, input, assessment(), sourceStatus));
+
+    expect(markdown).toContain('- 最近融资：公司曾完成战略融资并引入产业投资者，具体轮次和金额未披露。');
+    expect(markdown).toContain('| 融资记录：公司曾完成战略融资并引入产业投资者，具体轮次和金额未披露。 |');
+    expect(markdown).not.toContain('日期未披露；类型或轮次未披露；金额未披露');
+  });
+
   it('renders the full assessment with layered gaps when no product is recommended', () => {
     const model = buildReportModel(
       identity,

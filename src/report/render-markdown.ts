@@ -117,6 +117,9 @@ function financingSummary(model: ReportModel): string {
     return model.gaps.includes('融资信息获取失败') ? '融资信息获取失败' : '未查到或未披露';
   }
   const financing = model.latestFinancing;
+  if (financing.summary !== undefined && financing.summary !== null) {
+    return escapeInline(financing.summary);
+  }
   return [
     financing.occurredAt ?? '日期未披露',
     financing.typeOrRound ?? '类型或轮次未披露',
@@ -168,6 +171,9 @@ function factSupport(model: ReportModel, fact: EvidenceFact): string {
 }
 
 function financingStatement(record: FinancingRecord): string {
+  if (record.summary !== undefined && record.summary !== null) {
+    return `融资记录：${record.summary}`;
+  }
   return `融资记录：${[
     record.occurredAt ?? '日期未披露',
     record.typeOrRound ?? '类型或轮次未披露',

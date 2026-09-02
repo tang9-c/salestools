@@ -191,6 +191,22 @@ describe('shared contracts', () => {
     expect(ReportModelSchema.parse(report)).toEqual(report);
   });
 
+  it('accepts a sourced financing summary without precise financing fields', () => {
+    const parsed = EvidenceBundleSchema.parse({
+      ...evidenceBundle,
+      financingRecords: [{
+        occurredAt: null,
+        typeOrRound: null,
+        disclosedAmount: null,
+        investors: [],
+        summary: '公司曾完成战略融资并引入产业投资者，具体轮次和金额未披露。',
+        evidenceIds: ['ev-1'],
+      }],
+    });
+
+    expect(parsed.financingRecords[0]?.summary).toContain('战略融资');
+  });
+
   it('rejects unknown fields at every nested object level', () => {
     expect(IdentityProfileSchema.safeParse({ ...identity, extra: true }).success).toBe(false);
     expect(ResearchBundleSchema.safeParse({ ...researchBundle, extra: true }).success).toBe(false);

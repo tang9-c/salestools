@@ -1259,6 +1259,33 @@ describe('ArkEvidenceService', () => {
     expect(requestResearch(fetchFn).items[0]?.content).toBe(financing.content);
   });
 
+  it('preserves a sourced financing summary when precise fields are unavailable', async () => {
+    const research = budgetResearchBundle();
+    const financing = research.items.find(item => item.evidenceId.includes('get_financing_records'))!;
+    const model: EvidenceBundle = {
+      ...factFreeEvidence(research),
+      evidence: [referenceFromResearchItem(financing)],
+      financingRecords: [{
+        occurredAt: null,
+        typeOrRound: null,
+        disclosedAmount: null,
+        investors: [],
+        summary: '公司完成战略融资并引入产业投资者，日期、轮次和金额未披露。',
+        evidenceIds: [financing.evidenceId],
+      }],
+    };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(responseWithContent(JSON.stringify(model)));
+
+    await expect(client(fetchFn).extract(research)).resolves.toMatchObject({
+      financingRecords: [{
+        summary: '公司完成战略融资并引入产业投资者，日期、轮次和金额未披露。',
+        occurredAt: null,
+        typeOrRound: null,
+        disclosedAmount: null,
+      }],
+    });
+  });
+
   it('selects the latest dated financing record even when an older record appears first', async () => {
     const research = budgetResearchBundle();
     const financing = research.items.find(item => item.evidenceId.includes('get_financing_records'))!;

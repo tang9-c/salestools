@@ -63,6 +63,7 @@ export const FinancingRecordSchema = z.object({
   typeOrRound: z.string().nullable(),
   disclosedAmount: z.string().nullable(),
   investors: z.array(z.string()),
+  summary: z.string().trim().min(1).nullable().optional(),
   evidenceIds: z.array(z.string()),
 }).strict();
 
