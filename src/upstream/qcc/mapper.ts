@@ -303,8 +303,14 @@ const MaterialRecordSchema = z.object({
   Url: OptionalUrlSchema,
 }).passthrough();
 
+const RecruitmentMaterialRecordSchema = z.object({
+  RecruitmentMaterial: z.string().trim().min(1),
+  Url: OptionalUrlSchema,
+}).passthrough();
+
 const MATERIAL_MAX_BYTES = 4096;
 const MATERIAL_TOOLS = new Set(['get_financing_records', 'get_annual_reports', 'get_qualifications']);
+const RECRUITMENT_MATERIAL_GAP = '招聘使用非结构化材料整理';
 
 export interface MappedCandidate {
   legalName: string;
@@ -672,6 +678,16 @@ function safeMappedRecord(tool: string, record: Record<string, unknown>): {
   }
 
   if (tool === 'get_recruitment_info') {
+    const material = RecruitmentMaterialRecordSchema.safeParse(record);
+    if (material.success) {
+      return {
+        titleDetail: '招聘材料',
+        summary: '招聘信息（企查查材料，待模型整理）',
+        content: { material: material.data.RecruitmentMaterial },
+        publishedAt: null,
+        url: safeUrl(stringValue(material.data, 'Url')),
+      };
+    }
     const parsed = RecruitmentRecordSchema.safeParse(record);
     if (!parsed.success) throw invalidResponse('QCC recruitment record has an unsupported shape');
     const publishedAt = dateTimestamp(parsed.data.PublishDate);
@@ -858,6 +874,26 @@ function materialSourceUrl(records: readonly Record<string, unknown>[]): string 
   return null;
 }
 
+function hasRecruitmentMaterial(value: unknown): boolean {
+  const text = JSON.stringify(value).normalize('NFKC');
+  return /(?:招聘结果|招聘信息|招聘记录|招聘职位|岗位详情|岗位职责|任职要求|职位描述|职位要求)/u.test(text)
+    && /(?:岗位|职位|职责|要求|工程师|管理员|顾问)/u.test(text);
+}
+
+function recruitmentMaterialRecord(
+  root: Record<string, unknown>,
+  expected: ExpectedQccSubject,
+): Record<string, unknown> {
+  assertExpectedSubject(root, expected);
+  if (!hasRecruitmentMaterial(root)) {
+    throw invalidResponse('QCC recruitment response does not contain recruitment material');
+  }
+  return {
+    RecruitmentMaterial: truncateUtf8(JSON.stringify(root), MATERIAL_MAX_BYTES),
+    Url: materialSourceUrl([root]),
+  };
+}
+
 function knownMaterialRecords(
   tool: string,
   payload: unknown,
@@ -921,6 +957,15 @@ function formalRecords(
   if (RawRootSchema.safeParse(unwrapped).success) {
     const records = recordsOf(payload);
     for (const record of records) assertExpectedSubject(record, expected);
+    if (tool === 'get_recruitment_info'
+      && records.length > 0
+      && !records.every(record => RecruitmentRecordSchema.safeParse(record).success)) {
+      return [recruitmentMaterialRecord({
+        企业名称: expected.legalName,
+        统一社会信用代码: expected.creditCode,
+        招聘结果: records,
+      }, expected)];
+    }
     return records;
   }
   const chinese = RawRecordSchema.safeParse(unwrapped);
@@ -956,8 +1001,9 @@ function formalRecords(
     }));
   }
   if (tool === 'get_recruitment_info') {
-    const parsed = parseChineseFormalRoot(ChineseRecruitmentSchema, root, tool);
-    return parsed.招聘信息.map(record => ({
+    const parsed = ChineseRecruitmentSchema.safeParse(root);
+    if (!parsed.success) return [recruitmentMaterialRecord(root, expected)];
+    return parsed.data.招聘信息.map(record => ({
       PublishDate: record.发布日期 ?? null,
       JobName: record.招聘职位,
       Salary: record.月薪 ?? null,
@@ -1020,10 +1066,15 @@ export function mapQccToolResult(
       logId: null,
     });
   });
+  const usedRecruitmentMaterial = tool === 'get_recruitment_info'
+    && records.some(record => RecruitmentMaterialRecordSchema.safeParse(record).success);
   return {
     items,
-    gaps: items
-      .filter(item => item.url === null)
-      .map(item => qccUnavailableLinkAuditGap(item.evidenceId)),
+    gaps: [...new Set([
+      ...(usedRecruitmentMaterial ? [RECRUITMENT_MATERIAL_GAP] : []),
+      ...items
+        .filter(item => item.url === null)
+        .map(item => qccUnavailableLinkAuditGap(item.evidenceId)),
+    ])],
   };
 }

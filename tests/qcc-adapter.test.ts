@@ -226,6 +226,62 @@ describe('QCC mapping and formal collection', () => {
     expect(financing.gaps).not.toContain(qccUnavailableLinkAuditGap('qcc-operation-get_financing_records-2'));
   });
 
+  it('degrades an attributed unknown recruitment shape to one bounded material item', () => {
+    const mapped = mapQccToolResult(
+      'operation',
+      'get_recruitment_info',
+      fixture('qcc-recruitment-material.json'),
+      identity,
+      new Date('2026-08-29T12:00:00.000Z'),
+    );
+
+    expect(mapped.items).toHaveLength(1);
+    expect(mapped.gaps).toContain('招聘使用非结构化材料整理');
+    expect(mapped.items[0]).toMatchObject({
+      evidenceId: 'qcc-operation-get_recruitment_info-1',
+      entityScope: 'legal_entity',
+      entityMatch: 'confirmed',
+    });
+    const content = JSON.parse(mapped.items[0]!.content ?? '{}') as { material?: string };
+    expect(content.material).toContain('Windchill');
+    expect(content.material).toContain('Abaqus');
+    expect(Buffer.byteLength(content.material ?? '', 'utf8')).toBeLessThanOrEqual(4096);
+  });
+
+  it('truncates unknown recruitment material instead of retaining the full response', () => {
+    const payload = {
+      企业名称: identity.legalName,
+      统一社会信用代码: identity.creditCode,
+      招聘结果: [{ 岗位: 'Creo工程师', 岗位详情: '参数化建模'.repeat(3000) }],
+    };
+
+    const mapped = mapQccToolResult(
+      'operation', 'get_recruitment_info', payload, identity,
+      new Date('2026-08-29T12:00:00.000Z'),
+    );
+    const material = (JSON.parse(mapped.items[0]!.content ?? '{}') as { material: string }).material;
+
+    expect(Buffer.byteLength(material, 'utf8')).toBeLessThanOrEqual(4096);
+    expect(material.endsWith('…')).toBe(true);
+    expect(material).not.toContain('参数化建模'.repeat(3000));
+  });
+
+  it('does not degrade empty or mismatched unknown recruitment responses', () => {
+    const now = new Date('2026-08-29T12:00:00.000Z');
+
+    expect(() => mapQccToolResult(
+      'operation', 'get_recruitment_info',
+      { 企业名称: identity.legalName, 统一社会信用代码: identity.creditCode, 招聘结果: [] },
+      identity, now,
+    )).toThrow(expect.objectContaining({ code: 'INVALID_RESPONSE' }));
+
+    expect(() => mapQccToolResult(
+      'operation', 'get_recruitment_info',
+      { 企业名称: '其他公司', 统一社会信用代码: identity.creditCode, 招聘结果: [{ 岗位: 'Creo工程师' }] },
+      identity, now,
+    )).toThrow(expect.objectContaining({ code: 'SUBJECT_MISMATCH' }));
+  });
+
   it('normalizes the real QCC Chinese formal-response shapes conservatively', () => {
     const now = new Date('2026-08-29T12:00:00.000Z');
     const profile = mapQccToolResult('company', 'get_company_profile', {
