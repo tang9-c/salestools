@@ -449,25 +449,33 @@ function categoryCounts(
 
 function shrinkContent(state: ItemState): boolean {
   if (state.original.content === null || state.contentBudget <= state.minimumContentBytes) return false;
-  state.contentBudget = state.contentBudget > state.preferredContentBytes
+  const nextBudget = state.contentBudget > state.preferredContentBytes
     ? state.preferredContentBytes
     : Math.max(state.minimumContentBytes, state.contentBudget - SHRINK_STEP_BYTES);
-  state.item = {
+  const nextItem = {
     ...state.item,
-    content: evidenceExcerpt(state.original.content, state.contentBudget, state.textCategory),
+    content: evidenceExcerpt(state.original.content, nextBudget, state.textCategory),
   };
+  const requiredSignals = signalMask(state.original);
+  if ((signalMask(nextItem) & requiredSignals) !== requiredSignals) return false;
+  state.contentBudget = nextBudget;
+  state.item = nextItem;
   return true;
 }
 
 function shrinkSummary(state: ItemState): boolean {
   if (state.original.summary === null || state.summaryBudget <= 0) return false;
-  state.summaryBudget = state.summaryBudget > INITIAL_SUMMARY_BYTES
+  const nextBudget = state.summaryBudget > INITIAL_SUMMARY_BYTES
     ? INITIAL_SUMMARY_BYTES
     : Math.max(0, state.summaryBudget - SHRINK_STEP_BYTES);
-  state.item = {
+  const nextItem = {
     ...state.item,
-    summary: evidenceExcerpt(state.original.summary, state.summaryBudget, state.textCategory),
+    summary: evidenceExcerpt(state.original.summary, nextBudget, state.textCategory),
   };
+  const requiredSignals = signalMask(state.original);
+  if ((signalMask(nextItem) & requiredSignals) !== requiredSignals) return false;
+  state.summaryBudget = nextBudget;
+  state.item = nextItem;
   return true;
 }
 

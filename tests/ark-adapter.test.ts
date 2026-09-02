@@ -429,7 +429,11 @@ describe('ArkEvidenceService', () => {
       candidate => Buffer.byteLength(serializedRequest('ep-test', candidate), 'utf8'),
     );
 
-    expect(selection.bundle.items.map(item => item.evidenceId)).toContain('search-creo-product');
+    const selectedSignal = selection.bundle.items
+      .find(item => item.evidenceId === 'search-creo-product');
+    expect(selectedSignal).toBeDefined();
+    expect([selectedSignal!.title, selectedSignal!.summary, selectedSignal!.content].join('\n'))
+      .toMatch(/Creo/u);
   });
 
   it('keeps one substantive recruitment or engineering-method item under pressure', () => {
@@ -447,7 +451,11 @@ describe('ArkEvidenceService', () => {
       candidate => Buffer.byteLength(serializedRequest('ep-test', candidate), 'utf8'),
     );
 
-    expect(selection.bundle.items.map(item => item.evidenceId)).toContain('search-finite-element-job');
+    const selectedSignal = selection.bundle.items
+      .find(item => item.evidenceId === 'search-finite-element-job');
+    expect(selectedSignal).toBeDefined();
+    expect([selectedSignal!.title, selectedSignal!.summary, selectedSignal!.content].join('\n'))
+      .toMatch(/有限元/u);
   });
 
   it('replaces a same-category generic reservation when a signal cannot be appended', () => {
@@ -473,6 +481,41 @@ describe('ArkEvidenceService', () => {
 
     expect(selection.bundle.items.map(item => item.evidenceId)).toContain('search-creo-product');
     expect(Object.values(selection.categoryCounts).every(count => count >= 1)).toBe(true);
+  });
+
+  it('does not erase a reserved signal while fitting a later metadata-only item', () => {
+    const pressure = productRecallPressureBundle('product');
+    const categories = pressure.items.slice(0, 4);
+    const signal = {
+      ...pressure.items.find(item => item.evidenceId === 'search-creo-product')!,
+      content: `${'普通研发背景'.repeat(160)}明确使用 Creo。`,
+    };
+    const filler = {
+      ...pressure.items.find(item => item.evidenceId === 'search-generic-0')!,
+      evidenceId: 'search-metadata-only',
+      title: '普通不可截断资料'.repeat(20),
+      summary: null,
+      content: null,
+    };
+    const research = { ...pressure, items: [...categories, signal, filler] };
+    const withoutSignalContent = {
+      ...research,
+      items: research.items.map(item => item.evidenceId === signal.evidenceId
+        ? { ...item, content: null }
+        : item),
+      gaps: [...research.gaps, arkInputBudgetGap(research.items.length, research.items.length)],
+    };
+    const measure = (candidate: ResearchBundle) => (
+      Buffer.byteLength(serializedRequest('ep-test', candidate), 'utf8')
+    );
+    const requestMaxBytes = measure(withoutSignalContent);
+    expect(measure(research)).toBeGreaterThan(requestMaxBytes);
+
+    const selection = compactResearchBundleForArk(research, requestMaxBytes, measure);
+    const selectedSignal = selection.bundle.items.find(item => item.evidenceId === signal.evidenceId);
+
+    expect([selectedSignal?.title, selectedSignal?.summary, selectedSignal?.content].join('\n'))
+      .toMatch(/Creo/u);
   });
 
   it('uses one item once when it satisfies both signal slots', () => {
@@ -1157,7 +1200,7 @@ describe('ArkEvidenceService', () => {
 
     await expect(client(fetchFn).extract(research)).resolves.toMatchObject({
       ...factFreeEvidence(research),
-      gaps: expect.arrayContaining([arkInputBudgetGap(7, 12)]),
+      gaps: expect.arrayContaining([arkInputBudgetGap(6, 12)]),
     });
 
     const sent = requestResearch(fetchFn);
@@ -1166,11 +1209,10 @@ describe('ArkEvidenceService', () => {
       'qcc-company-get_company_profile-1',
       'qcc-ipr-get_patent_info-1',
       'qcc-operation-get_recruitment_info-1',
-      'search-procurement-1',
       'search-engineering-1',
-      'qcc-operation-get_bidding_info-1',
+      'search-procurement-1',
     ]);
-    expect(sent.items).toHaveLength(7);
+    expect(sent.items).toHaveLength(6);
     const original = research.items.find(item => item.evidenceId === sent.items[0].evidenceId);
     expect(sent.items[0]).toMatchObject({
       evidenceId: original?.evidenceId,
@@ -1187,7 +1229,7 @@ describe('ArkEvidenceService', () => {
     expect(sent.items[0]?.content).toContain('"typeOrRound":"B 轮"');
     expect(sent.items[0]?.content).toContain('"disclosedAmount":"2 亿元"');
     expect(sent.items[0]?.content).toContain('"investors":["测试基金","产业资本"]');
-    expect(sent.gaps).toContain(arkInputBudgetGap(7, 12));
+    expect(sent.gaps).toContain(arkInputBudgetGap(6, 12));
   });
 
   it('preserves successful structured financing fields through Ark extraction', async () => {
