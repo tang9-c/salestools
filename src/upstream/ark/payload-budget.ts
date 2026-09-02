@@ -649,27 +649,44 @@ export function compactResearchBundleForArk(
     initial: ItemState[],
     candidates: readonly ResearchItem[],
   ): ItemState[] => {
-    const initialIds = new Set(initial.map(state => state.original.evidenceId));
-    const reservations: Array<SignalReservation | null> = [
-      { states: initial, mask: 0, bytes: measureBytes(compactFor(initial)) },
-      null,
-      null,
-      null,
-    ];
+    const initialMask = initial.reduce((mask, state) => mask | signalMask(state.original), 0);
+    const reservations: Array<SignalReservation | null> = [null, null, null, null];
+    reservations[initialMask] = {
+      states: initial,
+      mask: initialMask,
+      bytes: measureBytes(compactFor(initial)),
+    };
     for (const item of candidates) {
-      if (initialIds.has(item.evidenceId)) continue;
       const itemMask = signalMask(item);
       if (itemMask === 0) continue;
       const previous = reservations.slice();
       for (const reservation of previous) {
-        if (reservation === null || (reservation.mask | itemMask) === reservation.mask) continue;
-        const trial = fitCandidate(reservation.states, item);
-        if (trial === null) continue;
+        if (reservation === null
+          || reservation.states.some(state => state.original.evidenceId === item.evidenceId)
+          || (reservation.mask | itemMask) === reservation.mask) continue;
         const nextMask = reservation.mask | itemMask;
-        const bytes = measureBytes(compactFor(trial));
-        const current = reservations[nextMask];
-        if (current === null || bytes < current.bytes) {
-          reservations[nextMask] = { states: trial, mask: nextMask, bytes };
+        const appended = fitCandidate(reservation.states, item);
+        const sameCategoryReplacement = appended === null ? reservation.states.flatMap((state, index) => {
+          const existingCategory = evidenceCategory(state.original, purposes);
+          const candidateCategory = evidenceCategory(item, purposes);
+          return signalMask(state.original) === 0
+            && existingCategory !== null
+            && existingCategory === candidateCategory ? [index] : [];
+        }) : [];
+        const trials = appended === null ? sameCategoryReplacement.map(index => (
+          fitStates([
+            ...reservation.states.slice(0, index),
+            ...reservation.states.slice(index + 1),
+            buildState(item, purposes),
+          ])
+        )) : [appended];
+        for (const trial of trials) {
+          if (trial === null) continue;
+          const bytes = measureBytes(compactFor(trial));
+          const current = reservations[nextMask];
+          if (current === null || bytes < current.bytes) {
+            reservations[nextMask] = { states: trial, mask: nextMask, bytes };
+          }
         }
       }
     }

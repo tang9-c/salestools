@@ -450,6 +450,31 @@ describe('ArkEvidenceService', () => {
     expect(selection.bundle.items.map(item => item.evidenceId)).toContain('search-finite-element-job');
   });
 
+  it('replaces a same-category generic reservation when a signal cannot be appended', () => {
+    const pressure = productRecallPressureBundle('product');
+    const categories = pressure.items.slice(0, 4);
+    const signal = pressure.items.find(item => item.evidenceId === 'search-creo-product')!;
+    const officialQuery = buildSearchPlan(pressure.identity)
+      .find(candidate => candidate.purpose === 'official_products')!.Query;
+    const oversizedSignal = {
+      ...signal,
+      title: `Creo 产品证据 ${'不可截断标题'.repeat(160)}`,
+      query: officialQuery,
+    };
+    const research = { ...pressure, items: [...categories, oversizedSignal] };
+    const replacement = { ...research, items: [...categories.slice(1), oversizedSignal] };
+    const requestMaxBytes = Buffer.byteLength(serializedRequest('ep-test', replacement), 'utf8');
+    const measure = (candidate: ResearchBundle) => (
+      Buffer.byteLength(serializedRequest('ep-test', candidate), 'utf8')
+    );
+    expect(measure(research)).toBeGreaterThan(requestMaxBytes);
+
+    const selection = compactResearchBundleForArk(research, requestMaxBytes, measure);
+
+    expect(selection.bundle.items.map(item => item.evidenceId)).toContain('search-creo-product');
+    expect(Object.values(selection.categoryCounts).every(count => count >= 1)).toBe(true);
+  });
+
   it('uses one item once when it satisfies both signal slots', () => {
     const research = productRecallPressureBundle('combined');
     const selection = compactResearchBundleForArk(research, 12_288);
