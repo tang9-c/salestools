@@ -156,6 +156,71 @@ describe('SQLite repositories', () => {
     expect(() => openDatabase(legacyPath).close()).not.toThrow();
   });
 
+  it('normalizes legacy industry audit JSON without rewriting historical Markdown', () => {
+    const legacyAuditPath = join(directory, 'legacy-industry-audit.sqlite');
+    const seeded = openDatabase(legacyAuditPath);
+    seeded.prepare(`
+      INSERT INTO assessments (
+        assessment_id, cache_key, requested_by, legal_name, credit_code, status,
+        report_markdown, result_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?)
+    `).run(
+      'legacy-industry',
+      'legacy-industry-key',
+      'tester',
+      '历史公司',
+      '91310000LEGACY0001',
+      '# 历史报告\n\n- 行业优先级：P1',
+      JSON.stringify(resultAudit),
+      now.toISOString(),
+    );
+    seeded.close();
+
+    const migrated = openDatabase(legacyAuditPath);
+    const row = migrated.prepare(
+      'SELECT report_markdown, result_json FROM assessments WHERE assessment_id = ?',
+    ).get('legacy-industry') as { report_markdown: string; result_json: string };
+    const audit = JSON.parse(row.result_json) as Record<string, unknown>;
+
+    expect(row.report_markdown).toContain('行业优先级：P1');
+    expect(audit).toMatchObject({ industryLabel: null, industryEvidenceIds: [] });
+    expect(audit).not.toHaveProperty('industryClassification');
+    migrated.close();
+  });
+
+  it('leaves an already migrated industry label audit unchanged', () => {
+    const currentAuditPath = join(directory, 'current-industry-audit.sqlite');
+    const seeded = openDatabase(currentAuditPath);
+    const { industryClassification: _legacy, ...withoutLegacyClassification } = resultAudit;
+    const currentAudit = {
+      ...withoutLegacyClassification,
+      industryLabel: '工业自动化装备',
+    };
+    seeded.prepare(`
+      INSERT INTO assessments (
+        assessment_id, cache_key, requested_by, legal_name, credit_code, status,
+        report_markdown, result_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?)
+    `).run(
+      'current-industry',
+      'current-industry-key',
+      'tester',
+      '当前公司',
+      '91310000CURRENT001',
+      '# 当前报告',
+      JSON.stringify(currentAudit),
+      now.toISOString(),
+    );
+    seeded.close();
+
+    const migrated = openDatabase(currentAuditPath);
+    const stored = migrated.prepare(
+      'SELECT result_json FROM assessments WHERE assessment_id = ?',
+    ).get('current-industry') as { result_json: string };
+    expect(JSON.parse(stored.result_json)).toEqual(currentAudit);
+    migrated.close();
+  });
+
   it('stores token hashes but only lists safe metadata', () => {
     const tokens = new TokenRepository(db);
     tokens.insert({ userId: 'user-1', tokenHash: 'secret-hash', enabled: true, createdAt: now.toISOString() });
