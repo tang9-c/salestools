@@ -830,6 +830,69 @@ describe('ArkEvidenceService', () => {
     expect(first.researchBytes).toBe(Buffer.byteLength(JSON.stringify(first.bundle), 'utf8'));
   });
 
+  it('keeps one eligible linked search source when QCC evidence fills the request budget', () => {
+    const base = minimumResearchBundle();
+    const template = researchBundle().items[0]!;
+    const officialQuery = buildSearchPlan(base.identity)
+      .find(query => query.purpose === 'official_products')!.Query;
+    const qccTools = [
+      ['company', 'get_company_profile'],
+      ['ipr', 'get_patent_info'],
+      ['operation', 'get_recruitment_info'],
+      ['risk', 'get_company_risk_scan'],
+    ] as const;
+    const qccItems = Array.from({ length: 28 }, (_, index): ResearchItem => {
+      const [sourceKind, tool] = qccTools[index % qccTools.length]!;
+      return {
+        ...template,
+        evidenceId: `qcc-${sourceKind}-${tool}-${index + 1}`,
+        source: 'qcc',
+        sourceKind,
+        title: `QCC ${index + 1}`,
+        summary: `QCC摘要${index + 1}`,
+        content: `QCC材料${index + 1}-${'正文'.repeat(90)}`,
+        url: null,
+        query: null,
+        position: index + 1,
+        logId: null,
+      };
+    });
+    const linkedSearch: ResearchItem = {
+      ...template,
+      evidenceId: 'search-official-linked',
+      title: '公司官网产品说明',
+      summary: '官网介绍移动储能和便携式电源产品',
+      content: '公司官网披露移动储能、便携式电源和家庭储能产品。',
+      url: 'https://company.example/products',
+      query: officialQuery,
+      position: 1,
+    };
+    const research = { ...base, items: [...qccItems, linkedSearch] };
+
+    const first = compactResearchBundleForArk(
+      research,
+      10_000,
+      candidate => Buffer.byteLength(serializedRequest('ep-test', candidate), 'utf8'),
+    );
+    const second = compactResearchBundleForArk(
+      research,
+      10_000,
+      candidate => Buffer.byteLength(serializedRequest('ep-test', candidate), 'utf8'),
+    );
+
+    expect(first.excludedCount).toBeGreaterThan(0);
+    expect(first.bundle.items).toContainEqual(expect.objectContaining({
+      evidenceId: linkedSearch.evidenceId,
+      url: linkedSearch.url,
+    }));
+    for (const category of ['industry', 'technology', 'timing', 'capacity'] as const) {
+      expect(first.categoryCounts[category]).toBeGreaterThanOrEqual(1);
+    }
+    expect(first.bundle.items.map(item => item.evidenceId))
+      .toEqual(second.bundle.items.map(item => item.evidenceId));
+    expect(Buffer.byteLength(serializedRequest('ep-test', first.bundle), 'utf8')).toBeLessThanOrEqual(10_000);
+  });
+
   it('keeps the complete Ark request within the supplied byte budget and returns audit metadata', async () => {
     const research = categoryCoverageBundle();
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
@@ -945,9 +1008,9 @@ describe('ArkEvidenceService', () => {
       'qcc-company-get_company_profile-1',
       'qcc-ipr-get_patent_info-1',
       'qcc-operation-get_recruitment_info-1',
+      'search-official-1',
       'search-procurement-1',
       'qcc-operation-get_bidding_info-1',
-      'search-recruitment-1',
     ]);
     expect(sent.items).toHaveLength(7);
     const original = research.items.find(item => item.evidenceId === sent.items[0].evidenceId);
@@ -1323,7 +1386,7 @@ describe('ArkEvidenceService', () => {
     );
 
     await expect(client(fetchFn).extract(research)).resolves.toMatchObject({
-      gaps: ['模型识别缺口', financingGap, annualReportGap, arkInputBudgetGap(7, 12)],
+      gaps: ['模型识别缺口', financingGap, annualReportGap, arkInputBudgetGap(6, 12)],
     });
   });
 
@@ -1351,9 +1414,9 @@ describe('ArkEvidenceService', () => {
       'qcc-ipr-get_patent_info-1',
       'qcc-operation-get_recruitment_info-1',
       'qcc-risk-get_company_risk_scan-1',
+      'search-engineering-1',
       'search-procurement-1',
       'qcc-operation-get_bidding_info-1',
-      'search-engineering-1',
     ]);
     expect(audited.selection.categoryCounts.capacity).toBe(1);
   });

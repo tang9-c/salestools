@@ -212,6 +212,16 @@ const SEARCH_PRIORITY: Readonly<Record<SearchQuery['purpose'], number>> = {
   quality: 6,
 };
 
+const LINKED_SEARCH_DIVERSITY_PRIORITY: Readonly<Record<SearchQuery['purpose'], number>> = {
+  official_products: 0,
+  engineering: 1,
+  software_ecosystem: 2,
+  recruitment: 3,
+  quality: 4,
+  procurement: 5,
+  expansion_financing: 6,
+};
+
 function stableSort<T>(values: readonly T[], priority: (value: T) => number): T[] {
   return values
     .map((value, index) => ({ value, index, priority: priority(value) }))
@@ -599,11 +609,36 @@ export function compactResearchBundleForArk(
     : greedyStates.map(state => state.original);
   // Stage B restores normal content, then shrinks the chosen reservation as a whole. Since Stage A
   // proved the minimum footprints fit, this never needs to drop a reserved category.
-  let states = fitStates(reservedItems.map(item => buildState(item, purposes)));
-  if (states === null) {
+  const fittedReservation = fitStates(reservedItems.map(item => buildState(item, purposes)));
+  if (fittedReservation === null) {
     throw new RangeError('Ark reserved evidence cannot fit its proven minimum footprints');
   }
+  let states: ItemState[] = fittedReservation;
   const selectedIds = new Set(states.map(state => state.original.evidenceId));
+  const hasEligibleLinkedSearch = (): boolean => states.some(state => (
+    state.original.source === 'doubao_search'
+      && state.original.url !== null
+      && (state.original.entityMatch === 'confirmed' || state.original.entityMatch === 'probable')
+  ));
+  if (!hasEligibleLinkedSearch()) {
+    const linkedSearchCandidates = stableSort(
+      orderedItems.filter(item => item.source === 'doubao_search'
+        && item.url !== null
+        && (item.entityMatch === 'confirmed' || item.entityMatch === 'probable')
+        && !selectedIds.has(item.evidenceId)),
+      item => {
+        const purpose = searchPurpose(item, purposes);
+        return purpose === null ? 7 : LINKED_SEARCH_DIVERSITY_PRIORITY[purpose];
+      },
+    );
+    for (const item of linkedSearchCandidates) {
+      const trial = fitCandidate(states, item);
+      if (trial === null) continue;
+      states = trial;
+      selectedIds.add(item.evidenceId);
+      break;
+    }
+  }
   for (const item of orderedItems) {
     if (selectedIds.has(item.evidenceId)) continue;
     const trial = fitCandidate(states, item);
