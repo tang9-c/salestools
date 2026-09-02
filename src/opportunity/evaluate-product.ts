@@ -356,7 +356,6 @@ export function evaluateProduct(
 
   const referencesById = new Map(evidence.evidence.map(reference => [reference.evidenceId, reference]));
   const relevantFacts = evidence.facts.filter(fact => isRelevant(fact, rule.product));
-  const productFacts = relevantFacts.filter(fact => fact.productTags.includes(rule.product));
   const usableFacts = relevantFacts.filter(fact => isReliableConfirmedFact(fact, referencesById));
   const targetNamed = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(fact.statement, rule.positiveKeywords);
   const strongTargetNamed = (fact: EvidenceFact): boolean => containsAffirmativeKeyword(
@@ -369,6 +368,8 @@ export function evaluateProduct(
   );
   const hasTargetSceneSignal = (fact: EvidenceFact): boolean => hasProductSignal(fact)
     && (!competitorNamed(fact) || strongTargetNamed(fact));
+  const productFacts = relevantFacts.filter(fact => fact.productTags.includes(rule.product)
+    || hasTargetSceneSignal(fact));
   const isPositiveProductFact = (fact: EvidenceFact): boolean => {
     if (!['product_scene', 'recruitment', 'software_ecosystem', 'procurement'].includes(fact.kind)) return false;
     return hasTargetSceneSignal(fact);

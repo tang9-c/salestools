@@ -15,7 +15,7 @@ export const PRODUCT_RULES: readonly ProductRule[] = [
     product: 'windchill', displayName: 'PTC Windchill',
     positiveKeywords: ['ptc windchill', 'windchill', 'plm'],
     strongTargetKeywords: ['ptc windchill', 'windchill'],
-    engineeringMethods: ['bom 变更和配置管理', 'bom', 'ebom', 'mbom', '变更管理', '配置管理', '产品生命周期', 'plm/erp'],
+    engineeringMethods: ['bom 变更和配置管理', 'bom', 'ebom', 'mbom', 'pdm', '变更管理', '配置管理', '产品生命周期', 'plm/erp'],
     competitorKeywords: ['teamcenter', 'enovia', 'ar・as innovator', 'aras innovator'],
     blockerKeywords: ['集团统一 plm', '长期许可锁定'],
   },

@@ -181,6 +181,29 @@ describe('evaluateOpportunities', () => {
     expect(result.overallOpportunity).toBe('中');
   });
 
+  it('uses an explicit PDM recruitment statement even when Ark omits productTags', () => {
+    const recruitment = reference('pdm-role', 'activity.zhipin.com');
+    const result = evaluateOpportunities(bundle({
+      industry: 'unverified',
+      evidence: [recruitment],
+      facts: [{
+        factId: 'pdm-role',
+        statement: '招聘机械助理工程师，岗位职责包括执行设计规范和编写技术文档，任职要求包含学过 PDM。',
+        kind: 'recruitment',
+        productTags: [],
+        strength: 'direct',
+        evidenceIds: ['pdm-role'],
+        entityScope: 'legal_entity',
+        entityMatch: 'confirmed',
+        matchBasis: ['网页内容提及已确认法定名称'],
+      }],
+    }), NOW);
+
+    expect(result.products.find(row => row.product === 'windchill')?.level).toBe('中');
+    expect(result.overallOpportunity).toBe('中');
+    expect(result.recommendedProduct).toBe('windchill');
+  });
+
   it('downgrades a strong incumbent without a replacement signal to 低', () => {
     const refs = [reference('scene', 'company.example'), reference('incumbent', 'jobs.example')];
     const result = evaluateOpportunities(bundle({ evidence: refs, facts: [
