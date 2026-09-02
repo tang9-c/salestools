@@ -67,6 +67,37 @@ const KEYWORD_RULES: readonly KeywordRule[] = [
   },
 ];
 
+const EXPLICIT_PRODUCT_SIGNAL_PATTERN =
+  /\b(?:windchill|feigenbaum(?:\s+qms)?|plm|qms|pdm|creo|pro\s*\/?\s*e|catia|3dexperience|abaqus|cst(?:\s+studio(?:\s+suite)?)?|solid\s*works)\b/iu;
+
+const ENGINEERING_METHOD_SIGNAL_PATTERN =
+  /(?:bom|ebom|mbom|capa|配置管理|变更管理|质量追溯|供应商质量|参数化建模|复杂曲面|大型装配|有限元|非线性|碰撞仿真|疲劳仿真|多物理场|电磁仿真|射频|天线|雷达|微波|emc|emi)/iu;
+
+const SUBSTANTIVE_RECRUITMENT_PATTERN =
+  /(?:岗位职责|任职要求|职位描述|职位要求|工作职责|招聘职位).{0,240}(?:工程师|管理员|顾问|经理)|(?:工程师|管理员|顾问|经理).{0,240}(?:岗位职责|任职要求|职位描述|职位要求|工作职责)/iu;
+
+function itemText(item: ResearchItem): string {
+  return [item.title, item.summary ?? '', item.content ?? ''].join('\n').normalize('NFKC');
+}
+
+function signalMask(item: ResearchItem): number {
+  const text = itemText(item);
+  const product = EXPLICIT_PRODUCT_SIGNAL_PATTERN.test(text) ? 1 : 0;
+  const recruitmentOrMethod = ENGINEERING_METHOD_SIGNAL_PATTERN.test(text)
+    || SUBSTANTIVE_RECRUITMENT_PATTERN.test(text) ? 2 : 0;
+  return product | recruitmentOrMethod;
+}
+
+function isNameOnlyEvidence(item: ResearchItem): boolean {
+  const textWithoutSubject = itemText(item)
+    .split(item.mentionedName.normalize('NFKC'))
+    .join('')
+    .trim();
+  return textWithoutSubject.length < 32
+    && signalMask(item) === 0
+    && !/(?:融资|扩产|专利|认证|采购|招标|中标|研发|产品|技术)/u.test(textWithoutSubject);
+}
+
 type ScoredWindow = {
   start: number;
   end: number;
@@ -613,7 +644,43 @@ export function compactResearchBundleForArk(
   if (fittedReservation === null) {
     throw new RangeError('Ark reserved evidence cannot fit its proven minimum footprints');
   }
-  let states: ItemState[] = fittedReservation;
+  type SignalReservation = Readonly<{ states: ItemState[]; mask: number; bytes: number }>;
+  const reserveSignals = (
+    initial: ItemState[],
+    candidates: readonly ResearchItem[],
+  ): ItemState[] => {
+    const initialIds = new Set(initial.map(state => state.original.evidenceId));
+    const reservations: Array<SignalReservation | null> = [
+      { states: initial, mask: 0, bytes: measureBytes(compactFor(initial)) },
+      null,
+      null,
+      null,
+    ];
+    for (const item of candidates) {
+      if (initialIds.has(item.evidenceId)) continue;
+      const itemMask = signalMask(item);
+      if (itemMask === 0) continue;
+      const previous = reservations.slice();
+      for (const reservation of previous) {
+        if (reservation === null || (reservation.mask | itemMask) === reservation.mask) continue;
+        const trial = fitCandidate(reservation.states, item);
+        if (trial === null) continue;
+        const nextMask = reservation.mask | itemMask;
+        const bytes = measureBytes(compactFor(trial));
+        const current = reservations[nextMask];
+        if (current === null || bytes < current.bytes) {
+          reservations[nextMask] = { states: trial, mask: nextMask, bytes };
+        }
+      }
+    }
+    const signalCount = (mask: number): number => (mask & 1 ? 1 : 0) + (mask & 2 ? 1 : 0);
+    return reservations
+      .filter((entry): entry is SignalReservation => entry !== null)
+      .sort((left, right) => signalCount(right.mask) - signalCount(left.mask)
+        || Number(right.mask === 3) - Number(left.mask === 3)
+        || left.bytes - right.bytes)[0]!.states;
+  };
+  let states: ItemState[] = reserveSignals(fittedReservation, orderedItems);
   const selectedIds = new Set(states.map(state => state.original.evidenceId));
   const hasEligibleLinkedSearch = (): boolean => states.some(state => (
     state.original.source === 'doubao_search'
@@ -639,8 +706,11 @@ export function compactResearchBundleForArk(
       break;
     }
   }
-  for (const item of orderedItems) {
-    if (selectedIds.has(item.evidenceId)) continue;
+  const finalFallback = stableSort(
+    orderedItems.filter(item => !selectedIds.has(item.evidenceId)),
+    item => isNameOnlyEvidence(item) ? 1 : 0,
+  );
+  for (const item of finalFallback) {
     const trial = fitCandidate(states, item);
     if (trial === null) continue;
     states = trial;

@@ -249,6 +249,77 @@ function bytePressureBundle(): ResearchBundle {
   };
 }
 
+function productRecallPressureBundle(signal: 'product' | 'method' | 'combined' | 'none'): ResearchBundle {
+  const base = minimumResearchBundle();
+  const template = researchBundle().items[0]!;
+  const queries = new Map(buildSearchPlan(base.identity).map(query => [query.purpose, query.Query]));
+  const common = {
+    ...template,
+    title: '普通企业资料',
+    summary: '普通摘要',
+    content: '普通正文',
+    mentionedName: base.identity.legalName,
+    entityScope: 'legal_entity' as const,
+    entityMatch: 'confirmed' as const,
+    matchBasis: ['法定名称一致'],
+  };
+  const qcc = (evidenceId: string, sourceKind: ResearchItem['sourceKind']): ResearchItem => ({
+    ...common,
+    evidenceId,
+    source: 'qcc',
+    sourceKind,
+    url: null,
+    query: null,
+    position: null,
+    logId: null,
+  });
+  const search = (
+    evidenceId: string,
+    purpose: 'official_products' | 'quality' | 'software_ecosystem' | 'recruitment',
+    content: string,
+  ): ResearchItem => ({
+    ...common,
+    evidenceId,
+    source: 'doubao_search',
+    sourceKind: 'web',
+    url: `https://evidence.example.cn/${evidenceId}`,
+    originalPublisher: '测试发布方',
+    originalDomain: 'evidence.example.cn',
+    query: queries.get(purpose)!,
+    position: 1,
+    logId: 'sanitized-log',
+    content,
+  });
+  const categories = [
+    qcc('qcc-company-get_company_profile-1', 'company'),
+    qcc('qcc-ipr-get_patent_info-1', 'ipr'),
+    qcc('qcc-operation-get_recruitment_info-1', 'operation'),
+    qcc('qcc-risk-get_company_risk_scan-1', 'risk'),
+  ];
+  const ordinary = [
+    search('search-official-generic', 'official_products', '公司官网介绍自动化产品。'),
+    {
+      ...search('search-low-info', 'quality', ''),
+      title: base.identity.legalName,
+      summary: null,
+      content: null,
+    },
+    ...Array.from({ length: 24 }, (_, index) => search(
+      `search-generic-${index}`,
+      'quality',
+      `质量认证一般资料 ${index} ${'背景'.repeat(180)}`,
+    )),
+  ];
+  const signals = signal === 'product'
+    ? [search('search-creo-product', 'quality', '公司研发环境明确使用 Creo。')]
+    : signal === 'method'
+      ? [search('search-finite-element-job', 'quality', '招聘仿真工程师，岗位职责包括非线性有限元分析。')]
+      : signal === 'combined'
+        ? [search('search-cst-job', 'quality', '招聘电磁仿真工程师，任职要求使用 CST 开展天线仿真。')]
+        : [];
+  return { ...base, items: [...categories, ...ordinary, ...signals] };
+}
+
 function minimumResearchBundle(): ResearchBundle {
   const base = researchBundle();
   return {
@@ -343,6 +414,68 @@ describe('ARK_SYSTEM_PROMPT', () => {
 });
 
 describe('ArkEvidenceService', () => {
+  it('keeps explicit product evidence when generic evidence fills the request budget', () => {
+    const research = productRecallPressureBundle('product');
+    const signal = research.items.find(item => item.evidenceId === 'search-creo-product')!;
+    expect(Buffer.byteLength(serializedRequest('ep-test', {
+      ...research,
+      items: [...research.items.slice(0, 4), signal],
+    }), 'utf8')).toBeLessThanOrEqual(12_288);
+    expect(Buffer.byteLength(serializedRequest('ep-test', research), 'utf8')).toBeGreaterThan(12_288);
+
+    const selection = compactResearchBundleForArk(
+      research,
+      12_288,
+      candidate => Buffer.byteLength(serializedRequest('ep-test', candidate), 'utf8'),
+    );
+
+    expect(selection.bundle.items.map(item => item.evidenceId)).toContain('search-creo-product');
+  });
+
+  it('keeps one substantive recruitment or engineering-method item under pressure', () => {
+    const research = productRecallPressureBundle('method');
+    const signal = research.items.find(item => item.evidenceId === 'search-finite-element-job')!;
+    expect(Buffer.byteLength(serializedRequest('ep-test', {
+      ...research,
+      items: [...research.items.slice(0, 4), signal],
+    }), 'utf8')).toBeLessThanOrEqual(12_288);
+    expect(Buffer.byteLength(serializedRequest('ep-test', research), 'utf8')).toBeGreaterThan(12_288);
+
+    const selection = compactResearchBundleForArk(
+      research,
+      12_288,
+      candidate => Buffer.byteLength(serializedRequest('ep-test', candidate), 'utf8'),
+    );
+
+    expect(selection.bundle.items.map(item => item.evidenceId)).toContain('search-finite-element-job');
+  });
+
+  it('uses one item once when it satisfies both signal slots', () => {
+    const research = productRecallPressureBundle('combined');
+    const selection = compactResearchBundleForArk(research, 12_288);
+
+    expect(selection.bundle.items.filter(item => item.evidenceId === 'search-cst-job')).toHaveLength(1);
+  });
+
+  it('does not manufacture signal reservations when no candidate contains a signal', () => {
+    const research = productRecallPressureBundle('none');
+    const first = compactResearchBundleForArk(research, 12_288);
+    const second = compactResearchBundleForArk(research, 12_288);
+
+    expect(first.bundle.items.map(item => item.evidenceId))
+      .toEqual(second.bundle.items.map(item => item.evidenceId));
+    expect(first.categoryCounts).toEqual(second.categoryCounts);
+  });
+
+  it('deprioritizes name-only search evidence behind substantive generic evidence', () => {
+    const research = productRecallPressureBundle('none');
+    const selection = compactResearchBundleForArk(research, 12_288);
+    const selectedIds = selection.bundle.items.map(item => item.evidenceId);
+
+    expect(selectedIds).not.toContain('search-low-info');
+    expect(selectedIds.some(evidenceId => evidenceId.startsWith('search-generic-'))).toBe(true);
+  });
+
   it('retains all eight items when their complete serialized request is 12,284 bytes', async () => {
     const model = 'ep-test';
     const research = padRequestToBytes(categoryCoverageBundle(), 12_284, model);
@@ -1008,8 +1141,8 @@ describe('ArkEvidenceService', () => {
       'qcc-company-get_company_profile-1',
       'qcc-ipr-get_patent_info-1',
       'qcc-operation-get_recruitment_info-1',
-      'search-official-1',
       'search-procurement-1',
+      'search-engineering-1',
       'qcc-operation-get_bidding_info-1',
     ]);
     expect(sent.items).toHaveLength(7);
