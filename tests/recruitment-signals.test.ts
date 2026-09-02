@@ -140,6 +140,17 @@ describe('招聘信号', () => {
     expect(row?.evidenceIds).toEqual(['job']);
   });
 
+  it('uses a Chinese recruitment-body summary as a SolidWorks scene when the product and duties are explicit', () => {
+    const entry = products.find(product => product.product === 'solidworks')!;
+    const statement = '招聘机械设计工程师，岗位职责包括使用 SolidWorks 完成非标自动化设备三维建模、工程图和设计变更。';
+    const result = evaluateOpportunities(recruitmentBundle(entry, statement, recent), NOW);
+
+    expect(result.products.find(product => product.product === 'solidworks')).toMatchObject({
+      level: '中',
+      evidenceIds: ['job'],
+    });
+  });
+
   it.each(products)('$product: a competitor-only job is ecosystem evidence, not a target-product scene', entry => {
     const result = evaluateOpportunities(recruitmentBundle(entry, entry.competitor, recent), NOW);
     const row = result.products.find(product => product.product === entry.product);

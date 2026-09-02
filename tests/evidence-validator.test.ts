@@ -210,6 +210,30 @@ describe('validateArkEvidence', () => {
     }, research);
   });
 
+  it('accepts one fact cited by two confirmed sources for the same legal entity', () => {
+    const candidate = fixture();
+    const research = researchBundle();
+    const secondItem = {
+      ...research.items[0],
+      evidenceId: 'web-2',
+      title: '招聘岗位详情',
+      url: 'https://jobs.example.net/creo-role',
+      originalPublisher: '招聘平台',
+      originalDomain: 'jobs.example.net',
+      summary: '岗位要求使用 Creo 完成参数化机械设计。',
+      content: '测试制造有限公司招聘机械设计工程师，要求使用 Creo 完成参数化机械设计。',
+      query: '测试制造有限公司 Creo 招聘',
+      position: 2,
+    };
+    research.items.push(secondItem);
+
+    expect(validateArkEvidence(research, {
+      ...candidate,
+      evidence: [...candidate.evidence, referenceFromResearchItem(secondItem)],
+      facts: [{ ...candidate.facts[0], evidenceIds: ['web-1', 'web-2'] }],
+    }).facts[0]?.evidenceIds).toEqual(['web-1', 'web-2']);
+  });
+
   it('rejects fact match basis invented outside its cited references', () => {
     const candidate = fixture();
     expectInvalid({
