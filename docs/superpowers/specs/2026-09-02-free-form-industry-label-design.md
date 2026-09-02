@@ -112,7 +112,7 @@ Markdown 摘要从“行业优先级”改为“行业”：
 
 数据库表结构不需要迁移。行业信息只存在于报告 Markdown 和 `result_json`。
 
-应用启动时执行一次轻量数据迁移：对于仍含 `industryClassification` 且不含 `industryLabel` 的历史 `result_json`，删除旧字段并写入 `industryLabel: null`。历史 Markdown 保持不变，因此旧报告仍按生成时内容可读；所有新运行时对象只使用新字段，不保留双写兼容层。
+应用启动时执行一次轻量数据迁移：对于仍含 `industryClassification` 且不含 `industryLabel` 的历史 `result_json`，删除旧字段、写入 `industryLabel: null`，并将 `industryEvidenceIds` 清空，满足“空标签不得引用行业证据”的新合同。历史 Markdown 保持不变，因此旧报告仍按生成时内容可读；所有新运行时对象只使用新字段，不保留双写兼容层。
 
 ## 测试要求
 
