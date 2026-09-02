@@ -54,22 +54,26 @@ describe('buildSearchPlan', () => {
     }
   });
 
-  it('splits all seven product recruitment signals across exactly two one-year content queries', () => {
+  it('uses the eight approved research intents without increasing the call count', () => {
     const plan = buildSearchPlan(identity);
-    const recruitment = plan.filter(query => query.purpose === 'recruitment');
 
-    expect(recruitment).toHaveLength(2);
-    expect(recruitment.map(query => query.Query).join(' ')).toMatch(/Windchill/);
-    expect(recruitment.map(query => query.Query).join(' ')).toMatch(/PLM/);
-    expect(recruitment.map(query => query.Query).join(' ')).toMatch(/QMS/);
-    expect(recruitment.map(query => query.Query).join(' ')).toMatch(/Creo/);
-    expect(recruitment.map(query => query.Query).join(' ')).toMatch(/CATIA/);
-    expect(recruitment.map(query => query.Query).join(' ')).toMatch(/Abaqus/);
-    expect(recruitment.map(query => query.Query).join(' ')).toMatch(/CST/);
-    expect(recruitment.map(query => query.Query).join(' ')).toMatch(/SolidWorks/);
-    for (const query of recruitment) {
-      expect(query.Filter).toEqual({ NeedUrl: true, NeedContent: true, TimeRange: 'OneYear' });
-    }
+    expect(plan.map(query => ({
+      purpose: query.purpose,
+      terms: query.Query.replace(`${query.searchedName} `, ''),
+    }))).toEqual([
+      { purpose: 'official_products', terms: '官网 产品 技术' },
+      { purpose: 'engineering', terms: '研发 工程 中心' },
+      { purpose: 'quality', terms: '质量 体系 认证' },
+      { purpose: 'software_ecosystem', terms: 'PLM QMS PDM' },
+      { purpose: 'recruitment', terms: '招聘 Creo CATIA SolidWorks CAD PDM' },
+      { purpose: 'recruitment', terms: '招聘 Abaqus CST CAE 有限元 电磁仿真' },
+      { purpose: 'procurement', terms: '招投标 数字化 采购' },
+      { purpose: 'expansion_financing', terms: '扩产 融资' },
+    ]);
+
+    expect(plan[3]?.Filter).toEqual({ NeedUrl: true, NeedContent: true });
+    expect(plan[4]?.Filter).toEqual({ NeedUrl: true, NeedContent: true, TimeRange: 'OneYear' });
+    expect(plan[5]?.Filter).toEqual({ NeedUrl: true, NeedContent: true, TimeRange: 'OneYear' });
   });
 
   it('applies OneYear to every dynamic recruitment, procurement, expansion, or financing query', () => {

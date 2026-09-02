@@ -47,11 +47,11 @@ export type SearchQuery = z.infer<typeof SearchQuerySchema>;
 const plans = [
   { purpose: 'official_products', terms: '官网 产品 技术' },
   { purpose: 'engineering', terms: '研发 工程 中心' },
-  { purpose: 'quality', terms: '质量 认证 ISO IATF AS9100' },
-  { purpose: 'software_ecosystem', terms: '软件 PLM QMS CAD CAE' },
-  { purpose: 'recruitment', terms: '招聘 Windchill PLM QMS Creo' },
-  { purpose: 'recruitment', terms: '招聘 CATIA Abaqus CST SolidWorks' },
-  { purpose: 'procurement', terms: '招标 采购 数字化' },
+  { purpose: 'quality', terms: '质量 体系 认证' },
+  { purpose: 'software_ecosystem', terms: 'PLM QMS PDM' },
+  { purpose: 'recruitment', terms: '招聘 Creo CATIA SolidWorks CAD PDM' },
+  { purpose: 'recruitment', terms: '招聘 Abaqus CST CAE 有限元 电磁仿真' },
+  { purpose: 'procurement', terms: '招投标 数字化 采购' },
   { purpose: 'expansion_financing', terms: '扩产 融资' },
 ] as const;
 
