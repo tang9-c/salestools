@@ -207,6 +207,9 @@ export function validateArkEvidence(researchInput: ResearchBundle, candidate: un
   }
   for (const [index, record] of evidence.financingRecords.entries()) {
     if (record.evidenceIds.length === 0) invalid(`Financing record ${index} requires evidence`);
+    if (record.summary !== undefined && record.summary !== null) {
+      rejectUnsupportedInference(`Financing record ${index} summary`, record.summary);
+    }
     if (record.typeOrRound !== null) {
       rejectUnsupportedInference(`Financing record ${index} typeOrRound`, record.typeOrRound);
     }

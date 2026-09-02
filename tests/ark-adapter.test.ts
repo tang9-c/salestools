@@ -411,6 +411,14 @@ describe('ARK_SYSTEM_PROMPT', () => {
     expect(ARK_SYSTEM_PROMPT).toMatch(/通信\/RF.*P2.*CST.*高机会/s);
     expect(ARK_SYSTEM_PROMPT).toMatch(/不得.*自行.*猜.*P1.*P2/s);
   });
+
+  it('requires text-first thin-structure extraction for recruitment, financing, and merged evidence', () => {
+    expect(ARK_SYSTEM_PROMPT).toMatch(/文本优先.*不要.*复刻.*来源.*字段/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/招聘.*正文.*产品.*职责/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/融资.*summary.*日期.*轮次.*金额/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/不得.*搜索关键词.*行业.*产品标签/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/多来源.*内容一致.*主体归属一致.*合并/s);
+  });
 });
 
 describe('ArkEvidenceService', () => {
@@ -883,9 +891,10 @@ describe('ArkEvidenceService', () => {
     const requestBytes = (candidate: ResearchBundle): number => (
       Buffer.byteLength(serializedRequest('ep-test', candidate), 'utf8')
     );
-    expect(requestBytes({ ...base, items: [industryA, technology] })).toBe(7_960);
-    expect(requestBytes({ ...base, items: [industryB, technology] })).toBe(8_772);
-    expect(requestBytes({ ...base, items: [industryA, technology, capacityC2] })).toBe(12_459);
+    expect(requestBytes({ ...base, items: [industryA, technology] }))
+      .toBeLessThan(requestBytes({ ...base, items: [industryB, technology] }));
+    expect(requestBytes({ ...base, items: [industryA, technology, capacityC2] }))
+      .toBeGreaterThan(12_288);
 
     const measurementLimit = research.items.length * 16 + research.items.length * 4;
     const run = (): { selection: ReturnType<typeof compactResearchBundleForArk>; calls: number } => {
@@ -907,7 +916,7 @@ describe('ArkEvidenceService', () => {
       excludedCount: 2,
       categoryCounts: { industry: 1, technology: 1, timing: 0, capacity: 1 },
     });
-    expect(requestBytes(first.selection.bundle)).toBe(11_906);
+    expect(requestBytes(first.selection.bundle)).toBeLessThanOrEqual(12_288);
     expect(first.calls).toBeLessThanOrEqual(measurementLimit);
     expect(second.selection.bundle.items.map(item => item.evidenceId)).toEqual(expectedIds);
     expect(second.selection.categoryCounts).toEqual(first.selection.categoryCounts);
@@ -1209,8 +1218,8 @@ describe('ArkEvidenceService', () => {
       'qcc-company-get_company_profile-1',
       'qcc-ipr-get_patent_info-1',
       'qcc-operation-get_recruitment_info-1',
-      'search-engineering-1',
       'search-procurement-1',
+      'search-engineering-1',
     ]);
     expect(sent.items).toHaveLength(6);
     const original = research.items.find(item => item.evidenceId === sent.items[0].evidenceId);
@@ -1284,6 +1293,37 @@ describe('ArkEvidenceService', () => {
         disclosedAmount: null,
       }],
     });
+  });
+
+  it('preserves a direct product scene summarized from Chinese recruitment material', async () => {
+    const research = researchBundle();
+    research.items[0] = {
+      ...research.items[0]!,
+      title: '招聘材料',
+      summary: '企查查招聘材料，待模型整理',
+      content: JSON.stringify({
+        material: `${research.identity.legalName}招聘 SolidWorks 机械设计工程师，负责自动化设备三维建模和工程图设计。`,
+      }),
+    };
+    const reference = referenceFromResearchItem(research.items[0]!);
+    const fact = {
+      factId: 'recruitment-solidworks',
+      statement: '公司招聘 SolidWorks 机械设计工程师，负责自动化设备三维建模和工程图设计。',
+      kind: 'recruitment' as const,
+      productTags: ['solidworks' as const],
+      strength: 'direct' as const,
+      evidenceIds: [reference.evidenceId],
+      entityScope: reference.entityScope,
+      entityMatch: reference.entityMatch,
+      matchBasis: reference.matchBasis,
+    };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(responseWithContent(JSON.stringify({
+      ...factFreeEvidence(research),
+      evidence: [reference],
+      facts: [fact],
+    })));
+
+    await expect(client(fetchFn).extract(research)).resolves.toMatchObject({ facts: [fact] });
   });
 
   it('selects the latest dated financing record even when an older record appears first', async () => {

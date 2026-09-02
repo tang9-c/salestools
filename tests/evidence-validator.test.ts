@@ -260,6 +260,8 @@ describe('validateArkEvidence', () => {
     { typeOrRound: '按董事长年龄判断决策风格保守' },
     { disclosedAmount: '按员工人数和行业人效倒推约 5 亿元' },
     { investors: ['投资方计划采购某软件'] },
+    { summary: '按员工人数和行业人效倒推真实营收约 5 亿元' },
+    { summary: '公司计划采购 Windchill，融资后采购意向明确' },
   ])('rejects unsupported inference in every renderable financing field: %j', polluted => {
     const candidate = fixture();
     expectInvalid({
@@ -287,6 +289,23 @@ describe('validateArkEvidence', () => {
         evidenceIds: ['web-1'],
       }],
     };
+    expect(validateArkEvidence(researchBundle(), accepted)).toEqual(accepted);
+  });
+
+  it('keeps a sourced financing summary without requiring date, round, amount, or investors', () => {
+    const candidate = fixture();
+    const accepted = {
+      ...candidate,
+      financingRecords: [{
+        occurredAt: null,
+        typeOrRound: null,
+        disclosedAmount: null,
+        investors: [],
+        summary: '公司完成战略融资并引入产业投资者，具体交易信息未披露。',
+        evidenceIds: ['web-1'],
+      }],
+    };
+
     expect(validateArkEvidence(researchBundle(), accepted)).toEqual(accepted);
   });
 
