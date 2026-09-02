@@ -310,7 +310,35 @@ const RecruitmentMaterialRecordSchema = z.object({
 
 const MATERIAL_MAX_BYTES = 4096;
 const MATERIAL_TOOLS = new Set(['get_financing_records', 'get_annual_reports', 'get_qualifications']);
+const RESEARCH_MATERIAL_TOOLS = new Set([
+  'get_company_profile',
+  'get_company_risk_scan',
+  'get_patent_info',
+  'get_recruitment_info',
+  'get_bidding_info',
+  'get_shareholder_info',
+  'get_software_copyright_info',
+  'get_financing_records',
+  'get_annual_reports',
+  'get_qualifications',
+]);
+const STRUCTURED_MATERIAL_FALLBACK_TOOLS = new Set([
+  'get_company_profile',
+  'get_patent_info',
+  'get_recruitment_info',
+  'get_bidding_info',
+  'get_shareholder_info',
+  'get_software_copyright_info',
+  'get_financing_records',
+  'get_annual_reports',
+  'get_qualifications',
+]);
 const RECRUITMENT_MATERIAL_GAP = '招聘使用非结构化材料整理';
+const RAW_MCP_TEXT = Symbol('raw-mcp-text');
+
+interface RawMcpText {
+  readonly [RAW_MCP_TEXT]: string;
+}
 
 export interface MappedCandidate {
   legalName: string;
@@ -338,6 +366,10 @@ function unmappableDataset(message: string): UpstreamError {
   return new UpstreamError('qcc', 'UNMAPPABLE_DATASET', message);
 }
 
+function isRawMcpText(value: unknown): value is RawMcpText {
+  return typeof value === 'object' && value !== null && RAW_MCP_TEXT in value;
+}
+
 function unwrapPayload(payload: unknown): unknown {
   if (typeof payload === 'object' && payload !== null && 'structuredContent' in payload) {
     return (payload as { structuredContent?: unknown }).structuredContent;
@@ -347,10 +379,12 @@ function unwrapPayload(payload: unknown): unknown {
     if (Array.isArray(content)) {
       const text = content.find(block => typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text');
       if (text !== undefined) {
+        const value = String((text as { text?: unknown }).text).trim();
+        if (value.length === 0) throw invalidResponse('QCC text result is empty');
         try {
-          return JSON.parse(String((text as { text?: unknown }).text));
-        } catch (error) {
-          throw invalidResponse('QCC text result is not valid JSON', error);
+          return JSON.parse(value);
+        } catch {
+          return { [RAW_MCP_TEXT]: value };
         }
       }
     }
@@ -655,6 +689,82 @@ export function mapCompanyDetails(
   return { identity, basicProfile };
 }
 
+const NON_EVIDENTIARY_MATERIAL_PATTERN =
+  /(?:无权访问|无权限|请开通权限|未返回结构化|不可猜测|可能相关.{0,40}(?:主体|企业).{0,20}需.{0,10}确认)/u;
+const LEGAL_ENTITY_NAME_PATTERN =
+  /[\p{Script=Han}A-Za-z0-9（）()·]{2,80}(?:股份有限公司|有限责任公司|集团有限公司|有限公司)/gu;
+
+function materialLabel(tool: string): string {
+  const labels: Readonly<Record<string, string>> = {
+    get_company_profile: '企业简介材料',
+    get_company_risk_scan: '风险材料',
+    get_patent_info: '专利材料',
+    get_recruitment_info: '招聘材料',
+    get_bidding_info: '招投标材料',
+    get_shareholder_info: '股东材料',
+    get_software_copyright_info: '软件著作权材料',
+    get_financing_records: '融资材料',
+    get_annual_reports: '年报材料',
+    get_qualifications: '资质材料',
+  };
+  return labels[tool] ?? '企业研究材料';
+}
+
+function assertSubstantiveMaterial(text: string, tool: string): void {
+  if (text.trim().length === 0 || NON_EVIDENTIARY_MATERIAL_PATTERN.test(text.normalize('NFKC'))) {
+    throw unmappableDataset(`QCC ${tool} response contains no usable research material`);
+  }
+}
+
+function hasStructuredMaterial(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const ignoredKeys = new Set(['Name', 'CreditCode', '企业名称', '统一社会信用代码']);
+  return Object.entries(value as Record<string, unknown>).some(([key, entry]) => {
+    if (ignoredKeys.has(key) || entry === null || entry === undefined) return false;
+    if (typeof entry === 'string') return entry.trim().length > 0;
+    if (Array.isArray(entry)) return entry.length > 0;
+    return typeof entry === 'object' && Object.keys(entry as Record<string, unknown>).length > 0;
+  });
+}
+
+function assertPlainTextSubject(text: string, expected: ExpectedQccSubject): void {
+  const normalized = text.normalize('NFKC');
+  const expectedNames = new Set([
+    normalizeQccLegalName(expected.legalName),
+  ]);
+  const mentionedLegalNames = normalized.match(LEGAL_ENTITY_NAME_PATTERN) ?? [];
+  if (mentionedLegalNames.length > 0
+    && !mentionedLegalNames.some(name => expectedNames.has(normalizeQccLegalName(name)))) {
+    throw new UpstreamError('qcc', 'SUBJECT_MISMATCH', 'QCC plain text identifies another legal entity');
+  }
+  const mentionedCreditCodes = normalized.match(/(?<![0-9A-Z])[0-9A-Z]{18}(?![0-9A-Z])/gu) ?? [];
+  if (mentionedCreditCodes.length > 0
+    && !mentionedCreditCodes.some(code => code === expected.creditCode.trim().toUpperCase())) {
+    throw new UpstreamError('qcc', 'SUBJECT_MISMATCH', 'QCC plain text identifies another credit code');
+  }
+}
+
+function genericMaterialRecord(
+  tool: string,
+  value: unknown,
+  expected: ExpectedQccSubject,
+  plainText = false,
+): Record<string, unknown> {
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  assertSubstantiveMaterial(text, tool);
+  if (plainText) assertPlainTextSubject(text, expected);
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    assertExpectedSubject(value as Record<string, unknown>, expected);
+  }
+  const records = typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? [value as Record<string, unknown>]
+    : [];
+  return {
+    Material: truncateUtf8(text, MATERIAL_MAX_BYTES),
+    Url: materialSourceUrl(records),
+  };
+}
+
 function safeMappedRecord(tool: string, record: Record<string, unknown>): {
   titleDetail: string;
   summary: string | null;
@@ -662,6 +772,17 @@ function safeMappedRecord(tool: string, record: Record<string, unknown>): {
   publishedAt: string | null;
   url: string | null;
 } {
+  const genericMaterial = MaterialRecordSchema.safeParse(record);
+  if (genericMaterial.success && RESEARCH_MATERIAL_TOOLS.has(tool)) {
+    const label = materialLabel(tool);
+    return {
+      titleDetail: label,
+      summary: `${label}（企查查材料，待模型整理）`,
+      content: { material: genericMaterial.data.Material },
+      publishedAt: null,
+      url: safeUrl(stringValue(genericMaterial.data, 'Url')),
+    };
+  }
   if (MATERIAL_TOOLS.has(tool)) {
     const parsed = MaterialRecordSchema.safeParse(record);
     if (!parsed.success) throw invalidResponse(`QCC ${tool} material has an unsupported shape`);
@@ -947,7 +1068,7 @@ function parseChineseFormalRoot<T extends z.ZodType>(
   return parsed.data;
 }
 
-function formalRecords(
+function strictFormalRecords(
   tool: string,
   payload: unknown,
   expected: ExpectedQccSubject,
@@ -959,7 +1080,8 @@ function formalRecords(
     for (const record of records) assertExpectedSubject(record, expected);
     if (tool === 'get_recruitment_info'
       && records.length > 0
-      && !records.every(record => RecruitmentRecordSchema.safeParse(record).success)) {
+      && !records.every(record => RecruitmentRecordSchema.safeParse(record).success)
+      && !records.every(record => RecruitmentMaterialRecordSchema.safeParse(record).success)) {
       return [recruitmentMaterialRecord({
         企业名称: expected.legalName,
         统一社会信用代码: expected.creditCode,
@@ -1033,6 +1155,39 @@ function formalRecords(
   throw invalidResponse(`QCC ${tool} has no Chinese response contract`);
 }
 
+function formalRecords(
+  tool: string,
+  payload: unknown,
+  expected: ExpectedQccSubject,
+): Record<string, unknown>[] {
+  const unwrapped = unwrapPayload(payload);
+  if (isRawMcpText(unwrapped)) {
+    if (!RESEARCH_MATERIAL_TOOLS.has(tool)) {
+      throw invalidResponse(`QCC ${tool} does not accept plain text material`);
+    }
+    return [genericMaterialRecord(tool, unwrapped[RAW_MCP_TEXT], expected, true)];
+  }
+
+  try {
+    return strictFormalRecords(tool, unwrapped, expected);
+  } catch (error) {
+    if (!STRUCTURED_MATERIAL_FALLBACK_TOOLS.has(tool)
+      || !(error instanceof UpstreamError)
+      || (error.code !== 'INVALID_RESPONSE' && error.code !== 'UNMAPPABLE_DATASET')
+      || !hasStructuredMaterial(unwrapped)) {
+      throw error;
+    }
+    try {
+      return [genericMaterialRecord(tool, unwrapped, expected)];
+    } catch (fallbackError) {
+      if (fallbackError instanceof UpstreamError && fallbackError.code === 'UNMAPPABLE_DATASET') {
+        throw error;
+      }
+      throw fallbackError;
+    }
+  }
+}
+
 export function mapQccToolResult(
   server: QccServer,
   tool: string,
@@ -1068,10 +1223,12 @@ export function mapQccToolResult(
   });
   const usedRecruitmentMaterial = tool === 'get_recruitment_info'
     && records.some(record => RecruitmentMaterialRecordSchema.safeParse(record).success);
+  const usedGenericMaterial = records.some(record => MaterialRecordSchema.safeParse(record).success);
   return {
     items,
     gaps: [...new Set([
       ...(usedRecruitmentMaterial ? [RECRUITMENT_MATERIAL_GAP] : []),
+      ...(usedGenericMaterial ? [`${materialLabel(tool)}使用非结构化材料，待模型整理`] : []),
       ...items
         .filter(item => item.url === null)
         .map(item => qccUnavailableLinkAuditGap(item.evidenceId)),

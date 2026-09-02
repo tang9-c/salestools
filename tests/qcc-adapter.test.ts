@@ -266,6 +266,63 @@ describe('QCC mapping and formal collection', () => {
     expect(material).not.toContain('参数化建模'.repeat(3000));
   });
 
+  it('keeps plain Chinese recruitment text for the confirmed subject as bounded material', () => {
+    const mapped = mapQccToolResult(
+      'operation',
+      'get_recruitment_info',
+      { content: [{ type: 'text', text: `${identity.legalName}招聘 SolidWorks 机械设计工程师，负责设备三维建模。` }] },
+      identity,
+      new Date('2026-08-29T12:00:00.000Z'),
+    );
+
+    expect(mapped.items).toHaveLength(1);
+    expect(mapped.items[0]?.content).toContain('SolidWorks');
+    expect(mapped.items[0]?.summary).toContain('待模型整理');
+  });
+
+  it('does not confirm plain text that explicitly identifies another legal entity', () => {
+    expect(() => mapQccToolResult(
+      'operation',
+      'get_recruitment_info',
+      { content: [{ type: 'text', text: '其他制造有限公司招聘 SolidWorks 机械设计工程师。' }] },
+      identity,
+      new Date('2026-08-29T12:00:00.000Z'),
+    )).toThrow(expect.objectContaining({ code: 'SUBJECT_MISMATCH' }));
+  });
+
+  it('keeps a plain-text company profile for assessment research after identity confirmation', () => {
+    const mapped = mapQccToolResult(
+      'company',
+      'get_company_profile',
+      { content: [{
+        type: 'text',
+        text: `${identity.legalName}从事工业机器人及智能装备研发制造，设有机械研发中心。`,
+      }] },
+      identity,
+      new Date('2026-08-29T12:00:00.000Z'),
+    );
+
+    expect(mapped.items[0]?.content).toContain('工业机器人');
+    expect(mapped.items[0]?.content).toContain('机械研发中心');
+  });
+
+  it('preserves a real material URL and reports a missing one without inventing it', () => {
+    const now = new Date('2026-08-29T12:00:00.000Z');
+    const linked = mapQccToolResult('operation', 'get_recruitment_info', {
+      Data: [{
+        RecruitmentMaterial: `${identity.legalName}招聘 Creo 工程师。`,
+        Url: 'https://jobs.example.cn/creo',
+      }],
+    }, identity, now);
+    expect(linked.items[0]?.url).toBe('https://jobs.example.cn/creo');
+
+    const unlinked = mapQccToolResult('operation', 'get_recruitment_info', {
+      content: [{ type: 'text', text: `${identity.legalName}招聘 Creo 工程师。` }],
+    }, identity, now);
+    expect(unlinked.items[0]?.url).toBeNull();
+    expect(unlinked.gaps).toContain(qccUnavailableLinkAuditGap('qcc-operation-get_recruitment_info-1'));
+  });
+
   it('does not degrade empty or mismatched unknown recruitment responses', () => {
     const now = new Date('2026-08-29T12:00:00.000Z');
 
@@ -382,7 +439,7 @@ describe('QCC mapping and formal collection', () => {
   it.each([
     'qcc-real-financing-permission.json',
     'qcc-real-financing-candidates.json',
-  ])('rejects an unstructured financing dataset from %s instead of reporting a verified empty result', file => {
+  ])('rejects a non-evidentiary financing response from %s instead of sending it to the model', file => {
     expect(() => mapQccToolResult(
       'operation',
       'get_financing_records',
@@ -390,6 +447,17 @@ describe('QCC mapping and formal collection', () => {
       identity,
       new Date('2026-08-29T12:00:00.000Z'),
     )).toThrow(expect.objectContaining({ code: 'UNMAPPABLE_DATASET' }));
+  });
+
+  it('keeps an unknown Chinese financing object as model material', () => {
+    const mapped = mapQccToolResult('operation', 'get_financing_records', {
+      企业名称: identity.legalName,
+      搜索结果: '公司完成战略融资并引入产业投资者，金额未披露。',
+      说明: '字段结构可能变化',
+    }, identity, new Date('2026-08-29T12:00:00.000Z'));
+
+    expect(mapped.items[0]?.content).toContain('战略融资');
+    expect(mapped.gaps.join('')).toContain('待模型整理');
   });
 
   it('accepts only structurally verified empty and substantive Chinese financing arrays', () => {
