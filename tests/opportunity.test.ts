@@ -142,10 +142,29 @@ describe('evaluateOpportunities', () => {
     expect(result.products.find(product => product.product === entry.product)?.level).toBe('低');
   });
 
-  it('keeps P1 industry matching at 低 when no product scene exists', () => {
+  it('keeps P1 industry matching at 待核实 when no product evidence exists', () => {
     const ev = reference('industry', 'company.example');
     const result = evaluateOpportunities(bundle({ evidence: [ev] }), NOW);
-    expect(result.products.every(row => row.level === '低')).toBe(true);
+    expect(result.products.every(row => row.level === '待核实')).toBe(true);
+  });
+
+  it.each(['P1', 'P2', 'non_target', 'unverified'] as const)(
+    'keeps identical confirmed product evidence at the same level for industry=%s',
+    industry => {
+      const input = completeHighCase(cases[0]!);
+      input.industryClassification = industry;
+      if (industry === 'unverified') input.industryEvidenceIds = [];
+      const result = evaluateOpportunities(input, NOW);
+      expect(result.products.find(row => row.product === 'windchill')?.level).toBe('高');
+    },
+  );
+
+  it('does not recommend a product when no product evidence exists, regardless of industry label', () => {
+    for (const industry of ['P1', 'P2', 'non_target', 'unverified'] as const) {
+      const result = evaluateOpportunities(bundle({ industry }), NOW);
+      expect(result.products.every(row => row.level === '待核实')).toBe(true);
+      expect(result).toMatchObject({ overallOpportunity: '待核实', recommendedProduct: null });
+    }
   });
 
   it('allows a confirmed P2 RF engineering scene to make CST the medium-priority product', () => {
@@ -179,7 +198,7 @@ describe('evaluateOpportunities', () => {
       fact('incumbent-only', 'creo', '招聘 Siemens NX 设计工程师', 'recruitment', ['incumbent-only']),
     ] }), NOW);
     expect(result.products.find(product => product.product === 'creo')?.level).toBe('低');
-    expect(result.recommendedProduct).toBe('windchill');
+    expect(result.recommendedProduct).toBeNull();
   });
 
   it.each([
@@ -342,10 +361,8 @@ describe('evaluateOpportunities', () => {
     expect(row?.blockers.join('')).not.toContain('预算');
   });
 
-  it.each([
-    { label: 'unverified industry', input: bundle({ industry: 'unverified' }) },
-    { label: 'critical identity conflict', input: bundle({ conflicts: ['法定主体归属冲突'] }) },
-  ])('returns all pending for $label', ({ input }) => {
+  it('returns all pending for a critical identity conflict', () => {
+    const input = bundle({ conflicts: ['法定主体归属冲突'] });
     const result = evaluateOpportunities(input, NOW);
     expect(result.products.every(row => row.level === '待核实')).toBe(true);
     expect(result).toMatchObject({ overallOpportunity: '待核实', recommendedProduct: null });

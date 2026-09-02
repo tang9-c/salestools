@@ -432,11 +432,9 @@ export function evaluateProduct(
   const reasons: string[] = [];
   const gaps: string[] = [];
 
-  if (evidence.industryClassification === 'unverified'
-    || criticalConflict(evidence.conflicts)
+  if (criticalConflict(evidence.conflicts)
     || allSupportingUnverified) {
     level = '待核实';
-    if (evidence.industryClassification === 'unverified') gaps.push('行业尚未核实');
     if (criticalConflict(evidence.conflicts)) gaps.push('存在关键主体或来源冲突');
     if (allSupportingUnverified) gaps.push('当前产品相关证据的主体归属均未核实');
   } else if (confirmedScene
@@ -460,18 +458,16 @@ export function evaluateProduct(
     if (!recentTiming) gaps.push('缺少最近 365 天的采购时机信号');
     if (!budgetSupport) gaps.push('预算能力待核实');
     if (!decisionSupport) gaps.push('独立决策权待核实');
-  } else if (evidence.industryClassification === 'P1'
-    || evidence.industryClassification === 'P2'
-    || evidence.industryClassification === 'non_target') {
+  } else if (productFacts.length === 0 && recentFinancing.length === 0 && !strongBlocker) {
+    level = '待核实';
+    gaps.push('缺少可归属于目标法定主体的产品相关证据');
+  } else {
     level = '低';
     if (!confirmedScene) gaps.push('未发现可归属于目标法定主体的具体产品场景');
     if (confirmedScene && complexityFacts.length === 0 && targetEcosystemFacts.length === 0) {
       gaps.push('缺少匹配的工程、组织复杂度或软件生态证据');
     }
     if (strongBlocker) reasons.push('已知替代生态或预算/决策阻碍使切入机会偏低');
-  } else {
-    level = '待核实';
-    gaps.push('证据不足，无法形成稳定判断');
   }
 
   const recruitmentStates = recruitmentWithSignal.map(fact =>

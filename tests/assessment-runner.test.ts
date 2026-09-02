@@ -229,6 +229,49 @@ describe('AssessmentRunner', () => {
     expect(resultJson).not.toMatch(/summary|content|raw|response|reportMarkdown/iu);
   });
 
+  it('supplements an unverified Ark industry label before evaluation and audit persistence', async () => {
+    const runtime = setup();
+    runtime.dependencies.ark = {
+      extractWithAudit: vi.fn(async (bundle: ResearchBundle) => {
+        const source = bundle.items[0]!;
+        return auditedExtraction(bundle, {
+          ...evidence(bundle),
+          evidence: [{
+            evidenceId: source.evidenceId,
+            title: source.title,
+            url: source.url,
+            originalPublisher: source.originalPublisher,
+            originalDomain: source.originalDomain,
+            publishedAt: source.publishedAt,
+            collectedAt: source.collectedAt,
+            mentionedName: source.mentionedName,
+            entityScope: source.entityScope,
+            entityMatch: source.entityMatch,
+            matchBasis: source.matchBasis,
+          }],
+          facts: [{
+            factId: 'industry-mobile-storage',
+            statement: '公司研发和制造移动储能与便携式电源产品',
+            kind: 'industry',
+            productTags: [],
+            strength: 'direct',
+            evidenceIds: [source.evidenceId],
+            entityScope: 'legal_entity',
+            entityMatch: 'confirmed',
+            matchBasis: source.matchBasis,
+          }],
+        });
+      }),
+    };
+
+    await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
+
+    expect(runtime.assessments.get(runtime.task.assessmentId)?.resultAudit).toMatchObject({
+      industryClassification: 'P1',
+      industryEvidenceIds: ['qcc-profile'],
+    });
+  });
+
   it('keeps the completed report and result audit when the decision log sink throws', async () => {
     const write = vi.fn((line: string) => {
       if (line.includes('"assessment_decision"')) throw new Error('log sink unavailable');

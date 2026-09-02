@@ -15,6 +15,7 @@ import type {
 } from '../db/assessment-repository.js';
 import type { StoredCompanyProfile } from '../db/profile-repository.js';
 import type { JsonlLogger } from '../logging/logger.js';
+import { supplementIndustryClassification } from '../industry/classify-industry.js';
 import { evaluateOpportunities } from '../opportunity/evaluate-all.js';
 import { buildReportModel } from '../report/build-report-model.js';
 import { renderMarkdown } from '../report/render-markdown.js';
@@ -161,7 +162,7 @@ export class AssessmentRunner {
       }
 
       try {
-        const evidence = EvidenceBundleSchema.parse(extracted.value.evidence);
+        const evidence = supplementIndustryClassification(EvidenceBundleSchema.parse(extracted.value.evidence));
         const assessment = this.opportunityEvaluator(evidence, this.now());
         const sourceStatus: ReportModel['sourceStatus'] = {
           qcc: qcc.sourceStatus.status,

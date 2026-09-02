@@ -34,7 +34,8 @@ export function evaluateOpportunities(evidenceInput: EvidenceBundle, now: Date):
   const positiveEvaluations = evaluations.filter(evaluation => evaluation.hasPositiveSupport);
   const globallyOnlyWeakOrProbablePositiveSupport = positiveEvaluations.length > 0
     && positiveEvaluations.every(evaluation => evaluation.onlyWeakOrProbablePositiveSupport);
-  const aggregateIsUnsupported = best.opportunity.level === '待核实'
+  const aggregateIsUnsupported = positiveEvaluations.length === 0
+    || best.opportunity.level === '待核实'
     || best.onlyWeakOrProbablePositiveSupport
     || globallyOnlyWeakOrProbablePositiveSupport;
   const overallOpportunity = aggregateIsUnsupported ? '待核实' : best.opportunity.level;
