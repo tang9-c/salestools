@@ -448,6 +448,27 @@ describe('assessment report', () => {
     expect(hasDirectLinkCoverageForKeyConclusions(model)).toBe(false);
   });
 
+  it('aggregates per-evidence QCC link gaps and excludes audit gaps from sales actions', () => {
+    const auditGaps = Array.from({ length: 200 }, (_, index) => (
+      qccUnavailableLinkAuditGap(`qcc-${index + 1}`)
+    ));
+    const input = evidenceBundle({
+      gaps: [...auditGaps, '预算能力待核实'],
+    });
+    const originalGaps = [...input.gaps];
+
+    const model = buildReportModel(identity, input, assessment(), sourceStatus);
+    const markdown = renderMarkdown(model);
+
+    expect(input.gaps).toEqual(originalGaps);
+    expect(model.gaps.filter(gap => gap.includes('企查查有 200 条证据未提供直接来源链接')))
+      .toHaveLength(1);
+    expect(model.gaps.some(gap => gap.startsWith('企查查来源链接不可用：'))).toBe(false);
+    expect(model.nextVerificationActions).toContain('核实预算能力待核实');
+    expect(model.nextVerificationActions.join('\n')).not.toContain('200 条证据');
+    expect(markdown.match(/企查查有 200 条证据未提供直接来源链接/gu)).toHaveLength(1);
+  });
+
   it('counts only complete real direct-link coverage for key conclusions', () => {
     const model = buildReportModel(identity, evidenceBundle(), assessment(), sourceStatus);
     expect(hasDirectLinkCoverageForKeyConclusions(model)).toBe(true);

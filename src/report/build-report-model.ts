@@ -1,6 +1,7 @@
 import {
   EvidenceBundleSchema,
   IdentityProfileSchema,
+  isQccUnavailableLinkAuditGap,
   OpportunityAssessmentSchema,
   ReportModelSchema,
   type EvidenceBundle,
@@ -157,7 +158,7 @@ export function buildReportModel(
   const recommended = assessment.recommendedProduct === null
     ? null
     : assessment.products.find(product => product.product === assessment.recommendedProduct) ?? null;
-  const baseGaps = uniqueInOrder([
+  const rawBaseGaps = uniqueInOrder([
     ...evidence.gaps,
     ...evidence.conflicts,
     ...(recommended === null ? assessment.summaryReasons : recommended.gaps),
@@ -165,6 +166,14 @@ export function buildReportModel(
       ? ['行业和产品技术场景待核实']
       : []),
   ]);
+  const unavailableQccLinkCount = rawBaseGaps.filter(isQccUnavailableLinkAuditGap).length;
+  const baseGaps = uniqueInOrder([
+    ...rawBaseGaps.filter(gap => !isQccUnavailableLinkAuditGap(gap)),
+    ...(unavailableQccLinkCount === 0
+      ? []
+      : [`企查查有 ${unavailableQccLinkCount} 条证据未提供直接来源链接`]),
+  ]);
+  const actionableGaps = baseGaps.filter(gap => classifyReportGap(gap) !== 'audit');
 
   return ReportModelSchema.parse({
     legalName: identity.legalName,
@@ -187,7 +196,7 @@ export function buildReportModel(
     gaps: baseGaps,
     nextVerificationActions: baseGaps.length === 0
       ? ['核实当前软件生态、预算和独立决策权']
-      : baseGaps.map(gap => `核实${gap}`),
+      : actionableGaps.map(gap => `核实${gap}`),
     sourceStatus,
     collectedAt: evidence.collectedAt,
     dynamicSignalFreshness: dynamicSignalFreshness(evidence.collectedAt),
