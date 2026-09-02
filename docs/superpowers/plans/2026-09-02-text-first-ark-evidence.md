@@ -37,7 +37,7 @@
 - `renderMarkdown` 在存在 `summary` 时优先展示该摘要；没有摘要时沿用日期、轮次、金额、投资方的已有降级展示。
 - Ark 输出仍为 `EvidenceBundle`，但融资记录可以只提供 `summary` 和 `evidenceIds`，其他融资字段为 `null` 或空数组。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `tests/contracts.test.ts` 增加一个融资记录只含摘要和证据引用仍能通过 `EvidenceBundleSchema` 的用例；在 `tests/report.test.ts` 增加报告优先呈现融资摘要的用例；在 `tests/ark-adapter.test.ts` 增加 Ark 返回中文融资段落总结、日期/轮次/金额为空时仍能通过验证的用例。
 
@@ -53,13 +53,13 @@ const financingWithSummary = {
 expect(EvidenceBundleSchema.safeParse({ ...evidenceBundle, financingRecords: [financingWithSummary] }).success).toBe(true);
 ```
 
-- [ ] **Step 2: 运行失败测试**
+- [x] **Step 2: 运行失败测试**
 
 运行：`npm test -- tests/contracts.test.ts tests/report.test.ts tests/ark-adapter.test.ts`
 
 预期：新增用例失败，原因是融资记录不接受 `summary` 或报告没有渲染该摘要。
 
-- [ ] **Step 3: 实现最小变更**
+- [x] **Step 3: 实现最小变更**
 
 在 `src/contracts/evidence.ts` 的融资记录对象中加入：
 
@@ -75,13 +75,13 @@ summary: z.string().trim().min(1).nullable().optional(),
 
 在 `src/report/render-markdown.ts` 的 `financingSummary` 和 `financingStatement` 中，当 `summary` 非空时先展示摘要，再按需补充可用字段。
 
-- [ ] **Step 4: 运行通过测试**
+- [x] **Step 4: 运行通过测试**
 
 运行：`npm test -- tests/contracts.test.ts tests/report.test.ts tests/ark-adapter.test.ts`
 
 预期：全部通过，旧融资记录 fixture 无需增加字段也能通过。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/contracts/evidence.ts src/upstream/ark/prompt.ts src/report/render-markdown.ts tests/contracts.test.ts tests/ark-adapter.test.ts tests/report.test.ts
@@ -99,7 +99,7 @@ git commit -m "feat: preserve llm financing summaries"
 - `mapCompanyDetails` 的主体/工商/联系方式校验继续严格；正式评估中的 `get_company_profile` 研究材料在已确认主体和信用代码查询上下文下允许走文本通道。这两个用途不得共用一个会绕过主体确认的宽松入口。
 - MCP `content[].text` 若不是 JSON，研究类工具将其作为原始材料保留；空文本仍然失败。正文明确出现与已确认主体冲突的法定名称或信用代码时，不得标记为 `confirmed`，必须失败或形成主体冲突 gap。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `tests/qcc-adapter.test.ts` 增加以下用例：
 
@@ -162,13 +162,13 @@ it('preserves a real material URL and reports a missing one without inventing it
 });
 ```
 
-- [ ] **Step 2: 运行失败测试**
+- [x] **Step 2: 运行失败测试**
 
 运行：`npm test -- tests/qcc-adapter.test.ts`
 
 预期：纯文本响应在 `unwrapPayload`/`formalRecords` 阶段失败，未知融资对象被标记为不可映射。
 
-- [ ] **Step 3: 实现最小变更**
+- [x] **Step 3: 实现最小变更**
 
 在 `src/upstream/qcc/mapper.ts`：
 
@@ -180,13 +180,13 @@ it('preserves a real material URL and reports a missing one without inventing it
 6. 材料回退的摘要固定为“企查查材料，待模型整理”，并在 gap 中说明“非结构化材料交由模型整理”，不把回退误报为已结构化事实。
 7. 有真实 URL 时原样保留；没有 URL 时保持 `null` 并复用 QCC 无直链审计 gap，不生成目录页或猜测链接。
 
-- [ ] **Step 4: 运行通过测试**
+- [x] **Step 4: 运行通过测试**
 
 运行：`npm test -- tests/qcc-adapter.test.ts`
 
 预期：新增纯文本、企业简介、主体冲突、未知结构和链接用例通过，现有主体不匹配、空响应、标准结构和调用预算测试继续通过。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/upstream/qcc/mapper.ts tests/qcc-adapter.test.ts
@@ -206,17 +206,17 @@ git commit -m "feat: preserve unstructured qcc research material"
 - `statement` 和融资 `summary` 是主要业务输出；缺少详细来源字段时使用中文摘要和 gaps，不补值。
 - Validator 继续阻止来源伪造、主体匹配升级、营收倒推、采购意向和高管人格推断，但不因融资日期/轮次/金额缺失而拒绝合法摘要。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `tests/ark-adapter.test.ts` 先增加对 `ARK_SYSTEM_PROMPT` 的明确断言：必须出现“文本优先/不要复刻来源字段”“招聘正文中的产品与职责”“融资 summary 可缺日期轮次金额”“不得仅凭搜索词或行业添加产品标签”和“多来源只在内容及主体一致时合并”。再增加中文自由文本招聘材料测试：Ark 输出 `kind: recruitment`、`productTags: ['solidworks']`、`strength: direct`、`statement` 包含产品和职责、`evidenceIds` 指向材料，验证后保留为事实；增加中文融资段落只输出 `summary` 的测试。在 `tests/evidence-validator.test.ts` 增加“缺少融资细节不失败、无证据摘要仍失败”的对照测试。
 
-- [ ] **Step 2: 运行失败测试**
+- [x] **Step 2: 运行失败测试**
 
 运行：`npm test -- tests/ark-adapter.test.ts tests/evidence-validator.test.ts`
 
 预期：提示断言明确失败，因为当前系统提示尚未包含上述文本优先和多来源合并规则；失败原因必须是缺少目标提示语义，而不是测试语法或 fixture 错误。融资摘要 schema 已由 Task 1 建立，不作为本任务红灯来源。
 
-- [ ] **Step 3: 实现最小变更**
+- [x] **Step 3: 实现最小变更**
 
 更新 `ARK_SYSTEM_PROMPT`：
 
@@ -230,13 +230,13 @@ git commit -m "feat: preserve unstructured qcc research material"
 
 在 `evidence-validator.ts` 中仅对新增 `summary` 做非空字符串校验和既有禁止性推断检查，不增加本地关键词抽取；保留现有来源引用和主体归属校验。
 
-- [ ] **Step 4: 运行通过测试**
+- [x] **Step 4: 运行通过测试**
 
 运行：`npm test -- tests/ark-adapter.test.ts tests/evidence-validator.test.ts`
 
 预期：中文自由文本招聘和融资摘要通过；标题-only、主体未确认、采购无载体和无证据摘要仍按既有规则降级或失败。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/upstream/ark/prompt.ts src/upstream/ark/evidence-validator.ts tests/ark-adapter.test.ts tests/evidence-validator.test.ts
@@ -255,7 +255,7 @@ git commit -m "feat: make ark evidence extraction text first"
 - 近期招聘正文明确出现产品和职责时至少得到低或中机会；行业 `unverified` 不改变该结果。
 - 融资摘要缺少日期等字段只影响报告缺口，不阻止其他产品事实评级。
 
-- [ ] **Step 1: 写回归保护测试**
+- [x] **Step 1: 写回归保护测试**
 
 增加四组回归用例：
 
@@ -264,23 +264,23 @@ git commit -m "feat: make ark evidence extraction text first"
 3. 只有融资 `summary` 的证据仍能渲染“融资概况”，不生成采购意向或营收推断。
 4. 两条内容一致且主体确认的招聘来源可以共同支持一个事实；任一来源主体未确认时，事实不得保持 `confirmed`。
 
-- [ ] **Step 2: 运行回归测试**
+- [x] **Step 2: 运行回归测试**
 
 运行：`npm test -- tests/opportunity.test.ts tests/recruitment-signals.test.ts tests/report.test.ts`
 
 预期：行业标签不影响机会等级的既有行为应直接通过，作为回归保护；融资摘要由 Task 1 实现后通过。若多来源主体归属测试失败，只能先写一个能稳定复现该失败的最小测试，再修改对应的 `src/opportunity/evaluate-product.ts` 或 `src/report/build-report-model.ts`。
 
-- [ ] **Step 3: 仅在出现红灯时实现最小变更**
+- [x] **Step 3: 仅在出现红灯时实现最小变更**
 
 不为已经通过的回归测试修改生产代码。只有出现可复现红灯时，才最小修改 `src/opportunity/evaluate-product.ts` 或 `src/report/build-report-model.ts`；不得新增本地产品词抽取器，不得让行业分类进入机会计算。
 
-- [ ] **Step 4: 运行通过测试**
+- [x] **Step 4: 运行通过测试**
 
 运行：`npm test -- tests/opportunity.test.ts tests/recruitment-signals.test.ts tests/report.test.ts`
 
 预期：三组回归用例通过，既有否定语义、替代软件、过期招聘和主体归属测试不回归。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add tests/opportunity.test.ts tests/recruitment-signals.test.ts tests/report.test.ts
@@ -297,7 +297,7 @@ git commit -m "test: verify text-first opportunity evaluation"
 - 不在本任务中新增真实凭据、保存上游原始响应或修改部署配置。
 - 真实验收使用已获授权主体“广东安达智能装备股份有限公司”（统一社会信用代码 `91441900673133772K`），通过本地 HTTP MCP、临时 SQLite 和已配置 `.env` 只提交一次 `force_refresh=true` 任务。
 
-- [ ] **Step 1: 运行完整验证**
+- [x] **Step 1: 运行完整验证**
 
 按顺序运行：
 
@@ -310,7 +310,7 @@ git diff --check
 
 预期：测试、类型检查、构建和 diff 检查全部成功。
 
-- [ ] **Step 2: 执行一次真实企业端到端验证**
+- [x] **Step 2: 执行一次真实企业端到端验证**
 
 自动验证通过后，使用 `apply_patch` 在已被 Git 忽略的 `.superpowers/text-first-evidence-e2e.mjs` 创建临时验收脚本。脚本复用已提交计划 `docs/superpowers/plans/2026-09-02-product-evidence-recall-fix.md` Task 4 Step 2 的完整本地 HTTP MCP 客户端，且只作以下确定替换：
 
@@ -327,7 +327,7 @@ rtk node .superpowers/text-first-evidence-e2e.mjs
 
 预期：主体画像唯一匹配；只创建一个 assessment；最终状态为 `completed`；报告可读取；QCC、豆包或 Ark 的真实失败按实际状态记录，不伪造成功；如果真实材料包含 SolidWorks 招聘正文，报告必须保留对应产品事实或明确说明主体、时效、上下文缺口；融资材料有内容时必须出现融资摘要，缺少日期/轮次/金额不能使整条融资证据消失。
 
-- [ ] **Step 3: 清理临时验收资产**
+- [x] **Step 3: 清理临时验收资产**
 
 停止本地服务后只删除以下忽略文件：
 
@@ -341,7 +341,7 @@ rtk git status --short
 
 预期：临时脚本、数据库和真实响应均未进入 Git 状态。
 
-- [ ] **Step 4: 记录验证文档**
+- [x] **Step 4: 记录验证文档**
 
 在 `docs/validation/2026-09-02-text-first-evidence.md` 记录：
 
@@ -351,7 +351,7 @@ rtk git status --short
 - 单一来源失败仍生成报告；
 - 未通过或仍待验证的项目，不写成成功。
 
-- [ ] **Step 5: 提交最终验证记录**
+- [x] **Step 5: 提交最终验证记录**
 
 ```bash
 git add docs/validation/2026-09-02-text-first-evidence.md
