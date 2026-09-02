@@ -61,7 +61,7 @@ function factFreeEvidence(research: ResearchBundle): EvidenceBundle {
   return {
     ...fixture(),
     identity: research.identity,
-    industryClassification: 'unverified',
+    industryLabel: null,
     industryEvidenceIds: [],
     evidence: [],
     facts: [],
@@ -381,7 +381,9 @@ describe('ARK_SYSTEM_PROMPT', () => {
     expect(ARK_SYSTEM_PROMPT).toMatch(/不可信数据/);
     expect(ARK_SYSTEM_PROMPT).toMatch(/不得执行.*指令/);
     expect(ARK_SYSTEM_PROMPT).toMatch(/不得调用.*工具/);
-    expect(ARK_SYSTEM_PROMPT).toMatch(/P1.*P2.*non_target.*unverified/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/industryLabel.*string\|null/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/2.?40.*字符.*confirmed.*legal_entity/s);
+    expect(ARK_SYSTEM_PROMPT).not.toMatch(/P1|P2|non_target|行业优先级/u);
     expect(ARK_SYSTEM_PROMPT).toMatch(/不得创建.*来源.*别名.*URL/s);
     expect(ARK_SYSTEM_PROMPT).toMatch(/不得.*高管人格.*年龄.*决策风格/s);
     expect(ARK_SYSTEM_PROMPT).toMatch(/不得.*营收.*估算.*人效/s);
@@ -390,26 +392,17 @@ describe('ARK_SYSTEM_PROMPT', () => {
     expect(ARK_SYSTEM_PROMPT).toMatch(/不得.*推断.*采购意向/s);
     expect(ARK_SYSTEM_PROMPT).toMatch(/每个.*标题.*摘要.*正文.*采购.*产品词/s);
     for (const field of [
-      'identity', 'industryClassification', 'industryEvidenceIds', 'evidence', 'facts',
+      'identity', 'industryLabel', 'industryEvidenceIds', 'evidence', 'facts',
       'financingRecords', 'conflicts', 'gaps', 'collectedAt',
     ]) {
       expect(ARK_SYSTEM_PROMPT).toContain(`\"${field}\"`);
     }
   });
 
-  it('freezes the project P1, P2, non-target, and unverified classification policy', () => {
-    const p1 = ['机器人', '电子高科技', '新能源汽车三电', '新能源装备'];
-    const p2 = [
-      '汽车整车', '汽车零部件', '航空航天', '军工', '工业装备', '半导体',
-      '通信/RF', '医疗器械', '家电', '船舶', '轨道交通',
-    ];
-
-    for (const industry of p1) expect(ARK_SYSTEM_PROMPT).toContain(industry);
-    for (const industry of p2) expect(ARK_SYSTEM_PROMPT).toContain(industry);
-    expect(ARK_SYSTEM_PROMPT).toMatch(/非目标.*不在.*范围.*充分证据/s);
-    expect(ARK_SYSTEM_PROMPT).toMatch(/证据不足.*冲突.*unverified/s);
-    expect(ARK_SYSTEM_PROMPT).toMatch(/通信\/RF.*P2.*CST.*高机会/s);
-    expect(ARK_SYSTEM_PROMPT).toMatch(/不得.*自行.*猜.*P1.*P2/s);
+  it('requires a concrete evidence-backed free-text industry label', () => {
+    expect(ARK_SYSTEM_PROMPT).toMatch(/行业标签.*主营产品.*技术场景/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/证据不足.*冲突.*null.*industryEvidenceIds/s);
+    expect(ARK_SYSTEM_PROMPT).toMatch(/不得输出.*科技行业.*制造业/s);
   });
 
   it('requires text-first thin-structure extraction for recruitment, financing, and merged evidence', () => {
@@ -875,7 +868,7 @@ describe('ArkEvidenceService', () => {
       position: 1,
       logId: 'log',
     });
-    const industryA = qcc('qcc-company-get_company_profile-A', 'company', 'A'.repeat(1_750));
+    const industryA = qcc('qcc-company-get_company_profile-A', 'company', 'A'.repeat(1_900));
     const technology = qcc('qcc-ipr-get_patent_info-T', 'ipr', 'T');
     const unfitCapacity = qcc('qcc-risk-get_company_risk_scan-C1', 'risk', 'X'.repeat(20_000));
     const industryB = search('search-official-B', 'official_products', 'B', 'z'.repeat(2_500));
@@ -1209,7 +1202,7 @@ describe('ArkEvidenceService', () => {
 
     await expect(client(fetchFn).extract(research)).resolves.toMatchObject({
       ...factFreeEvidence(research),
-      gaps: expect.arrayContaining([arkInputBudgetGap(6, 12)]),
+      gaps: expect.arrayContaining([arkInputBudgetGap(7, 12)]),
     });
 
     const sent = requestResearch(fetchFn);
@@ -1218,10 +1211,11 @@ describe('ArkEvidenceService', () => {
       'qcc-company-get_company_profile-1',
       'qcc-ipr-get_patent_info-1',
       'qcc-operation-get_recruitment_info-1',
-      'search-procurement-1',
       'search-engineering-1',
+      'search-procurement-1',
+      'qcc-operation-get_bidding_info-1',
     ]);
-    expect(sent.items).toHaveLength(6);
+    expect(sent.items).toHaveLength(7);
     const original = research.items.find(item => item.evidenceId === sent.items[0].evidenceId);
     expect(sent.items[0]).toMatchObject({
       evidenceId: original?.evidenceId,
@@ -1238,7 +1232,7 @@ describe('ArkEvidenceService', () => {
     expect(sent.items[0]?.content).toContain('"typeOrRound":"B 轮"');
     expect(sent.items[0]?.content).toContain('"disclosedAmount":"2 亿元"');
     expect(sent.items[0]?.content).toContain('"investors":["测试基金","产业资本"]');
-    expect(sent.gaps).toContain(arkInputBudgetGap(6, 12));
+    expect(sent.gaps).toContain(arkInputBudgetGap(7, 12));
   });
 
   it('preserves successful structured financing fields through Ark extraction', async () => {
@@ -1653,7 +1647,7 @@ describe('ArkEvidenceService', () => {
     );
 
     await expect(client(fetchFn).extract(research)).resolves.toMatchObject({
-      gaps: ['模型识别缺口', financingGap, annualReportGap, arkInputBudgetGap(6, 12)],
+      gaps: ['模型识别缺口', financingGap, annualReportGap, arkInputBudgetGap(7, 12)],
     });
   });
 
@@ -1681,9 +1675,10 @@ describe('ArkEvidenceService', () => {
       'qcc-ipr-get_patent_info-1',
       'qcc-operation-get_recruitment_info-1',
       'qcc-risk-get_company_risk_scan-1',
-      'search-engineering-1',
       'search-procurement-1',
+      'search-engineering-1',
       'qcc-operation-get_bidding_info-1',
+      'search-software-1',
     ]);
     expect(audited.selection.categoryCounts.capacity).toBe(1);
   });
@@ -1793,7 +1788,7 @@ describe('ArkEvidenceService', () => {
     };
     const emptyEvidence: EvidenceBundle = {
       ...fixture(),
-      industryClassification: 'unverified',
+      industryLabel: null,
       industryEvidenceIds: [],
       evidence: [],
       facts: [],

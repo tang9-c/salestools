@@ -3,7 +3,7 @@ import {
   EvidenceFactSchema,
   EvidenceReferenceSchema,
   FinancingRecordSchema,
-  IndustryClassificationSchema,
+  IndustryLabelSchema,
   ProductKeySchema,
 } from './evidence.js';
 import { UtcTimestampSchema } from './identity.js';
@@ -14,7 +14,7 @@ export const ArkSourceStatusSchema = z.enum(['completed', 'failed']);
 
 export const ReportModelSchema = z.object({
   legalName: z.string(),
-  industryClassification: IndustryClassificationSchema,
+  industryLabel: IndustryLabelSchema,
   industryEvidenceIds: z.array(z.string()),
   companyScaleClues: z.array(z.string()),
   overallOpportunity: OpportunityLevelSchema,
@@ -35,7 +35,15 @@ export const ReportModelSchema = z.object({
   }).strict(),
   collectedAt: UtcTimestampSchema,
   dynamicSignalFreshness: z.enum(['current', 'stale']),
-}).strict();
+}).strict().superRefine((report, context) => {
+  if ((report.industryLabel !== null) !== (report.industryEvidenceIds.length > 0)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['industryEvidenceIds'],
+      message: 'industry label and evidence IDs must either both be present or both be absent',
+    });
+  }
+});
 
 export type ArkSourceStatus = z.infer<typeof ArkSourceStatusSchema>;
 export type ReportModel = z.infer<typeof ReportModelSchema>;

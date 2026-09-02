@@ -77,7 +77,7 @@ const products = productKeys.map(product => ({
 }));
 
 const resultAudit = {
-  industryClassification: 'P1' as const,
+  industryLabel: '工业自动化装备',
   industryEvidenceIds: ['ev-1'],
   evidenceSelection: {
     selectedEvidenceIds: ['ev-1', 'ev-2'],
@@ -130,7 +130,7 @@ describe('assessment result audit', () => {
 
 const evidenceBundle = {
   identity,
-  industryClassification: 'P1' as const,
+  industryLabel: '工业自动化装备',
   industryEvidenceIds: ['ev-1'],
   evidence: [reference],
   facts: [{
@@ -158,7 +158,7 @@ const evidenceBundle = {
 
 const report = {
   legalName: identity.legalName,
-  industryClassification: 'P1' as const,
+  industryLabel: '工业自动化装备',
   industryEvidenceIds: evidenceBundle.industryEvidenceIds,
   companyScaleClues: [],
   overallOpportunity: '待核实' as const,
@@ -178,6 +178,30 @@ const report = {
 };
 
 describe('shared contracts', () => {
+  it('accepts an evidence-backed free-form industry label', () => {
+    const parsed = EvidenceBundleSchema.parse({
+      ...evidenceBundle,
+      industryLabel: '消费级与工业级 3D 打印设备',
+    });
+
+    expect(parsed.industryLabel).toBe('消费级与工业级 3D 打印设备');
+  });
+
+  it.each([
+    { industryLabel: null, industryEvidenceIds: ['ev-1'] },
+    { industryLabel: '3D 打印设备', industryEvidenceIds: [] },
+    { industryLabel: 'A', industryEvidenceIds: ['ev-1'] },
+    {
+      industryLabel: '这是一个明确超过四十个字符长度限制并且不应被行业标签合同接受的测试字符串用于验证上限',
+      industryEvidenceIds: ['ev-1'],
+    },
+  ])('rejects an inconsistent industry label: %j', invalidIndustry => {
+    expect(EvidenceBundleSchema.safeParse({
+      ...evidenceBundle,
+      ...invalidIndustry,
+    }).success).toBe(false);
+  });
+
   it('accepts the five complete contract shapes including explicit nulls', () => {
     expect(IdentityProfileSchema.parse(identity)).toEqual(identity);
     expect(ResearchBundleSchema.parse(researchBundle)).toEqual(researchBundle);

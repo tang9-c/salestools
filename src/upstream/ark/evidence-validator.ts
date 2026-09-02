@@ -160,18 +160,15 @@ export function validateArkEvidence(researchInput: ResearchBundle, candidate: un
     requireCompleteAttribution(`Evidence reference ${reference.evidenceId}`, reference.mentionedName, reference.matchBasis);
   }
 
-  if (evidence.industryClassification !== 'unverified' && evidence.industryEvidenceIds.length === 0) {
-    invalid('A verified industry classification requires evidence');
-  }
-
   const referenceById = new Map(evidence.evidence.map(reference => [reference.evidenceId, reference]));
   const researchById = new Map(research.items.map(item => [item.evidenceId, item]));
-  if (evidence.industryClassification !== 'unverified') {
+  if (evidence.industryLabel !== null) {
     const industryReferences = evidence.industryEvidenceIds
-      .map(evidenceId => referenceById.get(evidenceId))
-      .filter(reference => reference !== undefined);
-    if (industryReferences.every(reference => reference.entityMatch === 'unverified')) {
-      invalid('A verified industry classification requires attributed entity evidence');
+      .map(evidenceId => referenceById.get(evidenceId));
+    if (industryReferences.length !== evidence.industryEvidenceIds.length
+      || industryReferences.some(reference => reference?.entityScope !== 'legal_entity'
+        || reference.entityMatch !== 'confirmed')) {
+      invalid('An industry label requires confirmed legal-entity evidence');
     }
   }
 
@@ -222,7 +219,7 @@ export function validateArkEvidence(researchInput: ResearchBundle, candidate: un
   }
 
   if (research.items.length === 0) {
-    const hasClaimedEvidence = evidence.industryClassification !== 'unverified'
+    const hasClaimedEvidence = evidence.industryLabel !== null
       || evidence.industryEvidenceIds.length > 0
       || evidence.evidence.length > 0
       || evidence.facts.length > 0

@@ -67,14 +67,17 @@ function bundle(options: {
   evidence?: EvidenceReference[];
   facts?: EvidenceFact[];
   financing?: EvidenceBundle['financingRecords'];
-  industry?: EvidenceBundle['industryClassification'];
+  industryLabel?: string | null;
   conflicts?: string[];
 } = {}): EvidenceBundle {
   const evidence = options.evidence ?? [];
+  const industryLabel = options.industryLabel === undefined
+    ? (evidence.length === 0 ? null : '工业自动化装备')
+    : options.industryLabel;
   return {
     identity,
-    industryClassification: options.industry ?? 'P1',
-    industryEvidenceIds: evidence.length === 0 ? [] : [evidence[0]!.evidenceId],
+    industryLabel,
+    industryEvidenceIds: industryLabel === null ? [] : [evidence[0]!.evidenceId],
     evidence,
     facts: options.facts ?? [],
     financingRecords: options.financing ?? [],
@@ -142,35 +145,51 @@ describe('evaluateOpportunities', () => {
     expect(result.products.find(product => product.product === entry.product)?.level).toBe('低');
   });
 
-  it('keeps P1 industry matching at 待核实 when no product evidence exists', () => {
+  it('keeps a descriptive industry label at 待核实 when no product evidence exists', () => {
     const ev = reference('industry', 'company.example');
     const result = evaluateOpportunities(bundle({ evidence: [ev] }), NOW);
     expect(result.products.every(row => row.level === '待核实')).toBe(true);
   });
 
-  it.each(['P1', 'P2', 'non_target', 'unverified'] as const)(
-    'keeps identical confirmed product evidence at the same level for industry=%s',
-    industry => {
+  it.each(['机器人智能装备', '消费级电子设备', null] as const)(
+    'keeps identical confirmed product evidence at the same level for industryLabel=%s',
+    industryLabel => {
       const input = completeHighCase(cases[0]!);
-      input.industryClassification = industry;
-      if (industry === 'unverified') input.industryEvidenceIds = [];
+      input.industryLabel = industryLabel;
+      input.industryEvidenceIds = industryLabel === null ? [] : ['recruitment'];
       const result = evaluateOpportunities(input, NOW);
       expect(result.products.find(row => row.product === 'windchill')?.level).toBe('高');
     },
   );
 
   it('does not recommend a product when no product evidence exists, regardless of industry label', () => {
-    for (const industry of ['P1', 'P2', 'non_target', 'unverified'] as const) {
-      const result = evaluateOpportunities(bundle({ industry }), NOW);
+    for (const industryLabel of ['机器人智能装备', '消费级电子设备', null] as const) {
+      const evidence = industryLabel === null ? [] : [reference('industry', 'company.example')];
+      const result = evaluateOpportunities(bundle({ industryLabel, evidence }), NOW);
       expect(result.products.every(row => row.level === '待核实')).toBe(true);
       expect(result).toMatchObject({ overallOpportunity: '待核实', recommendedProduct: null });
     }
   });
 
-  it('allows a confirmed P2 RF engineering scene to make CST the medium-priority product', () => {
+  it('does not change any opportunity result when the descriptive industry label changes', () => {
+    const base = completeHighCase(cases[0]!);
+    const results = [
+      { industryLabel: '机器人智能装备', industryEvidenceIds: ['recruitment'] },
+      { industryLabel: '消费级电子设备', industryEvidenceIds: ['recruitment'] },
+      { industryLabel: null, industryEvidenceIds: [] },
+    ].map(industry => evaluateOpportunities({
+      ...base,
+      ...industry,
+    }, NOW));
+
+    expect(results[1]).toEqual(results[0]);
+    expect(results[2]).toEqual(results[0]);
+  });
+
+  it('allows a confirmed RF engineering scene to make CST the medium-priority product', () => {
     const refs = [reference('rf', 'company.example'), reference('team', 'jobs.example')];
     const result = evaluateOpportunities(bundle({
-      industry: 'P2', evidence: refs,
+      industryLabel: '射频通信设备', evidence: refs,
       facts: [
         fact('rf-scene', 'cst', '公司开展射频天线和 EMC/EMI 电磁仿真', 'product_scene', ['rf']),
         fact('rf-team', 'cst', '建有雷达微波研发团队', 'organization', ['team']),
@@ -184,7 +203,7 @@ describe('evaluateOpportunities', () => {
   it('uses an explicit PDM recruitment statement even when Ark omits productTags', () => {
     const recruitment = reference('pdm-role', 'activity.zhipin.com');
     const result = evaluateOpportunities(bundle({
-      industry: 'unverified',
+      industryLabel: null,
       evidence: [recruitment],
       facts: [{
         factId: 'pdm-role',
@@ -544,7 +563,7 @@ describe('evaluateOpportunities', () => {
   });
 
   it('returns a gaps-only aggregate result for empty evidence', () => {
-    const result = evaluateOpportunities(bundle({ industry: 'unverified' }), NOW);
+    const result = evaluateOpportunities(bundle({ industryLabel: null }), NOW);
     expect(result.products).toHaveLength(7);
     expect(result.products.every(row => row.level === '待核实')).toBe(true);
     expect(result).toMatchObject({ overallOpportunity: '待核实', recommendedProduct: null });

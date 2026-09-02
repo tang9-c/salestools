@@ -67,11 +67,11 @@ export const FinancingRecordSchema = z.object({
   evidenceIds: z.array(z.string()),
 }).strict();
 
-export const IndustryClassificationSchema = z.enum(['P1', 'P2', 'non_target', 'unverified']);
+export const IndustryLabelSchema = z.string().trim().min(2).max(40).nullable();
 
 export const EvidenceBundleSchema = z.object({
   identity: IdentityProfileSchema,
-  industryClassification: IndustryClassificationSchema,
+  industryLabel: IndustryLabelSchema,
   industryEvidenceIds: z.array(z.string()),
   evidence: z.array(EvidenceReferenceSchema),
   facts: z.array(EvidenceFactSchema),
@@ -79,14 +79,24 @@ export const EvidenceBundleSchema = z.object({
   conflicts: z.array(z.string()),
   gaps: z.array(z.string()),
   collectedAt: UtcTimestampSchema,
-}).strict();
+}).strict().superRefine((bundle, context) => {
+  const hasLabel = bundle.industryLabel !== null;
+  const hasEvidence = bundle.industryEvidenceIds.length > 0;
+  if (hasLabel !== hasEvidence) {
+    context.addIssue({
+      code: 'custom',
+      path: ['industryEvidenceIds'],
+      message: 'industry label and evidence IDs must either both be present or both be absent',
+    });
+  }
+});
 
 export type ProductKey = z.infer<typeof ProductKeySchema>;
 export type FactKind = z.infer<typeof FactKindSchema>;
 export type EvidenceReference = z.infer<typeof EvidenceReferenceSchema>;
 export type EvidenceFact = z.infer<typeof EvidenceFactSchema>;
 export type FinancingRecord = z.infer<typeof FinancingRecordSchema>;
-export type IndustryClassification = z.infer<typeof IndustryClassificationSchema>;
+export type IndustryLabel = z.infer<typeof IndustryLabelSchema>;
 export type EvidenceBundle = z.infer<typeof EvidenceBundleSchema>;
 
 export class EvidenceContractError extends Error {

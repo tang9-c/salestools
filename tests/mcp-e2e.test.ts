@@ -99,7 +99,7 @@ function fakeSearchItem(query: SearchQuery): ResearchItem {
 function fakeArkEvidence(bundle: ResearchBundle) {
   return {
     identity: bundle.identity,
-    industryClassification: 'unverified' as const,
+    industryLabel: null,
     industryEvidenceIds: [],
     evidence: [],
     facts: [],

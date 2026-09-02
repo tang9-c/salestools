@@ -11,7 +11,7 @@ describe('JsonlLogger', () => {
       assessmentId: 'assessment-1',
       userId: 'sales-1',
       resultAudit: {
-        industryClassification: 'P1',
+        industryLabel: '工业自动化装备',
         industryEvidenceIds: ['qcc-profile'],
         evidenceSelection: {
           selectedEvidenceIds: ['qcc-profile', 'doubao_search-web'],
@@ -43,7 +43,7 @@ describe('JsonlLogger', () => {
       timestamp: '2026-08-30T00:00:00.000Z',
       assessment_id: 'assessment-1',
       user_id: 'sales-1',
-      industry_classification: 'P1',
+      industry_label: '工业自动化装备',
       original_evidence_count: 3,
       selected_evidence_count: 2,
       excluded_evidence_count: 1,

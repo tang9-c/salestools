@@ -53,7 +53,7 @@ function collection(status: SourceCollection['sourceStatus']['status'], items: R
 function evidence(bundle: ResearchBundle): EvidenceBundle {
   return {
     identity: bundle.identity,
-    industryClassification: 'unverified',
+    industryLabel: null,
     industryEvidenceIds: [],
     evidence: [], facts: [], financingRecords: [], conflicts: [],
     gaps: [...bundle.gaps, ...(bundle.items.length === 0 ? ['未获得可用证据，不能形成销售判断'] : ['产品技术场景待核实'])],
@@ -200,7 +200,7 @@ describe('AssessmentRunner', () => {
 
     const stored = runtime.assessments.get(runtime.task.assessmentId)!;
     expect(stored.resultAudit).toMatchObject({
-      industryClassification: 'unverified',
+      industryLabel: null,
       industryEvidenceIds: [],
       evidenceSelection: {
         selectedEvidenceIds: ['qcc-profile', 'doubao_search-web'],
@@ -229,13 +229,15 @@ describe('AssessmentRunner', () => {
     expect(resultJson).not.toMatch(/summary|content|raw|response|reportMarkdown/iu);
   });
 
-  it('supplements an unverified Ark industry label before evaluation and audit persistence', async () => {
+  it('persists the evidence-backed Ark industry label without reclassification', async () => {
     const runtime = setup();
     runtime.dependencies.ark = {
       extractWithAudit: vi.fn(async (bundle: ResearchBundle) => {
         const source = bundle.items[0]!;
         return auditedExtraction(bundle, {
           ...evidence(bundle),
+          industryLabel: '移动储能设备',
+          industryEvidenceIds: [source.evidenceId],
           evidence: [{
             evidenceId: source.evidenceId,
             title: source.title,
@@ -267,7 +269,7 @@ describe('AssessmentRunner', () => {
     await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
 
     expect(runtime.assessments.get(runtime.task.assessmentId)?.resultAudit).toMatchObject({
-      industryClassification: 'P1',
+      industryLabel: '移动储能设备',
       industryEvidenceIds: ['qcc-profile'],
     });
   });
@@ -309,7 +311,7 @@ describe('AssessmentRunner', () => {
     let searchIndex = 0;
     const model: EvidenceBundle = {
       identity: IDENTITY,
-      industryClassification: 'unverified',
+      industryLabel: null,
       industryEvidenceIds: [],
       evidence: [],
       facts: [],

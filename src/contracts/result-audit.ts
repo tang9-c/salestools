@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IndustryClassificationSchema, ProductKeySchema } from './evidence.js';
+import { IndustryLabelSchema, ProductKeySchema } from './evidence.js';
 import { OpportunityLevelSchema } from './opportunity.js';
 
 const EvidenceCategoryCountsSchema = z.object({
@@ -54,10 +54,18 @@ const CompleteProductOpportunityAuditsSchema = z.array(ProductOpportunityAuditSc
   });
 
 export const AssessmentResultAuditSchema = z.object({
-  industryClassification: IndustryClassificationSchema,
+  industryLabel: IndustryLabelSchema,
   industryEvidenceIds: z.array(z.string()),
   evidenceSelection: EvidenceSelectionAuditSchema,
   opportunities: CompleteProductOpportunityAuditsSchema,
-}).strict();
+}).strict().superRefine((audit, context) => {
+  if ((audit.industryLabel !== null) !== (audit.industryEvidenceIds.length > 0)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['industryEvidenceIds'],
+      message: 'industry label and evidence IDs must either both be present or both be absent',
+    });
+  }
+});
 
 export type AssessmentResultAudit = z.infer<typeof AssessmentResultAuditSchema>;

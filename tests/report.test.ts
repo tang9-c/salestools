@@ -99,7 +99,7 @@ function evidenceBundle(overrides: Partial<EvidenceBundle> = {}): EvidenceBundle
   ];
   return {
     identity,
-    industryClassification: 'P1',
+    industryLabel: '工业自动化装备',
     industryEvidenceIds: ['industry'],
     evidence,
     facts: [
@@ -185,7 +185,7 @@ describe('assessment report', () => {
       ## 客户摘要
 
       - 法定主体：测试智能装备有限公司
-      - 行业优先级：P1
+      - 行业：工业自动化装备
       - 企业规模线索：研发组织覆盖机械、电子与软件团队
       - 最近融资：2026-08-10T12:00:00.000Z；A 轮；1 亿元；投资方：测试基金
       - 最佳切入产品：PTC Windchill
@@ -292,8 +292,8 @@ describe('assessment report', () => {
     const model = buildReportModel(
       identity,
       evidenceBundle({
-        industryClassification: 'unverified',
-        industryEvidenceIds: ['industry'],
+        industryLabel: null,
+        industryEvidenceIds: [],
         evidence: [reference('industry', { title: '企业官网简介' })],
         facts: [fact('industry-fact', '企业行业和产品技术场景仍待核实', 'industry', ['industry'])],
         financingRecords: [],
@@ -306,6 +306,7 @@ describe('assessment report', () => {
     const markdown = renderMarkdown(model);
 
     expect(markdown).toContain('## 客户摘要');
+    expect(markdown).toContain('- 行业：待核实');
     expect(markdown).toContain('- 最佳切入产品：暂不推荐');
     for (const product of [
       'PTC Windchill',
@@ -487,21 +488,22 @@ describe('assessment report', () => {
     expect(markdown.match(/企查查有 200 条证据未提供直接来源链接/gu)).toHaveLength(1);
   });
 
-  it('counts only complete real direct-link coverage for key conclusions', () => {
+  it('does not require an industry link when the industry label is unverified', () => {
     const model = buildReportModel(identity, evidenceBundle(), assessment(), sourceStatus);
     expect(hasDirectLinkCoverageForKeyConclusions(model)).toBe(true);
     expect(hasDirectLinkCoverageForKeyConclusions({
       ...model,
+      industryLabel: null,
       industryEvidenceIds: [],
-    })).toBe(false);
+    })).toBe(true);
   });
 
-  it('requires a direct link for industry classification even when product evidence has one', () => {
+  it('requires a direct link for the industry label even when product evidence has one', () => {
     const industryWithoutLink = reference('industry-without-link', {
       url: null,
       originalPublisher: null,
       originalDomain: null,
-      title: 'QCC 行业分类依据',
+      title: 'QCC 行业标签依据',
     });
     const productWithLink = reference('product-with-link', {
       url: 'https://jobs.example/windchill-role',
@@ -532,8 +534,8 @@ describe('assessment report', () => {
     const markdown = renderMarkdown(model);
 
     expect(model.industryEvidenceIds).toEqual(['industry-without-link']);
-    expect(markdown).toContain('行业分类：P1');
-    expect(markdown).toContain('QCC 行业分类依据（来源链接不可用）');
+    expect(markdown).toContain('行业：工业自动化装备');
+    expect(markdown).toContain('QCC 行业标签依据（来源链接不可用）');
     expect(hasDirectLinkCoverageForKeyConclusions(model)).toBe(false);
   });
 

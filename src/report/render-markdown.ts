@@ -90,7 +90,7 @@ function sourceLink(reference: EvidenceReference): string {
 
 export function hasDirectLinkCoverageForKeyConclusions(modelInput: ReportModel): boolean {
   const model = ReportModelSchema.parse(modelInput);
-  if (model.industryClassification !== 'unverified' && model.industryEvidenceIds.length === 0) return false;
+  if (model.industryLabel !== null && model.industryEvidenceIds.length === 0) return false;
   const recommendedEvidenceIds = model.recommendedProduct === null
     ? []
     : model.products.find(product => product.product === model.recommendedProduct)?.evidenceIds ?? [];
@@ -155,7 +155,7 @@ function factSupport(model: ReportModel, fact: EvidenceFact): string {
     .map(product => `${PRODUCT_LABELS[product.product]}：${product.level}`);
   if (products.length > 0) return products.join('；');
   const purpose: Readonly<Record<EvidenceFact['kind'], string>> = {
-    industry: '行业分类事实',
+    industry: '行业事实',
     product_scene: '产品技术场景事实',
     recruitment: '招聘事实',
     software_ecosystem: '软件生态事实',
@@ -199,7 +199,7 @@ function evidenceRows(model: ReportModel): string[] {
       const reference = referencesById.get(evidenceId);
       return reference === undefined
         ? []
-        : [evidenceRow(`行业分类：${model.industryClassification}`, reference, '行业分类依据')];
+        : [evidenceRow(`行业：${model.industryLabel ?? '待核实'}`, reference, '行业依据')];
     });
   const baseRows = [...factRows, ...industryRows];
   const latestFinancing = model.latestFinancing;
@@ -273,7 +273,7 @@ function renderAssessment(model: ReportModel): string {
     '## 客户摘要',
     '',
     `- 法定主体：${escapeInline(model.legalName)}`,
-    `- 行业优先级：${model.industryClassification}`,
+    `- 行业：${model.industryLabel === null ? '待核实' : escapeInline(model.industryLabel)}`,
     `- 企业规模线索：${escapeInline(scaleClues)}`,
     `- 最近融资：${financingSummary(model)}`,
     `- 最佳切入产品：${recommended === null ? '暂不推荐' : PRODUCT_LABELS[recommended.product]}`,

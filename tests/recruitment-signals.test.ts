@@ -43,7 +43,7 @@ function recruitmentBundle(
     entityScope: 'legal_entity', entityMatch: 'confirmed', matchBasis: ['官方域名与全称一致'],
   };
   return {
-    identity, industryClassification: 'P1', industryEvidenceIds: ['job'], evidence: [evidence],
+    identity, industryLabel: '工业自动化装备', industryEvidenceIds: ['job'], evidence: [evidence],
     facts: [{
       factId: 'job-fact', statement, kind: 'recruitment', productTags: [entry.product], strength,
       evidenceIds: ['job'], entityScope: 'legal_entity', entityMatch: 'confirmed',

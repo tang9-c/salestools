@@ -162,9 +162,6 @@ export function buildReportModel(
     ...evidence.gaps,
     ...evidence.conflicts,
     ...(recommended === null ? assessment.summaryReasons : recommended.gaps),
-    ...(assessment.recommendedProduct === null && evidence.industryClassification === 'unverified'
-      ? ['行业和产品技术场景待核实']
-      : []),
   ]);
   const unavailableQccLinkCount = rawBaseGaps.filter(isQccUnavailableLinkAuditGap).length;
   const baseGaps = uniqueInOrder([
@@ -177,7 +174,7 @@ export function buildReportModel(
 
   return ReportModelSchema.parse({
     legalName: identity.legalName,
-    industryClassification: evidence.industryClassification,
+    industryLabel: evidence.industryLabel,
     industryEvidenceIds: evidence.industryEvidenceIds,
     companyScaleClues: uniqueInOrder(reliableFacts
       .filter(fact => fact.kind === 'organization' || fact.kind === 'manufacturing')

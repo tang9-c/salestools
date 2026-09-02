@@ -43,7 +43,7 @@ export class JsonlLogger {
       timestamp: this.now().toISOString(),
       assessment_id: event.assessmentId,
       user_id: event.userId,
-      industry_classification: audit.industryClassification,
+      industry_label: audit.industryLabel,
       original_evidence_count: audit.evidenceSelection.originalCount,
       selected_evidence_count: audit.evidenceSelection.selectedCount,
       excluded_evidence_count: audit.evidenceSelection.excludedCount,

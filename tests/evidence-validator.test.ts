@@ -130,11 +130,36 @@ describe('validateArkEvidence', () => {
     });
   });
 
-  it('requires a non-unverified industry classification to cite existing evidence', () => {
+  it('requires a non-null industry label to cite existing evidence', () => {
     const candidate = fixture();
     expectInvalid({ ...candidate, industryEvidenceIds: [] });
     expectInvalid({ ...candidate, industryEvidenceIds: ['missing'] });
   });
+
+  it.each(['probable', 'unverified'] as const)(
+    'rejects an industry label backed only by %s subject attribution',
+    entityMatch => {
+      const candidate = fixture();
+      const research = researchBundle();
+      research.items[0] = {
+        ...research.items[0],
+        entityMatch,
+        matchBasis: ['网页仅提及简称，无法确认法定主体'],
+      };
+      const evidence = [{
+        ...candidate.evidence[0],
+        entityMatch,
+        matchBasis: ['网页仅提及简称，无法确认法定主体'],
+      }];
+
+      expectInvalid({
+        ...candidate,
+        evidence,
+        facts: [],
+        financingRecords: [],
+      }, research);
+    },
+  );
 
   it('requires complete subject attribution on every cited source and extracted fact', () => {
     const candidate = fixture();
@@ -166,7 +191,7 @@ describe('validateArkEvidence', () => {
 
     expectInvalid({
       ...candidate,
-      industryClassification: 'unverified',
+      industryLabel: null,
       industryEvidenceIds: [],
       evidence: [unverifiedReference],
       facts: [{ ...candidate.facts[0], evidenceIds: ['web-1'] }],
@@ -403,7 +428,7 @@ describe('validateArkEvidence', () => {
     };
     expectInvalid({
       ...candidate,
-      industryClassification: 'unverified',
+      industryLabel: null,
       industryEvidenceIds: [],
       evidence: [unverifiedReference],
       facts: [{
@@ -485,7 +510,7 @@ describe('validateArkEvidence', () => {
     };
     const emptyEvidence: EvidenceBundle = {
       ...candidate,
-      industryClassification: 'unverified',
+      industryLabel: null,
       industryEvidenceIds: [],
       evidence: [],
       facts: [],
@@ -495,7 +520,11 @@ describe('validateArkEvidence', () => {
     };
 
     expect(validateArkEvidence(emptyResearch, emptyEvidence)).toEqual(emptyEvidence);
-    expectInvalid({ ...emptyEvidence, industryClassification: 'P1' }, emptyResearch);
+    expectInvalid({
+      ...emptyEvidence,
+      industryLabel: '工业自动化装备',
+      industryEvidenceIds: ['missing'],
+    }, emptyResearch);
     expectInvalid({ ...emptyEvidence, facts: candidate.facts }, emptyResearch);
     expectInvalid({ ...emptyEvidence, evidence: candidate.evidence }, emptyResearch);
   });

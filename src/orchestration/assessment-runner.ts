@@ -15,7 +15,6 @@ import type {
 } from '../db/assessment-repository.js';
 import type { StoredCompanyProfile } from '../db/profile-repository.js';
 import type { JsonlLogger } from '../logging/logger.js';
-import { supplementIndustryClassification } from '../industry/classify-industry.js';
 import { evaluateOpportunities } from '../opportunity/evaluate-all.js';
 import { buildReportModel } from '../report/build-report-model.js';
 import { renderMarkdown } from '../report/render-markdown.js';
@@ -162,7 +161,7 @@ export class AssessmentRunner {
       }
 
       try {
-        const evidence = supplementIndustryClassification(EvidenceBundleSchema.parse(extracted.value.evidence));
+        const evidence = EvidenceBundleSchema.parse(extracted.value.evidence);
         const assessment = this.opportunityEvaluator(evidence, this.now());
         const sourceStatus: ReportModel['sourceStatus'] = {
           qcc: qcc.sourceStatus.status,
@@ -172,7 +171,7 @@ export class AssessmentRunner {
         const model = this.reportModelBuilder(profile.identity, evidence, assessment, sourceStatus);
         const markdown = this.markdownRenderer(model);
         const resultAudit: AssessmentResultAudit = {
-          industryClassification: evidence.industryClassification,
+          industryLabel: evidence.industryLabel,
           industryEvidenceIds: evidence.industryEvidenceIds,
           evidenceSelection: {
             selectedEvidenceIds: [...new Set(extracted.value.selection.bundle.items.map(item => item.evidenceId))],

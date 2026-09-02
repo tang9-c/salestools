@@ -17,7 +17,7 @@ const PRODUCT_KEYS = [
   'windchill', 'feigenbaum_qms', 'creo', 'catia', 'abaqus', 'cst', 'solidworks',
 ] as const;
 const RESULT_AUDIT: AssessmentResultAudit = {
-  industryClassification: 'unverified' as const,
+  industryLabel: null,
   industryEvidenceIds: [],
   evidenceSelection: {
     selectedEvidenceIds: [], originalCount: 0, selectedCount: 0, excludedCount: 0,

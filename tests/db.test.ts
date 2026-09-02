@@ -24,7 +24,7 @@ const basicProfile = {
 };
 const assessmentInput = { requestedBy: 'user-1', legalName: identity.legalName, creditCode: identity.creditCode };
 const resultAudit = {
-  industryClassification: 'P1' as const,
+  industryLabel: '工业自动化装备',
   industryEvidenceIds: ['qcc-profile'],
   evidenceSelection: {
     selectedEvidenceIds: ['qcc-profile', 'doubao_search-web'],
@@ -159,6 +159,11 @@ describe('SQLite repositories', () => {
   it('normalizes legacy industry audit JSON without rewriting historical Markdown', () => {
     const legacyAuditPath = join(directory, 'legacy-industry-audit.sqlite');
     const seeded = openDatabase(legacyAuditPath);
+    const { industryLabel: _currentLabel, ...withoutCurrentLabel } = resultAudit;
+    const legacyResultAudit = {
+      ...withoutCurrentLabel,
+      industryClassification: 'P1',
+    };
     seeded.prepare(`
       INSERT INTO assessments (
         assessment_id, cache_key, requested_by, legal_name, credit_code, status,
@@ -171,7 +176,7 @@ describe('SQLite repositories', () => {
       '历史公司',
       '91310000LEGACY0001',
       '# 历史报告\n\n- 行业优先级：P1',
-      JSON.stringify(resultAudit),
+      JSON.stringify(legacyResultAudit),
       now.toISOString(),
     );
     seeded.close();
@@ -191,11 +196,7 @@ describe('SQLite repositories', () => {
   it('leaves an already migrated industry label audit unchanged', () => {
     const currentAuditPath = join(directory, 'current-industry-audit.sqlite');
     const seeded = openDatabase(currentAuditPath);
-    const { industryClassification: _legacy, ...withoutLegacyClassification } = resultAudit;
-    const currentAudit = {
-      ...withoutLegacyClassification,
-      industryLabel: '工业自动化装备',
-    };
+    const currentAudit = resultAudit;
     seeded.prepare(`
       INSERT INTO assessments (
         assessment_id, cache_key, requested_by, legal_name, credit_code, status,
