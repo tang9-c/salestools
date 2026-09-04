@@ -36,7 +36,6 @@ const SUPPORT_KINDS = new Set<EvidenceFact['kind']>([
 ]);
 const UNKNOWN_SIGNAL_KEYWORDS = ['待核实', '未知', '未确认', '未披露', '无法确认', '不明确', '尚未'] as const;
 const POSITIVE_BUDGET_KEYWORDS = ['预算已批准', '预算充足', '专项预算已落实', '资金充足', '融资到账'] as const;
-const POSITIVE_DECISION_KEYWORDS = ['具有独立决策权', '独立采购决策权', '拥有独立采购权', '可自主采购', '采购审批权归属目标主体'] as const;
 
 type PublicationState = 'recent' | 'expired' | 'future' | 'missing';
 type AttributionState = 'confirmed' | 'probable' | 'unverified';
@@ -211,16 +210,6 @@ function isRelevant(fact: EvidenceFact, product: ProductKey): boolean {
 
 function uniqueInOrder(values: readonly string[]): string[] {
   return [...new Set(values)];
-}
-
-function positiveDecisionFact(
-  fact: EvidenceFact,
-  referencesById: ReadonlyMap<string, EvidenceReference>,
-): boolean {
-  if (fact.kind !== 'decision_power' || !isReliableConfirmedFact(fact, referencesById)) return false;
-  return !NEGATIVE_DECISION_PATTERN.test(normalized(fact.statement))
-    && !containsAny(fact.statement, [...GENERAL_BLOCKER_KEYWORDS, ...UNKNOWN_SIGNAL_KEYWORDS])
-    && containsAny(fact.statement, POSITIVE_DECISION_KEYWORDS);
 }
 
 function positiveBudgetFact(
@@ -408,7 +397,6 @@ export function evaluateProduct(
   const recentTiming = recentTimingFacts.length > 0 || recentFinancing.length > 0;
   const budgetSupport = usableFacts.some(fact => positiveBudgetFact(fact, referencesById))
     || recentFinancing.length > 0;
-  const decisionSupport = usableFacts.some(fact => positiveDecisionFact(fact, referencesById));
 
   const publisherFactIds = uniqueInOrder([
     ...directSceneFacts,
@@ -443,12 +431,11 @@ export function evaluateProduct(
     && complexityFacts.length > 0
     && recentTiming
     && budgetSupport
-    && decisionSupport
     && !strongBlocker) {
     level = '高';
     reasons.push('已确认具体产品或工程场景');
     reasons.push(`有 ${publisherCount} 个独立原始发布方支持`);
-    reasons.push('复杂度、近期时机、预算与决策权证据齐备');
+    reasons.push('复杂度、近期时机与预算证据齐备');
   } else if (confirmedScene
     && usableFacts.length > 0
     && (complexityFacts.length > 0 || targetEcosystemFacts.length > 0)
@@ -458,7 +445,6 @@ export function evaluateProduct(
     if (publisherCount < 2) gaps.push('少于两个独立原始发布方');
     if (!recentTiming) gaps.push('缺少最近 365 天的采购时机信号');
     if (!budgetSupport) gaps.push('预算能力待核实');
-    if (!decisionSupport) gaps.push('独立决策权待核实');
   } else if (productFacts.length === 0 && recentFinancing.length === 0 && !strongBlocker) {
     level = '待核实';
     gaps.push('缺少可归属于目标法定主体的产品相关证据');

@@ -112,6 +112,16 @@ describe('evaluateOpportunities', () => {
     expect(result.products.find(row => row.product === entry.product)?.level).toBe('高');
   });
 
+  it.each(cases)('$product: positive decision-right evidence is not required for 高', entry => {
+    const input = completeHighCase(entry);
+    input.evidence = input.evidence.filter(item => item.evidenceId !== 'decision');
+    input.facts = input.facts.filter(item => item.kind !== 'decision_power');
+
+    const result = evaluateOpportunities(input, NOW);
+
+    expect(result.products.find(row => row.product === entry.product)?.level).toBe('高');
+  });
+
   it.each(cases)('$product: financing strengthens an existing complete scene but never creates one', entry => {
     const withFinancing = completeHighCase(entry);
     const withoutFinancing = { ...withFinancing, financingRecords: [] };
