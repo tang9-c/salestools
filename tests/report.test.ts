@@ -127,6 +127,7 @@ function assessment(recommendedProduct: ProductKey | null = 'windchill'): Opport
     level: recommendedProduct === null
       ? '待核实' as const
       : product === 'windchill' ? '高' as const : '低' as const,
+    confidence: recommendedProduct !== null && product === 'windchill' ? '高' as const : '低' as const,
     evidenceIds: recommendedProduct === null
       ? []
       : product === 'windchill' ? ['recruitment', 'industry'] : ['industry'],
@@ -194,15 +195,15 @@ describe('assessment report', () => {
 
       ## 七项产品机会
 
-      | 产品 | 机会 | 依据 | 阻碍/缺口 |
-      | --- | --- | --- | --- |
-      | PTC Windchill | 高 | 已确认产品场景；近期招聘信号明确 | 预算能力待核实 |
-      | Feigenbaum QMS | 低 | — | 未发现具体产品场景 |
-      | PTC Creo | 低 | — | 已发现现有 CAD 生态；未发现具体产品场景 |
-      | Dassault Systèmes CATIA | 低 | — | 未发现具体产品场景 |
-      | Dassault Systèmes Abaqus | 低 | — | 未发现具体产品场景 |
-      | CST Studio Suite | 低 | — | 未发现具体产品场景 |
-      | Dassault Systèmes SolidWorks | 低 | — | 未发现具体产品场景 |
+      | 产品 | 机会 | 置信度 | 依据 | 阻碍/缺口 |
+      | --- | --- | --- | --- | --- |
+      | PTC Windchill | 高 | 高 | 已确认产品场景；近期招聘信号明确 | 预算能力待核实 |
+      | Feigenbaum QMS | 低 | 低 | — | 未发现具体产品场景 |
+      | PTC Creo | 低 | 低 | — | 已发现现有 CAD 生态；未发现具体产品场景 |
+      | Dassault Systèmes CATIA | 低 | 低 | — | 未发现具体产品场景 |
+      | Dassault Systèmes Abaqus | 低 | 低 | — | 未发现具体产品场景 |
+      | CST Studio Suite | 低 | 低 | — | 未发现具体产品场景 |
+      | Dassault Systèmes SolidWorks | 低 | 低 | — | 未发现具体产品场景 |
 
       ## 关键证据
 

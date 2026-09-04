@@ -107,9 +107,11 @@ function completeHighCase(entry: typeof cases[number]): EvidenceBundle {
 }
 
 describe('evaluateOpportunities', () => {
-  it.each(cases)('$product: two independent publishers, complexity, recent timing and budget produce 高', entry => {
+  it.each(cases)('$product: confirmed scene, complexity and recent timing produce 高 without budget', entry => {
     const result = evaluateOpportunities(completeHighCase(entry), NOW);
-    expect(result.products.find(row => row.product === entry.product)?.level).toBe('高');
+    const row = result.products.find(candidate => candidate.product === entry.product);
+    expect(row?.level).toBe('高');
+    expect(row?.confidence).toBe('高');
   });
 
   it.each(cases)('$product: positive decision-right evidence is not required for 高', entry => {
@@ -122,28 +124,118 @@ describe('evaluateOpportunities', () => {
     expect(result.products.find(row => row.product === entry.product)?.level).toBe('高');
   });
 
-  it.each(cases)('$product: financing strengthens an existing complete scene but never creates one', entry => {
+  it.each(cases)('$product: financing supplies timing but is not described as budget support', entry => {
     const withFinancing = completeHighCase(entry);
+    withFinancing.facts[0] = fact(
+      'scene', entry.product, `${entry.named}，${entry.method}`, 'product_scene', ['recruitment'],
+    );
     const withoutFinancing = { ...withFinancing, financingRecords: [] };
-    expect(evaluateOpportunities(withoutFinancing, NOW).products
-      .find(row => row.product === entry.product)?.level).toBe('中');
-    expect(evaluateOpportunities(withFinancing, NOW).products
-      .find(row => row.product === entry.product)?.level).toBe('高');
+    const withoutFinancingRow = evaluateOpportunities(withoutFinancing, NOW).products
+      .find(row => row.product === entry.product);
+    const withFinancingRow = evaluateOpportunities(withFinancing, NOW).products
+      .find(row => row.product === entry.product);
+    expect(withoutFinancingRow?.level).toBe('中');
+    expect(withFinancingRow?.level).toBe('高');
+    expect(withFinancingRow?.reasons.join('')).toContain('融资');
+    expect(withFinancingRow?.reasons.join('')).not.toContain('预算');
 
     const financingOnly = bundle({ evidence: withFinancing.evidence, financing: withFinancing.financingRecords });
     expect(evaluateOpportunities(financingOnly, NOW).products
       .find(row => row.product === entry.product)?.level).toBe('低');
   });
 
-  it.each(cases)('$product: duplicate repost domains count once and cannot pass the high threshold', entry => {
+  it.each(cases)('$product: one publisher can produce 高 but duplicate reposts keep confidence at 中', entry => {
     const input = completeHighCase(entry);
     input.evidence = input.evidence.map(item => ({
       ...item,
       originalPublisher: '同一发布方',
       originalDomain: 'same-publisher.example',
     }));
-    expect(evaluateOpportunities(input, NOW).products
-      .find(row => row.product === entry.product)?.level).toBe('中');
+    const row = evaluateOpportunities(input, NOW).products
+      .find(candidate => candidate.product === entry.product);
+    expect(row?.level).toBe('高');
+    expect(row?.confidence).toBe('中');
+  });
+
+  it.each(['采购公告', '招标公告'])('%s within 90 days directly produces 高 without complexity', carrier => {
+    const ev = reference('tender', 'procurement.example', '2026-08-01T12:00:00.000Z');
+    const row = evaluateOpportunities(bundle({ evidence: [ev], facts: [
+      fact('tender', 'windchill', `${carrier}原文披露该项目拟采购 Windchill 软件`, 'procurement', ['tender']),
+    ] }), NOW).products.find(product => product.product === 'windchill');
+
+    expect(row).toMatchObject({ level: '高', confidence: '高' });
+    expect(row?.reasons.join('')).toContain('正式采购或招标');
+  });
+
+  it('accepts a formal tender exactly 90 days old but not one older than 90 days', () => {
+    const evaluateAt = (publishedAt: string) => {
+      const ev = reference('tender', 'procurement.example', publishedAt);
+      return evaluateOpportunities(bundle({ evidence: [ev], facts: [
+        fact('tender', 'creo', '招标公告原文披露该项目计划采购 Creo 软件', 'procurement', ['tender']),
+      ] }), NOW).products.find(product => product.product === 'creo');
+    };
+
+    expect(evaluateAt('2026-06-01T12:00:00.000Z')?.level).toBe('高');
+    expect(evaluateAt('2026-06-01T11:59:59.999Z')?.level).not.toBe('高');
+  });
+
+  it.each([
+    { label: 'future', publishedAt: '2026-08-31T12:00:00.000Z', statement: '招标公告原文披露该项目拟采购 Creo 软件' },
+    { label: 'missing date', publishedAt: null, statement: '采购公告原文披露该项目拟采购 Creo 软件' },
+    { label: 'award', publishedAt: RECENT, statement: '中标公告披露原招标公告拟采购 Creo 软件' },
+    { label: 'contract', publishedAt: RECENT, statement: '采购合同回顾采购公告拟采购 Creo 软件' },
+    { label: 'acceptance', publishedAt: RECENT, statement: '验收公告回顾招标公告计划采购 Creo 软件' },
+    { label: 'cancelled', publishedAt: RECENT, statement: '采购公告取消拟采购 Creo 软件' },
+    { label: 'terminated', publishedAt: RECENT, statement: '招标公告终止计划采购 Creo 软件' },
+    { label: 'paused', publishedAt: RECENT, statement: '采购公告暂停拟采购 Creo 软件' },
+    { label: 'failed tender', publishedAt: RECENT, statement: '招标公告流标，原计划采购 Creo 软件' },
+    { label: 'void tender', publishedAt: RECENT, statement: '采购公告废标，原拟采购 Creo 软件' },
+  ])('does not directly promote an ineligible formal tender: $label', scenario => {
+    const ev = reference('tender', 'procurement.example', scenario.publishedAt);
+    const row = evaluateOpportunities(bundle({ evidence: [ev], facts: [
+      fact('tender', 'creo', scenario.statement, 'procurement', ['tender']),
+    ] }), NOW).products.find(product => product.product === 'creo');
+
+    expect(row?.level).not.toBe('高');
+  });
+
+  it.each([
+    '招聘公告转载招标公告，原文拟采购 Creo 软件',
+    '融资公告引用采购公告，称计划采购 Creo 软件',
+    '扩产新闻提到招标公告拟采购 Creo 软件',
+    '数字化新闻转载采购公告，披露采购意向涉及 Creo 软件',
+  ])('does not let a non-procurement carrier masquerade as a formal tender: %s', statement => {
+    const ev = reference('non-tender', 'news.example');
+    const row = evaluateOpportunities(bundle({ evidence: [ev], facts: [
+      fact('non-tender', 'creo', statement, 'procurement', ['non-tender']),
+    ] }), NOW).products.find(product => product.product === 'creo');
+
+    expect(row?.level).not.toBe('高');
+  });
+
+  it('lets an eligible formal tender outrank a general blocker while retaining the warning', () => {
+    const refs = [
+      reference('tender', 'procurement.example'),
+      reference('budget-blocker', 'company.example'),
+    ];
+    const row = evaluateOpportunities(bundle({ evidence: refs, facts: [
+      fact('tender', 'windchill', '招标公告原文披露该项目拟采购 Windchill 软件', 'procurement', ['tender']),
+      fact('budget-blocker', 'windchill', '公司预算冻结', 'budget', ['budget-blocker']),
+    ] }), NOW).products.find(product => product.product === 'windchill');
+
+    expect(row?.level).toBe('高');
+    expect(row?.blockers.join('')).toContain('预算');
+  });
+
+  it('keeps a critical identity conflict ahead of an eligible formal tender', () => {
+    const ev = reference('tender', 'procurement.example');
+    const row = evaluateOpportunities(bundle({
+      evidence: [ev],
+      facts: [fact('tender', 'cst', '采购公告原文披露该项目拟采购 CST Studio Suite 软件', 'procurement', ['tender'])],
+      conflicts: ['法定主体归属冲突'],
+    }), NOW).products.find(product => product.product === 'cst');
+
+    expect(row).toMatchObject({ level: '待核实', confidence: '高' });
   });
 
   it.each(cases)('$product: a direct product_scene tag without a keyword or method cannot establish the scene', entry => {
@@ -273,13 +365,13 @@ describe('evaluateOpportunities', () => {
   });
 
   it.each([
-    { label: 'explicit recent confirmed migration', statement: '公司正在将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
-    { label: 'soon planned migration', statement: '公司不久后计划将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
-    { label: 'proactive decided migration', statement: '公司未雨绸缪后决定将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
-    { label: 'necessary migration', statement: '公司不得不将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
+    { label: 'explicit recent confirmed migration', statement: '公司正在将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '高' },
+    { label: 'soon planned migration', statement: '公司不久后计划将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '高' },
+    { label: 'proactive decided migration', statement: '公司未雨绸缪后决定将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '高' },
+    { label: 'necessary migration', statement: '公司不得不将 Siemens NX 迁移替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '高' },
     { label: 'reverse replacement', statement: '公司将 Creo 替换为 Siemens NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
-    { label: 'migrate from NX to Creo', statement: '公司从 NX 迁移到 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
-    { label: 'replace NX with Creo', statement: '公司用 Creo 替换 NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '中' },
+    { label: 'migrate from NX to Creo', statement: '公司从 NX 迁移到 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '高' },
+    { label: 'replace NX with Creo', statement: '公司用 Creo 替换 NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '高' },
     { label: 'not yet migrate from NX to Creo', statement: '公司尚未从 NX 迁移到 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
     { label: 'will not replace NX with Creo', statement: '公司不会将 NX 替换为 Creo', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
     { label: 'did not use Creo to replace NX', statement: '公司并未用 Creo 替换 NX', publishedAt: RECENT, match: 'confirmed' as const, expected: '低' },
@@ -460,6 +552,7 @@ describe('evaluateOpportunities', () => {
     });
     const result = evaluateOpportunities(bundle({ evidence: [ev], facts: [probable] }), NOW);
     expect(result).toMatchObject({ overallOpportunity: '待核实', recommendedProduct: null });
+    expect(result.products.find(product => product.product === 'cst')?.confidence).toBe('低');
   });
 
   it('keeps the aggregate pending when the only positive product support is weak', () => {
@@ -469,6 +562,19 @@ describe('evaluateOpportunities', () => {
     });
     const result = evaluateOpportunities(bundle({ evidence: [ev], facts: [weak] }), NOW);
     expect(result).toMatchObject({ overallOpportunity: '待核实', recommendedProduct: null });
+    expect(result.products.find(product => product.product === 'cst')?.confidence).toBe('低');
+  });
+
+  it('assigns medium confidence to one reliable confirmed supporting product source', () => {
+    const ev = reference('supporting', 'company.example');
+    const supporting = fact(
+      'supporting', 'windchill', '公司开展 Windchill PLM 实施', 'product_scene', ['supporting'],
+      { strength: 'supporting' },
+    );
+    const row = evaluateOpportunities(bundle({ evidence: [ev], facts: [supporting] }), NOW)
+      .products.find(product => product.product === 'windchill');
+
+    expect(row?.confidence).toBe('中');
   });
 
   it('does not use financing whose cited source is not attributed to the legal entity', () => {
@@ -478,19 +584,20 @@ describe('evaluateOpportunities', () => {
       ? { ...item, entityScope: 'unknown', entityMatch: 'unverified', matchBasis: ['无法确认融资主体'] }
       : item);
     const row = evaluateOpportunities(input, NOW).products.find(product => product.product === entry.product);
-    expect(row?.level).toBe('中');
+    expect(row?.level).toBe('高');
     expect(row?.evidenceIds).not.toContain('financing');
   });
 
-  it('does not let unrelated risk evidence satisfy the two-publisher high threshold', () => {
+  it('does not let unrelated risk evidence raise product confidence', () => {
     const input = completeHighCase(cases[0]!);
     input.evidence = input.evidence.map(item => ({
       ...item, originalPublisher: '同一发布方', originalDomain: 'same.example',
     }));
     input.evidence.push(reference('unrelated-risk', 'risk-publisher.example'));
     input.facts.push(fact('unrelated-risk', 'creo', '未发现重大经营异常', 'risk', ['unrelated-risk']));
-    expect(evaluateOpportunities(input, NOW).products
-      .find(product => product.product === 'windchill')?.level).toBe('中');
+    const row = evaluateOpportunities(input, NOW).products
+      .find(product => product.product === 'windchill');
+    expect(row).toMatchObject({ level: '高', confidence: '中' });
   });
 
   it('does not treat untagged generic quality complexity as matching a Windchill scene', () => {
@@ -535,7 +642,7 @@ describe('evaluateOpportunities', () => {
     expect(result.products.find(product => product.product === 'creo')?.level).toBe('中');
   });
 
-  it('does not mistake unknown budget and decision statements for positive support', () => {
+  it('treats unknown budget and decision statements as neutral after removing the positive budget gate', () => {
     const input = completeHighCase(cases[0]!);
     input.financingRecords = [];
     input.evidence.push(reference('budget-unknown', 'finance.example'));
@@ -545,7 +652,7 @@ describe('evaluateOpportunities', () => {
       fact('decision-unknown', 'windchill', '独立采购决策权待核实', 'decision_power', ['decision']),
     ];
     expect(evaluateOpportunities(input, NOW).products
-      .find(product => product.product === 'windchill')?.level).toBe('中');
+      .find(product => product.product === 'windchill')?.level).toBe('高');
   });
 
   it('returns the schema order and uses direct evidence, blocker count, then fixed order for ties', () => {
@@ -576,6 +683,7 @@ describe('evaluateOpportunities', () => {
     const result = evaluateOpportunities(bundle({ industryLabel: null }), NOW);
     expect(result.products).toHaveLength(7);
     expect(result.products.every(row => row.level === '待核实')).toBe(true);
+    expect(result.products.every(row => row.confidence === '低')).toBe(true);
     expect(result).toMatchObject({ overallOpportunity: '待核实', recommendedProduct: null });
   });
 });

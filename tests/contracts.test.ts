@@ -70,6 +70,7 @@ const productKeys = ProductKeySchema.options;
 const products = productKeys.map(product => ({
   product,
   level: '待核实' as const,
+  confidence: '低' as const,
   evidenceIds: [],
   reasons: [],
   blockers: [],

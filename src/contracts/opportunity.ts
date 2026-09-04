@@ -2,10 +2,12 @@ import { z } from 'zod';
 import { ProductKeySchema } from './evidence.js';
 
 export const OpportunityLevelSchema = z.enum(['高', '中', '低', '待核实']);
+export const OpportunityConfidenceSchema = z.enum(['高', '中', '低']);
 
 export const ProductOpportunitySchema = z.object({
   product: ProductKeySchema,
   level: OpportunityLevelSchema,
+  confidence: OpportunityConfidenceSchema,
   evidenceIds: z.array(z.string()),
   reasons: z.array(z.string()),
   blockers: z.array(z.string()),
@@ -33,5 +35,6 @@ export const OpportunityAssessmentSchema = z.object({
 }).strict();
 
 export type OpportunityLevel = z.infer<typeof OpportunityLevelSchema>;
+export type OpportunityConfidence = z.infer<typeof OpportunityConfidenceSchema>;
 export type ProductOpportunity = z.infer<typeof ProductOpportunitySchema>;
 export type OpportunityAssessment = z.infer<typeof OpportunityAssessmentSchema>;

@@ -3,6 +3,7 @@ import {
   type EvidenceBundle,
   type EvidenceFact,
   type EvidenceReference,
+  type OpportunityConfidence,
   type OpportunityLevel,
   type ProductKey,
   type ProductOpportunity,
@@ -29,13 +30,19 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const RECENT_DAYS = 365;
+const FORMAL_PROCUREMENT_DAYS = 90;
 const COMPLEXITY_KINDS = new Set<EvidenceFact['kind']>(['organization', 'quality', 'manufacturing']);
 const SUPPORT_KINDS = new Set<EvidenceFact['kind']>([
   'product_scene', 'recruitment', 'software_ecosystem', 'organization', 'quality',
   'manufacturing', 'procurement', 'budget', 'decision_power', 'risk',
 ]);
-const UNKNOWN_SIGNAL_KEYWORDS = ['待核实', '未知', '未确认', '未披露', '无法确认', '不明确', '尚未'] as const;
-const POSITIVE_BUDGET_KEYWORDS = ['预算已批准', '预算充足', '专项预算已落实', '资金充足', '融资到账'] as const;
+const FORMAL_PROCUREMENT_CARRIER_PATTERN = /(?:采购公告|招标公告)/u;
+const FORMAL_PROCUREMENT_DISCLOSURE_PATTERN =
+  /(?:采购意向|计划\s*采购|拟\s*采购|即将\s*采购|有\s*采购需求|存在\s*采购需求|准备\s*采购)/u;
+const CLOSED_OR_INVALID_PROCUREMENT_PATTERN =
+  /(?:中标|成交|结果公告|采购合同|验收|取消|终止|暂停|流标|废标)/u;
+const NON_PROCUREMENT_CARRIER_PATTERN =
+  /(?:招聘公告|融资公告|扩产(?:公告|新闻)|数字化(?:公告|新闻))/u;
 
 type PublicationState = 'recent' | 'expired' | 'future' | 'missing';
 type AttributionState = 'confirmed' | 'probable' | 'unverified';
@@ -212,17 +219,6 @@ function uniqueInOrder(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
 
-function positiveBudgetFact(
-  fact: EvidenceFact,
-  referencesById: ReadonlyMap<string, EvidenceReference>,
-): boolean {
-  if (fact.kind !== 'budget' || !isReliableConfirmedFact(fact, referencesById)) return false;
-  const correctedStatement = withoutBudgetNegationCorrections(fact.statement);
-  return !NEGATIVE_BUDGET_PATTERN.test(correctedStatement)
-    && !containsAny(correctedStatement, [...GENERAL_BLOCKER_KEYWORDS, ...UNKNOWN_SIGNAL_KEYWORDS])
-    && containsAny(correctedStatement, POSITIVE_BUDGET_KEYWORDS);
-}
-
 function negativeSupportKind(fact: EvidenceFact): 'budget' | 'decision' | null {
   const statement = normalized(fact.statement);
   if (fact.kind === 'budget' && hasNegativeBudgetStatement(statement)) return 'budget';
@@ -328,6 +324,40 @@ function criticalConflict(conflicts: readonly string[]): boolean {
   return conflicts.some(conflict => containsAny(conflict, CRITICAL_CONFLICT_KEYWORDS));
 }
 
+function referenceIsWithinDays(reference: EvidenceReference, nowMs: number, days: number): boolean {
+  if (reference.publishedAt === null) return false;
+  const publishedAt = Date.parse(reference.publishedAt);
+  return publishedAt <= nowMs && nowMs - publishedAt <= days * DAY_MS;
+}
+
+function isEligibleFormalProcurement(
+  fact: EvidenceFact,
+  referencesById: ReadonlyMap<string, EvidenceReference>,
+  nowMs: number,
+  hasTargetSceneSignal: (fact: EvidenceFact) => boolean,
+): boolean {
+  if (fact.kind !== 'procurement'
+    || fact.strength !== 'direct'
+    || !isConfirmedTargetFact(fact, referencesById)
+    || !hasTargetSceneSignal(fact)) return false;
+  const statement = fact.statement.normalize('NFKC');
+  if (!FORMAL_PROCUREMENT_CARRIER_PATTERN.test(statement)
+    || !FORMAL_PROCUREMENT_DISCLOSURE_PATTERN.test(statement)
+    || CLOSED_OR_INVALID_PROCUREMENT_PATTERN.test(statement)
+    || NON_PROCUREMENT_CARRIER_PATTERN.test(statement)) return false;
+  return citedReferences(fact, referencesById)
+    .some(reference => referenceIsWithinDays(reference, nowMs, FORMAL_PROCUREMENT_DAYS));
+}
+
+function confidenceFromPublishers(
+  hasEligibleFormalProcurement: boolean,
+  publisherCount: number,
+): OpportunityConfidence {
+  if (hasEligibleFormalProcurement || publisherCount >= 2) return '高';
+  if (publisherCount === 1) return '中';
+  return '低';
+}
+
 export type ProductEvaluation = Readonly<{
   opportunity: ProductOpportunity;
   directConfirmedEvidenceCount: number;
@@ -373,6 +403,8 @@ export function evaluateProduct(
       || (fact.kind === 'procurement' && hasTargetSceneSignal(fact))))
     .concat(recentDirectRecruitment);
   const confirmedScene = directSceneFacts.length > 0;
+  const eligibleFormalProcurement = confirmedProductFacts.some(fact =>
+    isEligibleFormalProcurement(fact, referencesById, nowMs, hasTargetSceneSignal));
 
   const complexityFacts = usableFacts.filter(fact => (fact.productTags.includes(rule.product)
     && COMPLEXITY_KINDS.has(fact.kind))
@@ -395,26 +427,21 @@ export function evaluateProduct(
         && factPublicationState(fact, referencesById, nowMs) === 'recent'
         && containsAny(fact.statement, ['扩产', '新建', '新增', '升级', '数字化', '研发中心']))));
   const recentTiming = recentTimingFacts.length > 0 || recentFinancing.length > 0;
-  const budgetSupport = usableFacts.some(fact => positiveBudgetFact(fact, referencesById))
-    || recentFinancing.length > 0;
 
-  const publisherFactIds = uniqueInOrder([
-    ...directSceneFacts,
+  const positiveFacts = productFacts.filter(isPositiveProductFact);
+  const reliablePositiveFacts = positiveFacts.filter(fact => isReliableConfirmedFact(fact, referencesById));
+  const confidenceFactIds = uniqueInOrder([
+    ...reliablePositiveFacts,
     ...complexityFacts,
-    ...recentTimingFacts,
   ].flatMap(fact => fact.evidenceIds));
-  const supportingEvidenceIds = uniqueInOrder([
-    ...publisherFactIds,
-    ...(confirmedScene ? recentFinancing.flatMap(record => record.evidenceIds) : []),
-  ]);
-  const supportingReferences = supportingEvidenceIds.flatMap(id => {
+  const confidenceReferences = confidenceFactIds.flatMap(id => {
     const reference = referencesById.get(id);
     if (reference?.entityScope !== 'legal_entity' || reference.entityMatch !== 'confirmed') return [];
     return [reference];
   });
-  const publisherCount = countIndependentPublishers(supportingReferences);
+  const publisherCount = countIndependentPublishers(confidenceReferences);
+  const confidence = confidenceFromPublishers(eligibleFormalProcurement, publisherCount);
 
-  const positiveFacts = productFacts.filter(isPositiveProductFact);
   const allSupportingUnverified = positiveFacts.length > 0
     && positiveFacts.every(fact => factAttribution(fact, referencesById) === 'unverified');
   let level: OpportunityLevel;
@@ -426,25 +453,25 @@ export function evaluateProduct(
     level = '待核实';
     if (criticalConflict(evidence.conflicts)) gaps.push('存在关键主体或来源冲突');
     if (allSupportingUnverified) gaps.push('当前产品相关证据的主体归属均未核实');
+  } else if (eligibleFormalProcurement) {
+    level = '高';
+    reasons.push('发现最近 90 天内有效的正式采购或招标直接信号');
   } else if (confirmedScene
-    && publisherCount >= 2
     && complexityFacts.length > 0
     && recentTiming
-    && budgetSupport
     && !strongBlocker) {
     level = '高';
     reasons.push('已确认具体产品或工程场景');
-    reasons.push(`有 ${publisherCount} 个独立原始发布方支持`);
-    reasons.push('复杂度、近期时机与预算证据齐备');
+    reasons.push(recentTimingFacts.length > 0
+      ? '复杂度与近期时机证据齐备'
+      : '复杂度证据齐备；近期融资构成企业活跃或扩张时机信号');
   } else if (confirmedScene
     && usableFacts.length > 0
     && (complexityFacts.length > 0 || targetEcosystemFacts.length > 0)
     && !strongBlocker) {
     level = '中';
     reasons.push('已确认产品或工程场景，但高机会条件未齐备');
-    if (publisherCount < 2) gaps.push('少于两个独立原始发布方');
     if (!recentTiming) gaps.push('缺少最近 365 天的采购时机信号');
-    if (!budgetSupport) gaps.push('预算能力待核实');
   } else if (productFacts.length === 0 && recentFinancing.length === 0 && !strongBlocker) {
     level = '待核实';
     gaps.push('缺少可归属于目标法定主体的产品相关证据');
@@ -471,6 +498,7 @@ export function evaluateProduct(
     opportunity: {
       product: rule.product,
       level,
+      confidence,
       evidenceIds: outputEvidenceIds,
       reasons: uniqueInOrder(reasons),
       blockers,
