@@ -17,6 +17,19 @@ CREATE TABLE IF NOT EXISTS company_profiles (
 CREATE INDEX IF NOT EXISTS company_profiles_normalized_name
 ON company_profiles(normalized_legal_name);
 
+CREATE TABLE IF NOT EXISTS contact_query_snapshots (
+  snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cache_key TEXT NOT NULL,
+  normalized_query TEXT NOT NULL,
+  normalized_region_hint TEXT,
+  result_json TEXT NOT NULL,
+  collected_at TEXT NOT NULL,
+  stored_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS contact_snapshots_cache_time
+ON contact_query_snapshots(cache_key, stored_at DESC, snapshot_id DESC);
+
 CREATE TABLE IF NOT EXISTS assessments (
   assessment_id TEXT PRIMARY KEY,
   cache_key TEXT NOT NULL,

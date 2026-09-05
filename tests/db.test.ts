@@ -11,6 +11,10 @@ import {
 } from '../src/db/assessment-repository.js';
 import { ProfileRepository } from '../src/db/profile-repository.js';
 import { TokenRepository } from '../src/db/token-repository.js';
+import {
+  ContactSnapshotDataError,
+  ContactSnapshotRepository,
+} from '../src/db/contact-snapshot-repository.js';
 
 const now = new Date('2026-08-29T12:00:00.000Z');
 const identity = {
@@ -53,6 +57,20 @@ const completedResult = {
   collectedAt: now.toISOString(),
   resultAudit,
 };
+const contactCacheKey = 'a'.repeat(64);
+const contactSnapshotPayload = {
+  companies: [{
+    company_name: '测试制造有限公司',
+    contacts: [{
+      name: '张三',
+      title: '研发总监',
+      source_url: 'https://example.cn/team',
+      published_at: null,
+    }],
+  }],
+  warnings: [],
+  collected_at: '2026-08-06T00:00:00.000Z',
+};
 
 describe('SQLite repositories', () => {
   let directory: string;
@@ -79,6 +97,85 @@ describe('SQLite repositories', () => {
     const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all()
       .map(row => (row as { name: string }).name);
     expect(indexes).toContain('one_processing_per_company');
+    expect(tables).toContain('contact_query_snapshots');
+    expect(indexes).toContain('contact_snapshots_cache_time');
+  });
+
+  it('appends contact snapshots and treats exactly thirty days as fresh', () => {
+    const repository = new ContactSnapshotRepository(db);
+    repository.append({
+      cacheKey: contactCacheKey,
+      normalizedQuery: '测试制造',
+      normalizedRegionHint: null,
+      payload: contactSnapshotPayload,
+      storedAt: '2026-08-06T00:00:00.000Z',
+    });
+    const newerPayload = {
+      ...contactSnapshotPayload,
+      collected_at: '2026-09-05T00:00:00.000Z',
+      warnings: ['部分公开网页搜索失败，结果可能不完整'],
+    };
+    repository.append({
+      cacheKey: contactCacheKey,
+      normalizedQuery: '测试制造',
+      normalizedRegionHint: null,
+      payload: newerPayload,
+      storedAt: '2026-09-05T00:00:00.000Z',
+    });
+
+    expect(repository.findAll(contactCacheKey).map(snapshot => snapshot.payload))
+      .toEqual([contactSnapshotPayload, newerPayload]);
+    expect(repository.findLatest(contactCacheKey)?.payload).toEqual(newerPayload);
+    expect(repository.findFresh(
+      contactCacheKey, new Date('2026-10-05T00:00:00.000Z'), 30,
+    )?.payload).toEqual(newerPayload);
+    expect(repository.findFresh(
+      contactCacheKey, new Date('2026-10-05T00:00:00.001Z'), 30,
+    )).toBeNull();
+  });
+
+  it('rejects corrupt stored contact snapshots without exposing their contents', () => {
+    db.prepare(`
+      INSERT INTO contact_query_snapshots (
+        cache_key, normalized_query, normalized_region_hint,
+        result_json, collected_at, stored_at
+      ) VALUES (?, ?, NULL, ?, ?, ?)
+    `).run(
+      contactCacheKey,
+      '测试制造',
+      '{"email":"secret@example.cn","phone":"13800000000"}',
+      '2026-09-05T00:00:00.000Z',
+      '2026-09-05T00:00:00.000Z',
+    );
+
+    let observed: unknown;
+    try {
+      new ContactSnapshotRepository(db).findLatest(contactCacheKey);
+    } catch (error) {
+      observed = error;
+    }
+    expect(observed).toBeInstanceOf(ContactSnapshotDataError);
+    expect(String(observed)).not.toContain('secret@example.cn');
+    expect(String(observed)).not.toContain('13800000000');
+  });
+
+  it('stores only the strict current-contact snapshot payload', () => {
+    const repository = new ContactSnapshotRepository(db);
+    repository.append({
+      cacheKey: contactCacheKey,
+      normalizedQuery: '测试制造',
+      normalizedRegionHint: '上海',
+      payload: contactSnapshotPayload,
+      storedAt: '2026-08-06T00:00:00.000Z',
+    });
+
+    const row = db.prepare(`
+      SELECT result_json, normalized_region_hint
+      FROM contact_query_snapshots WHERE cache_key = ?
+    `).get(contactCacheKey) as { result_json: string; normalized_region_hint: string };
+    expect(row.normalized_region_hint).toBe('上海');
+    expect(JSON.parse(row.result_json)).toEqual(contactSnapshotPayload);
+    expect(row.result_json).not.toMatch(/email|phone|historical_contacts|content|model/iu);
   });
 
   it('idempotently migrates a legacy assessments table and round-trips a compact result audit', () => {
