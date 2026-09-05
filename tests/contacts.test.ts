@@ -4,6 +4,11 @@ import {
   type ContactExtractionCandidate,
 } from '../src/contracts/index.js';
 import { ContactLookupError, ContactService } from '../src/contacts/contact-service.js';
+import {
+  contactCacheIdentity,
+  projectContactHistory,
+  type StoredContactSnapshot,
+} from '../src/contacts/contact-cache.js';
 import { UpstreamError } from '../src/orchestration/retry.js';
 import { ContactExtractor } from '../src/upstream/ark/contact-extractor.js';
 import type { DoubaoWebResult } from '../src/upstream/search/mapper.js';
@@ -40,6 +45,7 @@ describe('contact contracts and search plan', () => {
           source_url: 'https://example.cn/a',
           published_at: null,
         }],
+        historical_contacts: [],
       }],
       warnings: [],
       collected_at: '2026-09-04T12:00:00.000Z',
@@ -92,6 +98,102 @@ describe('contact contracts and search plan', () => {
 });
 
 const collectedAt = '2026-09-04T12:00:00.000Z';
+
+function storedSnapshot(
+  snapshotId: number,
+  storedAt: string,
+  companies: StoredContactSnapshot['payload']['companies'],
+): StoredContactSnapshot {
+  const identity = contactCacheIdentity({ query: '测试制造', regionHint: '上海' });
+  return {
+    snapshotId,
+    ...identity,
+    payload: { companies, warnings: [], collected_at: storedAt },
+    storedAt,
+  };
+}
+
+describe('contact cache identity and history projection', () => {
+  it('normalizes equivalent query keys and isolates different regions', () => {
+    const left = contactCacheIdentity({ query: '  ＡBC  科技 ', regionHint: ' 上海 ' });
+    const right = contactCacheIdentity({ query: 'abc 科技', regionHint: '上海' });
+
+    expect(left).toEqual(right);
+    expect(contactCacheIdentity({ query: 'abc 科技' }).cacheKey).not.toBe(left.cacheKey);
+    expect(left.cacheKey).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('projects disappeared contacts as historical evidence with observation bounds', () => {
+    const first = storedSnapshot(1, '2026-01-01T00:00:00.000Z', [{
+      company_name: '测试制造有限公司',
+      contacts: [{
+        name: '张三', title: '研发总监', source_url: 'https://example.cn/old', published_at: null,
+      }],
+    }]);
+    const second = storedSnapshot(2, '2026-02-01T00:00:00.000Z', [{
+      company_name: '测试制造有限公司',
+      contacts: [{
+        name: '张三', title: '研发总监', source_url: 'https://example.cn/newer', published_at: null,
+      }],
+    }]);
+    const latest = storedSnapshot(3, collectedAt, [{
+      company_name: '测试制造有限公司', contacts: [],
+    }]);
+
+    expect(projectContactHistory([first, second, latest])).toEqual({
+      companies: [{
+        company_name: '测试制造有限公司',
+        contacts: [],
+        historical_contacts: [{
+          name: '张三', title: '研发总监', source_url: 'https://example.cn/newer',
+          published_at: null, first_seen_at: '2026-01-01T00:00:00.000Z',
+          last_seen_at: '2026-02-01T00:00:00.000Z', status: 'historical_evidence',
+        }],
+      }],
+      warnings: [],
+      collected_at: collectedAt,
+    });
+  });
+
+  it('keeps changed titles in history and removes identities that reappear', () => {
+    const first = storedSnapshot(1, '2026-01-01T00:00:00.000Z', [{
+      company_name: '测试制造有限公司',
+      contacts: [
+        { name: '张三', title: '研发经理', source_url: 'https://example.cn/old', published_at: null },
+        { name: '李四', title: '质量总监', source_url: 'https://example.cn/quality', published_at: null },
+      ],
+    }]);
+    const latest = storedSnapshot(2, collectedAt, [{
+      company_name: '测试制造有限公司',
+      contacts: [
+        { name: '张三', title: '研发总监', source_url: 'https://example.cn/new', published_at: null },
+        { name: '李四', title: '质量总监', source_url: 'https://example.cn/quality2', published_at: null },
+      ],
+    }]);
+
+    const result = projectContactHistory([first, latest]);
+    expect(result.companies[0]?.historical_contacts.map(contact => contact.title))
+      .toEqual(['研发经理']);
+    expect(result.companies[0]?.contacts.map(contact => contact.name)).toEqual(['张三', '李四']);
+  });
+
+  it('adds historical-only companies after current companies and keeps three companies total', () => {
+    const older = storedSnapshot(1, '2026-01-01T00:00:00.000Z', [
+      { company_name: '历史甲', contacts: [{
+        name: '甲', title: '技术总监', source_url: 'https://example.cn/a', published_at: null,
+      }] },
+      { company_name: '历史乙', contacts: [{
+        name: '乙', title: '采购经理', source_url: 'https://example.cn/b', published_at: null,
+      }] },
+    ]);
+    const latest = storedSnapshot(2, collectedAt, [{ company_name: '当前公司', contacts: [] }]);
+
+    const result = projectContactHistory([older, latest]);
+    expect(result.companies.map(company => company.company_name))
+      .toEqual(['当前公司', '历史甲', '历史乙']);
+    expect(result.companies.slice(1).every(company => company.contacts.length === 0)).toBe(true);
+  });
+});
 
 function webResult(overrides: Partial<DoubaoWebResult> = {}): DoubaoWebResult {
   return {

@@ -35,16 +35,32 @@ export const ContactExtractionCandidateSchema = z.object({
   sourceUrl: DirectEvidenceUrlSchema,
 }).strict();
 
-const PublicContactSchema = z.object({
+export const PublicContactSchema = z.object({
   name: PublicIdentityTextSchema,
   title: PublicIdentityTextSchema,
   source_url: DirectEvidenceUrlSchema,
   published_at: UtcTimestampSchema.nullable(),
 }).strict();
 
-const ContactCompanySchema = z.object({
+export const ContactSnapshotCompanySchema = z.object({
   company_name: PublicIdentityTextSchema,
   contacts: z.array(PublicContactSchema).max(10),
+}).strict();
+
+export const ContactSnapshotPayloadSchema = z.object({
+  companies: z.array(ContactSnapshotCompanySchema).max(3),
+  warnings: z.array(z.string()),
+  collected_at: UtcTimestampSchema,
+}).strict();
+
+export const HistoricalContactSchema = PublicContactSchema.extend({
+  first_seen_at: UtcTimestampSchema,
+  last_seen_at: UtcTimestampSchema,
+  status: z.literal('historical_evidence'),
+}).strict();
+
+const ContactCompanySchema = ContactSnapshotCompanySchema.extend({
+  historical_contacts: z.array(HistoricalContactSchema).max(10),
 }).strict();
 
 export const GetContactsOutputSchema = z.object({
@@ -54,6 +70,8 @@ export const GetContactsOutputSchema = z.object({
 }).strict();
 
 export type ContactExtractionCandidate = z.infer<typeof ContactExtractionCandidateSchema>;
+export type ContactSnapshotPayload = z.infer<typeof ContactSnapshotPayloadSchema>;
+export type HistoricalContact = z.infer<typeof HistoricalContactSchema>;
 export type GetContactsOutput = z.infer<typeof GetContactsOutputSchema>;
 
 export interface ContactExtractionResult {
