@@ -35,6 +35,18 @@ const SuccessfulResponseSchema = z.object({
   Result: z.object({ WebResults: z.array(WebResultSchema) }).passthrough(),
 }).passthrough();
 
+export interface DoubaoWebResult {
+  title: string;
+  url: string;
+  originalPublisher: string | null;
+  originalDomain: string;
+  summary: string | null;
+  content: string | null;
+  publishedAt: string | null;
+  position: number;
+  logId: string | null;
+}
+
 function invalidResponse(message: string, cause?: unknown): UpstreamError {
   return new UpstreamError(
     'doubao_search',
@@ -150,6 +162,21 @@ export function mapDoubaoSearchResponse(
   query: SearchQuery,
   collectedAt: Date,
 ): ResearchItem[] {
+  return mapDoubaoWebResponse(payload).map(result => {
+    const url = new URL(result.url);
+    return ResearchItemSchema.parse({
+      evidenceId: evidenceId(result.logId, query, url, result.position),
+      source: 'doubao_search',
+      sourceKind: 'web',
+      ...result,
+      ...attribution(query, url, result.title, result.summary, result.content),
+      collectedAt: collectedAt.toISOString(),
+      query: query.Query,
+    });
+  });
+}
+
+export function mapDoubaoWebResponse(payload: unknown): DoubaoWebResult[] {
   const parsed = SuccessfulResponseSchema.safeParse(payload);
   if (!parsed.success) throw invalidResponse('Doubao search response has an unsupported shape', parsed.error);
   const logId = nullableText(parsed.data.LogId);
@@ -158,10 +185,7 @@ export function mapDoubaoSearchResponse(
     const summary = nullableText(result.Summary);
     const content = nullableText(result.Content);
     const url = new URL(result.Url);
-    return ResearchItemSchema.parse({
-      evidenceId: evidenceId(logId, query, url, result.SortId),
-      source: 'doubao_search',
-      sourceKind: 'web',
+    return {
       title: result.Title,
       url: url.toString(),
       originalPublisher: nullableText(result.SiteName),
@@ -169,11 +193,8 @@ export function mapDoubaoSearchResponse(
       summary,
       content,
       publishedAt: publishedTimestamp(result.PublishTime),
-      collectedAt: collectedAt.toISOString(),
-      ...attribution(query, url, result.Title, summary, content),
-      query: query.Query,
       position: result.SortId,
       logId,
-    });
+    };
   });
 }

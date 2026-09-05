@@ -1,11 +1,14 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import type { OpportunityLevel, ProductKey, ResearchSourceStatus } from '../contracts/index.js';
+import type { ContactServiceOutput } from '../contacts/contact-service.js';
 import {
   AssessmentIdInputSchema,
   AssessmentReportOutputSchema,
   AssessmentStatusOutputSchema,
   CompanyProfileInputSchema,
   CompanyProfileOutputSchema,
+  GetContactsInputSchema,
+  GetContactsOutputSchema,
   SubmitAssessmentInputSchema,
   SubmitAssessmentOutputSchema,
 } from './tool-schemas.js';
@@ -104,7 +107,10 @@ export interface McpServices {
   submitAssessment(input: SubmitAssessmentServiceInput, userId: string): Awaitable<SubmitAssessmentServiceOutput>;
   getAssessmentStatus(input: AssessmentServiceInput): Awaitable<AssessmentStatusServiceOutput>;
   getAssessmentReport(input: AssessmentServiceInput): Awaitable<AssessmentReportServiceOutput>;
+  getContacts(input: CompanyProfileServiceInput): Awaitable<ContactServiceOutput>;
 }
+
+export type { ContactServiceOutput } from '../contacts/contact-service.js';
 
 function toolResult<T extends Record<string, unknown>>(output: T) {
   return {
@@ -191,6 +197,22 @@ function assessmentReportOutput(output: AssessmentReportServiceOutput) {
   });
 }
 
+function contactsOutput(output: ContactServiceOutput) {
+  return GetContactsOutputSchema.parse({
+    companies: output.companies.map(company => ({
+      company_name: company.companyName,
+      contacts: company.contacts.map(contact => ({
+        name: contact.name,
+        title: contact.title,
+        source_url: contact.sourceUrl,
+        published_at: contact.publishedAt,
+      })),
+    })),
+    warnings: output.warnings,
+    collected_at: output.collectedAt,
+  });
+}
+
 export function buildMcpServer(services: McpServices): McpServer {
   const server = new McpServer({ name: 'target-customer-assessment', version: '0.1.0' });
 
@@ -227,6 +249,15 @@ export function buildMcpServer(services: McpServices): McpServer {
     outputSchema: AssessmentReportOutputSchema,
   }, async ({ assessment_id }) => toolResult(assessmentReportOutput(await services.getAssessmentReport({
     assessmentId: assessment_id,
+  }))));
+
+  server.registerTool('get_contacts', {
+    description: '查询公开网页中的关键岗位职业身份；不返回邮箱或电话，也不保证法人主体已确认。',
+    inputSchema: GetContactsInputSchema,
+    outputSchema: GetContactsOutputSchema,
+  }, async input => toolResult(contactsOutput(await services.getContacts({
+    query: input.query,
+    ...(input.region_hint === undefined ? {} : { regionHint: input.region_hint }),
   }))));
 
   return server;

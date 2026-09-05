@@ -3,11 +3,12 @@ import { DatabaseSync } from 'node:sqlite';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.js';
-import type { ResearchBundle, ResearchItem } from '../src/contracts/index.js';
+import type { ContactExtractionCandidate, ResearchBundle, ResearchItem } from '../src/contracts/index.js';
 import { AssessmentRepository } from '../src/db/assessment-repository.js';
 import { initializeDatabase } from '../src/db/database.js';
 import { createApplication, type RunningApplication } from '../src/index.js';
 import type { SearchQuery } from '../src/upstream/search/search-plan.js';
+import type { DoubaoWebResult } from '../src/upstream/search/mapper.js';
 
 const LEGAL_NAME = '测试机器人有限公司';
 const CREDIT_CODE = '91310000TEST000001';
@@ -96,6 +97,27 @@ function fakeSearchItem(query: SearchQuery): ResearchItem {
   };
 }
 
+const fakeContactPage: DoubaoWebResult = {
+  title: `${LEGAL_NAME}研发团队`,
+  url: 'https://robot.example.cn/team',
+  originalPublisher: `${LEGAL_NAME}官网`,
+  originalDomain: 'robot.example.cn',
+  summary: `${LEGAL_NAME}研发总监李四负责机器人平台研发。`,
+  content: null,
+  publishedAt: '2026-08-01T00:00:00.000Z',
+  position: 1,
+  logId: 'contact-log',
+};
+
+const fakeContact: ContactExtractionCandidate = {
+  companyName: LEGAL_NAME,
+  name: '李四',
+  title: '研发总监',
+  roleCategory: 'research_and_development',
+  sourceType: 'official_website',
+  sourceUrl: fakeContactPage.url,
+};
+
 function fakeArkEvidence(bundle: ResearchBundle) {
   return {
     identity: bundle.identity,
@@ -162,8 +184,15 @@ describe('MCP HTTP simulated end-to-end', () => {
         call: async (_server, tool) => fakeQccPayload(tool),
         close: async () => undefined,
       },
-      searchClient: { search: async query => [fakeSearchItem(query)] },
+      searchClient: {
+        search: async query => [fakeSearchItem(query)],
+        searchWeb: async () => [fakeContactPage],
+      },
       ark: { extractWithAudit: async bundle => fakeArkExtraction(bundle) },
+      contactExtractor: { extract: async () => ({
+        contacts: [fakeContact],
+        selection: { totalPages: 2, includedPages: 2, textTruncated: false },
+      }) },
       logSink: { write: () => undefined },
     });
     const firstToken = runtime.tokenService.create('sales-a');
@@ -184,6 +213,20 @@ describe('MCP HTTP simulated end-to-end', () => {
     expect(firstClient.getProtocolEra()).toBe('modern');
     expect(profile).toMatchObject({ source_status: 'completed', cache_hit: false });
     expect(profile).toHaveProperty('cache_hit');
+
+    const contacts = await call(firstClient, 'get_contacts', { query: '测试机器人', region_hint: '上海' });
+    expect(contacts).toEqual({
+      companies: [{
+        company_name: LEGAL_NAME,
+        contacts: [{
+          name: '李四', title: '研发总监', source_url: fakeContactPage.url,
+          published_at: fakeContactPage.publishedAt,
+        }],
+      }],
+      warnings: [],
+      collected_at: expect.any(String),
+    });
+    expect(JSON.stringify(contacts)).not.toMatch(/email|phone|邮箱|电话/iu);
 
     const submitted = await call(firstClient, 'submit_assessment', {
       legal_name: LEGAL_NAME,

@@ -1,17 +1,20 @@
 import { z } from 'zod';
 import type { IdentityProfile } from '../../contracts/index.js';
 
-const SearchFilterSchema = z.object({
+export const SearchFilterSchema = z.object({
   NeedUrl: z.literal(true),
   NeedContent: z.boolean(),
   TimeRange: z.literal('OneYear').optional(),
 }).strict();
 
-export const SearchQuerySchema = z.object({
+export const DoubaoWebSearchRequestSchema = z.object({
   Query: z.string().trim().min(1).max(100),
   SearchType: z.literal('web'),
   Count: z.number().int().min(1).max(50).default(10),
   Filter: SearchFilterSchema,
+}).strict();
+
+export const SearchQuerySchema = DoubaoWebSearchRequestSchema.extend({
   purpose: z.enum([
     'official_products',
     'engineering',
@@ -43,6 +46,7 @@ export const SearchQuerySchema = z.object({
 });
 
 export type SearchQuery = z.infer<typeof SearchQuerySchema>;
+export type DoubaoWebSearchRequest = z.infer<typeof DoubaoWebSearchRequestSchema>;
 
 const plans = [
   { purpose: 'official_products', terms: '官网 产品 技术' },

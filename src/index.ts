@@ -9,6 +9,7 @@ import { initializeDatabase, openDatabase } from './db/database.js';
 import { ProfileRepository } from './db/profile-repository.js';
 import { TokenRepository } from './db/token-repository.js';
 import { JsonlLogger, type LogSink } from './logging/logger.js';
+import { ContactService, type ContactExtractorDependency } from './contacts/contact-service.js';
 import { createHttpApp } from './mcp/http-app.js';
 import type { McpServices } from './mcp/tools.js';
 import { AssessmentRunner } from './orchestration/assessment-runner.js';
@@ -16,13 +17,17 @@ import { AssessmentService } from './orchestration/assessment-service.js';
 import { ActivityTracker } from './orchestration/activity-tracker.js';
 import { AssessmentQueue } from './orchestration/fifo-queue.js';
 import { ArkEvidenceService } from './upstream/ark/client.js';
+import { ContactExtractor } from './upstream/ark/contact-extractor.js';
 import { QccResearchCollector } from './upstream/qcc/assessment-research.js';
 import { QccGateway } from './upstream/qcc/client.js';
 import { CompanyProfileService } from './upstream/qcc/profile-service.js';
 import { DoubaoSearchClient } from './upstream/search/doubao-client.js';
+import { UpstreamError } from './orchestration/retry.js';
 
 type QccDependency = Pick<QccGateway, 'call' | 'close'>;
-type SearchDependency = Pick<DoubaoSearchClient, 'search'> & { close?: () => Promise<void> };
+type SearchDependency = Pick<DoubaoSearchClient, 'search'>
+  & Partial<Pick<DoubaoSearchClient, 'searchWeb'>>
+  & { close?: () => Promise<void> };
 type ArkDependency = Pick<ArkEvidenceService, 'extractWithAudit'> & { close?: () => Promise<void> };
 
 export interface ApplicationOverrides {
@@ -30,6 +35,7 @@ export interface ApplicationOverrides {
   qccGateway?: QccDependency;
   searchClient?: SearchDependency;
   ark?: ArkDependency;
+  contactExtractor?: ContactExtractorDependency;
   logSink?: LogSink;
   now?: () => Date;
 }
@@ -100,6 +106,29 @@ export function createApplication(
     requestMaxBytes: config.arkRequestMaxBytes,
     signal: abortController.signal,
   });
+  const contactExtractor = overrides.contactExtractor ?? new ContactExtractor({
+    url: config.arkApiUrl,
+    model: config.arkModel,
+    credential: config.arkCredential,
+    requestMaxBytes: config.arkRequestMaxBytes,
+    signal: abortController.signal,
+  });
+  const contactService = new ContactService({
+    searchClient: {
+      searchWeb: query => {
+        if (searchClient.searchWeb === undefined) {
+          throw new UpstreamError(
+            'doubao_search',
+            'INVALID_RESPONSE',
+            'Contact web search is unavailable',
+          );
+        }
+        return searchClient.searchWeb(query);
+      },
+    },
+    extractor: contactExtractor,
+    now: overrides.now,
+  });
   const profileService = new CompanyProfileService(qccGateway, profiles, {
     profileCacheTtlDays: config.profileCacheTtlDays,
     maxQccCalls: config.maxQccCalls,
@@ -141,6 +170,7 @@ export function createApplication(
     submitAssessment: input => activity.track(() => assessmentService.submit(input, userId)),
     getAssessmentStatus: input => activity.track(() => assessmentService.status(input)),
     getAssessmentReport: input => activity.track(() => assessmentService.report(input)),
+    getContacts: input => activity.track(() => contactService.get(input)),
   });
   const app = createHttpApp(config, token => tokenService.verify(token), servicesFor);
 

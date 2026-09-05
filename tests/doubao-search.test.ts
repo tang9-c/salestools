@@ -137,6 +137,40 @@ describe('buildSearchPlan', () => {
 });
 
 describe('DoubaoSearchClient', () => {
+  it('maps neutral web results without company attribution', async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(fixture()), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = new DoubaoSearchClient({
+      url: 'https://open.feedcoopapi.com/search_api/web_search',
+      apiKey: 'test-search-key',
+      fetchFn,
+      now: () => new Date('2026-08-29T12:00:00.000Z'),
+    });
+
+    const items = await client.searchWeb({
+      Query: '测试制造 研发负责人',
+      SearchType: 'web',
+      Count: 10,
+      Filter: { NeedUrl: true, NeedContent: true },
+    });
+
+    expect(items[0]).toEqual({
+      title: '测试制造有限公司招聘 Creo 机械设计工程师',
+      url: 'https://jobs.example.cn/positions/creo-engineer',
+      originalPublisher: '测试制造招聘官网',
+      originalDomain: 'jobs.example.cn',
+      summary: '岗位负责参数化机械设计。',
+      content: '测试制造有限公司正在招聘 Creo 机械设计工程师。',
+      publishedAt: '2026-08-28T09:30:00.000Z',
+      position: 1,
+      logId: 'doubao-log-123',
+    });
+    expect(items[0]).not.toHaveProperty('entityMatch');
+    expect(items[0]).not.toHaveProperty('mentionedName');
+  });
+
   it('threads AbortSignal into fetch and maps cancellation to a typed error', async () => {
     const controller = new AbortController();
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {

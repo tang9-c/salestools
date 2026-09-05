@@ -11,6 +11,7 @@ export * from './evidence.js';
 export * from './opportunity.js';
 export * from './report.js';
 export * from './result-audit.js';
+export * from './contact.js';
 
 export const CandidateSchema = z.object({
   legal_name: z.string(),

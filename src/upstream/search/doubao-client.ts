@@ -1,8 +1,13 @@
 import { z } from 'zod';
 import type { ResearchItem } from '../../contracts/index.js';
 import { UpstreamError } from '../../orchestration/retry.js';
-import { mapDoubaoSearchResponse } from './mapper.js';
-import { SearchQuerySchema, type SearchQuery } from './search-plan.js';
+import { mapDoubaoSearchResponse, mapDoubaoWebResponse, type DoubaoWebResult } from './mapper.js';
+import {
+  DoubaoWebSearchRequestSchema,
+  SearchQuerySchema,
+  type DoubaoWebSearchRequest,
+  type SearchQuery,
+} from './search-plan.js';
 
 const BusinessEnvelopeSchema = z.object({
   Code: z.number(),
@@ -93,6 +98,17 @@ export class DoubaoSearchClient {
 
   async search(query: SearchQuery): Promise<ResearchItem[]> {
     const parsedQuery = SearchQuerySchema.parse(query);
+    const payload = await this.request(parsedQuery);
+    return mapDoubaoSearchResponse(payload, parsedQuery, this.now());
+  }
+
+  async searchWeb(query: DoubaoWebSearchRequest): Promise<DoubaoWebResult[]> {
+    const parsedQuery = DoubaoWebSearchRequestSchema.parse(query);
+    const payload = await this.request(parsedQuery);
+    return mapDoubaoWebResponse(payload);
+  }
+
+  private async request(query: DoubaoWebSearchRequest): Promise<unknown> {
     let response: Response;
     try {
       response = await this.fetchFn(this.options.url, {
@@ -103,10 +119,10 @@ export class DoubaoSearchClient {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          Query: parsedQuery.Query,
-          SearchType: parsedQuery.SearchType,
-          Count: parsedQuery.Count,
-          Filter: parsedQuery.Filter,
+          Query: query.Query,
+          SearchType: query.SearchType,
+          Count: query.Count,
+          Filter: query.Filter,
         }),
       });
     } catch (error) {
@@ -125,6 +141,6 @@ export class DoubaoSearchClient {
       throw new UpstreamError('doubao_search', 'INVALID_RESPONSE', 'Doubao search returned invalid JSON', { cause: error });
     }
 
-    return mapDoubaoSearchResponse(normalizeSuccessfulPayload(payload), parsedQuery, this.now());
+    return normalizeSuccessfulPayload(payload);
   }
 }

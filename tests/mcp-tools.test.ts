@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   AssessmentIdInputSchema,
   CompanyProfileInputSchema,
+  GetContactsInputSchema,
   SubmitAssessmentInputSchema,
 } from '../src/mcp/tool-schemas.js';
 import {
@@ -11,6 +12,7 @@ import {
   type AssessmentReportServiceOutput,
   type AssessmentStatusServiceOutput,
   type CompanyProfileServiceOutput,
+  type ContactServiceOutput,
   type McpServices,
   type SubmitAssessmentServiceOutput,
 } from '../src/mcp/tools.js';
@@ -69,6 +71,28 @@ const expectedReport = {
   source_status: { qcc: 'completed', doubao_search: 'partial', ark: 'completed' },
   markdown: '# 报告',
 };
+const contacts: ContactServiceOutput = {
+  companies: [{
+    companyName: '测试制造有限公司',
+    contacts: [{
+      name: '张三', title: '研发总监', sourceUrl: 'https://example.cn/team',
+      publishedAt: collectedAt,
+    }],
+  }],
+  warnings: [],
+  collectedAt,
+};
+const expectedContacts = {
+  companies: [{
+    company_name: '测试制造有限公司',
+    contacts: [{
+      name: '张三', title: '研发总监', source_url: 'https://example.cn/team',
+      published_at: collectedAt,
+    }],
+  }],
+  warnings: [],
+  collected_at: collectedAt,
+};
 
 function services(overrides: Partial<McpServices> = {}): McpServices {
   return {
@@ -76,6 +100,7 @@ function services(overrides: Partial<McpServices> = {}): McpServices {
     submitAssessment: async () => submit,
     getAssessmentStatus: async () => status,
     getAssessmentReport: async () => report,
+    getContacts: async () => contacts,
     ...overrides,
   };
 }
@@ -109,21 +134,30 @@ describe('MCP tool schemas', () => {
     expect(AssessmentIdInputSchema.safeParse({ assessment_id: assessmentId }).success).toBe(true);
     expect(AssessmentIdInputSchema.safeParse({ assessment_id: 'not-uuid' }).success).toBe(false);
     expect(AssessmentIdInputSchema.safeParse({ assessment_id: assessmentId, user_id: 'other' }).success).toBe(false);
+
+    expect(GetContactsInputSchema.parse({ query: '测试公司', region_hint: '上海' }))
+      .toEqual({ query: '测试公司', region_hint: '上海' });
+    expect(GetContactsInputSchema.safeParse({ query: '' }).success).toBe(false);
+    expect(GetContactsInputSchema.safeParse({ query: 'x'.repeat(49) }).success).toBe(false);
+    expect(GetContactsInputSchema.safeParse({ query: '测试', region_hint: 'x'.repeat(17) }).success).toBe(false);
+    expect(GetContactsInputSchema.safeParse({ query: '测试', force_refresh: true }).success).toBe(false);
   });
 
-  it('registers exactly four tools with selection rules and cache metadata only where allowed', async () => {
+  it('registers exactly five tools with selection rules and cache metadata only where allowed', async () => {
     const connection = await connectedClient(services());
     const listed = await connection.client.listTools();
     const byName = new Map(listed.tools.map(tool => [tool.name, tool]));
 
     expect([...byName.keys()].sort()).toEqual([
-      'get_assessment_report', 'get_assessment_status', 'get_company_profile', 'submit_assessment',
+      'get_assessment_report', 'get_assessment_status', 'get_company_profile', 'get_contacts', 'submit_assessment',
     ]);
     expect(byName.get('get_company_profile')?.description).toMatch(/default|默认|ambiguous|模糊/i);
     expect(byName.get('submit_assessment')?.description).toMatch(/explicit|明确|formal|正式/i);
     expect(byName.get('submit_assessment')?.description).toMatch(/confirm|确认/i);
     expect(byName.get('submit_assessment')?.description).toContain('legal_name');
     expect(byName.get('submit_assessment')?.description).toContain('credit_code');
+    expect(byName.get('get_contacts')?.description).toMatch(/公开|public/i);
+    expect(byName.get('get_contacts')?.description).toMatch(/不.*邮箱|without.*email/i);
 
     const profileOutput = JSON.stringify(byName.get('get_company_profile')?.outputSchema);
     const submitOutput = JSON.stringify(byName.get('submit_assessment')?.outputSchema);
@@ -141,7 +175,7 @@ describe('MCP tool schemas', () => {
     await connection.server.close();
   });
 
-  it('returns matching text and structured content for all four Task 2 output contracts', async () => {
+  it('returns matching text and structured content for all five output contracts', async () => {
     const observedInputs: unknown[] = [];
     const connection = await connectedClient(services({
       getCompanyProfile: async input => {
@@ -160,12 +194,17 @@ describe('MCP tool schemas', () => {
         observedInputs.push(input);
         return report;
       },
+      getContacts: async input => {
+        observedInputs.push(input);
+        return contacts;
+      },
     }));
     const calls = [
       ['get_company_profile', { query: '测试公司', region_hint: '上海' }, expectedProfile],
       ['submit_assessment', { legal_name: '测试制造有限公司', credit_code: '91310000TEST000001' }, expectedSubmit],
       ['get_assessment_status', { assessment_id: assessmentId }, expectedStatus],
       ['get_assessment_report', { assessment_id: assessmentId }, expectedReport],
+      ['get_contacts', { query: '测试制造', region_hint: '上海' }, expectedContacts],
     ] as const;
 
     for (const [name, args, expected] of calls) {
@@ -180,6 +219,7 @@ describe('MCP tool schemas', () => {
       '',
       { assessmentId },
       { assessmentId },
+      { query: '测试制造', regionHint: '上海' },
     ]);
 
     await connection.client.close();

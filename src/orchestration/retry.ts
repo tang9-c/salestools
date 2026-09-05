@@ -74,6 +74,7 @@ const SAFE_ERROR_MESSAGES: Readonly<Partial<Record<UpstreamSource, Readonly<Reco
     INVALID_JSON: 'Ark returned invalid JSON',
     INVALID_EVIDENCE: 'Ark returned invalid evidence',
     INPUT_TOO_LARGE: 'Ark request exceeds the configured input capacity',
+    INVALID_CONTACTS: 'Ark returned invalid contacts',
     ABORTED: 'Ark request cancelled during shutdown',
   },
 };
@@ -93,6 +94,7 @@ const NON_RETRYABLE_CODES = new Set([
   'AUTHENTICATION_ERROR',
   'EMPTY_RESPONSE',
   'INVALID_EVIDENCE',
+  'INVALID_CONTACTS',
   'INVALID_JSON',
   'INVALID_RESPONSE',
   'INPUT_TOO_LARGE',

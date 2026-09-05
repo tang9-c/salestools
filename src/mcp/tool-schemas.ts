@@ -3,6 +3,7 @@ import {
   AssessmentReportOutputSchema,
   AssessmentStatusOutputSchema,
   CompanyProfileOutputSchema,
+  GetContactsOutputSchema,
   SubmitAssessmentOutputSchema,
 } from '../contracts/index.js';
 
@@ -21,12 +22,19 @@ export const AssessmentIdInputSchema = z.object({
   assessment_id: z.uuid(),
 }).strict();
 
+export const GetContactsInputSchema = z.object({
+  query: z.string().trim().min(1).max(48),
+  region_hint: z.string().trim().min(1).max(16).optional(),
+}).strict();
+
 export {
   AssessmentReportOutputSchema,
   AssessmentStatusOutputSchema,
   CompanyProfileOutputSchema,
+  GetContactsOutputSchema,
   SubmitAssessmentOutputSchema,
 };
 
 export type CompanyProfileInput = z.infer<typeof CompanyProfileInputSchema>;
 export type SubmitAssessmentInput = z.infer<typeof SubmitAssessmentInputSchema>;
+export type GetContactsInput = z.infer<typeof GetContactsInputSchema>;
