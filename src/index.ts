@@ -8,6 +8,7 @@ import { AssessmentRepository } from './db/assessment-repository.js';
 import { initializeDatabase, openDatabase } from './db/database.js';
 import { ProfileRepository } from './db/profile-repository.js';
 import { TokenRepository } from './db/token-repository.js';
+import { ContactSnapshotRepository } from './db/contact-snapshot-repository.js';
 import { JsonlLogger, type LogSink } from './logging/logger.js';
 import { ContactService, type ContactExtractorDependency } from './contacts/contact-service.js';
 import { createHttpApp } from './mcp/http-app.js';
@@ -82,6 +83,8 @@ export function createApplication(
   const activity = new ActivityTracker();
 
   const profiles = new ProfileRepository(database);
+  const contactSnapshots = new ContactSnapshotRepository(database);
+  const logger = new JsonlLogger(overrides.logSink ?? stdoutSink, overrides.now);
   const tokenService = new TokenService(new TokenRepository(database), overrides.now);
   const qccGateway = overrides.qccGateway ?? new QccGateway({
     urls: {
@@ -127,6 +130,8 @@ export function createApplication(
       },
     },
     extractor: contactExtractor,
+    snapshots: contactSnapshots,
+    cacheLogger: logger,
     now: overrides.now,
   });
   const profileService = new CompanyProfileService(qccGateway, profiles, {
@@ -136,7 +141,6 @@ export function createApplication(
     now: overrides.now,
   });
   const qccResearch = new QccResearchCollector(qccGateway, overrides.now);
-  const logger = new JsonlLogger(overrides.logSink ?? stdoutSink, overrides.now);
   const runner = new AssessmentRunner({
     assessments,
     profiles,

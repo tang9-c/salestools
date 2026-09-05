@@ -75,4 +75,22 @@ export class JsonlLogger {
     };
     this.sink.write(`${JSON.stringify(line)}\n`);
   }
+
+  logContactCacheError(event: {
+    operation: 'read' | 'parse' | 'write';
+    cacheKey: string;
+    error: Error;
+  }): void {
+    const line = {
+      event: 'contact_cache_error',
+      timestamp: this.now().toISOString(),
+      operation: event.operation,
+      cache_key_prefix: event.cacheKey.slice(0, 12),
+      error: {
+        name: event.error.name,
+        message: safeMessage(event.error.message),
+      },
+    };
+    this.sink.write(`${JSON.stringify(line)}\n`);
+  }
 }

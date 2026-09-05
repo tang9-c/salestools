@@ -1,6 +1,9 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { DatabaseSync } from 'node:sqlite';
 import type { AddressInfo } from 'node:net';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import type { ContactExtractionCandidate, ResearchBundle, ResearchItem } from '../src/contracts/index.js';
@@ -178,6 +181,7 @@ describe('MCP HTTP simulated end-to-end', () => {
 
   it('runs profile, assessment, polling and cross-user report reads over modern MCP', async () => {
     const database = initializeDatabase(new DatabaseSync(':memory:'));
+    let contactSearchCalls = 0;
     runtime = createApplication(loadConfig(env), {
       database,
       qccGateway: {
@@ -186,7 +190,10 @@ describe('MCP HTTP simulated end-to-end', () => {
       },
       searchClient: {
         search: async query => [fakeSearchItem(query)],
-        searchWeb: async () => [fakeContactPage],
+        searchWeb: async () => {
+          contactSearchCalls += 1;
+          return [fakeContactPage];
+        },
       },
       ark: { extractWithAudit: async bundle => fakeArkExtraction(bundle) },
       contactExtractor: { extract: async () => ({
@@ -222,6 +229,7 @@ describe('MCP HTTP simulated end-to-end', () => {
           name: '李四', title: '研发总监', source_url: fakeContactPage.url,
           published_at: fakeContactPage.publishedAt,
         }],
+        historical_contacts: [],
       }],
       warnings: [],
       collected_at: expect.any(String),
@@ -248,6 +256,11 @@ describe('MCP HTTP simulated end-to-end', () => {
     const secondClient = await connect(endpoint, secondToken, 'e2e-user-b');
     clients.push(secondClient);
     expect(secondClient.getProtocolEra()).toBe('modern');
+    const sharedContacts = await call(secondClient, 'get_contacts', {
+      query: ' 测试机器人 ', region_hint: '上海',
+    });
+    expect(sharedContacts).toEqual(contacts);
+    expect(contactSearchCalls).toBe(2);
     const report = await call(secondClient, 'get_assessment_report', { assessment_id: assessmentId });
     expect(secondClient.getProtocolEra()).toBe('modern');
     expect(report).toMatchObject({
@@ -274,5 +287,76 @@ describe('MCP HTTP simulated end-to-end', () => {
       cache_hit: true,
       cached_at: stored?.completedAt,
     });
+  });
+
+  it('reuses a contact snapshot after application restart without calling upstream', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'contact-cache-e2e-'));
+    const sqlitePath = join(directory, 'service.sqlite');
+    const persistedConfig = loadConfig({ ...env, SQLITE_PATH: sqlitePath });
+    const commonOverrides = {
+      qccGateway: {
+        call: async (_server: string, tool: string) => fakeQccPayload(tool),
+        close: async () => undefined,
+      },
+      ark: { extractWithAudit: async (bundle: ResearchBundle) => fakeArkExtraction(bundle) },
+      logSink: { write: () => undefined },
+    };
+
+    try {
+      runtime = createApplication(persistedConfig, {
+        ...commonOverrides,
+        searchClient: {
+          search: async query => [fakeSearchItem(query)],
+          searchWeb: async () => [fakeContactPage],
+        },
+        contactExtractor: { extract: async () => ({
+          contacts: [fakeContact],
+          selection: { totalPages: 1, includedPages: 1, textTruncated: false },
+        }) },
+      });
+      const token = runtime.tokenService.create('sales-a');
+      const firstClient = await connect(
+        `http://127.0.0.1:${((await runtime.listen(0, '127.0.0.1')).address() as AddressInfo).port}/mcp`,
+        token,
+        'cache-before-restart',
+      );
+      clients.push(firstClient);
+      const first = await call(firstClient, 'get_contacts', {
+        query: '测试机器人', region_hint: '上海',
+      });
+      await firstClient.close();
+      await runtime.close();
+      runtime = undefined;
+
+      let upstreamCalls = 0;
+      runtime = createApplication(persistedConfig, {
+        ...commonOverrides,
+        searchClient: {
+          search: async () => [],
+          searchWeb: async () => { upstreamCalls += 1; throw new Error('must use cache'); },
+        },
+        contactExtractor: { extract: async () => {
+          upstreamCalls += 1;
+          throw new Error('must use cache');
+        } },
+      });
+      const secondClient = await connect(
+        `http://127.0.0.1:${((await runtime.listen(0, '127.0.0.1')).address() as AddressInfo).port}/mcp`,
+        token,
+        'cache-after-restart',
+      );
+      clients.push(secondClient);
+      const second = await call(secondClient, 'get_contacts', {
+        query: ' 测试机器人 ', region_hint: '上海',
+      });
+
+      expect(second).toEqual(first);
+      expect(upstreamCalls).toBe(0);
+    } finally {
+      await Promise.allSettled(clients.splice(0).map(client => client.close()));
+      await runtime?.close();
+      runtime = undefined;
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

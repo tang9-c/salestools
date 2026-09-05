@@ -207,6 +207,15 @@ function contactsOutput(output: ContactServiceOutput) {
         source_url: contact.sourceUrl,
         published_at: contact.publishedAt,
       })),
+      historical_contacts: company.historicalContacts.map(contact => ({
+        name: contact.name,
+        title: contact.title,
+        source_url: contact.sourceUrl,
+        published_at: contact.publishedAt,
+        first_seen_at: contact.firstSeenAt,
+        last_seen_at: contact.lastSeenAt,
+        status: contact.status,
+      })),
     })),
     warnings: output.warnings,
     collected_at: output.collectedAt,
@@ -252,7 +261,7 @@ export function buildMcpServer(services: McpServices): McpServer {
   }))));
 
   server.registerTool('get_contacts', {
-    description: '查询公开网页中的关键岗位职业身份；不返回邮箱或电话，也不保证法人主体已确认。',
+    description: '查询公开网页中的当前关键岗位职业身份和历史任职证据；历史证据不代表已离职，不返回邮箱或电话，也不保证法人主体已确认。',
     inputSchema: GetContactsInputSchema,
     outputSchema: GetContactsOutputSchema,
   }, async input => toolResult(contactsOutput(await services.getContacts({

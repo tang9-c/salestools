@@ -146,4 +146,29 @@ describe('JsonlLogger', () => {
     expect(lines[0]).not.toMatch(/qcc-key|plain-token|ark-key|json-secret/);
     expect(JSON.parse(lines[0]!).error.message).toContain('[REDACTED]');
   });
+
+  it('logs only a cache-key prefix and sanitizes contact cache failures', () => {
+    const lines: string[] = [];
+    const logger = new JsonlLogger(
+      { write: line => lines.push(line) },
+      () => new Date('2026-09-05T00:00:00.000Z'),
+    );
+    logger.logContactCacheError({
+      operation: 'write',
+      cacheKey: 'a'.repeat(64),
+      error: new Error('api_key=private-key Authorization: Bearer hidden-token'),
+    });
+
+    expect(JSON.parse(lines[0]!)).toEqual({
+      event: 'contact_cache_error',
+      timestamp: '2026-09-05T00:00:00.000Z',
+      operation: 'write',
+      cache_key_prefix: 'a'.repeat(12),
+      error: {
+        name: 'Error',
+        message: 'api_key=[REDACTED] Authorization: [REDACTED]',
+      },
+    });
+    expect(lines[0]).not.toMatch(/private-key|hidden-token/);
+  });
 });

@@ -78,6 +78,11 @@ const contacts: ContactServiceOutput = {
       name: '张三', title: '研发总监', sourceUrl: 'https://example.cn/team',
       publishedAt: collectedAt,
     }],
+    historicalContacts: [{
+      name: '李四', title: '技术总监', sourceUrl: 'https://example.cn/old-team',
+      publishedAt: null, firstSeenAt: '2025-01-01T00:00:00.000Z',
+      lastSeenAt: '2025-06-01T00:00:00.000Z', status: 'historical_evidence',
+    }],
   }],
   warnings: [],
   collectedAt,
@@ -88,6 +93,11 @@ const expectedContacts = {
     contacts: [{
       name: '张三', title: '研发总监', source_url: 'https://example.cn/team',
       published_at: collectedAt,
+    }],
+    historical_contacts: [{
+      name: '李四', title: '技术总监', source_url: 'https://example.cn/old-team',
+      published_at: null, first_seen_at: '2025-01-01T00:00:00.000Z',
+      last_seen_at: '2025-06-01T00:00:00.000Z', status: 'historical_evidence',
     }],
   }],
   warnings: [],
@@ -163,6 +173,7 @@ describe('MCP tool schemas', () => {
     const submitOutput = JSON.stringify(byName.get('submit_assessment')?.outputSchema);
     const statusOutput = JSON.stringify(byName.get('get_assessment_status')?.outputSchema);
     const reportOutput = JSON.stringify(byName.get('get_assessment_report')?.outputSchema);
+    const contactsOutput = JSON.stringify(byName.get('get_contacts')?.outputSchema);
     expect(profileOutput).toContain('cache_hit');
     expect(submitOutput).toContain('cache_hit');
     expect(submitOutput).toContain('cached_at');
@@ -170,6 +181,9 @@ describe('MCP tool schemas', () => {
     expect(statusOutput).not.toContain('cached_at');
     expect(reportOutput).not.toContain('cache_hit');
     expect(reportOutput).not.toContain('cached_at');
+    expect(contactsOutput).toContain('historical_contacts');
+    expect(contactsOutput).not.toContain('cache_hit');
+    expect(contactsOutput).not.toContain('cached_at');
 
     await connection.client.close();
     await connection.server.close();
