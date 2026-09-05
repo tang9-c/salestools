@@ -1,8 +1,21 @@
 import {
+  ContactSnapshotPayloadSchema,
+  GetContactsOutputSchema,
   PublicIdentityTextSchema,
   type ContactExtractionCandidate,
   type ContactExtractionResult,
+  type ContactSnapshotPayload,
+  type GetContactsOutput,
 } from '../contracts/index.js';
+import {
+  contactCacheIdentity,
+  projectContactHistory,
+  type ContactCacheIdentity,
+} from './contact-cache.js';
+import {
+  ContactSnapshotDataError,
+  type ContactSnapshotStore,
+} from '../db/contact-snapshot-repository.js';
 import { CallBudget } from '../orchestration/call-budget.js';
 import { retryOnce } from '../orchestration/retry.js';
 import { buildContactSearchPlan } from '../upstream/search/contact-search-plan.js';
@@ -24,7 +37,17 @@ export interface ContactExtractorDependency {
 export interface ContactServiceOptions {
   searchClient: ContactSearchDependency;
   extractor: ContactExtractorDependency;
+  snapshots: ContactSnapshotStore;
+  cacheLogger?: ContactCacheLoggerDependency;
   now?: () => Date;
+}
+
+export interface ContactCacheLoggerDependency {
+  logContactCacheError(event: {
+    operation: 'read' | 'parse' | 'write';
+    cacheKey: string;
+    error: Error;
+  }): void;
 }
 
 export interface GetContactsServiceInput {
@@ -41,6 +64,15 @@ export interface ContactServiceOutput {
       sourceUrl: string;
       publishedAt: string | null;
     }>;
+    historicalContacts: Array<{
+      name: string;
+      title: string;
+      sourceUrl: string;
+      publishedAt: string | null;
+      firstSeenAt: string;
+      lastSeenAt: string;
+      status: 'historical_evidence';
+    }>;
   }>;
   warnings: string[];
   collectedAt: string;
@@ -53,6 +85,9 @@ export class ContactLookupError extends Error {
     super('公开联系人查询暂不可用，请稍后重试', options);
   }
 }
+
+const CONTACT_CACHE_TTL_DAYS = 30;
+const STALE_WARNING = '实时刷新失败，使用超过 30 天的历史缓存';
 
 function normalize(value: string): string {
   return value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
@@ -132,12 +167,26 @@ function compareItems(left: RankedWebResult, right: RankedWebResult): number {
 
 export class ContactService {
   private readonly now: () => Date;
+  private readonly inFlight = new Map<string, Promise<ContactServiceOutput>>();
 
   constructor(private readonly options: ContactServiceOptions) {
     this.now = options.now ?? (() => new Date());
   }
 
   async get(input: GetContactsServiceInput): Promise<ContactServiceOutput> {
+    const identity = contactCacheIdentity(input);
+    const fresh = this.cacheOperation('read', identity.cacheKey, () => (
+      this.options.snapshots.findFresh(
+        identity.cacheKey,
+        this.now(),
+        CONTACT_CACHE_TTL_DAYS,
+      )
+    ));
+    if (fresh !== null) return this.render(identity.cacheKey);
+    return this.singleflight(identity.cacheKey, () => this.refreshAndStore(input, identity));
+  }
+
+  private async fetchSnapshot(input: GetContactsServiceInput): Promise<ContactSnapshotPayload> {
     const budget = new CallBudget(
       { qcc: 0, doubaoSearch: 4, ark: 2, total: 6 },
       { reserveArkCalls: 2 },
@@ -194,7 +243,7 @@ export class ContactService {
       let company = companyByName.get(companyKey);
       if (company === undefined) {
         if (companies.length >= 3) continue;
-        company = { companyName: contact.companyName.trim(), contacts: [] };
+        company = { companyName: contact.companyName.trim(), contacts: [], historicalContacts: [] };
         companies.push(company);
         companyByName.set(companyKey, company);
       }
@@ -211,6 +260,123 @@ export class ContactService {
     if (companies.length === 0 && warnings.length === 0) {
       warnings.push('未发现满足证据要求的关键岗位人员');
     }
-    return { companies, warnings, collectedAt: this.now().toISOString() };
+    return ContactSnapshotPayloadSchema.parse({
+      companies: companies.map(company => ({
+        company_name: company.companyName,
+        contacts: company.contacts.map(contact => ({
+          name: contact.name,
+          title: contact.title,
+          source_url: contact.sourceUrl,
+          published_at: contact.publishedAt,
+        })),
+      })),
+      warnings,
+      collected_at: this.now().toISOString(),
+    });
   }
+
+  private async refreshAndStore(
+    input: GetContactsServiceInput,
+    identity: ContactCacheIdentity,
+  ): Promise<ContactServiceOutput> {
+    const fresh = this.cacheOperation('read', identity.cacheKey, () => (
+      this.options.snapshots.findFresh(
+        identity.cacheKey,
+        this.now(),
+        CONTACT_CACHE_TTL_DAYS,
+      )
+    ));
+    if (fresh !== null) return this.render(identity.cacheKey);
+
+    let payload: ContactSnapshotPayload;
+    try {
+      payload = await this.fetchSnapshot(input);
+    } catch (error) {
+      if (!(error instanceof ContactLookupError)) throw error;
+      const latest = this.cacheOperation('read', identity.cacheKey, () => (
+        this.options.snapshots.findLatest(identity.cacheKey)
+      ));
+      if (latest === null) throw error;
+      const projected = this.project(identity.cacheKey);
+      return toServiceOutput(GetContactsOutputSchema.parse({
+        ...projected,
+        warnings: [...new Set([...projected.warnings, STALE_WARNING])],
+      }));
+    }
+
+    const storedAt = this.now().toISOString();
+    this.cacheOperation('write', identity.cacheKey, () => this.options.snapshots.append({
+      ...identity,
+      payload,
+      storedAt,
+    }));
+    return this.render(identity.cacheKey);
+  }
+
+  private project(cacheKey: string): GetContactsOutput {
+    const snapshots = this.cacheOperation('read', cacheKey, () => (
+      this.options.snapshots.findAll(cacheKey)
+    ));
+    return projectContactHistory(snapshots);
+  }
+
+  private render(cacheKey: string): ContactServiceOutput {
+    return toServiceOutput(this.project(cacheKey));
+  }
+
+  private cacheOperation<T>(
+    operation: 'read' | 'write',
+    cacheKey: string,
+    action: () => T,
+  ): T {
+    try {
+      return action();
+    } catch (error) {
+      const safeError = error instanceof Error ? error : new Error('Unknown contact cache error');
+      this.options.cacheLogger?.logContactCacheError({
+        operation: safeError instanceof ContactSnapshotDataError ? 'parse' : operation,
+        cacheKey,
+        error: safeError,
+      });
+      throw error;
+    }
+  }
+
+  private singleflight(
+    cacheKey: string,
+    operation: () => Promise<ContactServiceOutput>,
+  ): Promise<ContactServiceOutput> {
+    const existing = this.inFlight.get(cacheKey);
+    if (existing !== undefined) return existing;
+    const pending = operation().finally(() => {
+      if (this.inFlight.get(cacheKey) === pending) this.inFlight.delete(cacheKey);
+    });
+    this.inFlight.set(cacheKey, pending);
+    return pending;
+  }
+}
+
+function toServiceOutput(output: GetContactsOutput): ContactServiceOutput {
+  return {
+    companies: output.companies.map(company => ({
+      companyName: company.company_name,
+      contacts: company.contacts.map(contact => ({
+        name: contact.name,
+        title: contact.title,
+        sourceUrl: contact.source_url,
+        publishedAt: contact.published_at,
+      })),
+      historicalContacts: company.historical_contacts.map(contact => ({
+        name: contact.name,
+        title: contact.title,
+        sourceUrl: contact.source_url,
+        publishedAt: contact.published_at,
+        firstSeenAt: contact.first_seen_at,
+        lastSeenAt: contact.last_seen_at,
+        status: contact.status,
+      })),
+    })),
+    warnings: output.warnings,
+    collectedAt: output.collected_at,
+  };
 }

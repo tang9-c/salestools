@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   GetContactsOutputSchema,
   type ContactExtractionCandidate,
+  type ContactSnapshotPayload,
 } from '../src/contracts/index.js';
 import { ContactLookupError, ContactService } from '../src/contacts/contact-service.js';
 import {
@@ -13,6 +14,10 @@ import { UpstreamError } from '../src/orchestration/retry.js';
 import { ContactExtractor } from '../src/upstream/ark/contact-extractor.js';
 import type { DoubaoWebResult } from '../src/upstream/search/mapper.js';
 import { buildContactSearchPlan } from '../src/upstream/search/contact-search-plan.js';
+import type {
+  AppendContactSnapshotInput,
+  ContactSnapshotStore,
+} from '../src/db/contact-snapshot-repository.js';
 
 describe('contact contracts and search plan', () => {
   it('builds exactly two bounded public-source queries', () => {
@@ -111,6 +116,33 @@ function storedSnapshot(
     payload: { companies, warnings: [], collected_at: storedAt },
     storedAt,
   };
+}
+
+class MemoryContactSnapshots implements ContactSnapshotStore {
+  readonly rows: StoredContactSnapshot[];
+
+  constructor(initial: StoredContactSnapshot[] = []) {
+    this.rows = [...initial];
+  }
+
+  append(input: AppendContactSnapshotInput): void {
+    this.rows.push({ ...input, snapshotId: this.rows.length + 1 });
+  }
+
+  findFresh(cacheKey: string, now: Date, ttlDays: number): StoredContactSnapshot | null {
+    const cutoff = now.getTime() - ttlDays * 86_400_000;
+    return this.findAll(cacheKey).filter(row => Date.parse(row.storedAt) >= cutoff).at(-1) ?? null;
+  }
+
+  findLatest(cacheKey: string): StoredContactSnapshot | null {
+    return this.findAll(cacheKey).at(-1) ?? null;
+  }
+
+  findAll(cacheKey: string): StoredContactSnapshot[] {
+    return this.rows.filter(row => row.cacheKey === cacheKey)
+      .sort((left, right) => left.storedAt.localeCompare(right.storedAt)
+        || left.snapshotId - right.snapshotId);
+  }
 }
 
 describe('contact cache identity and history projection', () => {
@@ -225,6 +257,8 @@ function candidate(overrides: Partial<ContactExtractionCandidate> = {}): Contact
 function service(options: {
   searches: Array<DoubaoWebResult[] | Error>;
   extracted?: ContactExtractionCandidate[] | Error;
+  snapshots?: ContactSnapshotStore;
+  now?: Date;
 }) {
   let searchIndex = 0;
   return new ContactService({
@@ -245,7 +279,8 @@ function service(options: {
         };
       },
     },
-    now: () => new Date(collectedAt),
+    snapshots: options.snapshots ?? new MemoryContactSnapshots(),
+    now: () => options.now ?? new Date(collectedAt),
   });
 }
 
@@ -293,6 +328,7 @@ describe('ContactService', () => {
           name: '张三', title: '研发总监', sourceUrl: 'https://example.cn/team',
           publishedAt: '2026-08-01T00:00:00.000Z',
         }],
+        historicalContacts: [],
       }],
       warnings: [],
       collectedAt,
@@ -371,6 +407,7 @@ describe('ContactService', () => {
           selection: { totalPages: 2, includedPages: 2, textTruncated: true },
         }),
       },
+      snapshots: new MemoryContactSnapshots(),
       now: () => new Date(collectedAt),
     }).get({ query: '测试制造' });
 
@@ -402,12 +439,135 @@ describe('ContactService', () => {
           };
         },
       },
+      snapshots: new MemoryContactSnapshots(),
       now: () => new Date(collectedAt),
     }).get({ query: '测试制造' });
 
     expect([...searchAttempts.values()].reduce((sum, attempts) => sum + attempts, 0)).toBe(4);
     expect(arkAttempts).toBe(2);
     expect(result.companies).toHaveLength(1);
+  });
+
+  it('returns a fresh snapshot without calling search or Ark', async () => {
+    const identity = contactCacheIdentity({ query: '测试制造' });
+    const payload: ContactSnapshotPayload = {
+      companies: [{
+        company_name: '测试制造有限公司',
+        contacts: [{
+          name: '张三', title: '研发总监', source_url: 'https://example.cn/team', published_at: null,
+        }],
+      }],
+      warnings: [],
+      collected_at: collectedAt,
+    };
+    const snapshots = new MemoryContactSnapshots([{
+      snapshotId: 1, ...identity, payload, storedAt: collectedAt,
+    }]);
+    let calls = 0;
+    const result = await new ContactService({
+      snapshots,
+      searchClient: { searchWeb: async () => { calls += 1; return []; } },
+      extractor: { extract: async () => {
+        calls += 1;
+        return { contacts: [], selection: { totalPages: 0, includedPages: 0, textTruncated: false } };
+      } },
+      now: () => new Date(collectedAt),
+    }).get({ query: '测试制造' });
+
+    expect(calls).toBe(0);
+    expect(result.collectedAt).toBe(collectedAt);
+    expect(result.companies[0]?.historicalContacts).toEqual([]);
+  });
+
+  it('appends a successful refresh and reuses it on the next call', async () => {
+    const snapshots = new MemoryContactSnapshots();
+    let searches = 0;
+    let extractions = 0;
+    const instance = new ContactService({
+      snapshots,
+      searchClient: { searchWeb: async () => {
+        searches += 1;
+        return searches % 2 === 1 ? [webResult()] : [];
+      } },
+      extractor: { extract: async () => {
+        extractions += 1;
+        return {
+          contacts: [candidate()],
+          selection: { totalPages: 1, includedPages: 1, textTruncated: false },
+        };
+      } },
+      now: () => new Date(collectedAt),
+    });
+
+    const first = await instance.get({ query: '测试制造' });
+    const second = await instance.get({ query: '测试制造' });
+    expect(second).toEqual(first);
+    expect(searches).toBe(2);
+    expect(extractions).toBe(1);
+    expect(snapshots.rows).toHaveLength(1);
+  });
+
+  it('uses an expired snapshot only when upstream refresh fails and does not renew it', async () => {
+    const identity = contactCacheIdentity({ query: '测试制造' });
+    const payload: ContactSnapshotPayload = {
+      companies: [], warnings: ['历史警告'], collected_at: '2026-07-01T00:00:00.000Z',
+    };
+    const snapshots = new MemoryContactSnapshots([{
+      snapshotId: 1, ...identity, payload, storedAt: '2026-07-01T00:00:00.000Z',
+    }]);
+    const failed = new UpstreamError('doubao_search', 'AUTHENTICATION_ERROR', 'private detail');
+    const result = await service({
+      searches: [failed, failed], snapshots, now: new Date(collectedAt),
+    }).get({ query: '测试制造' });
+
+    expect(result.collectedAt).toBe(payload.collected_at);
+    expect(result.warnings).toEqual([
+      '历史警告', '实时刷新失败，使用超过 30 天的历史缓存',
+    ]);
+    expect(snapshots.rows).toHaveLength(1);
+  });
+
+  it('does not mask cache read failures as stale success', async () => {
+    const cacheError = new Error('database read failed');
+    const snapshots: ContactSnapshotStore = {
+      append: () => undefined,
+      findFresh: () => { throw cacheError; },
+      findLatest: () => null,
+      findAll: () => [],
+    };
+
+    await expect(service({ searches: [[], []], snapshots }).get({ query: '测试制造' }))
+      .rejects.toBe(cacheError);
+  });
+
+  it('coalesces concurrent refreshes for one cache key and clears rejected operations', async () => {
+    const snapshots = new MemoryContactSnapshots();
+    let searches = 0;
+    let fail = true;
+    const instance = new ContactService({
+      snapshots,
+      searchClient: { searchWeb: async () => {
+        searches += 1;
+        if (fail) throw new UpstreamError('doubao_search', 'NETWORK_ERROR', 'failed');
+        return [];
+      } },
+      extractor: { extract: async () => ({
+        contacts: [], selection: { totalPages: 0, includedPages: 0, textTruncated: false },
+      }) },
+      now: () => new Date(collectedAt),
+    });
+
+    const failed = await Promise.allSettled([
+      instance.get({ query: '测试制造' }),
+      instance.get({ query: ' 测试制造 ' }),
+    ]);
+    expect(failed.every(result => result.status === 'rejected')).toBe(true);
+    expect(searches).toBe(4);
+
+    fail = false;
+    await instance.get({ query: '测试制造' });
+    expect(searches).toBe(6);
+    expect(snapshots.rows).toHaveLength(1);
   });
 
   it('accepts a published CTO as a technology leader', async () => {
