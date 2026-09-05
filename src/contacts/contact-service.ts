@@ -90,6 +90,25 @@ function companyStem(companyName: string): string {
   return normalize(companyName).replace(/(?:有限责任公司|股份有限公司|有限公司|集团公司|集团)$/u, '');
 }
 
+const OfficialNewsPublisherByDomain = new Map<string, RegExp>([
+  ['jwview.com', /中新经纬/u],
+  ['chinanews.com', /(?:中国新闻网|中新网)/u],
+  ['xinhuanet.com', /(?:新华网|新华社)/u],
+  ['people.com.cn', /(?:人民网|人民日报)/u],
+  ['cctv.com', /(?:央视|中央广播电视总台)/u],
+  ['cqn.com.cn', /(?:中国质量新闻网|中国质量报)/u],
+]);
+
+function isOfficialNewsPublisher(source: DoubaoWebResult): boolean {
+  const host = source.originalDomain.toLowerCase();
+  for (const [domain, publisher] of OfficialNewsPublisherByDomain) {
+    if ((host === domain || host.endsWith(`.${domain}`)) && publisher.test(source.originalPublisher ?? '')) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function sourceMatches(companyName: string, source: DoubaoWebResult): boolean {
   const text = searchableText(source);
   const publisher = normalize(source.originalPublisher ?? '');
@@ -98,10 +117,11 @@ function sourceMatches(companyName: string, source: DoubaoWebResult): boolean {
   const publisherMatchesCompany = stem.length >= 2 && publisher.includes(stem);
   const officialWechat = source.originalDomain === 'mp.weixin.qq.com'
     && /(?:公众号|微信公众|微信)/u.test(`${publisher} ${title} ${text}`);
+  const officialNews = isOfficialNewsPublisher(source);
   const tender = /(?:招标|投标|中标|采购公告|采购项目|采购文件|采购合同)/u.test(text);
   const patent = /(?:专利|发明人|申请号|授权公告)/u.test(text);
   const conference = /(?:会议|峰会|论坛|大会|嘉宾)/u.test(text);
-  return publisherMatchesCompany || officialWechat || tender || patent || conference;
+  return publisherMatchesCompany || officialNews || officialWechat || tender || patent || conference;
 }
 
 function compareItems(left: RankedWebResult, right: RankedWebResult): number {

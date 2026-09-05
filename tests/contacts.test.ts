@@ -341,6 +341,54 @@ describe('ContactService', () => {
     expect(result.companies[0]?.contacts).toHaveLength(1);
   });
 
+  it('accepts a known official-news publisher without treating its domain as a company website', async () => {
+    const page = webResult({
+      url: 'https://www.jwview.com/story', originalDomain: 'www.jwview.com',
+      originalPublisher: '中新经纬',
+      summary: '测试制造有限公司创始人、CEO张三介绍产品研发规划。', content: null,
+    });
+    const result = await service({
+      searches: [[page], []],
+      extracted: [candidate({
+        title: '创始人、CEO', roleCategory: 'executive', sourceType: 'official_news', sourceUrl: page.url,
+      })],
+    }).get({ query: '测试制造' });
+
+    expect(result.companies[0]?.contacts).toHaveLength(1);
+  });
+
+  it('accepts an approved official-news publisher on one of its subdomains', async () => {
+    const page = webResult({
+      url: 'https://m.jwview.com/story', originalDomain: 'm.jwview.com',
+      originalPublisher: '中新经纬',
+      summary: '测试制造有限公司创始人、CEO张三介绍产品研发规划。', content: null,
+    });
+    const result = await service({
+      searches: [[page], []],
+      extracted: [candidate({
+        title: '创始人、CEO', roleCategory: 'executive', sourceType: 'official_news', sourceUrl: page.url,
+      })],
+    }).get({ query: '测试制造' });
+
+    expect(result.companies[0]?.contacts).toHaveLength(1);
+  });
+
+  it('rejects a lookalike domain for an official-news publisher', async () => {
+    const page = webResult({
+      url: 'https://jwview.com.example.net/story', originalDomain: 'jwview.com.example.net',
+      originalPublisher: '中新经纬',
+      summary: '测试制造有限公司创始人、CEO张三介绍产品研发规划。', content: null,
+    });
+    const result = await service({
+      searches: [[page], []],
+      extracted: [candidate({
+        title: '创始人、CEO', roleCategory: 'executive', sourceType: 'official_news', sourceUrl: page.url,
+      })],
+    }).get({ query: '测试制造' });
+
+    expect(result.companies).toEqual([]);
+  });
+
   it('determines an allowed source from page metadata instead of trusting the model label', async () => {
     const page = webResult();
     const result = await service({
@@ -451,8 +499,114 @@ describe('ContactExtractor', () => {
 
     expect(observedBytes).toBeLessThanOrEqual(6_144);
     expect(observedBytes).toBeGreaterThan(0);
-    expect(user.pages).toHaveLength(20);
-    expect(result.selection).toEqual({ totalPages: 20, includedPages: 20, textTruncated: true });
+    expect(user.pages.length).toBeLessThan(20);
+    expect(result.selection).toEqual({
+      totalPages: 20,
+      includedPages: user.pages.length,
+      textTruncated: true,
+    });
+  });
+
+  it('reserves useful body context for selected high-ranked pages instead of thinning every page', async () => {
+    let observedBody = '';
+    const fetchFn = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      observedBody = String(init?.body);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '{"contacts":[]}' } }],
+      }), { status: 200 });
+    };
+    const extractor = new ContactExtractor({
+      url: 'https://ark.example.cn/chat', model: 'test-model', credential: 'secret',
+      requestMaxBytes: 12_288, fetchFn,
+    });
+    const pages = Array.from({ length: 20 }, (_, index) => ({
+      ...webResult({
+        title: '测试制造有限公司关键岗位公开资料页面'.repeat(2),
+        url: `https://example.cn/very-long-source-path/${'a'.repeat(70)}/${index}`,
+        originalPublisher: '测试制造有限公司官方新闻发布',
+        summary: '测试制造有限公司研发总监张三负责技术研发。'.repeat(100),
+        content: '测试制造有限公司研发总监张三负责技术研发。'.repeat(200),
+      }),
+      queryIndex: index < 10 ? 0 : 1,
+      position: (index % 10) + 1,
+    }));
+
+    const result = await extractor.extract(pages);
+    const request = JSON.parse(observedBody) as { messages: Array<{ content: string }> };
+    const sent = JSON.parse(request.messages[1]?.content ?? '{}') as {
+      pages: Array<{ queryIndex: number; position: number; text: string }>;
+    };
+
+    expect(result.selection).toMatchObject({ totalPages: 20, textTruncated: true });
+    expect(sent.pages.length).toBeLessThan(20);
+    expect(sent.pages.map(page => page.queryIndex)).toEqual(expect.arrayContaining([0, 1]));
+    expect(sent.pages.filter(page => page.position === 1)).toHaveLength(2);
+    expect(sent.pages.every(page => Buffer.byteLength(page.text, 'utf8') >= 768)).toBe(true);
+  });
+
+  it('skips an oversized page metadata record and retains a later useful page', async () => {
+    let observedBody = '';
+    const fetchFn = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      observedBody = String(init?.body);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '{"contacts":[]}' } }],
+      }), { status: 200 });
+    };
+    const extractor = new ContactExtractor({
+      url: 'https://ark.example.cn/chat', model: 'test-model', credential: 'secret',
+      requestMaxBytes: 6_144, fetchFn,
+    });
+    const oversized = {
+      ...webResult({
+        url: `https://example.cn/${'a'.repeat(5_000)}`,
+        content: '测试制造有限公司研发总监张三负责技术研发。'.repeat(100),
+      }),
+      queryIndex: 0,
+    };
+    const useful = {
+      ...webResult({
+        url: 'https://example.cn/useful',
+        content: '测试制造有限公司研发总监张三负责技术研发。'.repeat(100),
+      }),
+      queryIndex: 1,
+    };
+
+    const result = await extractor.extract([oversized, useful]);
+    const request = JSON.parse(observedBody) as { messages: Array<{ content: string }> };
+    const sent = JSON.parse(request.messages[1]?.content ?? '{}') as { pages: Array<{ url: string }> };
+
+    expect(result.selection).toEqual({ totalPages: 2, includedPages: 1, textTruncated: true });
+    expect(sent.pages.map(page => page.url)).toEqual([useful.url]);
+  });
+
+  it('orders each query bucket by search rank before interleaving them', async () => {
+    let observedBody = '';
+    const fetchFn = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      observedBody = String(init?.body);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '{"contacts":[]}' } }],
+      }), { status: 200 });
+    };
+    const extractor = new ContactExtractor({
+      url: 'https://ark.example.cn/chat', model: 'test-model', credential: 'secret',
+      requestMaxBytes: 6_144, fetchFn,
+    });
+    const pages = [
+      { ...webResult({ url: 'https://example.cn/1-2', content: '研发负责人'.repeat(200), position: 2 }), queryIndex: 1 },
+      { ...webResult({ url: 'https://example.cn/0-2', content: '研发负责人'.repeat(200), position: 2 }), queryIndex: 0 },
+      { ...webResult({ url: 'https://example.cn/1-1', content: '研发负责人'.repeat(200), position: 1 }), queryIndex: 1 },
+      { ...webResult({ url: 'https://example.cn/0-1', content: '研发负责人'.repeat(200), position: 1 }), queryIndex: 0 },
+    ];
+
+    await extractor.extract(pages);
+    const request = JSON.parse(observedBody) as { messages: Array<{ content: string }> };
+    const sent = JSON.parse(request.messages[1]?.content ?? '{}') as {
+      pages: Array<{ queryIndex: number; position: number }>;
+    };
+
+    expect(sent.pages.map(page => [page.queryIndex, page.position])).toEqual([
+      [0, 1], [1, 1], [0, 2], [1, 2],
+    ]);
   });
 
   it.each([6_144, 12_288])('reports excluded pages for long metadata at %i bytes', async requestMaxBytes => {

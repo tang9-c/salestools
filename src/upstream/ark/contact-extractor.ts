@@ -35,6 +35,9 @@ companyName、name、title 和 sourceUrl 必须逐字来自同一条输入材料
 不得输出邮箱、电话或其他直接联系方式。
 专利发明人或招投标联系人没有明确职位时不得输出；普通员工和无法确认岗位者不得输出。`;
 
+const MIN_CONTACT_TEXT_BYTES = 768;
+const MAX_CONTACT_TEXT_BYTES = 1_500;
+
 function parseJsonContent(content: string): unknown {
   const trimmed = content.trim();
   if (trimmed.length === 0) throw new ArkInvalidOutputError('EMPTY_RESPONSE', 'Ark returned empty contacts');
@@ -50,14 +53,28 @@ function pageText(item: RankedWebResult): string {
   return [item.summary, item.content].filter((value): value is string => value !== null).join('\n');
 }
 
-function compactItem(item: RankedWebResult, textLimit: number) {
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (maxBytes <= 0 || Buffer.byteLength(value, 'utf8') === 0) return '';
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  let bytes = 0;
+  let output = '';
+  for (const codePoint of value) {
+    const next = Buffer.byteLength(codePoint, 'utf8');
+    if (bytes + next > maxBytes) break;
+    output += codePoint;
+    bytes += next;
+  }
+  return output;
+}
+
+function compactItem(item: RankedWebResult, textBytes: number) {
   return {
     queryIndex: item.queryIndex,
     position: item.position,
     title: item.title.slice(0, 240),
     url: item.url,
     originalPublisher: item.originalPublisher?.slice(0, 120) ?? null,
-    text: pageText(item).slice(0, textLimit),
+    text: truncateUtf8(pageText(item), textBytes),
     publishedAt: item.publishedAt,
   };
 }
@@ -74,32 +91,59 @@ function serialize(model: string, items: readonly unknown[]): string {
   });
 }
 
+function interleaveByQueryRank(items: readonly RankedWebResult[]): RankedWebResult[] {
+  const pagesByQuery = new Map<number, RankedWebResult[]>();
+  for (const item of items) {
+    const pages = pagesByQuery.get(item.queryIndex);
+    if (pages === undefined) pagesByQuery.set(item.queryIndex, [item]);
+    else pages.push(item);
+  }
+
+  const orderedBuckets = [...pagesByQuery.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, pages]) => pages.sort((left, right) => (
+      left.position - right.position || left.url.localeCompare(right.url)
+    )));
+
+  const ordered: RankedWebResult[] = [];
+  for (let rank = 0; ; rank += 1) {
+    let added = false;
+    for (const pages of orderedBuckets) {
+      const page = pages[rank];
+      if (page === undefined) continue;
+      ordered.push(page);
+      added = true;
+    }
+    if (!added) return ordered;
+  }
+}
+
 function boundedRequest(
   model: string,
   items: readonly RankedWebResult[],
   maxBytes: number,
 ): { body: string; selection: ContactExtractionResult['selection'] } {
-  const metadataOnly: RankedWebResult[] = [];
+  const selected: RankedWebResult[] = [];
   let request = serialize(model, []);
   if (Buffer.byteLength(request, 'utf8') > maxBytes) {
     throw new ArkInvalidOutputError('INPUT_TOO_LARGE', 'Ark contacts request exceeds byte budget');
   }
-  for (const item of items) {
-    const candidate = [...metadataOnly, item];
-    const serialized = serialize(model, candidate.map(page => compactItem(page, 0)));
-    if (Buffer.byteLength(serialized, 'utf8') > maxBytes) break;
-    metadataOnly.push(item);
+  for (const item of interleaveByQueryRank(items)) {
+    const candidate = [...selected, item];
+    const serialized = serialize(model, candidate.map(page => compactItem(page, MIN_CONTACT_TEXT_BYTES)));
+    if (Buffer.byteLength(serialized, 'utf8') > maxBytes) continue;
+    selected.push(item);
     request = serialized;
   }
-  if (items.length > 0 && metadataOnly.length === 0) {
-    throw new ArkInvalidOutputError('INPUT_TOO_LARGE', 'Ark contacts request cannot fit page metadata');
+  if (items.length > 0 && selected.length === 0) {
+    throw new ArkInvalidOutputError('INPUT_TOO_LARGE', 'Ark contacts request cannot fit useful page context');
   }
 
-  let lower = 0;
-  let upper = 1_500;
+  let lower = MIN_CONTACT_TEXT_BYTES;
+  let upper = MAX_CONTACT_TEXT_BYTES;
   while (lower < upper) {
     const middle = Math.ceil((lower + upper) / 2);
-    const serialized = serialize(model, metadataOnly.map(page => compactItem(page, middle)));
+    const serialized = serialize(model, selected.map(page => compactItem(page, middle)));
     if (Buffer.byteLength(serialized, 'utf8') <= maxBytes) {
       lower = middle;
       request = serialized;
@@ -107,13 +151,13 @@ function boundedRequest(
       upper = middle - 1;
     }
   }
-  const textTruncated = metadataOnly.length < items.length
-    || metadataOnly.some(item => pageText(item).length > lower);
+  const textTruncated = selected.length < items.length
+    || selected.some(item => Buffer.byteLength(pageText(item), 'utf8') > lower);
   return {
     body: request,
     selection: {
       totalPages: items.length,
-      includedPages: metadataOnly.length,
+      includedPages: selected.length,
       textTruncated,
     },
   };
