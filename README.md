@@ -19,6 +19,8 @@ npm start
 
 每位用户使用独立 Bearer Token。明文只在创建时输出一次，服务端 SQLite 只保存 SHA-256 哈希。
 
+Token 命令使用构建后的 `dist/cli/tokens.js`，执行前先运行 `npm run build`；生产镜像已包含该编译产物，不依赖开发依赖 `tsx`。
+
 ```bash
 npm run tokens -- tokens:create --user sales-a
 npm run tokens -- tokens:list
