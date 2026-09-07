@@ -81,7 +81,6 @@ function withoutBatchCapacityGap(bundle: ResearchBundle, selectedCount: number, 
 
 export function planArkBatches(
   bundleInput: ResearchBundle,
-  maxBatches: number,
   requestMaxBytes: number,
   measureBytes: (bundle: ResearchBundle) => number,
 ): ArkBatchPlan {
@@ -91,12 +90,12 @@ export function planArkBatches(
   const batches: ArkPlannedBatch[] = [];
   const unplannedItems: ResearchItem[] = [];
 
-  if (remaining.length === 0 && maxBatches > 0) {
+  if (remaining.length === 0) {
     const selection = compactResearchBundleForArk(bundle, requestMaxBytes, measureBytes);
     batches.push({ bundle: selection.bundle, selection, requestBytes: measureBytes(selection.bundle) });
   }
 
-  while (remaining.length > 0 && batches.length < maxBatches) {
+  while (remaining.length > 0) {
     const remainingBundle = ResearchBundleSchema.parse({ ...bundle, items: remaining });
     const compacted = compactResearchBundleForArk(
       remainingBundle,

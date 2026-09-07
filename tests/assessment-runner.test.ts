@@ -158,7 +158,6 @@ describe('AssessmentRunner', () => {
       ark,
       logger,
       profileCacheTtlDays: 30,
-      maxArkBatches: 8,
       budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 2, total: 18 },
       now: () => NOW,
       ...overrides,
@@ -177,7 +176,6 @@ describe('AssessmentRunner', () => {
     });
     const runtime = setup({
       opportunityEvaluator,
-      maxArkBatches: 8,
       searchClient: distinctSearchClient(),
       budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 16, total: 32 },
     });
@@ -224,7 +222,6 @@ describe('AssessmentRunner', () => {
 
   it('continues after one Ark batch fails twice and marks the completed report partial', async () => {
     const runtime = setup({
-      maxArkBatches: 8,
       searchClient: distinctSearchClient(),
       budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 16, total: 32 },
     });
@@ -254,7 +251,6 @@ describe('AssessmentRunner', () => {
 
   it('fails the assessment when every planned Ark batch fails', async () => {
     const runtime = setup({
-      maxArkBatches: 8,
       searchClient: distinctSearchClient(),
       budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 6, total: 22 },
     });
@@ -279,7 +275,6 @@ describe('AssessmentRunner', () => {
   it('records later batches as skipped and unprocessed after Ark budget exhaustion', async () => {
     const lines: string[] = [];
     const runtime = setup({
-      maxArkBatches: 8,
       searchClient: distinctSearchClient(),
       logger: new JsonlLogger({ write: line => lines.push(line) }, () => NOW),
       budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 1, total: 17 },

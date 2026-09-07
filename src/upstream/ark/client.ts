@@ -78,11 +78,10 @@ export class ArkEvidenceService {
     this.fetchFn = options.fetchFn ?? fetch;
   }
 
-  planBatches(bundle: ResearchBundle, maxBatches: number): ArkBatchPlan {
+  planBatches(bundle: ResearchBundle): ArkBatchPlan {
     const requestMaxBytes = this.options.requestMaxBytes ?? ARK_REQUEST_MAX_BYTES;
     return planArkBatches(
       bundle,
-      maxBatches,
       requestMaxBytes,
       candidate => Buffer.byteLength(serializeArkRequest(this.options.model, candidate), 'utf8'),
     );

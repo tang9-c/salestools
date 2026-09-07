@@ -50,7 +50,7 @@ interface SearchClient {
 }
 
 interface ArkSource {
-  planBatches(bundle: ResearchBundle, maxBatches: number): ArkBatchPlan;
+  planBatches(bundle: ResearchBundle): ArkBatchPlan;
   extractWithAudit(bundle: ResearchBundle): Promise<ArkEvidenceExtraction>;
 }
 
@@ -63,7 +63,6 @@ export interface AssessmentRunnerOptions {
   logger: JsonlLogger;
   profileCacheTtlDays: number;
   budgetLimits: CallBudgetLimits;
-  maxArkBatches: number;
   now?: () => Date;
   opportunityEvaluator?: typeof evaluateOpportunities;
   reportModelBuilder?: typeof buildReportModel;
@@ -134,10 +133,7 @@ export class AssessmentRunner {
       if (this.stopIfAborted(task)) return;
 
       const budget = new CallBudget(this.options.budgetLimits, {
-        reserveArkCalls: Math.min(
-          this.options.maxArkBatches * 2,
-          this.options.budgetLimits.ark,
-        ),
+        reserveArkCalls: this.options.budgetLimits.ark,
       });
       const retryOptions = this.retryOptions(task);
       const qccPromise = this.options.qccResearch
@@ -155,7 +151,7 @@ export class AssessmentRunner {
         collectedAt: this.now().toISOString(),
       });
 
-      const plan = this.options.ark.planBatches(research, this.options.maxArkBatches);
+      const plan = this.options.ark.planBatches(research);
       const successful: SuccessfulArkBatch[] = [];
       const failedEvidenceIds: string[] = [];
       for (const [index, batch] of plan.batches.entries()) {

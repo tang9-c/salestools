@@ -149,7 +149,6 @@ export function createApplication(
     ark,
     logger,
     profileCacheTtlDays: config.profileCacheTtlDays,
-    maxArkBatches: config.maxArkBatches,
     budgetLimits: {
       qcc: config.maxQccCalls,
       doubaoSearch: config.maxSearchCalls,

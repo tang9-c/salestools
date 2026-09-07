@@ -80,7 +80,7 @@ describe('planArkBatches', () => {
       qcc('qcc-no-url-2'),
     ]);
 
-    const plan = planArkBatches(input, 8, 30_000, serializedBytes);
+    const plan = planArkBatches(input, 30_000, serializedBytes);
     const planned = plan.batches.flatMap(batch => batch.bundle.items);
 
     expect(plan.originalCount).toBe(4);
@@ -93,7 +93,7 @@ describe('planArkBatches', () => {
     expect(planned.filter(entry => entry.source === 'qcc')).toHaveLength(2);
   });
 
-  it('accounts for all ninety-two eligible items across at most eight byte-bounded requests', () => {
+  it('plans all ninety-two eligible items even when they require more than eight byte-bounded requests', () => {
     const input = bundle(Array.from({ length: 92 }, (_, index) => item(`e-${index + 1}`, {
       title: `资料 e-${index + 1}`,
       url: `https://publisher-${index + 1}.example/article`,
@@ -103,17 +103,13 @@ describe('planArkBatches', () => {
       content: index % 3 === 0 ? '招聘机械工程师，要求使用 Creo 进行参数化建模。' : null,
     })));
 
-    const first = planArkBatches(input, 8, 12_288, serializedBytes);
-    const second = planArkBatches(input, 8, 12_288, serializedBytes);
+    const first = planArkBatches(input, 12_288, serializedBytes);
+    const second = planArkBatches(input, 12_288, serializedBytes);
     const plannedIds = first.batches.flatMap(batch => batch.bundle.items.map(entry => entry.evidenceId));
 
-    expect(first.batches.length).toBeGreaterThan(1);
-    expect(first.batches.length).toBeLessThanOrEqual(8);
-    expect(new Set(plannedIds).size + first.unplannedItems.length).toBe(first.candidateCount);
-    expect(new Set([
-      ...plannedIds,
-      ...first.unplannedItems.map(entry => entry.evidenceId),
-    ]).size).toBe(first.candidateCount);
+    expect(first.batches.length).toBeGreaterThan(8);
+    expect(new Set(plannedIds).size).toBe(first.candidateCount);
+    expect(first.unplannedItems).toEqual([]);
     expect(first.batches.map(batch => batch.bundle.items.map(entry => entry.evidenceId)))
       .toEqual(second.batches.map(batch => batch.bundle.items.map(entry => entry.evidenceId)));
     for (const batch of first.batches) {
@@ -130,7 +126,7 @@ describe('planArkBatches', () => {
     });
     const fitting = item('fitting');
 
-    const plan = planArkBatches(bundle([tooLarge, fitting]), 8, 12_288, serializedBytes);
+    const plan = planArkBatches(bundle([tooLarge, fitting]), 12_288, serializedBytes);
 
     expect(plan.batches).toHaveLength(1);
     expect(plan.batches[0]?.bundle.items.map(entry => entry.evidenceId)).toEqual(['fitting']);

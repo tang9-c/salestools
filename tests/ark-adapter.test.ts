@@ -428,7 +428,7 @@ describe('ArkEvidenceService', () => {
     };
     const service = client(vi.fn(), 12_288, `ep-${'long-model-name-'.repeat(40)}`);
 
-    const plan = service.planBatches(expanded, 8);
+    const plan = service.planBatches(expanded);
 
     expect(plan.batches.length).toBeGreaterThan(1);
     expect(plan.batches.every(batch => batch.requestBytes <= 12_288)).toBe(true);

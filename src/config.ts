@@ -4,7 +4,7 @@ const CONFIG_KEYS = [
   'PORT', 'PUBLIC_MCP_HOST', 'ALLOWED_ORIGINS', 'SQLITE_PATH',
   'QCC_MCP_COMPANY_URL', 'QCC_MCP_RISK_URL', 'QCC_MCP_IPR_URL', 'QCC_MCP_OPERATION_URL', 'QCC_API_KEY',
   'DOUBAO_SEARCH_API_URL', 'DOUBAO_SEARCH_API_KEY', 'ARK_API_URL', 'ARK_MODEL', 'ARK_CREDENTIAL',
-  'ARK_REQUEST_MAX_BYTES', 'MAX_QCC_CALLS', 'MAX_SEARCH_CALLS', 'MAX_ARK_BATCHES', 'MAX_ARK_CALLS', 'MAX_TOTAL_UPSTREAM_CALLS',
+  'ARK_REQUEST_MAX_BYTES', 'MAX_QCC_CALLS', 'MAX_SEARCH_CALLS', 'MAX_ARK_CALLS', 'MAX_TOTAL_UPSTREAM_CALLS',
   'PROFILE_CACHE_TTL_DAYS', 'ASSESSMENT_CACHE_TTL_DAYS', 'MAX_CONCURRENT_ASSESSMENTS',
 ] as const;
 
@@ -52,7 +52,6 @@ const configSchema = z.object({
   ARK_REQUEST_MAX_BYTES: positiveInteger.min(minimumArkRequestBytes).default(12_288),
   MAX_QCC_CALLS: positiveInteger.default(8),
   MAX_SEARCH_CALLS: positiveInteger.default(8),
-  MAX_ARK_BATCHES: positiveInteger.default(8),
   MAX_ARK_CALLS: positiveInteger.default(16),
   MAX_TOTAL_UPSTREAM_CALLS: positiveInteger.default(32),
   PROFILE_CACHE_TTL_DAYS: positiveInteger.default(30),
@@ -88,7 +87,6 @@ export type AppConfig = ParsedConfig & {
   arkRequestMaxBytes: number;
   maxQccCalls: number;
   maxSearchCalls: number;
-  maxArkBatches: number;
   maxArkCalls: number;
   maxTotalUpstreamCalls: number;
   profileCacheTtlDays: number;
@@ -128,7 +126,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     arkRequestMaxBytes: parsed.data.ARK_REQUEST_MAX_BYTES,
     maxQccCalls: parsed.data.MAX_QCC_CALLS,
     maxSearchCalls: parsed.data.MAX_SEARCH_CALLS,
-    maxArkBatches: parsed.data.MAX_ARK_BATCHES,
     maxArkCalls: parsed.data.MAX_ARK_CALLS,
     maxTotalUpstreamCalls: parsed.data.MAX_TOTAL_UPSTREAM_CALLS,
     profileCacheTtlDays: parsed.data.PROFILE_CACHE_TTL_DAYS,

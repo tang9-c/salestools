@@ -46,7 +46,6 @@ describe('loadConfig', () => {
     expect(loadConfig(valid as NodeJS.ProcessEnv)).toMatchObject({
       maxQccCalls: 8,
       maxSearchCalls: 8,
-      maxArkBatches: 8,
       maxArkCalls: 16,
       arkRequestMaxBytes: 12_288,
       maxTotalUpstreamCalls: 32,
