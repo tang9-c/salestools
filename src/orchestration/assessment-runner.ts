@@ -181,6 +181,12 @@ export class AssessmentRunner {
             categoryCounts: extracted.value.selection.categoryCounts,
             researchBytes: extracted.value.selection.researchBytes,
             requestBytes: extracted.value.requestBytes,
+            batchCount: 1,
+            successfulBatchCount: 1,
+            failedBatchCount: 0,
+            processedCount: extracted.value.selection.selectedCount,
+            unprocessedCount: extracted.value.selection.excludedCount,
+            deduplicatedCount: 0,
           },
           opportunities: assessment.products.map(product => ({
             product: product.product,

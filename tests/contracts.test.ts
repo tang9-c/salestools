@@ -108,6 +108,34 @@ const researchBundle = {
 };
 
 describe('assessment result audit', () => {
+  it('defaults historical selection audits to one successful batch', () => {
+    const parsed = AssessmentResultAuditSchema.parse(resultAudit);
+
+    expect(parsed.evidenceSelection).toMatchObject({
+      batchCount: 1,
+      successfulBatchCount: 1,
+      failedBatchCount: 0,
+      processedCount: 2,
+      unprocessedCount: 1,
+      deduplicatedCount: 0,
+    });
+  });
+
+  it('rejects inconsistent batch processing counts', () => {
+    expect(AssessmentResultAuditSchema.safeParse({
+      ...resultAudit,
+      evidenceSelection: {
+        ...resultAudit.evidenceSelection,
+        batchCount: 2,
+        successfulBatchCount: 2,
+        failedBatchCount: 1,
+        processedCount: 2,
+        unprocessedCount: 1,
+        deduplicatedCount: 0,
+      },
+    }).success).toBe(false);
+  });
+
   it.each([
     ['duplicate selected evidence IDs', {
       selectedEvidenceIds: ['ev-1', 'ev-1'],

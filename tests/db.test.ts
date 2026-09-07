@@ -38,6 +38,12 @@ const resultAudit = {
     categoryCounts: { industry: 1, technology: 1, timing: 0, capacity: 0 },
     researchBytes: 2_048,
     requestBytes: 4_096,
+    batchCount: 1,
+    successfulBatchCount: 1,
+    failedBatchCount: 0,
+    processedCount: 2,
+    unprocessedCount: 1,
+    deduplicatedCount: 0,
   },
   opportunities: [
     { product: 'windchill' as const, level: '高' as const, evidenceIds: ['qcc-profile'] },

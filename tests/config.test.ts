@@ -46,9 +46,10 @@ describe('loadConfig', () => {
     expect(loadConfig(valid as NodeJS.ProcessEnv)).toMatchObject({
       maxQccCalls: 8,
       maxSearchCalls: 8,
-      maxArkCalls: 2,
+      maxArkBatches: 8,
+      maxArkCalls: 16,
       arkRequestMaxBytes: 12_288,
-      maxTotalUpstreamCalls: 18,
+      maxTotalUpstreamCalls: 32,
       profileCacheTtlDays: 30,
       assessmentCacheTtlDays: 30,
       maxConcurrentAssessments: 1,
@@ -141,6 +142,16 @@ describe('loadConfig', () => {
       ...valid,
       MAX_ARK_CALLS: '2',
       MAX_TOTAL_UPSTREAM_CALLS: '1',
+    } as NodeJS.ProcessEnv)).toThrow('Invalid configuration: MAX_TOTAL_UPSTREAM_CALLS');
+  });
+
+  it('rejects a total upstream limit below the configured source budgets', () => {
+    expect(() => loadConfig({
+      ...valid,
+      MAX_QCC_CALLS: '8',
+      MAX_SEARCH_CALLS: '8',
+      MAX_ARK_CALLS: '16',
+      MAX_TOTAL_UPSTREAM_CALLS: '31',
     } as NodeJS.ProcessEnv)).toThrow('Invalid configuration: MAX_TOTAL_UPSTREAM_CALLS');
   });
 

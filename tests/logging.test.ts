@@ -47,6 +47,12 @@ describe('JsonlLogger', () => {
       original_evidence_count: 3,
       selected_evidence_count: 2,
       excluded_evidence_count: 1,
+      batch_count: 1,
+      successful_batch_count: 1,
+      failed_batch_count: 0,
+      processed_evidence_count: 2,
+      unprocessed_evidence_count: 1,
+      deduplicated_evidence_count: 0,
       category_counts: { industry: 1, technology: 1, timing: 0, capacity: 0 },
       research_bytes: 2_048,
       request_bytes: 4_096,
@@ -93,6 +99,37 @@ describe('JsonlLogger', () => {
       error: { code: 'REMOTE', message: 'Authorization: [REDACTED]' },
     });
     expect(lines[0]).not.toMatch(/hidden-token|qcc-secret|raw-upstream|private-report/);
+  });
+
+  it('attributes Ark attempts to a batch without logging evidence content', () => {
+    const lines: string[] = [];
+    const logger = new JsonlLogger({ write: line => lines.push(line) }, () => new Date('2026-08-30T00:00:00.000Z'));
+
+    logger.logUpstreamAttempt({
+      assessmentId: 'assessment-1',
+      userId: 'sales-1',
+      source: 'ark',
+      durationMs: 18,
+      success: true,
+      attempt: 1,
+      error: null,
+      batchIndex: 2,
+      content: 'private evidence body',
+    } as never);
+
+    expect(JSON.parse(lines[0]!)).toEqual({
+      event: 'upstream_attempt',
+      timestamp: '2026-08-30T00:00:00.000Z',
+      assessment_id: 'assessment-1',
+      user_id: 'sales-1',
+      source: 'ark',
+      duration_ms: 18,
+      success: true,
+      attempt: 1,
+      batch_index: 2,
+      error: null,
+    });
+    expect(lines[0]).not.toContain('private evidence body');
   });
 
   it('writes one JSON line for each real retry attempt', async () => {

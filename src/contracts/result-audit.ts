@@ -9,7 +9,7 @@ const EvidenceCategoryCountsSchema = z.object({
   capacity: z.number().int().nonnegative(),
 }).strict();
 
-const EvidenceSelectionAuditSchema = z.object({
+const EvidenceSelectionAuditInputSchema = z.object({
   selectedEvidenceIds: z.array(z.string()),
   originalCount: z.number().int().nonnegative(),
   selectedCount: z.number().int().nonnegative(),
@@ -17,7 +17,23 @@ const EvidenceSelectionAuditSchema = z.object({
   categoryCounts: EvidenceCategoryCountsSchema,
   researchBytes: z.number().int().nonnegative(),
   requestBytes: z.number().int().nonnegative(),
-}).strict().superRefine((selection, context) => {
+  batchCount: z.number().int().nonnegative().optional(),
+  successfulBatchCount: z.number().int().nonnegative().optional(),
+  failedBatchCount: z.number().int().nonnegative().optional(),
+  processedCount: z.number().int().nonnegative().optional(),
+  unprocessedCount: z.number().int().nonnegative().optional(),
+  deduplicatedCount: z.number().int().nonnegative().optional(),
+}).strict();
+
+const EvidenceSelectionAuditSchema = EvidenceSelectionAuditInputSchema.transform(selection => ({
+  ...selection,
+  batchCount: selection.batchCount ?? 1,
+  successfulBatchCount: selection.successfulBatchCount ?? 1,
+  failedBatchCount: selection.failedBatchCount ?? 0,
+  processedCount: selection.processedCount ?? selection.selectedCount,
+  unprocessedCount: selection.unprocessedCount ?? selection.excludedCount,
+  deduplicatedCount: selection.deduplicatedCount ?? 0,
+})).superRefine((selection, context) => {
   if (new Set(selection.selectedEvidenceIds).size !== selection.selectedEvidenceIds.length) {
     context.addIssue({ code: 'custom', message: 'selected evidence IDs must be unique' });
   }
@@ -34,6 +50,16 @@ const EvidenceSelectionAuditSchema = z.object({
   }
   if (selection.researchBytes > selection.requestBytes) {
     context.addIssue({ code: 'custom', message: 'research bytes cannot exceed request bytes' });
+  }
+  if (selection.successfulBatchCount + selection.failedBatchCount !== selection.batchCount) {
+    context.addIssue({ code: 'custom', message: 'successful and failed batches must match batch count' });
+  }
+  if (selection.processedCount + selection.unprocessedCount + selection.deduplicatedCount
+    !== selection.originalCount) {
+    context.addIssue({ code: 'custom', message: 'processed, unprocessed, and deduplicated counts must match original count' });
+  }
+  if (selection.processedCount > selection.selectedCount) {
+    context.addIssue({ code: 'custom', message: 'processed count cannot exceed selected count' });
   }
 });
 

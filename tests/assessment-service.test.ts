@@ -23,6 +23,8 @@ const RESULT_AUDIT: AssessmentResultAudit = {
     selectedEvidenceIds: [], originalCount: 0, selectedCount: 0, excludedCount: 0,
     categoryCounts: { industry: 0, technology: 0, timing: 0, capacity: 0 },
     researchBytes: 0, requestBytes: 0,
+    batchCount: 1, successfulBatchCount: 1, failedBatchCount: 0,
+    processedCount: 0, unprocessedCount: 0, deduplicatedCount: 0,
   },
   opportunities: PRODUCT_KEYS.map(product => ({ product, level: '待核实' as const, evidenceIds: [] })),
 };

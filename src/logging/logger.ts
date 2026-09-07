@@ -11,6 +11,7 @@ export interface LogSink {
 export type UpstreamAttemptLog = RetryAttemptEvent & Readonly<{
   assessmentId: string;
   userId: string;
+  batchIndex?: number;
 }>;
 
 export type AssessmentDecisionLog = Readonly<{
@@ -47,6 +48,12 @@ export class JsonlLogger {
       original_evidence_count: audit.evidenceSelection.originalCount,
       selected_evidence_count: audit.evidenceSelection.selectedCount,
       excluded_evidence_count: audit.evidenceSelection.excludedCount,
+      batch_count: audit.evidenceSelection.batchCount,
+      successful_batch_count: audit.evidenceSelection.successfulBatchCount,
+      failed_batch_count: audit.evidenceSelection.failedBatchCount,
+      processed_evidence_count: audit.evidenceSelection.processedCount,
+      unprocessed_evidence_count: audit.evidenceSelection.unprocessedCount,
+      deduplicated_evidence_count: audit.evidenceSelection.deduplicatedCount,
       category_counts: audit.evidenceSelection.categoryCounts,
       research_bytes: audit.evidenceSelection.researchBytes,
       request_bytes: audit.evidenceSelection.requestBytes,
@@ -68,6 +75,7 @@ export class JsonlLogger {
       duration_ms: event.durationMs,
       success: event.success,
       attempt: event.attempt,
+      ...(event.batchIndex === undefined ? {} : { batch_index: event.batchIndex }),
       error: event.error === null ? null : {
         code: event.error.code,
         message: safeMessage(event.error.message),
