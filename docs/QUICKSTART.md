@@ -119,6 +119,8 @@ Codex 应调用 `submit_assessment`，输入等价于：
 - `processing`：任务已提交，等待资料采集和整理。
 - `completed`：命中 30 天内的已完成报告，通常会带 `cache_hit: true`。
 
+新任务返回的 `estimated_minutes` 为 `5-40`，这是按真实 Ark 分批耗时给出的宽区间，不是 SLA，也不包含前方其他任务的排队时间。
+
 如果只是想读取已有报告，不要反复提交同一任务。
 
 ## 6. 轮询评估状态

@@ -90,7 +90,7 @@ describe('AssessmentService', () => {
     const first = await service.submit(input, COMPANY.requestedBy);
     const duplicate = await service.submit(input, 'sales-2');
 
-    expect(first).toMatchObject({ status: 'processing', cacheHit: false, estimatedMinutes: '5-10' });
+    expect(first).toMatchObject({ status: 'processing', cacheHit: false, estimatedMinutes: '5-40' });
     expect(duplicate).toEqual(first);
     expect(enqueued).toEqual([first.assessmentId]);
     expect(await service.status({ assessmentId: first.assessmentId })).toMatchObject({ status: 'processing' });

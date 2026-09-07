@@ -67,7 +67,7 @@ export type CompanyProfileServiceOutput = {
 export type SubmitAssessmentServiceOutput = {
   assessmentId: string;
   status: 'processing';
-  estimatedMinutes: '5-10';
+  estimatedMinutes: '5-40';
   cacheHit: false;
 } | {
   assessmentId: string;

@@ -64,7 +64,7 @@ export const CompanyProfileOutputSchema = z.union([
 const SubmitAssessmentProcessingSchema = z.object({
   assessment_id: z.uuid(),
   status: z.literal('processing'),
-  estimated_minutes: z.literal('5-10'),
+  estimated_minutes: z.literal('5-40'),
   cache_hit: z.literal(false),
 }).strict();
 

@@ -64,7 +64,16 @@ function isMaterial(item: ResearchItem): boolean {
   if (item.source !== 'qcc') return false;
   const summary = item.summary ?? '';
   const content = item.content?.trim() ?? '';
-  return summary.includes('待模型整理') || content.startsWith('{') || content.startsWith('[');
+  if (summary.includes('待模型整理')) return true;
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    return typeof parsed === 'object'
+      && parsed !== null
+      && !Array.isArray(parsed)
+      && Object.hasOwn(parsed, 'material');
+  } catch {
+    return false;
+  }
 }
 
 function usedEvidenceIds(bundle: EvidenceBundle): Set<string> {

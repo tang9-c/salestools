@@ -252,6 +252,63 @@ describe('AssessmentRunner', () => {
     expect(stored.reportMarkdown).toContain('Ark 批次处理失败：1/3');
   });
 
+  it('fails the assessment when every planned Ark batch fails', async () => {
+    const runtime = setup({
+      maxArkBatches: 8,
+      searchClient: distinctSearchClient(),
+      budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 6, total: 22 },
+    });
+    runtime.dependencies.ark = {
+      planBatches: vi.fn((bundle: ResearchBundle) => batchPlan(
+        bundle,
+        [[bundle.items[0]!], [bundle.items[1]!], bundle.items.slice(2)],
+      )),
+      extractWithAudit: vi.fn(async () => {
+        throw new UpstreamError('ark', 'NETWORK_ERROR', 'down');
+      }),
+    };
+
+    await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
+
+    expect(runtime.dependencies.ark.extractWithAudit).toHaveBeenCalledTimes(6);
+    expect(runtime.assessments.get(runtime.task.assessmentId)).toMatchObject({
+      status: 'failed', errorMessage: '模型事实整理不可用', reportMarkdown: null,
+    });
+  });
+
+  it('records later batches as skipped and unprocessed after Ark budget exhaustion', async () => {
+    const lines: string[] = [];
+    const runtime = setup({
+      maxArkBatches: 8,
+      searchClient: distinctSearchClient(),
+      logger: new JsonlLogger({ write: line => lines.push(line) }, () => NOW),
+      budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 1, total: 17 },
+    });
+    runtime.dependencies.ark = {
+      planBatches: vi.fn((bundle: ResearchBundle) => batchPlan(
+        bundle,
+        [[bundle.items[0]!], [bundle.items[1]!], bundle.items.slice(2)],
+      )),
+      extractWithAudit: vi.fn(async (bundle: ResearchBundle) => auditedExtraction(bundle)),
+    };
+
+    await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
+
+    const stored = runtime.assessments.get(runtime.task.assessmentId)!;
+    expect(runtime.dependencies.ark.extractWithAudit).toHaveBeenCalledTimes(1);
+    expect(stored).toMatchObject({
+      status: 'completed', sourceStatus: { ark: 'partial' },
+      resultAudit: { evidenceSelection: {
+        batchCount: 3, successfulBatchCount: 1, failedBatchCount: 2,
+        processedCount: 1, unprocessedCount: 8,
+      } },
+    });
+    const skipped = lines.map(line => JSON.parse(line))
+      .filter(line => line.event === 'ark_batch_skipped');
+    expect(skipped.map(line => line.batch_index)).toEqual([2, 3]);
+    expect(skipped.every(line => line.batch_item_count > 0 && line.request_bytes > 0)).toBe(true);
+  });
+
   it.each([
     ['QCC-only failure', collection('failed'), false, 'failed', 'completed'],
     ['search-only failure', collection('completed', [item('qcc', 'profile')]), true, 'completed', 'failed'],

@@ -62,6 +62,8 @@ codex mcp add salestools \
 
 `MAX_ARK_CALLS` 默认 `16`，统计 HTTP 尝试次数而不是批次数，因此可覆盖 8 批各一次重试；`MAX_TOTAL_UPSTREAM_CALLS` 默认 `32`，必须至少覆盖 QCC、搜索和 Ark 三项上限之和。主动下调 Ark 或总调用上限可能得到 `ark=partial` 的报告。各批次在发送前都会按最终模型名称和请求信封重新核对字节数。
 
+`submit_assessment` 对新任务返回 `estimated_minutes=5-40`。这是基于真实串行分批运行修正后的经验区间，不是 SLA，也不包含队列等待；批次越多、模型端点越慢，越接近区间上沿。
+
 每份已完成报告都显示客户摘要、完整七产品机会矩阵、关键证据、销售建议（无推荐时显示“暂不推荐”）、风险与分层缺口以及来源状态。`recommended_product` 为 `null` 不会隐藏这七项判断。
 
 SQLite 的 `assessments.result_json` 只保存可审计的派生结果：有证据支持的自由文本行业标签及其证据 ID、七项产品机会等级与证据 ID、入选证据 ID，以及原始、去重、已处理、未处理、批次成功/失败数量和各批字节数汇总。行业标签只用于报告展示，不参与机会等级、推荐产品或置信度。`recommended_product` 与 `overall_opportunity` 仍分别保存于 `assessments` 的独立列，不属于 `result_json`。`result_json` 不保存研究正文、网页正文、原始上游响应或凭据；MCP 响应仍保持既有精简契约。

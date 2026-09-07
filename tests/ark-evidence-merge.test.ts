@@ -144,4 +144,19 @@ describe('mergeArkEvidence', () => {
     expect(merged.gaps).toContain('材料未完成模型整理（容量上限）：unplanned');
     expect(merged.gaps.some(gap => gap.endsWith('：cited'))).toBe(false);
   });
+
+  it('does not treat an ordinary structured QCC record as pending material', () => {
+    const structured = item('structured');
+    structured.summary = '企业风险扫描结果';
+    structured.content = '{"riskCount":2,"status":"正常"}';
+    const original = research([structured]);
+
+    const merged = mergeArkEvidence({
+      original,
+      successful: [{ input: original, evidence: evidence(original) }],
+      failedEvidenceIds: [], unplannedEvidenceIds: [],
+    });
+
+    expect(merged.gaps).not.toContain('模型未从该材料提炼出可采信事实：structured');
+  });
 });

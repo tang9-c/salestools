@@ -46,10 +46,10 @@ const expectedProfile = {
   cache_hit: false,
 };
 const submit: SubmitAssessmentServiceOutput = {
-  assessmentId, status: 'processing', estimatedMinutes: '5-10', cacheHit: false,
+  assessmentId, status: 'processing', estimatedMinutes: '5-40', cacheHit: false,
 };
 const expectedSubmit = {
-  assessment_id: assessmentId, status: 'processing', estimated_minutes: '5-10', cache_hit: false,
+  assessment_id: assessmentId, status: 'processing', estimated_minutes: '5-40', cache_hit: false,
 };
 const status: AssessmentStatusServiceOutput = {
   assessmentId, status: 'processing', message: '正在处理',

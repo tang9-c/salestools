@@ -163,12 +163,26 @@ export class AssessmentRunner {
           'ark',
           budget,
           () => this.options.ark.extractWithAudit(batch.bundle),
-          this.retryOptions(task, index + 1),
+          this.retryOptions(task, index + 1, batch.bundle.items.length, batch.requestBytes),
         );
         if (this.stopIfAborted(task)) return;
         if (extracted.status === 'completed') {
           successful.push({ input: batch.bundle, evidence: extracted.value.evidence });
         } else {
+          if (extracted.error.code === 'BUDGET_EXHAUSTED') {
+            try {
+              this.options.logger.logArkBatchSkipped({
+                assessmentId: task.assessmentId,
+                userId: task.requestedBy,
+                batchIndex: index + 1,
+                batchItemCount: batch.bundle.items.length,
+                requestBytes: batch.requestBytes,
+                reason: 'BUDGET_EXHAUSTED',
+              });
+            } catch {
+              // Logging must not change assessment execution.
+            }
+          }
           failedEvidenceIds.push(...batch.bundle.items.map(item => item.evidenceId));
         }
       }
@@ -314,12 +328,19 @@ export class AssessmentRunner {
     };
   }
 
-  private retryOptions(task: AssessmentRecord, batchIndex?: number): RetryOptions {
+  private retryOptions(
+    task: AssessmentRecord,
+    batchIndex?: number,
+    batchItemCount?: number,
+    requestBytes?: number,
+  ): RetryOptions {
     return {
       onAttempt: event => this.options.logger.logUpstreamAttempt({
         assessmentId: task.assessmentId,
         userId: task.requestedBy,
         batchIndex,
+        batchItemCount,
+        requestBytes,
         ...event,
       }),
     };

@@ -469,13 +469,13 @@ describe('MCP output unions', () => {
 
   it('freezes the two and only two submit_assessment variants', () => {
     expect(SubmitAssessmentOutputSchema.safeParse({
-      assessment_id: assessmentId, status: 'processing', estimated_minutes: '5-10', cache_hit: false,
+      assessment_id: assessmentId, status: 'processing', estimated_minutes: '5-40', cache_hit: false,
     }).success).toBe(true);
     expect(SubmitAssessmentOutputSchema.safeParse({
       assessment_id: assessmentId, status: 'completed', cache_hit: true, cached_at: timestamp,
     }).success).toBe(true);
     expect(SubmitAssessmentOutputSchema.safeParse({
-      assessment_id: assessmentId, status: 'processing', estimated_minutes: '5-10', cache_hit: true,
+      assessment_id: assessmentId, status: 'processing', estimated_minutes: '5-40', cache_hit: true,
     }).success).toBe(false);
     expect(SubmitAssessmentOutputSchema.safeParse({
       assessment_id: assessmentId, status: 'failed', cache_hit: false,

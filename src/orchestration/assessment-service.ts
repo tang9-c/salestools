@@ -70,7 +70,7 @@ export class AssessmentService {
     return {
       assessmentId: result.record.assessmentId,
       status: 'processing' as const,
-      estimatedMinutes: '5-10' as const,
+      estimatedMinutes: '5-40' as const,
       cacheHit: false as const,
     };
   }

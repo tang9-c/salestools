@@ -22,7 +22,7 @@ function noOpServices(): McpServices {
       sourceStatus: 'failed', candidates: [], basicProfile: null, cacheHit: false, message: 'unused',
     }),
     submitAssessment: async () => ({
-      assessmentId: processing.assessmentId, status: 'processing', estimatedMinutes: '5-10', cacheHit: false,
+      assessmentId: processing.assessmentId, status: 'processing', estimatedMinutes: '5-40', cacheHit: false,
     }),
     getAssessmentStatus: async () => processing,
     getAssessmentReport: async () => processing,
@@ -121,7 +121,7 @@ describe('MCP HTTP security boundary', () => {
           return {
             assessmentId: processing.assessmentId,
             status: 'processing',
-            estimatedMinutes: '5-10',
+            estimatedMinutes: '5-40',
             cacheHit: false,
           };
         },

@@ -114,6 +114,8 @@ describe('JsonlLogger', () => {
       attempt: 1,
       error: null,
       batchIndex: 2,
+      batchItemCount: 7,
+      requestBytes: 12_001,
       content: 'private evidence body',
     } as never);
 
@@ -127,9 +129,27 @@ describe('JsonlLogger', () => {
       success: true,
       attempt: 1,
       batch_index: 2,
+      batch_item_count: 7,
+      request_bytes: 12_001,
       error: null,
     });
     expect(lines[0]).not.toContain('private evidence body');
+  });
+
+  it('records an Ark batch skipped before HTTP because its call budget is exhausted', () => {
+    const lines: string[] = [];
+    const logger = new JsonlLogger({ write: line => lines.push(line) }, () => new Date('2026-08-30T00:00:00.000Z'));
+
+    logger.logArkBatchSkipped({
+      assessmentId: 'assessment-1', userId: 'sales-1', batchIndex: 3,
+      batchItemCount: 6, requestBytes: 11_900, reason: 'BUDGET_EXHAUSTED',
+    });
+
+    expect(JSON.parse(lines[0]!)).toEqual({
+      event: 'ark_batch_skipped', timestamp: '2026-08-30T00:00:00.000Z',
+      assessment_id: 'assessment-1', user_id: 'sales-1', batch_index: 3,
+      batch_item_count: 6, request_bytes: 11_900, reason: 'BUDGET_EXHAUSTED',
+    });
   });
 
   it('writes one JSON line for each real retry attempt', async () => {

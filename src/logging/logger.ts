@@ -12,6 +12,17 @@ export type UpstreamAttemptLog = RetryAttemptEvent & Readonly<{
   assessmentId: string;
   userId: string;
   batchIndex?: number;
+  batchItemCount?: number;
+  requestBytes?: number;
+}>;
+
+export type ArkBatchSkippedLog = Readonly<{
+  assessmentId: string;
+  userId: string;
+  batchIndex: number;
+  batchItemCount: number;
+  requestBytes: number;
+  reason: 'BUDGET_EXHAUSTED';
 }>;
 
 export type AssessmentDecisionLog = Readonly<{
@@ -76,12 +87,27 @@ export class JsonlLogger {
       success: event.success,
       attempt: event.attempt,
       ...(event.batchIndex === undefined ? {} : { batch_index: event.batchIndex }),
+      ...(event.batchItemCount === undefined ? {} : { batch_item_count: event.batchItemCount }),
+      ...(event.requestBytes === undefined ? {} : { request_bytes: event.requestBytes }),
       error: event.error === null ? null : {
         code: event.error.code,
         message: safeMessage(event.error.message),
       },
     };
     this.sink.write(`${JSON.stringify(line)}\n`);
+  }
+
+  logArkBatchSkipped(event: ArkBatchSkippedLog): void {
+    this.sink.write(`${JSON.stringify({
+      event: 'ark_batch_skipped',
+      timestamp: this.now().toISOString(),
+      assessment_id: event.assessmentId,
+      user_id: event.userId,
+      batch_index: event.batchIndex,
+      batch_item_count: event.batchItemCount,
+      request_bytes: event.requestBytes,
+      reason: event.reason,
+    })}\n`);
   }
 
   logContactCacheError(event: {

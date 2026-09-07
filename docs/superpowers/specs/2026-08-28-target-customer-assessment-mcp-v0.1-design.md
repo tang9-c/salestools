@@ -4,7 +4,7 @@
 
 部署一个中国大陆云上的远程 MCP 服务。
 
-用户在 Codex 中输入企业名称，确认法定主体后提交体检任务。正常单任务通常在 5–10 分钟内获得一份中文 Markdown 报告；该时间是经验预估，不是 SLA，排队时可能更久。
+用户在 Codex 中输入企业名称，确认法定主体后提交体检任务。单任务返回 5–40 分钟的经验区间；实际时间受 Ark 批次数、单批延迟和队列等待影响，不构成 SLA。
 
 首版只验证：
 
@@ -193,7 +193,7 @@ Token 仅用于：
 {
   "assessment_id": "uuid",
   "status": "processing",
-  "estimated_minutes": "5-10",
+  "estimated_minutes": "5-40",
   "cache_hit": false
 }
 ```
