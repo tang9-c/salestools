@@ -415,6 +415,25 @@ describe('ARK_SYSTEM_PROMPT', () => {
 });
 
 describe('ArkEvidenceService', () => {
+  it('plans requests using the configured model name in the exact byte measurement', () => {
+    const research = researchBundle();
+    const expanded: ResearchBundle = {
+      ...research,
+      items: Array.from({ length: 30 }, (_, index) => ({
+        ...research.items[0]!,
+        evidenceId: `long-model-${index}`,
+        url: `https://publisher-${index}.example/evidence`,
+        originalDomain: `publisher-${index}.example`,
+      })),
+    };
+    const service = client(vi.fn(), 12_288, `ep-${'long-model-name-'.repeat(40)}`);
+
+    const plan = service.planBatches(expanded, 8);
+
+    expect(plan.batches.length).toBeGreaterThan(1);
+    expect(plan.batches.every(batch => batch.requestBytes <= 12_288)).toBe(true);
+  });
+
   it('keeps explicit product evidence when generic evidence fills the request budget', () => {
     const research = productRecallPressureBundle('product');
     const signal = research.items.find(item => item.evidenceId === 'search-creo-product')!;

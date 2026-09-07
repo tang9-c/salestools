@@ -8,6 +8,7 @@ import {
   type ArkPayloadSelection,
 } from './payload-budget.js';
 import { buildArkMessages } from './prompt.js';
+import { planArkBatches, type ArkBatchPlan } from './batch-plan.js';
 
 const ArkResponseSchema = z.object({
   choices: z.array(z.object({
@@ -75,6 +76,16 @@ export class ArkEvidenceService {
 
   constructor(private readonly options: ArkEvidenceServiceOptions) {
     this.fetchFn = options.fetchFn ?? fetch;
+  }
+
+  planBatches(bundle: ResearchBundle, maxBatches: number): ArkBatchPlan {
+    const requestMaxBytes = this.options.requestMaxBytes ?? ARK_REQUEST_MAX_BYTES;
+    return planArkBatches(
+      bundle,
+      maxBatches,
+      requestMaxBytes,
+      candidate => Buffer.byteLength(serializeArkRequest(this.options.model, candidate), 'utf8'),
+    );
   }
 
   async extract(bundle: ResearchBundle): Promise<EvidenceBundle> {
