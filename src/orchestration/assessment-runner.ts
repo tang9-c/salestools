@@ -20,6 +20,8 @@ import { buildReportModel } from '../report/build-report-model.js';
 import { renderMarkdown } from '../report/render-markdown.js';
 import type { SourceCollection } from '../upstream/qcc/assessment-research.js';
 import type { ArkEvidenceExtraction } from '../upstream/ark/client.js';
+import type { ArkBatchPlan } from '../upstream/ark/batch-plan.js';
+import { mergeArkEvidence, type SuccessfulArkBatch } from '../upstream/ark/merge-evidence.js';
 import { buildSearchPlan } from '../upstream/search/search-plan.js';
 import { CallBudget, type CallBudgetLimits, type UpstreamSource } from './call-budget.js';
 import {
@@ -48,6 +50,7 @@ interface SearchClient {
 }
 
 interface ArkSource {
+  planBatches(bundle: ResearchBundle, maxBatches: number): ArkBatchPlan;
   extractWithAudit(bundle: ResearchBundle): Promise<ArkEvidenceExtraction>;
 }
 
@@ -60,6 +63,7 @@ export interface AssessmentRunnerOptions {
   logger: JsonlLogger;
   profileCacheTtlDays: number;
   budgetLimits: CallBudgetLimits;
+  maxArkBatches: number;
   now?: () => Date;
   opportunityEvaluator?: typeof evaluateOpportunities;
   reportModelBuilder?: typeof buildReportModel;
@@ -130,7 +134,10 @@ export class AssessmentRunner {
       if (this.stopIfAborted(task)) return;
 
       const budget = new CallBudget(this.options.budgetLimits, {
-        reserveArkCalls: Math.min(2, this.options.budgetLimits.ark),
+        reserveArkCalls: Math.min(
+          this.options.maxArkBatches * 2,
+          this.options.budgetLimits.ark,
+        ),
       });
       const retryOptions = this.retryOptions(task);
       const qccPromise = this.options.qccResearch
@@ -148,45 +155,85 @@ export class AssessmentRunner {
         collectedAt: this.now().toISOString(),
       });
 
-      const extracted = await retryOnce(
-        'ark',
-        budget,
-        () => this.options.ark.extractWithAudit(research),
-        retryOptions,
-      );
-      if (this.stopIfAborted(task)) return;
-      if (extracted.status === 'failed') {
+      const plan = this.options.ark.planBatches(research, this.options.maxArkBatches);
+      const successful: SuccessfulArkBatch[] = [];
+      const failedEvidenceIds: string[] = [];
+      for (const [index, batch] of plan.batches.entries()) {
+        const extracted = await retryOnce(
+          'ark',
+          budget,
+          () => this.options.ark.extractWithAudit(batch.bundle),
+          this.retryOptions(task, index + 1),
+        );
+        if (this.stopIfAborted(task)) return;
+        if (extracted.status === 'completed') {
+          successful.push({ input: batch.bundle, evidence: extracted.value.evidence });
+        } else {
+          failedEvidenceIds.push(...batch.bundle.items.map(item => item.evidenceId));
+        }
+      }
+      if (successful.length === 0) {
         this.fail(task, '模型事实整理不可用');
         return;
       }
 
       try {
-        const evidence = EvidenceBundleSchema.parse(extracted.value.evidence);
+        const failedBatchCount = plan.batches.length - successful.length;
+        const batchGaps = [
+          ...(failedBatchCount === 0 ? [] : [`Ark 批次处理失败：${failedBatchCount}/${plan.batches.length}`]),
+          ...(plan.unplannedItems.length === 0
+            ? []
+            : [`Ark 容量上限未处理证据：${plan.unplannedItems.length}`]),
+        ];
+        const evidence = EvidenceBundleSchema.parse(mergeArkEvidence({
+          original: { ...research, gaps: [...research.gaps, ...batchGaps] },
+          successful,
+          failedEvidenceIds,
+          unplannedEvidenceIds: plan.unplannedItems.map(item => item.evidenceId),
+        }));
         const assessment = this.opportunityEvaluator(evidence, this.now());
         const sourceStatus: ReportModel['sourceStatus'] = {
           qcc: qcc.sourceStatus.status,
           doubaoSearch: search.sourceStatus.status,
-          ark: 'completed',
+          ark: failedBatchCount > 0 || plan.unplannedItems.length > 0 ? 'partial' : 'completed',
         };
         const model = this.reportModelBuilder(profile.identity, evidence, assessment, sourceStatus);
         const markdown = this.markdownRenderer(model);
+        const selectedEvidenceIds = [...new Set(plan.batches.flatMap(
+          batch => batch.bundle.items.map(item => item.evidenceId),
+        ))];
+        const processedEvidenceIds = new Set(successful.flatMap(
+          batch => batch.input.items.map(item => item.evidenceId),
+        ));
+        const unprocessedEvidenceIds = new Set([
+          ...failedEvidenceIds,
+          ...plan.unplannedItems.map(item => item.evidenceId),
+        ]);
         const resultAudit: AssessmentResultAudit = {
           industryLabel: evidence.industryLabel,
           industryEvidenceIds: evidence.industryEvidenceIds,
           evidenceSelection: {
-            selectedEvidenceIds: [...new Set(extracted.value.selection.bundle.items.map(item => item.evidenceId))],
-            originalCount: extracted.value.selection.originalCount,
-            selectedCount: extracted.value.selection.selectedCount,
-            excludedCount: extracted.value.selection.excludedCount,
-            categoryCounts: extracted.value.selection.categoryCounts,
-            researchBytes: extracted.value.selection.researchBytes,
-            requestBytes: extracted.value.requestBytes,
-            batchCount: 1,
-            successfulBatchCount: 1,
-            failedBatchCount: 0,
-            processedCount: extracted.value.selection.selectedCount,
-            unprocessedCount: extracted.value.selection.excludedCount,
-            deduplicatedCount: 0,
+            selectedEvidenceIds,
+            originalCount: plan.originalCount,
+            selectedCount: selectedEvidenceIds.length,
+            excludedCount: plan.originalCount - selectedEvidenceIds.length,
+            categoryCounts: plan.batches.reduce((counts, batch) => ({
+              industry: counts.industry + batch.selection.categoryCounts.industry,
+              technology: counts.technology + batch.selection.categoryCounts.technology,
+              timing: counts.timing + batch.selection.categoryCounts.timing,
+              capacity: counts.capacity + batch.selection.categoryCounts.capacity,
+            }), { industry: 0, technology: 0, timing: 0, capacity: 0 }),
+            researchBytes: plan.batches.reduce(
+              (bytes, batch) => bytes + batch.selection.researchBytes,
+              0,
+            ),
+            requestBytes: plan.batches.reduce((bytes, batch) => bytes + batch.requestBytes, 0),
+            batchCount: plan.batches.length,
+            successfulBatchCount: successful.length,
+            failedBatchCount,
+            processedCount: processedEvidenceIds.size,
+            unprocessedCount: unprocessedEvidenceIds.size,
+            deduplicatedCount: plan.deduplicatedCount,
           },
           opportunities: assessment.products.map(product => ({
             product: product.product,
@@ -267,11 +314,12 @@ export class AssessmentRunner {
     };
   }
 
-  private retryOptions(task: AssessmentRecord): RetryOptions {
+  private retryOptions(task: AssessmentRecord, batchIndex?: number): RetryOptions {
     return {
       onAttempt: event => this.options.logger.logUpstreamAttempt({
         assessmentId: task.assessmentId,
         userId: task.requestedBy,
+        batchIndex,
         ...event,
       }),
     };

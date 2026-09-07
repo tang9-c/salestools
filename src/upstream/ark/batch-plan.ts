@@ -91,6 +91,11 @@ export function planArkBatches(
   const batches: ArkPlannedBatch[] = [];
   const unplannedItems: ResearchItem[] = [];
 
+  if (remaining.length === 0 && maxBatches > 0) {
+    const selection = compactResearchBundleForArk(bundle, requestMaxBytes, measureBytes);
+    batches.push({ bundle: selection.bundle, selection, requestBytes: measureBytes(selection.bundle) });
+  }
+
   while (remaining.length > 0 && batches.length < maxBatches) {
     const remainingBundle = ResearchBundleSchema.parse({ ...bundle, items: remaining });
     const compacted = compactResearchBundleForArk(

@@ -97,7 +97,7 @@ export type AssessmentReportServiceOutput = {
   sourceStatus: {
     qcc: ResearchSourceStatus;
     doubaoSearch: ResearchSourceStatus;
-    ark: 'completed';
+    ark: 'completed' | 'partial';
   };
   markdown: string;
 };

@@ -29,7 +29,7 @@ type QccDependency = Pick<QccGateway, 'call' | 'close'>;
 type SearchDependency = Pick<DoubaoSearchClient, 'search'>
   & Partial<Pick<DoubaoSearchClient, 'searchWeb'>>
   & { close?: () => Promise<void> };
-type ArkDependency = Pick<ArkEvidenceService, 'extractWithAudit'> & { close?: () => Promise<void> };
+type ArkDependency = Pick<ArkEvidenceService, 'planBatches' | 'extractWithAudit'> & { close?: () => Promise<void> };
 
 export interface ApplicationOverrides {
   database?: DatabaseSync;
@@ -149,6 +149,7 @@ export function createApplication(
     ark,
     logger,
     profileCacheTtlDays: config.profileCacheTtlDays,
+    maxArkBatches: config.maxArkBatches,
     budgetLimits: {
       qcc: config.maxQccCalls,
       doubaoSearch: config.maxSearchCalls,

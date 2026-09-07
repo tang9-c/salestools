@@ -12,6 +12,7 @@ import { initializeDatabase } from '../src/db/database.js';
 import { createApplication, type RunningApplication } from '../src/index.js';
 import type { SearchQuery } from '../src/upstream/search/search-plan.js';
 import type { DoubaoWebResult } from '../src/upstream/search/mapper.js';
+import type { ArkBatchPlan } from '../src/upstream/ark/batch-plan.js';
 
 const LEGAL_NAME = '测试机器人有限公司';
 const CREDIT_CODE = '91310000TEST000001';
@@ -151,6 +152,21 @@ function fakeArkExtraction(bundle: ResearchBundle) {
   };
 }
 
+function fakeArkPlan(bundle: ResearchBundle): ArkBatchPlan {
+  const extraction = fakeArkExtraction(bundle);
+  return {
+    batches: [{
+      bundle: extraction.selection.bundle,
+      selection: extraction.selection,
+      requestBytes: extraction.requestBytes,
+    }],
+    originalCount: extraction.selection.originalCount,
+    candidateCount: extraction.selection.selectedCount,
+    deduplicatedCount: 0,
+    unplannedItems: [],
+  };
+}
+
 async function connect(endpoint: string, token: string, name: string): Promise<Client> {
   const client = new Client(
     { name, version: '1.0.0' },
@@ -195,7 +211,7 @@ describe('MCP HTTP simulated end-to-end', () => {
           return [fakeContactPage];
         },
       },
-      ark: { extractWithAudit: async bundle => fakeArkExtraction(bundle) },
+      ark: { planBatches: fakeArkPlan, extractWithAudit: async bundle => fakeArkExtraction(bundle) },
       contactExtractor: { extract: async () => ({
         contacts: [fakeContact],
         selection: { totalPages: 2, includedPages: 2, textTruncated: false },
@@ -298,7 +314,7 @@ describe('MCP HTTP simulated end-to-end', () => {
         call: async (_server: string, tool: string) => fakeQccPayload(tool),
         close: async () => undefined,
       },
-      ark: { extractWithAudit: async (bundle: ResearchBundle) => fakeArkExtraction(bundle) },
+      ark: { planBatches: fakeArkPlan, extractWithAudit: async (bundle: ResearchBundle) => fakeArkExtraction(bundle) },
       logSink: { write: () => undefined },
     };
 

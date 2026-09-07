@@ -10,9 +10,11 @@ import { AssessmentRepository } from '../src/db/assessment-repository.js';
 import { initializeDatabase } from '../src/db/database.js';
 import { ProfileRepository } from '../src/db/profile-repository.js';
 import { JsonlLogger } from '../src/logging/logger.js';
+import { evaluateOpportunities } from '../src/opportunity/evaluate-all.js';
 import { AssessmentRunner, AssessmentWorkerError } from '../src/orchestration/assessment-runner.js';
 import { retryOnce, UpstreamError } from '../src/orchestration/retry.js';
 import { ArkEvidenceService } from '../src/upstream/ark/client.js';
+import type { ArkBatchPlan, ArkPlannedBatch } from '../src/upstream/ark/batch-plan.js';
 import { arkInputBudgetGap } from '../src/upstream/ark/payload-budget.js';
 import { QccResearchCollector, type SourceCollection } from '../src/upstream/qcc/assessment-research.js';
 
@@ -80,6 +82,43 @@ function auditedExtraction(bundle: ResearchBundle, extractedEvidence: EvidenceBu
   };
 }
 
+function plannedBatch(bundle: ResearchBundle): ArkPlannedBatch {
+  const bytes = Buffer.byteLength(JSON.stringify(bundle), 'utf8');
+  return {
+    bundle,
+    requestBytes: bytes,
+    selection: {
+      bundle,
+      originalCount: bundle.items.length,
+      selectedCount: bundle.items.length,
+      excludedCount: 0,
+      categoryCounts: { industry: 0, technology: 0, timing: 0, capacity: 0 },
+      researchBytes: bytes,
+    },
+  };
+}
+
+function batchPlan(original: ResearchBundle, chunks: readonly ResearchItem[][]): ArkBatchPlan {
+  const seen = new Set<string>();
+  const uniqueChunks = chunks.map(chunk => chunk.filter(entry => {
+    if (seen.has(entry.evidenceId)) return false;
+    seen.add(entry.evidenceId);
+    return true;
+  })).filter(chunk => chunk.length > 0 || original.items.length === 0);
+  return {
+    batches: uniqueChunks.map(items => plannedBatch({ ...original, items })),
+    originalCount: original.items.length,
+    candidateCount: seen.size,
+    deduplicatedCount: original.items.length - seen.size,
+    unplannedItems: [],
+  };
+}
+
+function distinctSearchClient() {
+  let index = 0;
+  return { search: vi.fn(async () => [item('doubao_search', `web-${index += 1}`)]) };
+}
+
 describe('AssessmentRunner', () => {
   const databases: DatabaseSync[] = [];
   afterEach(() => { databases.splice(0).forEach(database => database.close()); });
@@ -106,7 +145,10 @@ describe('AssessmentRunner', () => {
       collectQccResearch: vi.fn(async () => collection('completed', [item('qcc', 'profile')])),
     };
     const searchClient = { search: vi.fn(async () => [item('doubao_search', 'web')]) };
-    const ark = { extractWithAudit: vi.fn(async (bundle: ResearchBundle) => auditedExtraction(bundle)) };
+    const ark = {
+      planBatches: vi.fn((bundle: ResearchBundle) => batchPlan(bundle, [bundle.items])),
+      extractWithAudit: vi.fn(async (bundle: ResearchBundle) => auditedExtraction(bundle)),
+    };
     const logger = new JsonlLogger({ write: () => undefined }, () => NOW);
     const dependencies = {
       assessments,
@@ -116,12 +158,99 @@ describe('AssessmentRunner', () => {
       ark,
       logger,
       profileCacheTtlDays: 30,
+      maxArkBatches: 8,
       budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 2, total: 18 },
       now: () => NOW,
       ...overrides,
     };
+    if (!(dependencies.ark as { planBatches?: unknown }).planBatches) {
+      (dependencies.ark as { planBatches?: (bundle: ResearchBundle) => ArkBatchPlan }).planBatches =
+        bundle => batchPlan(bundle, [bundle.items]);
+    }
     return { database, assessments, profiles, task, qccResearch, searchClient, ark, dependencies };
   }
+
+  it('executes and merges every planned Ark batch with aggregate audit counts', async () => {
+    const opportunityEvaluator = vi.fn((input: EvidenceBundle, now: Date) => {
+      expect(input.facts.map(fact => fact.factId)).toEqual(['batch-fact-1', 'batch-fact-2', 'batch-fact-3']);
+      return evaluateOpportunities(input, now);
+    });
+    const runtime = setup({
+      opportunityEvaluator,
+      maxArkBatches: 8,
+      searchClient: distinctSearchClient(),
+      budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 16, total: 32 },
+    });
+    let planned: ArkBatchPlan | null = null;
+    runtime.dependencies.ark = {
+      planBatches: vi.fn((bundle: ResearchBundle) => {
+        planned = batchPlan(bundle, [[bundle.items[0]!], [bundle.items[1]!], bundle.items.slice(2)]);
+        return planned;
+      }),
+      extractWithAudit: vi.fn(async (bundle: ResearchBundle) => {
+        const source = bundle.items[0]!;
+        const ref = {
+          evidenceId: source.evidenceId, title: source.title, url: source.url,
+          originalPublisher: source.originalPublisher, originalDomain: source.originalDomain,
+          publishedAt: source.publishedAt, collectedAt: source.collectedAt,
+          mentionedName: source.mentionedName, entityScope: source.entityScope,
+          entityMatch: source.entityMatch, matchBasis: source.matchBasis,
+        };
+        const batchNumber = (planned?.batches.findIndex(batch => batch.bundle === bundle) ?? -1) + 1;
+        return auditedExtraction(bundle, {
+          ...evidence(bundle), evidence: [ref],
+          facts: [{
+            factId: `batch-fact-${batchNumber}`, statement: `第 ${batchNumber} 批事实`,
+            kind: 'product_scene', productTags: [], strength: 'direct',
+            evidenceIds: [source.evidenceId], entityScope: source.entityScope,
+            entityMatch: source.entityMatch, matchBasis: source.matchBasis,
+          }],
+        });
+      }),
+    };
+
+    await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
+
+    expect(runtime.dependencies.ark.extractWithAudit).toHaveBeenCalledTimes(3);
+    expect(opportunityEvaluator).toHaveBeenCalledTimes(1);
+    expect(runtime.assessments.get(runtime.task.assessmentId)).toMatchObject({
+      status: 'completed', sourceStatus: { ark: 'completed' },
+      resultAudit: { evidenceSelection: {
+        batchCount: 3, successfulBatchCount: 3, failedBatchCount: 0,
+        processedCount: 9, unprocessedCount: 0,
+      } },
+    });
+  });
+
+  it('continues after one Ark batch fails twice and marks the completed report partial', async () => {
+    const runtime = setup({
+      maxArkBatches: 8,
+      searchClient: distinctSearchClient(),
+      budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 16, total: 32 },
+    });
+    let call = 0;
+    runtime.dependencies.ark = {
+      planBatches: vi.fn((bundle: ResearchBundle) => batchPlan(
+        bundle,
+        [[bundle.items[0]!], [bundle.items[1]!], bundle.items.slice(2)],
+      )),
+      extractWithAudit: vi.fn(async (bundle: ResearchBundle) => {
+        call += 1;
+        if (call === 2 || call === 3) throw new UpstreamError('ark', 'NETWORK_ERROR', 'down');
+        return auditedExtraction(bundle);
+      }),
+    };
+
+    await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
+
+    const stored = runtime.assessments.get(runtime.task.assessmentId)!;
+    expect(runtime.dependencies.ark.extractWithAudit).toHaveBeenCalledTimes(4);
+    expect(stored).toMatchObject({
+      status: 'completed', sourceStatus: { ark: 'partial' },
+      resultAudit: { evidenceSelection: { batchCount: 3, successfulBatchCount: 2, failedBatchCount: 1 } },
+    });
+    expect(stored.reportMarkdown).toContain('Ark 批次处理失败：1/3');
+  });
 
   it.each([
     ['QCC-only failure', collection('failed'), false, 'failed', 'completed'],
@@ -153,12 +282,15 @@ describe('AssessmentRunner', () => {
       searchClient: { search: vi.fn(async () => { throw new UpstreamError('doubao_search', 'DOWN', 'down'); }) },
       budgetLimits: { qcc: 8, doubaoSearch: 2, ark: 2, total: 12 },
     });
-    const ark = { extractWithAudit: vi.fn(async (bundle: ResearchBundle) => {
+    const ark = {
+      planBatches: vi.fn((bundle: ResearchBundle) => batchPlan(bundle, [bundle.items])),
+      extractWithAudit: vi.fn(async (bundle: ResearchBundle) => {
       expect(bundle.items).toEqual([]);
       expect(bundle.sourceStatus.qcc.status).toBe('failed');
       expect(bundle.sourceStatus.doubaoSearch.status).toBe('failed');
       return auditedExtraction(bundle);
-    }) };
+      }),
+    };
     runtime.dependencies.ark = ark;
 
     await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
@@ -179,9 +311,10 @@ describe('AssessmentRunner', () => {
     ]) expect(stored.reportMarkdown).toContain(product);
   });
 
-  it('persists only compact Ark selection metadata and all seven opportunity decisions', async () => {
+  it('persists only compact Ark batch-plan metadata and all seven opportunity decisions', async () => {
     const runtime = setup();
     runtime.dependencies.ark = {
+      planBatches: vi.fn((bundle: ResearchBundle) => batchPlan(bundle, [bundle.items])),
       extractWithAudit: vi.fn(async (bundle: ResearchBundle) => ({
         evidence: evidence(bundle),
         selection: {
@@ -204,12 +337,14 @@ describe('AssessmentRunner', () => {
       industryEvidenceIds: [],
       evidenceSelection: {
         selectedEvidenceIds: ['qcc-profile', 'doubao_search-web'],
-        originalCount: 2,
+        originalCount: 9,
         selectedCount: 2,
-        excludedCount: 0,
-        categoryCounts: { industry: 1, technology: 1, timing: 0, capacity: 0 },
-        researchBytes: 2_048,
-        requestBytes: 4_096,
+        excludedCount: 7,
+        categoryCounts: { industry: 0, technology: 0, timing: 0, capacity: 0 },
+        batchCount: 1,
+        processedCount: 2,
+        unprocessedCount: 0,
+        deduplicatedCount: 7,
       },
     });
     expect(stored.resultAudit?.opportunities).toHaveLength(7);
@@ -232,6 +367,7 @@ describe('AssessmentRunner', () => {
   it('persists the evidence-backed Ark industry label without reclassification', async () => {
     const runtime = setup();
     runtime.dependencies.ark = {
+      planBatches: vi.fn((bundle: ResearchBundle) => batchPlan(bundle, [bundle.items])),
       extractWithAudit: vi.fn(async (bundle: ResearchBundle) => {
         const source = bundle.items[0]!;
         return auditedExtraction(bundle, {
@@ -299,7 +435,7 @@ describe('AssessmentRunner', () => {
     expect(write.mock.calls.filter(([line]) => line.includes('"assessment_decision"'))).toHaveLength(1);
   });
 
-  it('retains financing, annual-report, and Ark input-budget gaps in the final report', async () => {
+  it('retains source gaps without leaking a temporary per-batch Ark input gap', async () => {
     const financingGap = '融资结果无法结构化验证（适配器契约缺口）';
     const annualReportGap = '年报信息获取失败';
     const budgetGap = arkInputBudgetGap(11, 11);
@@ -349,7 +485,7 @@ describe('AssessmentRunner', () => {
     const markdown = runtime.assessments.get(runtime.task.assessmentId)?.reportMarkdown ?? '';
     expect(markdown).toContain(financingGap);
     expect(markdown).toContain(annualReportGap);
-    expect(markdown).toContain(budgetGap);
+    expect(markdown).not.toContain(budgetGap);
   });
 
   it('does not start the search client when the search budget is exhausted', async () => {

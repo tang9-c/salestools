@@ -103,7 +103,7 @@ const AssessmentReportCompletedSchema = z.object({
   source_status: z.object({
     qcc: ResearchSourceStatusSchema,
     doubao_search: ResearchSourceStatusSchema,
-    ark: z.literal('completed'),
+    ark: z.enum(['completed', 'partial']),
   }).strict(),
   markdown: z.string(),
 }).strict();

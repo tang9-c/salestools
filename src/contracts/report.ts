@@ -10,7 +10,7 @@ import { UtcTimestampSchema } from './identity.js';
 import { CompleteProductOpportunitiesSchema, OpportunityLevelSchema } from './opportunity.js';
 import { ResearchSourceStatusSchema } from './research.js';
 
-export const ArkSourceStatusSchema = z.enum(['completed', 'failed']);
+export const ArkSourceStatusSchema = z.enum(['completed', 'partial', 'failed']);
 
 export const ReportModelSchema = z.object({
   legalName: z.string(),
@@ -31,7 +31,7 @@ export const ReportModelSchema = z.object({
   sourceStatus: z.object({
     qcc: ResearchSourceStatusSchema,
     doubaoSearch: ResearchSourceStatusSchema,
-    ark: z.literal('completed'),
+    ark: z.enum(['completed', 'partial']),
   }).strict(),
   collectedAt: UtcTimestampSchema,
   dynamicSignalFreshness: z.enum(['current', 'stale']),

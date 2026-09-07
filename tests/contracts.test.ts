@@ -412,8 +412,8 @@ describe('shared contracts', () => {
     ])).toBe(2);
   });
 
-  it('never accepts a failed or partial Ark result as a report', () => {
-    expect(ReportModelSchema.safeParse({ ...report, sourceStatus: { ...report.sourceStatus, ark: 'partial' } }).success).toBe(false);
+  it('accepts a partial Ark result but never a completely failed Ark report', () => {
+    expect(ReportModelSchema.safeParse({ ...report, sourceStatus: { ...report.sourceStatus, ark: 'partial' } }).success).toBe(true);
     expect(ReportModelSchema.safeParse({ ...report, sourceStatus: { ...report.sourceStatus, ark: 'failed' } }).success).toBe(false);
   });
 });
