@@ -214,9 +214,10 @@ Generate 92 compact evidence items and assert:
 const plan = planArkBatches(ninetyTwoItems, 8, 12_288, serializedBytes);
 expect(plan.batches.length).toBeGreaterThan(1);
 expect(plan.batches.length).toBeLessThanOrEqual(8);
-expect(plan.unplannedItems).toEqual([]);
-expect(new Set(plan.batches.flatMap(batch => batch.bundle.items.map(item => item.evidenceId))).size)
-  .toBe(plan.candidateCount);
+expect(new Set([
+  ...plan.batches.flatMap(batch => batch.bundle.items.map(item => item.evidenceId)),
+  ...plan.unplannedItems.map(item => item.evidenceId),
+]).size).toBe(plan.candidateCount);
 for (const batch of plan.batches) {
   expect(serializedBytes(batch.bundle)).toBe(batch.requestBytes);
   expect(batch.requestBytes).toBeLessThanOrEqual(12_288);

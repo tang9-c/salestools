@@ -179,6 +179,21 @@ get_assessment_report：读取报告并准备拜访
 
 ## 常见问题
 
+### 方舟为什么显示 `partial`？
+
+正式评估会把证据拆成多个受字节上限保护的方舟请求。单批失败或达到最大批次数后仍有材料未处理时，已成功批次仍会生成报告，但来源状态显示 `ark=partial`，审计缺口会列出失败批次或容量剩余数量。
+
+部署侧相关配置为：
+
+```ini
+ARK_REQUEST_MAX_BYTES=12288
+MAX_ARK_BATCHES=8
+MAX_ARK_CALLS=16
+MAX_TOTAL_UPSTREAM_CALLS=32
+```
+
+`MAX_ARK_CALLS` 计算实际请求尝试次数，不是批次数；一次失败后的重试还会消耗一次。不要只提高 `MAX_ARK_BATCHES` 而不同时确保 Ark 和总调用预算足够。
+
 ### Codex 看不到 salestools 工具
 
 确认 `codex mcp list` 中存在 `salestools`，然后检查环境变量仍在当前终端：

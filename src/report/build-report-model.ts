@@ -18,7 +18,7 @@ const DYNAMIC_SIGNAL_MAX_AGE_MS = 7 * DAY_MS;
 
 export type ReportGapCategory = 'rating' | 'enhancement' | 'audit';
 
-const ARK_INPUT_CAPACITY_GAP_PATTERN = /方舟输入.*容量.*\d+\/\d+/u;
+const ARK_INPUT_CAPACITY_GAP_PATTERN = /(?:方舟输入.*容量.*\d+\/\d+|Ark 批次处理失败：\d+\/\d+|Ark 容量上限未处理证据：\d+)/u;
 const EXPLICIT_AUDIT_GAP_PATTERN = /来源|链接|url|网址|上游|获取失败|调用失败|无法结构化验证|适配器契约|工具不可用|未调用|未重试|企查查|豆包|年报|链接不可用/iu;
 const ENHANCEMENT_GAP_PATTERN = /融资|预算|时机|时间|周期|决策|审批|采购计划|扩容|替换/iu;
 
