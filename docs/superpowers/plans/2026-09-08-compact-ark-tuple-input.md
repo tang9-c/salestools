@@ -328,6 +328,7 @@ Expected: 全部测试、类型检查、构建和空白检查通过。
 7. 只输出以下指标，不输出原始材料：
 
 ```ts
+import { DatabaseSync } from 'node:sqlite';
 import { config as loadDotEnv } from 'dotenv';
 import {
   ResearchBundleSchema,
@@ -336,7 +337,7 @@ import {
   type ResearchSourceStatus,
 } from '../src/contracts/index.js';
 import { loadConfig } from '../src/config.js';
-import { openDatabase } from '../src/db/database.js';
+import { initializeDatabase } from '../src/db/database.js';
 import { ProfileRepository } from '../src/db/profile-repository.js';
 import { CallBudget } from '../src/orchestration/call-budget.js';
 import { retryOnce, safeUpstreamErrorMessage } from '../src/orchestration/retry.js';
@@ -389,9 +390,10 @@ async function collectSearch(
   };
 }
 
-loadDotEnv();
+const envPath = process.env.SALESTOOLS_ENV_PATH;
+loadDotEnv(envPath === undefined ? {} : { path: envPath });
 const config = loadConfig(process.env);
-const database = openDatabase(config.sqlitePath);
+const database = initializeDatabase(new DatabaseSync(':memory:'));
 const profiles = new ProfileRepository(database);
 const qccGateway = new QccGateway({
   urls: {
@@ -470,7 +472,7 @@ try {
 Run:
 
 ```bash
-rtk npx tsx tmp/diagnose-ark-batches.ts
+rtk env SALESTOOLS_ENV_PATH=/Users/tang-codeing/code/salestools/.env npm exec -- tsx tmp/diagnose-ark-batches.ts
 ```
 
 Expected:
@@ -502,7 +504,7 @@ MAX_TOTAL_UPSTREAM_CALLS=36
 Run:
 
 ```bash
-rtk npx tsx -e "import { config } from 'dotenv'; import { loadConfig } from './src/config.ts'; config(); const c=loadConfig(process.env); console.log(JSON.stringify({ark:c.maxArkCalls,total:c.maxTotalUpstreamCalls}))"
+rtk env SALESTOOLS_ENV_PATH=/Users/tang-codeing/code/salestools/.env npm exec -- tsx -e "import { config } from 'dotenv'; import { loadConfig } from './src/config.ts'; config({path:process.env.SALESTOOLS_ENV_PATH}); const c=loadConfig(process.env); console.log(JSON.stringify({ark:c.maxArkCalls,total:c.maxTotalUpstreamCalls}))"
 ```
 
 Expected: `{"ark":20,"total":36}`。不要修改或提交 `.env.example`。
