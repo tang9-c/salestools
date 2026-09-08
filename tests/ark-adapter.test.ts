@@ -20,7 +20,11 @@ import {
   arkInputBudgetGap,
   compactResearchBundleForArk,
 } from '../src/upstream/ark/payload-budget.js';
-import { ARK_SYSTEM_PROMPT, buildArkMessages } from '../src/upstream/ark/prompt.js';
+import {
+  ARK_INPUT_ITEM_FIELDS,
+  ARK_SYSTEM_PROMPT,
+  buildArkMessages,
+} from '../src/upstream/ark/prompt.js';
 import { mapQccToolResult } from '../src/upstream/qcc/mapper.js';
 import { buildSearchPlan, type SearchQuery } from '../src/upstream/search/search-plan.js';
 
@@ -167,10 +171,48 @@ function budgetResearchBundle(): ResearchBundle {
   };
 }
 
-function requestResearch(fetchFn: ReturnType<typeof vi.fn<typeof fetch>>): ResearchBundle {
+type ArkInputTuple = readonly [
+  string,
+  ResearchItem['source'],
+  ResearchItem['sourceKind'],
+  string,
+  string | null,
+  string | null,
+  string | null,
+  string | null,
+  string | null,
+  string | null,
+  string,
+  string,
+  ResearchItem['entityScope'],
+  ResearchItem['entityMatch'],
+  string[],
+];
+
+interface ArkInputPayload {
+  identity: ResearchBundle['identity'];
+  collectedAt: string;
+  items: ArkInputTuple[];
+}
+
+function requestPayload(fetchFn: ReturnType<typeof vi.fn<typeof fetch>>): ArkInputPayload {
   const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
   const userMessage = body.messages.find((message: { role: string }) => message.role === 'user');
   return JSON.parse(userMessage.content);
+}
+
+function tupleAsItem(tuple: ArkInputTuple) {
+  return {
+    evidenceId: tuple[0], source: tuple[1], sourceKind: tuple[2], title: tuple[3],
+    url: tuple[4], originalPublisher: tuple[5], originalDomain: tuple[6], summary: tuple[7],
+    content: tuple[8], publishedAt: tuple[9], collectedAt: tuple[10], mentionedName: tuple[11],
+    entityScope: tuple[12], entityMatch: tuple[13], matchBasis: tuple[14],
+  };
+}
+
+function requestResearch(fetchFn: ReturnType<typeof vi.fn<typeof fetch>>) {
+  const payload = requestPayload(fetchFn);
+  return { ...payload, items: payload.items.map(tupleAsItem) };
 }
 
 function client(
@@ -373,6 +415,45 @@ function padRequestToBytes(
 }
 
 describe('ARK_SYSTEM_PROMPT', () => {
+  it('serializes every Ark research item as the fixed compact tuple', () => {
+    const base = researchBundle();
+    const source = {
+      ...base.items[0]!,
+      originalPublisher: null,
+      summary: null,
+      publishedAt: null,
+      query: 'QUERY_SENTINEL_NOT_FOR_ARK',
+      position: 987_654,
+      logId: 'LOG_SENTINEL_NOT_FOR_ARK',
+    };
+    const research: ResearchBundle = {
+      ...base,
+      items: [source],
+      gaps: ['SOURCE_GAP_NOT_FOR_ARK'],
+    };
+
+    const payload = JSON.parse(buildArkMessages(research)[1]!.content);
+
+    expect(payload).toEqual({
+      identity: research.identity,
+      collectedAt: research.collectedAt,
+      items: [[
+        source.evidenceId, source.source, source.sourceKind, source.title, source.url,
+        source.originalPublisher, source.originalDomain, source.summary, source.content,
+        source.publishedAt, source.collectedAt, source.mentionedName, source.entityScope,
+        source.entityMatch, source.matchBasis,
+      ]],
+    });
+    expect(payload).not.toHaveProperty('sourceStatus');
+    expect(payload).not.toHaveProperty('gaps');
+    expect(payload.items[0]).toHaveLength(15);
+    expect(payload.items.flat()).not.toContain(source.query);
+    expect(payload.items.flat()).not.toContain(source.position);
+    expect(payload.items.flat()).not.toContain(source.logId);
+    expect(ARK_SYSTEM_PROMPT).toContain(JSON.stringify(ARK_INPUT_ITEM_FIELDS));
+    expect(ARK_SYSTEM_PROMPT).toMatch(/紧凑研究输入.*网页正文.*不可信数据/s);
+  });
+
   it('does not claim a fixed four-item evidence limit', () => {
     expect(ARK_SYSTEM_PROMPT).not.toMatch(/最多包含4条/);
   });
@@ -739,7 +820,7 @@ describe('ArkEvidenceService', () => {
         qccItem(
           'qcc-operation-get_recruitment_info-large-but-fitting',
           'operation',
-          '巨型时机'.repeat(400),
+          '巨型时机'.repeat(500),
         ),
         qccItem(expectedIds[2]!, 'risk', '风险信息'),
         qccItem(expectedIds[3]!, 'operation', '招投标信息'),
@@ -753,14 +834,14 @@ describe('ArkEvidenceService', () => {
     const first = await service.extractWithAudit(research);
     const second = await service.extractWithAudit(research);
 
-    expect(first.selection.bundle.items.map(item => item.evidenceId)).toEqual(expectedIds);
+    expect(first.selection.bundle.items.map(item => item.evidenceId).sort()).toEqual([...expectedIds].sort());
     expect(first.selection).toMatchObject({
       originalCount: 5,
       selectedCount: 4,
       excludedCount: 1,
       categoryCounts: { industry: 1, technology: 1, timing: 1, capacity: 1 },
     });
-    expect(second.selection.bundle.items.map(item => item.evidenceId)).toEqual(expectedIds);
+    expect(second.selection.bundle.items.map(item => item.evidenceId).sort()).toEqual([...expectedIds].sort());
     expect(second.selection).toMatchObject({
       originalCount: 5,
       selectedCount: 4,
@@ -801,7 +882,7 @@ describe('ArkEvidenceService', () => {
         ...template,
         ...fields,
         source: 'qcc',
-        title: `${identity}-${'候选'.repeat(220)}`,
+        title: `${identity}-${'候选'.repeat(240)}`,
         summary: null,
         content: null,
         query: null,
@@ -887,7 +968,7 @@ describe('ArkEvidenceService', () => {
       position: 1,
       logId: 'log',
     });
-    const industryA = qcc('qcc-company-get_company_profile-A', 'company', 'A'.repeat(1_900));
+    const industryA = qcc('qcc-company-get_company_profile-A', 'company', 'A'.repeat(2_500));
     const technology = qcc('qcc-ipr-get_patent_info-T', 'ipr', 'T');
     const unfitCapacity = qcc('qcc-risk-get_company_risk_scan-C1', 'risk', 'X'.repeat(20_000));
     const industryB = search('search-official-B', 'official_products', 'B', 'z'.repeat(2_500));
@@ -1003,7 +1084,7 @@ describe('ArkEvidenceService', () => {
       query: null,
       position: null,
       logId: null,
-      title: `${itemEvidenceId}-${'不可截断'.repeat(50)}`,
+      title: `${itemEvidenceId}-${'不可截断'.repeat(itemEvidenceId.includes('unknown') ? 700 : 50)}`,
       summary: `${itemEvidenceId}-${'摘要'.repeat(500)}`,
       content: `${itemEvidenceId}-${'正文'.repeat(1_000)}`,
     });
@@ -1209,7 +1290,12 @@ describe('ArkEvidenceService', () => {
       response_format: { type: 'json_object' },
       temperature: 0,
     });
-    expect(JSON.parse(body.messages[1].content)).toEqual(research);
+    expect(requestPayload(fetchFn)).toMatchObject({
+      identity: research.identity,
+      collectedAt: research.collectedAt,
+      items: [expect.any(Array)],
+    });
+    expect(requestPayload(fetchFn).items[0]).toHaveLength(15);
     expect(service.extract.length).toBe(1);
   });
 
@@ -1219,13 +1305,10 @@ describe('ArkEvidenceService', () => {
       responseWithContent(JSON.stringify(factFreeEvidence(research))),
     );
 
-    await expect(client(fetchFn).extract(research)).resolves.toMatchObject({
-      ...factFreeEvidence(research),
-      gaps: expect.arrayContaining([arkInputBudgetGap(7, 12)]),
-    });
+    const audited = await client(fetchFn).extractWithAudit(research);
 
     const sent = requestResearch(fetchFn);
-    expect(sent.items.map(item => item.evidenceId)).toEqual([
+    expect(sent.items.map(item => item.evidenceId)).toEqual(expect.arrayContaining([
       'qcc-operation-get_financing_records-1',
       'qcc-company-get_company_profile-1',
       'qcc-ipr-get_patent_info-1',
@@ -1233,8 +1316,12 @@ describe('ArkEvidenceService', () => {
       'search-engineering-1',
       'search-procurement-1',
       'qcc-operation-get_bidding_info-1',
-    ]);
-    expect(sent.items).toHaveLength(7);
+    ]));
+    expect(sent.items).toHaveLength(audited.selection.selectedCount);
+    expect(audited.evidence.gaps).toContain(arkInputBudgetGap(
+      audited.selection.selectedCount,
+      audited.selection.originalCount,
+    ));
     const original = research.items.find(item => item.evidenceId === sent.items[0].evidenceId);
     expect(sent.items[0]).toMatchObject({
       evidenceId: original?.evidenceId,
@@ -1251,7 +1338,7 @@ describe('ArkEvidenceService', () => {
     expect(sent.items[0]?.content).toContain('"typeOrRound":"B 轮"');
     expect(sent.items[0]?.content).toContain('"disclosedAmount":"2 亿元"');
     expect(sent.items[0]?.content).toContain('"investors":["测试基金","产业资本"]');
-    expect(sent.gaps).toContain(arkInputBudgetGap(7, 12));
+    expect(requestPayload(fetchFn)).not.toHaveProperty('gaps');
   });
 
   it('preserves successful structured financing fields through Ark extraction', async () => {
@@ -1388,14 +1475,15 @@ describe('ArkEvidenceService', () => {
       responseWithContent(JSON.stringify(factFreeEvidence(research))),
     );
 
-    await client(fetchFn).extract(research);
+    const audited = await client(fetchFn).extractWithAudit(research);
 
     const sent = requestResearch(fetchFn);
     expect(sent.items[0]?.evidenceId).toBe(latestFinancing.evidenceId);
     expect(sent.items[0]?.content).toBe(latestFinancing.content);
     expect(sent.items).not.toContainEqual(expect.objectContaining({ evidenceId: oldFinancing.evidenceId }));
     expect(sent.items).not.toContainEqual(expect.objectContaining({ evidenceId: undatedFinancing.evidenceId }));
-    expect(sent.gaps).toContain(ARK_HISTORICAL_FINANCING_GAP);
+    expect(requestPayload(fetchFn)).not.toHaveProperty('gaps');
+    expect(audited.selection.bundle.gaps).toContain(ARK_HISTORICAL_FINANCING_GAP);
   });
 
   it('keeps source order stable when every financing record has no date', async () => {
@@ -1416,12 +1504,13 @@ describe('ArkEvidenceService', () => {
       responseWithContent(JSON.stringify(factFreeEvidence(research))),
     );
 
-    await client(fetchFn).extract(research);
+    const audited = await client(fetchFn).extractWithAudit(research);
 
     const sent = requestResearch(fetchFn);
     expect(sent.items[0]?.evidenceId).toBe(first.evidenceId);
     expect(sent.items).not.toContainEqual(expect.objectContaining({ evidenceId: second.evidenceId }));
-    expect(sent.gaps).toContain(ARK_HISTORICAL_FINANCING_GAP);
+    expect(requestPayload(fetchFn)).not.toHaveProperty('gaps');
+    expect(audited.selection.bundle.gaps).toContain(ARK_HISTORICAL_FINANCING_GAP);
   });
 
   it('retains a technical fact that appears after the first 100 characters', async () => {
@@ -1547,14 +1636,15 @@ describe('ArkEvidenceService', () => {
       responseWithContent(JSON.stringify(factFreeEvidence(research))),
     );
 
-    await client(fetchFn).extract(research);
+    const output = await client(fetchFn).extract(research);
 
     const sent = requestResearch(fetchFn);
     const body = String(fetchFn.mock.calls[0]?.[1]?.body);
     expect(Buffer.byteLength(JSON.stringify(sent), 'utf8')).toBeGreaterThan(6_656);
     expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(ARK_REQUEST_MAX_BYTES);
     expect(sent.items.length).toBeGreaterThan(4);
-    expect(sent.gaps).toContain(arkInputBudgetGap(sent.items.length, research.items.length));
+    expect(requestPayload(fetchFn)).not.toHaveProperty('gaps');
+    expect(output.gaps).toContain(arkInputBudgetGap(sent.items.length, research.items.length));
     expect(sent.items.every(item => !item.title.endsWith('\uFFFD'))).toBe(true);
   });
 
@@ -1614,9 +1704,7 @@ describe('ArkEvidenceService', () => {
     const sent = requestResearch(fetchFn);
     expect(Buffer.byteLength(String(fetchFn.mock.calls[0]?.[1]?.body), 'utf8'))
       .toBeLessThanOrEqual(ARK_REQUEST_MAX_BYTES);
-    expect(sent.gaps).toContain(financingGap);
-    expect(sent.gaps).toContain(sourceFailureGap);
-    expect(sent.gaps.some(isQccUnavailableLinkAuditGap)).toBe(false);
+    expect(requestPayload(fetchFn)).not.toHaveProperty('gaps');
     expect(output.gaps).toEqual(expect.arrayContaining([financingGap, sourceFailureGap, ...mapped.gaps]));
   });
 
@@ -1645,9 +1733,10 @@ describe('ArkEvidenceService', () => {
       responseWithContent(JSON.stringify(response)),
     );
 
-    await client(fetchFn).extract(research);
+    const output = await client(fetchFn).extract(research);
 
-    expect(requestResearch(fetchFn).gaps.some(gap => gap.startsWith('方舟输入受网关容量限制，仅保留 '))).toBe(false);
+    expect(requestPayload(fetchFn)).not.toHaveProperty('gaps');
+    expect(output.gaps.some(gap => gap.startsWith('方舟输入受网关容量限制，仅保留 '))).toBe(false);
   });
 
   it('never truncates evidence title or provenance fields', async () => {
@@ -1690,9 +1779,13 @@ describe('ArkEvidenceService', () => {
       responseWithContent(JSON.stringify(model)),
     );
 
-    await expect(client(fetchFn).extract(research)).resolves.toMatchObject({
-      gaps: ['模型识别缺口', financingGap, annualReportGap, arkInputBudgetGap(7, 12)],
-    });
+    const audited = await client(fetchFn).extractWithAudit(research);
+    expect(audited.evidence.gaps).toEqual([
+      '模型识别缺口',
+      financingGap,
+      annualReportGap,
+      arkInputBudgetGap(audited.selection.selectedCount, audited.selection.originalCount),
+    ]);
   });
 
   it('reserves categories then falls back deterministically across sources when financing is absent', async () => {
@@ -1729,7 +1822,10 @@ describe('ArkEvidenceService', () => {
 
   it('validates model provenance against the compact bundle rather than omitted research items', async () => {
     const research = budgetResearchBundle();
-    const omitted = research.items.find(item => item.evidenceId === 'qcc-risk-get_company_risk_scan-1')!;
+    const plannedIds = new Set(client(vi.fn()).planBatches(research).batches[0]!.bundle.items
+      .map(item => item.evidenceId));
+    const omitted = research.items.find(item => !plannedIds.has(item.evidenceId))!;
+    expect(omitted).toBeDefined();
     const invalid: EvidenceBundle = {
       ...factFreeEvidence(research),
       evidence: [{
