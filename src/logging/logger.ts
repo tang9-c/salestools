@@ -25,6 +25,8 @@ export type ArkBatchSkippedLog = Readonly<{
   reason: 'BUDGET_EXHAUSTED';
 }>;
 
+export type ArkBatchStartedLog = Omit<ArkBatchSkippedLog, 'reason'>;
+
 export type AssessmentDecisionLog = Readonly<{
   assessmentId: string;
   userId: string;
@@ -107,6 +109,18 @@ export class JsonlLogger {
       batch_item_count: event.batchItemCount,
       request_bytes: event.requestBytes,
       reason: event.reason,
+    })}\n`);
+  }
+
+  logArkBatchStarted(event: ArkBatchStartedLog): void {
+    this.sink.write(`${JSON.stringify({
+      event: 'ark_batch_started',
+      timestamp: this.now().toISOString(),
+      assessment_id: event.assessmentId,
+      user_id: event.userId,
+      batch_index: event.batchIndex,
+      batch_item_count: event.batchItemCount,
+      request_bytes: event.requestBytes,
     })}\n`);
   }
 

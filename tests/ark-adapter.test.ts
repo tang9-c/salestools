@@ -1250,7 +1250,6 @@ describe('ArkEvidenceService', () => {
   it('threads AbortSignal into fetch and maps cancellation to a typed unavailable error', async () => {
     const controller = new AbortController();
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
-      expect(init?.signal).toBe(controller.signal);
       return new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
       });
@@ -1264,6 +1263,44 @@ describe('ArkEvidenceService', () => {
     controller.abort();
     await expect(extraction).rejects.toMatchObject({ source: 'ark', code: 'ABORTED' });
     expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts an Ark request at its deadline and reports a retryable timeout', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => (
+      new Promise<Response>((_resolve, reject) => {
+        const fallback = setTimeout(() => reject(new Error('test fetch stayed active')), 100);
+        init?.signal?.addEventListener('abort', () => {
+          clearTimeout(fallback);
+          reject(new DOMException('timed out', 'TimeoutError'));
+        }, { once: true });
+      })
+    ));
+    const service = new ArkEvidenceService({
+      url: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+      model: 'ep-test', credential: 'ark-test-secret', fetchFn, requestTimeoutMs: 10,
+    });
+
+    await expect(service.extract(researchBundle()))
+      .rejects.toMatchObject({ source: 'ark', code: 'TIMEOUT' });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the Ark deadline active while reading the response body', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => ({
+      ok: true,
+      json: () => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('timed out', 'TimeoutError'));
+        }, { once: true });
+      }),
+    } as Response));
+    const service = new ArkEvidenceService({
+      url: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+      model: 'ep-test', credential: 'ark-test-secret', fetchFn, requestTimeoutMs: 10,
+    });
+
+    await expect(service.extract(researchBundle()))
+      .rejects.toMatchObject({ source: 'ark', code: 'TIMEOUT' });
   });
 
   it('performs exactly one POST and validates a normal JSON response', async () => {

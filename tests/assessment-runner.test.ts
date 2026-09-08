@@ -221,9 +221,11 @@ describe('AssessmentRunner', () => {
   });
 
   it('runs two Ark batches concurrently without starting a third', async () => {
+    const lines: string[] = [];
     const runtime = setup({
       searchClient: distinctSearchClient(),
       budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 16, total: 32 },
+      logger: new JsonlLogger({ write: line => lines.push(line) }, () => NOW),
     });
     let active = 0;
     let maxActive = 0;
@@ -245,6 +247,12 @@ describe('AssessmentRunner', () => {
 
     expect(maxActive).toBe(2);
     expect(runtime.dependencies.ark.extractWithAudit).toHaveBeenCalledTimes(3);
+    expect(lines.map(line => JSON.parse(line)).filter(line => line.event === 'ark_batch_started'))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ batch_index: 1 }),
+        expect.objectContaining({ batch_index: 2 }),
+        expect.objectContaining({ batch_index: 3 }),
+      ]));
   });
 
   it('continues after one Ark batch fails twice and marks the completed report partial', async () => {
@@ -329,6 +337,9 @@ describe('AssessmentRunner', () => {
       .filter(line => line.event === 'ark_batch_skipped');
     expect(skipped.map(line => line.batch_index)).toEqual([2, 3]);
     expect(skipped.every(line => line.batch_item_count > 0 && line.request_bytes > 0)).toBe(true);
+    const started = lines.map(line => JSON.parse(line))
+      .filter(line => line.event === 'ark_batch_started');
+    expect(started.map(line => line.batch_index)).toEqual([1]);
   });
 
   it.each([

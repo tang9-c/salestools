@@ -68,6 +68,7 @@ const SAFE_ERROR_MESSAGES: Readonly<Partial<Record<UpstreamSource, Readonly<Reco
   },
   ark: {
     NETWORK_ERROR: 'Ark network request failed',
+    TIMEOUT: 'Ark request timed out',
     REMOTE_HTTP_ERROR: 'Ark HTTP request failed',
     INVALID_RESPONSE: 'Ark returned an invalid response',
     EMPTY_RESPONSE: 'Ark returned empty content',

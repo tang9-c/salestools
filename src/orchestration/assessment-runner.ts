@@ -156,16 +156,33 @@ export class AssessmentRunner {
       const failedEvidenceIds: string[] = [];
       for (let start = 0; start < plan.batches.length; start += 2) {
         const group = plan.batches.slice(start, start + 2);
-        const results = await Promise.all(group.map(async (batch, offset) => ({
-          batch,
-          index: start + offset,
-          extracted: await retryOnce(
-            'ark',
-            budget,
-            () => this.options.ark.extractWithAudit(batch.bundle),
-            this.retryOptions(task, start + offset + 1, batch.bundle.items.length, batch.requestBytes),
-          ),
-        })));
+        const results = await Promise.all(group.map(async (batch, offset) => {
+          const index = start + offset;
+          const extract = (): Promise<ArkEvidenceExtraction> => {
+            try {
+              this.options.logger.logArkBatchStarted({
+                assessmentId: task.assessmentId,
+                userId: task.requestedBy,
+                batchIndex: index + 1,
+                batchItemCount: batch.bundle.items.length,
+                requestBytes: batch.requestBytes,
+              });
+            } catch {
+              // Logging must not change assessment execution.
+            }
+            return this.options.ark.extractWithAudit(batch.bundle);
+          };
+          return {
+            batch,
+            index,
+            extracted: await retryOnce(
+              'ark',
+              budget,
+              extract,
+              this.retryOptions(task, index + 1, batch.bundle.items.length, batch.requestBytes),
+            ),
+          };
+        }));
         if (this.stopIfAborted(task)) return;
         for (const { batch, index, extracted } of results) {
           if (extracted.status === 'completed') {

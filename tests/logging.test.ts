@@ -152,6 +152,22 @@ describe('JsonlLogger', () => {
     });
   });
 
+  it('records an Ark batch before its HTTP request starts', () => {
+    const lines: string[] = [];
+    const logger = new JsonlLogger({ write: line => lines.push(line) }, () => new Date('2026-08-30T00:00:00.000Z'));
+
+    logger.logArkBatchStarted({
+      assessmentId: 'assessment-1', userId: 'sales-1', batchIndex: 4,
+      batchItemCount: 16, requestBytes: 12_180,
+    });
+
+    expect(JSON.parse(lines[0]!)).toEqual({
+      event: 'ark_batch_started', timestamp: '2026-08-30T00:00:00.000Z',
+      assessment_id: 'assessment-1', user_id: 'sales-1', batch_index: 4,
+      batch_item_count: 16, request_bytes: 12_180,
+    });
+  });
+
   it('writes one JSON line for each real retry attempt', async () => {
     const lines: string[] = [];
     const logger = new JsonlLogger({ write: line => lines.push(line) });

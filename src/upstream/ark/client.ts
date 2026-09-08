@@ -25,7 +25,10 @@ export interface ArkEvidenceServiceOptions {
   fetchFn?: typeof fetch;
   signal?: AbortSignal;
   requestMaxBytes?: number;
+  requestTimeoutMs?: number;
 }
+
+const ARK_REQUEST_TIMEOUT_MS = 120_000;
 
 export interface ArkEvidenceExtraction {
   readonly evidence: EvidenceBundle;
@@ -118,11 +121,15 @@ export class ArkEvidenceService {
       throw new ArkInvalidOutputError('INPUT_TOO_LARGE', 'Ark request exceeds the UTF-8 byte budget');
     }
     const compactBundle = selection.bundle;
+    const timeoutSignal = AbortSignal.timeout(this.options.requestTimeoutMs ?? ARK_REQUEST_TIMEOUT_MS);
+    const requestSignal = this.options.signal === undefined
+      ? timeoutSignal
+      : AbortSignal.any([this.options.signal, timeoutSignal]);
     let response: Response;
     try {
       response = await this.fetchFn(this.options.url, {
         method: 'POST',
-        signal: this.options.signal,
+        signal: requestSignal,
         headers: {
           Authorization: `Bearer ${this.options.credential}`,
           'Content-Type': 'application/json',
@@ -132,6 +139,9 @@ export class ArkEvidenceService {
     } catch (error) {
       if (this.options.signal?.aborted === true) {
         throw new ArkUnavailableError('ABORTED', 'Ark request aborted', { cause: error });
+      }
+      if (timeoutSignal.aborted) {
+        throw new ArkUnavailableError('TIMEOUT', 'Ark request timed out', { cause: error });
       }
       throw new ArkUnavailableError('NETWORK_ERROR', 'Ark request failed', { cause: error });
     }
@@ -144,6 +154,12 @@ export class ArkEvidenceService {
     try {
       envelope = await response.json();
     } catch (error) {
+      if (this.options.signal?.aborted === true) {
+        throw new ArkUnavailableError('ABORTED', 'Ark request aborted', { cause: error });
+      }
+      if (timeoutSignal.aborted) {
+        throw new ArkUnavailableError('TIMEOUT', 'Ark request timed out', { cause: error });
+      }
       throw new ArkUnavailableError('INVALID_RESPONSE', 'Ark returned an invalid API response', { cause: error });
     }
 

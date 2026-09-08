@@ -61,6 +61,11 @@ describe('retryOnce', () => {
       .toBe('Ark request exceeds the configured input capacity');
   });
 
+  it('maps Ark timeouts to a fixed safe message', () => {
+    expect(safeUpstreamErrorMessage('ark', 'TIMEOUT'))
+      .toBe('Ark request timed out');
+  });
+
   it('returns the second typed error and never makes a third attempt', async () => {
     const budget = new CallBudget({ qcc: 5, doubaoSearch: 1, ark: 1, total: 5 });
     let calls = 0;
