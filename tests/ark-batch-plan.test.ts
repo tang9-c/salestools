@@ -61,6 +61,18 @@ function serializedBytes(candidate: ResearchBundle): number {
   }), 'utf8');
 }
 
+function serializedObjectBytes(candidate: ResearchBundle): number {
+  const messages = buildArkMessages(candidate).map(message => message.role === 'user'
+    ? { ...message, content: JSON.stringify(candidate) }
+    : message);
+  return Buffer.byteLength(JSON.stringify({
+    model: 'ep-test',
+    messages,
+    response_format: { type: 'json_object' },
+    temperature: 0,
+  }), 'utf8');
+}
+
 describe('planArkBatches', () => {
   it('keeps the richer duplicate web result without deduplicating QCC records that lack URLs', () => {
     const qcc = (evidenceId: string): ResearchItem => item(evidenceId, {
@@ -103,11 +115,15 @@ describe('planArkBatches', () => {
       content: index % 3 === 0 ? '招聘机械工程师，要求使用 Creo 进行参数化建模。' : null,
     })));
 
+    const objectPlan = planArkBatches(input, 12_288, serializedObjectBytes);
     const first = planArkBatches(input, 12_288, serializedBytes);
     const second = planArkBatches(input, 12_288, serializedBytes);
     const plannedIds = first.batches.flatMap(batch => batch.bundle.items.map(entry => entry.evidenceId));
 
-    expect(first.batches.length).toBeGreaterThan(8);
+    expect(first.batches.length).toBeLessThan(objectPlan.batches.length);
+    expect(first.batches.reduce((total, batch) => total + batch.requestBytes, 0))
+      .toBeLessThan(objectPlan.batches.reduce((total, batch) => total + batch.requestBytes, 0));
+    expect(plannedIds).toHaveLength(first.candidateCount);
     expect(new Set(plannedIds).size).toBe(first.candidateCount);
     expect(first.unplannedItems).toEqual([]);
     expect(first.batches.map(batch => batch.bundle.items.map(entry => entry.evidenceId)))
