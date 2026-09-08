@@ -58,7 +58,7 @@ Expected: 仅出现上述 6 个已知代码/测试文件，以及本计划或规
 Run:
 
 ```bash
-rtk npx vitest run tests/ark-adapter.test.ts tests/ark-batch-plan.test.ts tests/assessment-runner.test.ts
+rtk npm test -- --run tests/ark-adapter.test.ts tests/ark-batch-plan.test.ts tests/assessment-runner.test.ts
 ```
 
 Expected: 三个测试文件全部通过。
@@ -162,7 +162,7 @@ it('serializes every Ark research item as the fixed compact tuple', () => {
 Run:
 
 ```bash
-rtk npx vitest run tests/ark-adapter.test.ts
+rtk npm test -- --run tests/ark-adapter.test.ts
 ```
 
 Expected: 新协议测试失败，因为用户消息仍是完整 `ResearchBundle` 对象。
@@ -211,7 +211,7 @@ function compactInput(bundle: ResearchBundle) {
 Run:
 
 ```bash
-rtk npx vitest run tests/ark-adapter.test.ts
+rtk npm test -- --run tests/ark-adapter.test.ts
 ```
 
 Expected: 全部通过；真实 HTTP body 仍不超过配置字节上限，输出来源校验测试不回退。
@@ -276,7 +276,7 @@ expect(compactPlan.batches.every(batch => batch.requestBytes <= 12_288)).toBe(tr
 Run:
 
 ```bash
-rtk npx vitest run tests/ark-batch-plan.test.ts tests/evidence-validator.test.ts tests/ark-evidence-merge.test.ts
+rtk npm test -- --run tests/ark-batch-plan.test.ts tests/evidence-validator.test.ts tests/ark-evidence-merge.test.ts
 ```
 
 Expected: 全部通过；92 个候选没有遗漏或重复，虚构 ID 和被省略批次的 ID 仍被拒绝。
