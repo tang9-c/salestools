@@ -220,6 +220,33 @@ describe('AssessmentRunner', () => {
     });
   });
 
+  it('runs two Ark batches concurrently without starting a third', async () => {
+    const runtime = setup({
+      searchClient: distinctSearchClient(),
+      budgetLimits: { qcc: 8, doubaoSearch: 8, ark: 16, total: 32 },
+    });
+    let active = 0;
+    let maxActive = 0;
+    runtime.dependencies.ark = {
+      planBatches: vi.fn((bundle: ResearchBundle) => batchPlan(
+        bundle,
+        [[bundle.items[0]!], [bundle.items[1]!], bundle.items.slice(2)],
+      )),
+      extractWithAudit: vi.fn(async (bundle: ResearchBundle) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        active -= 1;
+        return auditedExtraction(bundle);
+      }),
+    };
+
+    await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
+
+    expect(maxActive).toBe(2);
+    expect(runtime.dependencies.ark.extractWithAudit).toHaveBeenCalledTimes(3);
+  });
+
   it('continues after one Ark batch fails twice and marks the completed report partial', async () => {
     const runtime = setup({
       searchClient: distinctSearchClient(),

@@ -154,32 +154,39 @@ export class AssessmentRunner {
       const plan = this.options.ark.planBatches(research);
       const successful: SuccessfulArkBatch[] = [];
       const failedEvidenceIds: string[] = [];
-      for (const [index, batch] of plan.batches.entries()) {
-        const extracted = await retryOnce(
-          'ark',
-          budget,
-          () => this.options.ark.extractWithAudit(batch.bundle),
-          this.retryOptions(task, index + 1, batch.bundle.items.length, batch.requestBytes),
-        );
+      for (let start = 0; start < plan.batches.length; start += 2) {
+        const group = plan.batches.slice(start, start + 2);
+        const results = await Promise.all(group.map(async (batch, offset) => ({
+          batch,
+          index: start + offset,
+          extracted: await retryOnce(
+            'ark',
+            budget,
+            () => this.options.ark.extractWithAudit(batch.bundle),
+            this.retryOptions(task, start + offset + 1, batch.bundle.items.length, batch.requestBytes),
+          ),
+        })));
         if (this.stopIfAborted(task)) return;
-        if (extracted.status === 'completed') {
-          successful.push({ input: batch.bundle, evidence: extracted.value.evidence });
-        } else {
-          if (extracted.error.code === 'BUDGET_EXHAUSTED') {
-            try {
-              this.options.logger.logArkBatchSkipped({
-                assessmentId: task.assessmentId,
-                userId: task.requestedBy,
-                batchIndex: index + 1,
-                batchItemCount: batch.bundle.items.length,
-                requestBytes: batch.requestBytes,
-                reason: 'BUDGET_EXHAUSTED',
-              });
-            } catch {
-              // Logging must not change assessment execution.
+        for (const { batch, index, extracted } of results) {
+          if (extracted.status === 'completed') {
+            successful.push({ input: batch.bundle, evidence: extracted.value.evidence });
+          } else {
+            if (extracted.error.code === 'BUDGET_EXHAUSTED') {
+              try {
+                this.options.logger.logArkBatchSkipped({
+                  assessmentId: task.assessmentId,
+                  userId: task.requestedBy,
+                  batchIndex: index + 1,
+                  batchItemCount: batch.bundle.items.length,
+                  requestBytes: batch.requestBytes,
+                  reason: 'BUDGET_EXHAUSTED',
+                });
+              } catch {
+                // Logging must not change assessment execution.
+              }
             }
+            failedEvidenceIds.push(...batch.bundle.items.map(item => item.evidenceId));
           }
-          failedEvidenceIds.push(...batch.bundle.items.map(item => item.evidenceId));
         }
       }
       if (successful.length === 0) {

@@ -85,18 +85,19 @@ export function planArkBatches(
   measureBytes: (bundle: ResearchBundle) => number,
 ): ArkBatchPlan {
   const bundle = ResearchBundleSchema.parse(bundleInput);
-  const candidates = deduplicate(bundle.items);
+  const planningBundle = ResearchBundleSchema.parse({ ...bundle, gaps: [] });
+  const candidates = deduplicate(planningBundle.items);
   let remaining = [...candidates];
   const batches: ArkPlannedBatch[] = [];
   const unplannedItems: ResearchItem[] = [];
 
   if (remaining.length === 0) {
-    const selection = compactResearchBundleForArk(bundle, requestMaxBytes, measureBytes);
+    const selection = compactResearchBundleForArk(planningBundle, requestMaxBytes, measureBytes);
     batches.push({ bundle: selection.bundle, selection, requestBytes: measureBytes(selection.bundle) });
   }
 
   while (remaining.length > 0) {
-    const remainingBundle = ResearchBundleSchema.parse({ ...bundle, items: remaining });
+    const remainingBundle = ResearchBundleSchema.parse({ ...planningBundle, items: remaining });
     const compacted = compactResearchBundleForArk(
       remainingBundle,
       requestMaxBytes,

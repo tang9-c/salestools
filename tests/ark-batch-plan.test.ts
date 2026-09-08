@@ -132,4 +132,16 @@ describe('planArkBatches', () => {
     expect(plan.batches[0]?.bundle.items.map(entry => entry.evidenceId)).toEqual(['fitting']);
     expect(plan.unplannedItems.map(entry => entry.evidenceId)).toEqual(['too-large']);
   });
+
+  it('does not repeat source gaps in Ark batches', () => {
+    const input = {
+      ...bundle([item('evidence-1')]),
+      gaps: ['年报信息获取失败', '融资信息获取失败'],
+    };
+
+    const plan = planArkBatches(input, 12_288, serializedBytes);
+
+    expect(plan.batches).toHaveLength(1);
+    expect(plan.batches[0]?.bundle.gaps).toEqual([]);
+  });
 });

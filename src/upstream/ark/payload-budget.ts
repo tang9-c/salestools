@@ -133,6 +133,18 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return output;
 }
 
+function truncateUtf8End(value: string, maxBytes: number): string {
+  let bytes = 0;
+  const output: string[] = [];
+  for (const codePoint of Array.from(value).reverse()) {
+    const next = utf8Bytes(codePoint);
+    if (bytes + next > maxBytes) break;
+    output.push(codePoint);
+    bytes += next;
+  }
+  return output.reverse().join('');
+}
+
 function evidenceExcerpt(
   value: string,
   maxBytes: number,
@@ -154,8 +166,18 @@ function evidenceExcerpt(
     }
   }
   if (candidates.length === 0) {
-    const head = truncateUtf8(value, maxBytes);
-    return head.length === 0 ? null : head;
+    const separator = '\n…\n';
+    const fragmentBudget = Math.floor((maxBytes - utf8Bytes(separator) * 2) / 3);
+    if (fragmentBudget <= 0) {
+      const head = truncateUtf8(value, maxBytes);
+      return head.length === 0 ? null : head;
+    }
+    const characters = Array.from(value);
+    return [
+      truncateUtf8(value, fragmentBudget),
+      truncateUtf8(characters.slice(Math.floor(characters.length / 2)).join(''), fragmentBudget),
+      truncateUtf8End(value, fragmentBudget),
+    ].join(separator);
   }
 
   candidates.sort((left, right) => left.start - right.start || left.end - right.end);

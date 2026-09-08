@@ -1558,6 +1558,31 @@ describe('ArkEvidenceService', () => {
     expect(sent.items.every(item => !item.title.endsWith('\uFFFD'))).toBe(true);
   });
 
+  it('keeps head, middle, and tail windows when long content has no known signal', () => {
+    const base = researchBundle();
+    const padding = '普通背景'.repeat(900);
+    const research: ResearchBundle = {
+      ...base,
+      items: [{
+        ...base.items[0]!,
+        title: '普通资料',
+        summary: null,
+        content: `HEAD_MARK${padding}${'MIDDLE_MARK'.repeat(8)}${padding}TAIL_MARK`,
+      }],
+    };
+    const measure = (candidate: ResearchBundle) => (
+      Buffer.byteLength(serializedRequest('ep-test', candidate), 'utf8')
+    );
+
+    const selection = compactResearchBundleForArk(research, 12_288, measure);
+    const content = selection.bundle.items[0]?.content ?? '';
+
+    expect(content).toContain('HEAD_MARK');
+    expect(content).toContain('MIDDLE_MARK');
+    expect(content).toContain('TAIL_MARK');
+    expect(measure(selection.bundle)).toBeLessThanOrEqual(12_288);
+  });
+
   it('uses the shared mapper-to-compactor audit-gap protocol and restores exact gaps after validation', async () => {
     const research = budgetResearchBundle();
     const mapped = mapQccToolResult(
