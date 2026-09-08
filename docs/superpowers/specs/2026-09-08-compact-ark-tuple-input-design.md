@@ -28,6 +28,7 @@
       "summary",
       "content",
       "publishedAt",
+      "collectedAt",
       "mentionedName",
       "entityScope",
       "entityMatch",
@@ -49,10 +50,11 @@
 8. `summary`
 9. `content`
 10. `publishedAt`
-11. `mentionedName`
-12. `entityScope`
-13. `entityMatch`
-14. `matchBasis`
+11. `collectedAt`
+12. `mentionedName`
+13. `entityScope`
+14. `entityMatch`
+15. `matchBasis`
 
 保留 `null` 占位，避免字段错位。`query`、`position` 和 `logId` 不属于可采信事实，不发送给 Ark。`sourceStatus` 和来源缺口由本地流程处理，也不放入材料消息。
 
@@ -79,7 +81,7 @@ Ark 响应仍使用现有 `EvidenceBundle`。`validateArkEvidence` 继续针对�
 自动测试覆盖：
 
 - 所有输入材料各出现一次且 evidence ID 不变；
-- 14 个数组字段顺序、`null` 占位和 `matchBasis` 完整；
+- 15 个数组字段顺序、`null` 占位和 `matchBasis` 完整；
 - `query`、`position`、`logId`、`sourceStatus` 和 `gaps` 不进入用户消息；
 - 完整请求仍不超过配置字节上限；
 - 虚构 evidence ID 仍被拒绝；
