@@ -75,6 +75,45 @@ describe('validateArkEvidence', () => {
     expect(validateArkEvidence(researchBundle(), candidate)).toEqual(candidate);
   });
 
+  it('drops a fact with an unknown string kind without rejecting the valid batch', () => {
+    const candidate = fixture();
+    const validFact = candidate.facts[0]!;
+
+    const accepted = validateArkEvidence(researchBundle(), {
+      ...candidate,
+      facts: [validFact, { ...validFact, factId: 'fact-unknown-kind', kind: '经营动态' }],
+      gaps: [],
+    });
+
+    expect(accepted.facts).toEqual([validFact]);
+    expect(accepted.gaps).toContain('模型返回 1 条未知事实类型，已忽略');
+  });
+
+  it('keeps a sourced financing summary while clearing a non-ISO date', () => {
+    const candidate = fixture();
+
+    const accepted = validateArkEvidence(researchBundle(), {
+      ...candidate,
+      financingRecords: [{
+        occurredAt: '2026-06-15',
+        typeOrRound: '战略融资',
+        disclosedAmount: null,
+        investors: [],
+        summary: '公司完成战略融资，具体金额未披露。',
+        evidenceIds: ['web-1'],
+      }],
+    });
+
+    expect(accepted.financingRecords).toEqual([{
+      occurredAt: null,
+      typeOrRound: '战略融资',
+      disclosedAmount: null,
+      investors: [],
+      summary: '公司完成战略融资，具体金额未披露。',
+      evidenceIds: ['web-1'],
+    }]);
+  });
+
   it('rejects invented evidence IDs and URLs', () => {
     const candidate = fixture();
     expectInvalid({

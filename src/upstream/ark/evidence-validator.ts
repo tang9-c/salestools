@@ -1,12 +1,58 @@
 import {
   EvidenceBundleSchema,
+  FactKindSchema,
   ResearchBundleSchema,
+  UtcTimestampSchema,
   validateEvidenceProvenance,
   type EvidenceBundle,
   type ProductKey,
   type ResearchBundle,
   type ResearchItem,
 } from '../../contracts/index.js';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeArkCandidate(candidate: unknown): unknown {
+  if (!isRecord(candidate)) {
+    return candidate;
+  }
+
+  let droppedFactCount = 0;
+  const facts = Array.isArray(candidate.facts)
+    ? candidate.facts.filter((fact) => {
+        if (!isRecord(fact) || typeof fact.kind !== 'string') {
+          return true;
+        }
+        if (FactKindSchema.safeParse(fact.kind).success) {
+          return true;
+        }
+        droppedFactCount += 1;
+        return false;
+      })
+    : candidate.facts;
+
+  const financingRecords = Array.isArray(candidate.financingRecords)
+    ? candidate.financingRecords.map((record) => {
+        if (
+          !isRecord(record) ||
+          typeof record.occurredAt !== 'string' ||
+          UtcTimestampSchema.safeParse(record.occurredAt).success
+        ) {
+          return record;
+        }
+        return { ...record, occurredAt: null };
+      })
+    : candidate.financingRecords;
+
+  const gaps =
+    droppedFactCount > 0 && Array.isArray(candidate.gaps)
+      ? [...candidate.gaps, `模型返回 ${droppedFactCount} 条未知事实类型，已忽略`]
+      : candidate.gaps;
+
+  return { ...candidate, facts, financingRecords, gaps };
+}
 
 export class ArkEvidenceValidationError extends Error {
   override readonly name = 'ArkEvidenceValidationError';
@@ -135,7 +181,7 @@ export function validateArkEvidence(researchInput: ResearchBundle, candidate: un
   let evidence: EvidenceBundle;
   try {
     research = ResearchBundleSchema.parse(researchInput);
-    evidence = EvidenceBundleSchema.parse(candidate);
+    evidence = EvidenceBundleSchema.parse(normalizeArkCandidate(candidate));
   } catch (error) {
     invalid('Ark output does not match the EvidenceBundle contract', error);
   }
