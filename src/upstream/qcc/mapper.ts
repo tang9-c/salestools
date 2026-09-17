@@ -308,7 +308,7 @@ const RecruitmentMaterialRecordSchema = z.object({
   Url: OptionalUrlSchema,
 }).passthrough();
 
-const MATERIAL_MAX_BYTES = 4096;
+const MATERIAL_MAX_BYTES = 8192;
 const MATERIAL_TOOLS = new Set(['get_financing_records', 'get_annual_reports', 'get_qualifications']);
 const RESEARCH_MATERIAL_TOOLS = new Set([
   'get_company_profile',
@@ -556,14 +556,10 @@ function safeUrl(value: string | null): string | null {
   if (value !== null) {
     try {
       const url = new URL(value);
-      const normalizedPath = url.pathname.replace(/\/+$/u, '') || '/';
-      const isCatalogue = url.origin === 'https://agent.qcc.com'
-        && normalizedPath === '/data';
       if ((url.protocol === 'https:' || url.protocol === 'http:')
         && url.hostname.length > 0
         && url.username.length === 0
-        && url.password.length === 0
-        && !isCatalogue) return url.toString();
+        && url.password.length === 0) return url.toString();
     } catch {
       // Invalid or absent upstream links remain explicitly unavailable.
     }

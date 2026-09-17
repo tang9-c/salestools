@@ -13,12 +13,6 @@ export const DirectEvidenceUrlSchema = z.string().superRefine((value, context) =
       || url.username.length > 0
       || url.password.length > 0) {
       context.addIssue({ code: 'custom', message: 'expected a credential-free HTTP(S) direct evidence URL' });
-      return;
-    }
-    const normalizedPath = url.pathname.replace(/\/+$/u, '') || '/';
-    if (url.origin === 'https://agent.qcc.com'
-      && normalizedPath === '/data') {
-      context.addIssue({ code: 'custom', message: 'QCC tool catalogue is not a direct evidence URL' });
     }
   } catch {
     context.addIssue({ code: 'custom', message: 'expected a valid direct evidence URL' });

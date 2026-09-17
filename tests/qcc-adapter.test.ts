@@ -245,7 +245,7 @@ describe('QCC mapping and formal collection', () => {
     const content = JSON.parse(mapped.items[0]!.content ?? '{}') as { material?: string };
     expect(content.material).toContain('Windchill');
     expect(content.material).toContain('Abaqus');
-    expect(Buffer.byteLength(content.material ?? '', 'utf8')).toBeLessThanOrEqual(4096);
+    expect(Buffer.byteLength(content.material ?? '', 'utf8')).toBeLessThanOrEqual(8192);
   });
 
   it('truncates unknown recruitment material instead of retaining the full response', () => {
@@ -261,7 +261,7 @@ describe('QCC mapping and formal collection', () => {
     );
     const material = (JSON.parse(mapped.items[0]!.content ?? '{}') as { material: string }).material;
 
-    expect(Buffer.byteLength(material, 'utf8')).toBeLessThanOrEqual(4096);
+    expect(Buffer.byteLength(material, 'utf8')).toBeLessThanOrEqual(8192);
     expect(material.endsWith('…')).toBe(true);
     expect(material).not.toContain('参数化建模'.repeat(3000));
   });
@@ -408,7 +408,7 @@ describe('QCC mapping and formal collection', () => {
     });
   });
 
-  it('never substitutes the QCC tool catalogue for a direct evidence URL', () => {
+  it('preserves the QCC upstream URL when it is the only available link, including the tool catalogue page', () => {
     const mapped = mapQccToolResult('risk', 'get_company_risk_scan', {
       Data: [{
         RiskCount: 1,
@@ -417,8 +417,8 @@ describe('QCC mapping and formal collection', () => {
       }],
     }, identity, new Date('2026-08-29T12:00:00.000Z'));
 
-    expect(mapped.items[0]?.url).toBeNull();
-    expect(mapped.gaps).toContain(qccUnavailableLinkAuditGap('qcc-risk-get_company_risk_scan-1'));
+    expect(mapped.items[0]?.url).toBe('https://agent.qcc.com/data');
+    expect(mapped.gaps).not.toContain(qccUnavailableLinkAuditGap('qcc-risk-get_company_risk_scan-1'));
   });
 
   it('maps the sanitized real Chinese shareholder response', () => {
@@ -501,7 +501,7 @@ describe('QCC mapping and formal collection', () => {
       expect(mapped.items).toHaveLength(1);
       const content = JSON.parse(mapped.items[0]!.content ?? '{}') as { material?: string };
       expect(content.material).toBeTypeOf('string');
-      expect(Buffer.byteLength(content.material ?? '', 'utf8')).toBeLessThanOrEqual(4096);
+      expect(Buffer.byteLength(content.material ?? '', 'utf8')).toBeLessThanOrEqual(8192);
       expect(mapped.items[0]!.url).toBeNull();
     }
     expect(financing.items[0]!.content).toContain('完成战略融资并引入产业投资者');

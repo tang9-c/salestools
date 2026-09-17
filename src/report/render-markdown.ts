@@ -70,11 +70,9 @@ function safeHttpUrl(value: string | null): string | null {
   if (value === null) return null;
   try {
     const url = new URL(value);
-    const normalizedPath = url.pathname.replace(/\/+$/u, '') || '/';
     if (!['http:', 'https:'].includes(url.protocol)
       || url.username !== ''
-      || url.password !== ''
-      || (url.origin === 'https://agent.qcc.com' && normalizedPath === '/data')) return null;
+      || url.password !== '') return null;
     return url.href;
   } catch {
     return null;

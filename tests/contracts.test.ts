@@ -360,12 +360,16 @@ describe('shared contracts', () => {
       ...researchBundle,
       items: [{ ...item, url: null }],
     }).success).toBe(false);
-    for (const unsafe of ['javascript:alert(1)', 'https://user:password@example.cn/private', 'https://agent.qcc.com/data']) {
+    for (const unsafe of ['javascript:alert(1)', 'https://user:password@example.cn/private']) {
       expect(ResearchBundleSchema.safeParse({
         ...researchBundle,
         items: [{ ...item, url: unsafe }],
       }).success).toBe(false);
     }
+    expect(ResearchBundleSchema.safeParse({
+      ...researchBundle,
+      items: [{ ...item, url: 'https://agent.qcc.com/data' }],
+    }).success).toBe(true);
   });
 
   it('validates nullable QCC URL provenance byte-for-byte', () => {
