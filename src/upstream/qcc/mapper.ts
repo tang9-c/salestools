@@ -15,6 +15,19 @@ const RawRootSchema = z.object({ Data: z.unknown() }).passthrough();
 const RawRecordSchema = z.record(z.string(), z.unknown());
 const RequiredChineseStringSchema = z.string().trim().min(1);
 const OptionalChineseStringSchema = RequiredChineseStringSchema.optional();
+// Auxiliary profile values may change representation; identity fields stay strict.
+const AuxiliaryProfileStringSchema = z.preprocess(
+  value => typeof value === 'string' && value.trim() ? value.trim() : undefined,
+  z.string().optional(),
+);
+
+function industryLabel(value: unknown): string | null {
+  if (nonBlank(value)) return value.trim();
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const labels = ['门类', '大类', '中类', '小类'].map(key => record[key]).filter(nonBlank);
+  return labels.length === 0 ? null : [...new Set(labels.map(label => label.trim()))].join(' / ');
+}
 
 function nonBlank(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -31,15 +44,15 @@ export function normalizeQccLegalName(value: string): string {
 const ChineseRegistrationSchema = z.object({
   企业名称: RequiredChineseStringSchema,
   统一社会信用代码: RequiredChineseStringSchema,
-  登记状态: OptionalChineseStringSchema,
-  注册地址: OptionalChineseStringSchema,
-  所属地区: OptionalChineseStringSchema,
-  企业类型: OptionalChineseStringSchema,
-  成立日期: OptionalChineseStringSchema,
-  注册资本: OptionalChineseStringSchema,
-  法定代表人: OptionalChineseStringSchema,
-  国标行业: OptionalChineseStringSchema,
-  人员规模: OptionalChineseStringSchema,
+  登记状态: AuxiliaryProfileStringSchema,
+  注册地址: AuxiliaryProfileStringSchema,
+  所属地区: AuxiliaryProfileStringSchema,
+  企业类型: AuxiliaryProfileStringSchema,
+  成立日期: AuxiliaryProfileStringSchema,
+  注册资本: AuxiliaryProfileStringSchema,
+  法定代表人: AuxiliaryProfileStringSchema,
+  国标行业: z.preprocess(value => industryLabel(value) ?? undefined, z.string().optional()),
+  人员规模: AuxiliaryProfileStringSchema,
 }).passthrough().refine(record => [
   record.登记状态,
   record.注册地址,
@@ -55,11 +68,11 @@ const ChineseRegistrationSchema = z.object({
 const ChineseProfileSchema = z.object({
   企业名称: RequiredChineseStringSchema,
   统一社会信用代码: OptionalChineseStringSchema,
-  企查查行业: OptionalChineseStringSchema,
-  简介: OptionalChineseStringSchema,
-  产业链概览: OptionalChineseStringSchema,
-  人员规模: OptionalChineseStringSchema,
-  网址: OptionalChineseStringSchema,
+  企查查行业: AuxiliaryProfileStringSchema,
+  简介: AuxiliaryProfileStringSchema,
+  产业链概览: AuxiliaryProfileStringSchema,
+  人员规模: AuxiliaryProfileStringSchema,
+  网址: AuxiliaryProfileStringSchema,
 }).passthrough().refine(record => [
   record.企查查行业,
   record.简介,
@@ -670,6 +683,7 @@ export function mapCompanyDetails(
   });
   const basicProfile = BasicProfileSchema.parse({
     industry: stringValueFrom(registration, ['Industry', '国标行业'])
+      ?? industryLabel(registration.国标行业)
       ?? stringValueFrom(profile, ['Industry', '企查查行业']),
     region: stringValueFrom(registration, ['Province', '所属地区']),
     company_type: stringValueFrom(registration, ['EconKind', '企业类型']),

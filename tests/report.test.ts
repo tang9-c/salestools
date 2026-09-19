@@ -156,6 +156,106 @@ const sourceStatus: ReportModel['sourceStatus'] = {
 };
 
 describe('assessment report', () => {
+  it('prioritizes recommended-product questions and covers distinct discovery topics', () => {
+    const input = evidenceBundle({ facts: [
+      fact('other', '招聘 Creo 工程师', 'recruitment', ['recruitment'], ['creo']),
+      fact('job', '招聘 Windchill 管理员', 'recruitment', ['recruitment'], ['windchill']),
+      fact('duplicate', '招聘 Windchill 管理员', 'recruitment', ['recruitment'], ['windchill']),
+      fact('tools', '使用 Windchill 管理变更', 'software_ecosystem', ['industry'], ['windchill']),
+      fact('purchase', '拟采购 Windchill', 'procurement', ['industry'], ['windchill']),
+    ] });
+    const questions = buildReportModel(identity, input, assessment(), sourceStatus).salesQuestions;
+    expect(questions).toHaveLength(3);
+    expect(questions[0]).toContain('招聘 Windchill 管理员');
+    expect(questions.join('\n')).toContain('使用 Windchill 管理变更');
+    expect(questions.join('\n')).toContain('拟采购 Windchill');
+    expect(questions.join('\n')).not.toContain('Creo');
+  });
+
+  it('ranks direct dated product evidence and retains omitted details in the appendix', () => {
+    const input = evidenceBundle({ evidence: [reference('industry'), reference('recruitment'), reference('old', { publishedAt: null }), reference('new')], facts: [
+      { ...fact('weak', '一般 Windchill 场景', 'product_scene', ['industry'], ['windchill']), strength: 'supporting' },
+      fact('old', '无日期 Windchill 场景', 'product_scene', ['old'], ['windchill']),
+      fact('new', '近期 Windchill 场景', 'product_scene', ['new'], ['windchill']),
+    ], financingRecords: [] });
+    const markdown = renderMarkdown(buildReportModel(identity, input, assessment(), sourceStatus));
+    const detail = markdown.split('## 产品切入依据')[1]!.split('## 关键证据')[0]!;
+    expect(detail.indexOf('近期 Windchill')).toBeLessThan(detail.indexOf('无日期 Windchill'));
+    expect(detail).not.toContain('一般 Windchill');
+    expect(markdown.split('## 关键证据')[1]).toContain('一般 Windchill');
+    expect(detail).not.toContain('### Feigenbaum QMS');
+  });
+
+  it('keeps technical failures out of sales actions and supplies a useful fallback', () => {
+    const result = assessment(null);
+    result.summaryReasons = [];
+    const model = buildReportModel(identity, evidenceBundle({ gaps: ['Ark 请求超时', '材料未处理'], conflicts: [], facts: [] }), result, sourceStatus);
+    expect(model.nextVerificationActions.length).toBeGreaterThan(0);
+    expect(model.nextVerificationActions.join('\n')).not.toMatch(/Ark|材料未处理/);
+    expect(renderMarkdown(model)).toContain('Ark 请求超时');
+  });
+
+  it('does not promote future dates and keeps the original facts and ratings intact', () => {
+    const input = evidenceBundle({ evidence: [reference('industry'), reference('recruitment'), reference('future', { publishedAt: '2027-01-01T00:00:00.000Z' })], facts: [
+      fact('future', '未来日期 Windchill 记录', 'recruitment', ['future'], ['windchill']),
+      fact('valid', '已发布 Windchill 记录', 'recruitment', ['recruitment'], ['windchill']),
+    ], financingRecords: [] });
+    const before = structuredClone(input);
+    const ratings = assessment();
+    const model = buildReportModel(identity, input, ratings, sourceStatus);
+    expect(model.salesQuestions[0]).toContain('已发布 Windchill 记录');
+    expect(model.products).toEqual(ratings.products);
+    expect(input).toEqual(before);
+    expect(model.facts).toHaveLength(2);
+  });
+
+  it('turns sourced recruitment facts into company-specific discovery questions even without a recommendation', () => {
+    const input = evidenceBundle({ conflicts: [], gaps: [] });
+    const model = buildReportModel(identity, input, assessment(null), sourceStatus);
+    expect(model.salesQuestions.join('\n')).toContain('招聘 Windchill PLM 管理员负责 BOM 变更');
+    const markdown = renderMarkdown(model);
+    expect(markdown).toContain('首轮访谈问题');
+    expect(markdown).toContain('暂不推荐');
+    expect(model.recommendedProduct).toBeNull();
+    expect(model.products.every(product => product.level === '待核实')).toBe(true);
+  });
+
+  it('puts concrete sourced facts and purchase uncertainty beside each product without raising its rating', () => {
+    const model = buildReportModel(identity, evidenceBundle(), assessment(), sourceStatus);
+    const markdown = renderMarkdown(model);
+    const detail = markdown.split('## 产品切入依据')[1]!.split('## 关键证据')[0]!;
+    expect(detail).toContain('招聘 Windchill PLM 管理员负责 BOM 变更');
+    expect(detail).toContain('[招聘平台](<https://jobs.example/plm-role>)');
+    expect(detail).toContain('招聘要求不等于已部署软件或采购意向');
+    expect(detail).toContain('未获得该产品的明确采购记录');
+    expect(model.products).toEqual(assessment().products);
+  });
+
+  it('does not turn weak or unconfirmed material into discovery premises', () => {
+    const input = evidenceBundle({
+      facts: [{ ...fact('weak', '已经全面使用 SolidWorks', 'recruitment', ['recruitment'], ['solidworks']), strength: 'weak' }],
+    });
+    const model = buildReportModel(identity, input, assessment(null), sourceStatus);
+    expect(model.salesQuestions.join('\n')).not.toContain('已经全面使用 SolidWorks');
+  });
+
+  it('retains untagged product facts without assigning every fact on the same page to every product', () => {
+    const input = evidenceBundle({ facts: [fact('cad', '招聘要求熟悉 Creo 参数化建模', 'recruitment', ['industry'])] });
+    const model = buildReportModel(identity, input, assessment(), sourceStatus);
+    const markdown = renderMarkdown(model);
+    const creo = markdown.split('### PTC Creo')[1]!.split('## 关键证据')[0]!;
+    const catia = markdown.includes('### Dassault Systèmes CATIA') ? markdown.split('### Dassault Systèmes CATIA')[1]! : '';
+    expect(creo).toContain('招聘要求熟悉 Creo 参数化建模');
+    expect(catia).not.toContain('招聘要求熟悉 Creo 参数化建模');
+  });
+
+  it('distinguishes financing collection failure from no disclosed financing', () => {
+    const markdown = renderMarkdown(buildReportModel(identity, evidenceBundle({
+      financingRecords: [], gaps: ['融资信息获取失败（工具不可用，未重试）'],
+    }), assessment(), sourceStatus));
+    expect(markdown).toContain('- 最近融资：融资信息获取失败');
+  });
+
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -205,6 +305,15 @@ describe('assessment report', () => {
       | CST Studio Suite | 低 | 低 | — | 未发现具体产品场景 |
       | Dassault Systèmes SolidWorks | 低 | 低 | — | 未发现具体产品场景 |
 
+      ## 产品切入依据
+
+      ### PTC Windchill
+
+      - 场景线索：招聘 Windchill PLM 管理员负责 BOM 变更（[招聘平台](<https://jobs.example/plm-role>)）
+      - 场景线索：研发组织覆盖机械、电子与软件团队（[测试公司官网](<https://company.example/industry>)）
+      - 招聘要求不等于已部署软件或采购意向。
+      - 未获得该产品的明确采购记录；采购时机需访谈核实。
+
       ## 关键证据
 
       | 事实 | 提及主体 | 归属 | 匹配 | 匹配依据 | 来源 | 时间 | 支持结论 |
@@ -218,15 +327,13 @@ describe('assessment report', () => {
 
       - 建议切入产品：PTC Windchill
       - 建议联系岗位：研发负责人、PLM/数字化负责人、产品数据或配置管理负责人
-      - 首轮访谈问题：
-        - 当前 BOM、工程变更和配置管理分别由哪些系统或表格承载？
-        - 研发、制造和质量团队之间如何同步产品数据与版本？
-        - 当前系统的扩容、替换或集成计划由谁负责，预算和决策流程是什么？
       - 主要系统壁垒：暂未发现已确认的系统壁垒
+      - 首轮访谈问题（用于核实，不代表已确认需求）：
+        - 资料记载“招聘 Windchill PLM 管理员负责 BOM 变更”（来源：PLM 管理员招聘）。该岗位对应现有工具的维护还是新增团队？实际使用的软件、席位和扩容计划分别是什么？
       - 下一步行动：
-        - 核实现有 PLM 版本待核实
-        - 核实集团采购边界尚未确认
-        - 核实预算能力待核实
+        - 访谈确认：现有 PLM 版本待核实；请相关负责人说明现状与计划
+        - 访谈确认：集团采购边界尚未确认；请相关负责人说明现状与计划
+        - 访谈确认：预算能力待核实；请相关负责人说明现状与计划
 
       ## 风险
 
@@ -487,7 +594,7 @@ describe('assessment report', () => {
     expect(model.gaps.filter(gap => gap.includes('企查查有 200 条证据未提供直接来源链接')))
       .toHaveLength(1);
     expect(model.gaps.some(gap => gap.startsWith('企查查来源链接不可用：'))).toBe(false);
-    expect(model.nextVerificationActions).toContain('核实预算能力待核实');
+    expect(model.nextVerificationActions.join('\n')).toContain('预算能力待核实');
     expect(model.nextVerificationActions.join('\n')).not.toContain('200 条证据');
     expect(markdown.match(/企查查有 200 条证据未提供直接来源链接/gu)).toHaveLength(1);
   });

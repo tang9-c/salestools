@@ -1,6 +1,6 @@
 import type { ProfileRepository } from '../../db/profile-repository.js';
 import { CallBudget } from '../../orchestration/call-budget.js';
-import { retryOnce } from '../../orchestration/retry.js';
+import { retryOnce, UpstreamError } from '../../orchestration/retry.js';
 import {
   mapCompanyCandidates,
   mapCompanyDetails,
@@ -58,6 +58,17 @@ export type CompanyProfileResult = {
 
 export function normalizeLegalName(value: string): string {
   return normalizeQccLegalName(value);
+}
+
+function profileFailureMessage(error: unknown): string {
+  if (error instanceof UpstreamError) {
+    if (error.code === 'INVALID_RESPONSE' || error.code === 'UNMAPPABLE_DATASET') {
+      return '企查查返回的数据格式暂不兼容，请检查适配器';
+    }
+    if (error.code === 'SUBJECT_MISMATCH') return '企查查返回主体与所选企业不一致，请重新确认主体';
+    if (error.code === 'AUTHENTICATION_ERROR') return '企查查认证失败，请检查凭据或权限';
+  }
+  return '企查查暂不可用，请稍后重试';
 }
 
 function candidateFromIdentity(identity: {
@@ -155,7 +166,7 @@ export class CompanyProfileService {
     if (lookup.status === 'failed') {
       return {
         sourceStatus: 'failed', candidates: [], basicProfile: null, cacheHit: false,
-        message: '企查查暂不可用，请稍后重试',
+        message: profileFailureMessage(lookup.error),
       };
     }
 
@@ -190,7 +201,7 @@ export class CompanyProfileService {
       if (result.status === 'failed') {
         return {
           sourceStatus: 'failed', candidates: [], basicProfile: null, cacheHit: false,
-          message: '企查查暂不可用，请稍后重试',
+          message: profileFailureMessage(result.error),
         };
       }
       detailPayloads.push(result.value);
@@ -206,10 +217,10 @@ export class CompanyProfileService {
         detailPayloads[3],
         requestedAt,
       );
-    } catch {
+    } catch (error) {
       return {
         sourceStatus: 'failed', candidates: [], basicProfile: null, cacheHit: false,
-        message: '企查查暂不可用，请稍后重试',
+        message: profileFailureMessage(error),
       };
     }
     this.profiles.upsert({

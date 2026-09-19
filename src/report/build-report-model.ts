@@ -19,7 +19,7 @@ const DYNAMIC_SIGNAL_MAX_AGE_MS = 7 * DAY_MS;
 export type ReportGapCategory = 'rating' | 'enhancement' | 'audit';
 
 const ARK_INPUT_CAPACITY_GAP_PATTERN = /(?:方舟输入.*容量.*\d+\/\d+|Ark 批次处理失败：\d+\/\d+|Ark 容量上限未处理证据：\d+)/u;
-const EXPLICIT_AUDIT_GAP_PATTERN = /来源|链接|url|网址|上游|获取失败|调用失败|无法结构化验证|适配器契约|工具不可用|未调用|未重试|企查查|豆包|年报|链接不可用/iu;
+const EXPLICIT_AUDIT_GAP_PATTERN = /来源|链接|url|网址|上游|获取失败|调用失败|无法结构化验证|适配器契约|工具不可用|未调用|未重试|企查查|豆包|年报|链接不可用|Ark|方舟|超时|材料未处理|证据未处理/iu;
 const ENHANCEMENT_GAP_PATTERN = /融资|预算|时机|时间|周期|决策|审批|采购计划|扩容|替换/iu;
 
 /**
@@ -74,6 +74,28 @@ const SALES_QUESTIONS: Readonly<Record<ProductKey, readonly string[]>> = {
 
 function uniqueInOrder(values: readonly string[]): string[] {
   return [...new Set(values.filter(value => value.trim().length > 0))];
+}
+
+/** Presentation order only; never used for opportunity scoring. */
+export function rankReportFacts(
+  facts: readonly EvidenceFact[],
+  references: ReadonlyMap<string, EvidenceReference>,
+  collectedAt: string,
+): EvidenceFact[] {
+  const cutoff = Date.parse(collectedAt);
+  const date = (fact: EvidenceFact): number => {
+    const dates = fact.evidenceIds.map(id => Date.parse(references.get(id)?.publishedAt ?? ''));
+    return dates.length > 0 && dates.every(value => Number.isFinite(value) && value <= cutoff)
+      ? Math.min(...dates) : Number.NEGATIVE_INFINITY;
+  };
+  const seen = new Set<string>();
+  return [...facts].sort((a, b) => Number(b.strength === 'direct') - Number(a.strength === 'direct')
+    || date(b) - date(a)).filter(fact => {
+    const key = fact.statement.normalize('NFKC').replace(/\s+/gu, '').toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function sameIdentity(left: IdentityProfile, right: IdentityProfile): boolean {
@@ -171,6 +193,30 @@ export function buildReportModel(
       : [`企查查有 ${unavailableQccLinkCount} 条证据未提供直接来源链接`]),
   ]);
   const actionableGaps = baseGaps.filter(gap => classifyReportGap(gap) !== 'audit');
+  const discoveryFacts = rankReportFacts(reliableFacts.filter(fact =>
+    ['recruitment', 'software_ecosystem', 'product_scene', 'procurement', 'quality', 'manufacturing'].includes(fact.kind)), referencesById, evidence.collectedAt)
+    .sort((a, b) => {
+      const product = assessment.recommendedProduct;
+      return product === null ? 0 : Number(b.productTags.includes(product)) - Number(a.productTags.includes(product));
+    });
+  const topics = new Set<string>();
+  const selectedDiscoveryFacts = discoveryFacts.filter(fact => {
+    const topic = fact.kind === 'procurement' ? 'timing' : fact.kind === 'software_ecosystem' ? 'ecosystem' : 'scenario';
+    if (topics.has(topic)) return false;
+    topics.add(topic);
+    return true;
+  });
+  const discoveryQuestions = selectedDiscoveryFacts.map(fact => {
+    const question = fact.kind === 'recruitment'
+      ? '该岗位对应现有工具的维护还是新增团队？实际使用的软件、席位和扩容计划分别是什么？'
+      : fact.kind === 'procurement'
+        ? '该项目目前是计划、招标、已成交还是已结束？本次可参与的范围和时间窗口是什么？'
+        : fact.kind === 'software_ecosystem'
+          ? '该系统目前覆盖哪些团队和版本？有没有明确的扩容、集成或替换问题？'
+          : '这一场景目前由什么工具和流程支撑？最需要改善的具体环节及负责岗位是什么？';
+    const sources = uniqueInOrder(fact.evidenceIds.map(id => referencesById.get(id)!.title));
+    return `资料记载“${fact.statement}”（来源：${sources.join('、')}）。${question}`;
+  });
 
   return ReportModelSchema.parse({
     legalName: identity.legalName,
@@ -186,14 +232,14 @@ export function buildReportModel(
     products: assessment.products,
     facts: reportFacts,
     evidence: evidence.evidence.filter(reference => selectedEvidenceIds.has(reference.evidenceId)),
-    salesQuestions: assessment.recommendedProduct === null
-      ? []
-      : [...SALES_QUESTIONS[assessment.recommendedProduct]],
+    salesQuestions: discoveryQuestions.length > 0
+      ? discoveryQuestions
+      : assessment.recommendedProduct === null ? [] : [...SALES_QUESTIONS[assessment.recommendedProduct]],
     risks: uniqueInOrder(reliableFacts.filter(fact => fact.kind === 'risk').map(fact => fact.statement)),
     gaps: baseGaps,
-    nextVerificationActions: baseGaps.length === 0
-      ? ['核实当前软件生态、预算和独立决策权']
-      : actionableGaps.map(gap => `核实${gap}`),
+    nextVerificationActions: actionableGaps.length === 0
+      ? ['联系研发或质量负责人，了解现有工具、具体痛点和近期项目安排']
+      : actionableGaps.map(gap => `访谈确认：${gap}；请相关负责人说明现状与计划`),
     sourceStatus,
     collectedAt: evidence.collectedAt,
     dynamicSignalFreshness: dynamicSignalFreshness(evidence.collectedAt),

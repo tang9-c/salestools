@@ -88,6 +88,12 @@ describe('buildSearchPlan', () => {
     }
   });
 
+  it('requests body content for all eight research purposes without adding searches', () => {
+    const plan = buildSearchPlan(identity);
+    expect(plan).toHaveLength(8);
+    expect(plan.every(query => query.Filter.NeedContent)).toBe(true);
+  });
+
   it('omits TimeRange from non-dynamic website, product, engineering, quality, and ecosystem queries', () => {
     const ordinary = buildSearchPlan(identity).filter(query => (
       query.purpose !== 'recruitment'

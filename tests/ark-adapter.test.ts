@@ -1849,8 +1849,8 @@ describe('ArkEvidenceService', () => {
       'qcc-ipr-get_patent_info-1',
       'qcc-operation-get_recruitment_info-1',
       'qcc-risk-get_company_risk_scan-1',
-      'search-procurement-1',
       'search-engineering-1',
+      'search-procurement-1',
       'qcc-operation-get_bidding_info-1',
       'search-software-1',
     ]);

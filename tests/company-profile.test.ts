@@ -185,7 +185,7 @@ describe('CompanyProfileService', () => {
 
     await expect(service.get(candidate.Name)).resolves.toEqual({
       sourceStatus: 'failed', candidates: [], basicProfile: null, cacheHit: false,
-      message: '企查查暂不可用，请稍后重试',
+      message: '企查查返回的数据格式暂不兼容，请检查适配器',
     });
   });
 

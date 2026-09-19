@@ -77,9 +77,6 @@ export function buildSearchPlan(identity: IdentityProfile): SearchQuery[] {
   const aliases = normalizedNames(identity).filter(name => name !== identity.legalName.normalize('NFKC').trim());
 
   return plans.map(plan => {
-    const needsContent = plan.purpose === 'recruitment'
-      || plan.purpose === 'engineering'
-      || plan.purpose === 'software_ecosystem';
     const needsOneYear = plan.purpose === 'recruitment'
       || plan.purpose === 'procurement'
       || plan.purpose === 'expansion_financing';
@@ -89,7 +86,7 @@ export function buildSearchPlan(identity: IdentityProfile): SearchQuery[] {
       Count: 10,
       Filter: {
         NeedUrl: true,
-        NeedContent: needsContent,
+        NeedContent: true,
         ...(needsOneYear ? { TimeRange: 'OneYear' as const } : {}),
       },
       purpose: plan.purpose,
