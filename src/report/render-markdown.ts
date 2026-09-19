@@ -291,6 +291,7 @@ function renderAssessment(model: ReportModel): string {
     ? '未获得可靠规模线索'
     : model.companyScaleClues.join('；');
   const summaryReasons = model.summaryReasons.length === 0 ? '暂无' : model.summaryReasons.join('；');
+  const productEvidence = productEvidenceSections(model);
   const salesRecommendationLines = recommended === null
     ? ['- 暂不推荐：当前证据不足以给出产品切入建议。']
     : [
@@ -320,9 +321,7 @@ function renderAssessment(model: ReportModel): string {
     '| --- | --- | --- | --- | --- |',
     ...model.products.map(product => `| ${PRODUCT_LABELS[product.product]} | ${product.level} | ${product.confidence} | ${formatValues(product.reasons)} | ${formatValues([...product.blockers, ...product.gaps])} |`),
     '',
-    '## 产品切入依据',
-    '',
-    ...productEvidenceSections(model),
+    ...(productEvidence.length === 0 ? [] : ['## 产品切入依据', '', ...productEvidence]),
     '## 关键证据',
     '',
     '| 事实 | 提及主体 | 归属 | 匹配 | 匹配依据 | 来源 | 时间 | 支持结论 |',

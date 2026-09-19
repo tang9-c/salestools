@@ -32,7 +32,7 @@ const SuccessfulResponseSchema = z.object({
   Code: z.literal(0),
   Message: z.string().optional(),
   LogId: z.string().nullable().optional(),
-  Result: z.object({ WebResults: z.array(WebResultSchema) }).passthrough(),
+  Result: z.object({ WebResults: z.array(z.unknown()) }).passthrough(),
 }).passthrough();
 
 export interface DoubaoWebResult {
@@ -180,8 +180,15 @@ export function mapDoubaoWebResponse(payload: unknown): DoubaoWebResult[] {
   const parsed = SuccessfulResponseSchema.safeParse(payload);
   if (!parsed.success) throw invalidResponse('Doubao search response has an unsupported shape', parsed.error);
   const logId = nullableText(parsed.data.LogId);
+  const results = parsed.data.Result.WebResults.flatMap(result => {
+    const candidate = WebResultSchema.safeParse(result);
+    return candidate.success ? [candidate.data] : [];
+  });
+  if (parsed.data.Result.WebResults.length > 0 && results.length === 0) {
+    throw invalidResponse('Doubao search response contains no usable web results');
+  }
 
-  return parsed.data.Result.WebResults.map(result => {
+  return results.map(result => {
     const summary = nullableText(result.Summary);
     const content = nullableText(result.Content);
     const url = new URL(result.Url);

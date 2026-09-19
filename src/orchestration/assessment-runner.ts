@@ -154,6 +154,7 @@ export class AssessmentRunner {
       const plan = this.options.ark.planBatches(research);
       const successful: SuccessfulArkBatch[] = [];
       const failedEvidenceIds: string[] = [];
+      const failedBatchCodes: string[] = [];
       for (let start = 0; start < plan.batches.length; start += 2) {
         const group = plan.batches.slice(start, start + 2);
         const results = await Promise.all(group.map(async (batch, offset) => {
@@ -188,6 +189,7 @@ export class AssessmentRunner {
           if (extracted.status === 'completed') {
             successful.push({ input: batch.bundle, evidence: extracted.value.evidence });
           } else {
+            failedBatchCodes.push(extracted.error.code);
             if (extracted.error.code === 'BUDGET_EXHAUSTED') {
               try {
                 this.options.logger.logArkBatchSkipped({
@@ -213,8 +215,12 @@ export class AssessmentRunner {
 
       try {
         const failedBatchCount = plan.batches.length - successful.length;
+        const failedCodeCounts = new Map<string, number>();
+        for (const code of failedBatchCodes) failedCodeCounts.set(code, (failedCodeCounts.get(code) ?? 0) + 1);
         const batchGaps = [
           ...(failedBatchCount === 0 ? [] : [`Ark 批次处理失败：${failedBatchCount}/${plan.batches.length}`]),
+          ...(failedCodeCounts.size === 0 ? [] : [`Ark 批次失败原因：${[...failedCodeCounts]
+            .map(([code, count]) => `${code}=${count}`).join('，')}`]),
           ...(plan.unplannedItems.length === 0
             ? []
             : [`Ark 容量上限未处理证据：${plan.unplannedItems.length}`]),

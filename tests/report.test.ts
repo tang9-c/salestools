@@ -195,6 +195,25 @@ describe('assessment report', () => {
     expect(renderMarkdown(model)).toContain('Ark 请求超时');
   });
 
+  it('omits the product-evidence section when no product has concrete evidence', () => {
+    const model = buildReportModel(identity, evidenceBundle({ facts: [], conflicts: [], gaps: [] }), assessment(null), sourceStatus);
+    expect(renderMarkdown(model)).not.toContain('## 产品切入依据');
+  });
+
+  it('keeps model and batch diagnostics out of sales actions', () => {
+    const gaps = [
+      '模型未从该材料提炼出可采信事实：qcc-operation-financing-1',
+      '多批次行业标签冲突：智能科技 / 飞行器研发',
+      'Ark 批次失败原因：TIMEOUT=2，INVALID_EVIDENCE=1',
+    ];
+    const model = buildReportModel(identity, evidenceBundle({ facts: [], conflicts: [], gaps }), assessment(null), sourceStatus);
+    expect(model.nextVerificationActions.join('\n')).not.toMatch(/模型未|多批次|Ark/);
+    const markdown = renderMarkdown(model);
+    expect(markdown).toContain(gaps[0]);
+    expect(markdown).toContain(gaps[1]);
+    expect(markdown).toContain('Ark 批次失败原因：TIMEOUT=2');
+  });
+
   it('does not promote future dates and keeps the original facts and ratings intact', () => {
     const input = evidenceBundle({ evidence: [reference('industry'), reference('recruitment'), reference('future', { publishedAt: '2027-01-01T00:00:00.000Z' })], facts: [
       fact('future', '未来日期 Windchill 记录', 'recruitment', ['future'], ['windchill']),
@@ -443,7 +462,8 @@ describe('assessment report', () => {
     ['方舟输入容量已裁剪：6/12', 'audit'],
     ['Ark 批次处理失败：1/3', 'audit'],
     ['Ark 容量上限未处理证据：7', 'audit'],
-    ['模型未从该材料提炼出可采信事实：qcc-recruitment-1', 'rating'],
+    ['模型未从该材料提炼出可采信事实：qcc-recruitment-1', 'audit'],
+    ['多批次行业标签冲突：智能科技 / 飞行器研发', 'audit'],
     ['近期融资情况待核实', 'enhancement'],
     ['融资信息获取失败', 'audit'],
     ['融资结果无法结构化验证（适配器契约缺口）', 'audit'],

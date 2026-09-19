@@ -282,6 +282,7 @@ describe('AssessmentRunner', () => {
       resultAudit: { evidenceSelection: { batchCount: 3, successfulBatchCount: 2, failedBatchCount: 1 } },
     });
     expect(stored.reportMarkdown).toContain('Ark 批次处理失败：1/3');
+    expect(stored.reportMarkdown).toContain('Ark 批次失败原因：NETWORK\\_ERROR=1');
   });
 
   it('fails the assessment when every planned Ark batch fails', async () => {

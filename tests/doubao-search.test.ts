@@ -376,6 +376,19 @@ describe('DoubaoSearchClient', () => {
     }));
   });
 
+  it('keeps valid search results when another result has a blank title', () => {
+    const payload = {
+      Code: 0,
+      Result: { WebResults: [
+        { Title: '', Url: 'https://invalid.example/item', SortId: 1 },
+        { Title: '有效质量认证结果', Url: 'https://example.cn/quality', SortId: 2 },
+      ] },
+    };
+    const items = mapDoubaoSearchResponse(payload, buildSearchPlan(identity)[2], new Date('2026-09-19T00:00:00Z'));
+    expect(items).toHaveLength(1);
+    expect(items[0]?.title).toBe('有效质量认证结果');
+  });
+
   it('confirms a result on an official domain even when the page omits the company name', () => {
     const item = mapDoubaoSearchResponse(
       searchPayload({ Url: 'https://www.example.cn/products', Content: '产品与技术中心' }),
