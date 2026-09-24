@@ -24,6 +24,8 @@ import { QccGateway } from './upstream/qcc/client.js';
 import { CompanyProfileService } from './upstream/qcc/profile-service.js';
 import { DoubaoSearchClient } from './upstream/search/doubao-client.js';
 import { UpstreamError } from './orchestration/retry.js';
+import { CompanyQuestionService } from './orchestration/company-question-service.js';
+import { CompanyAnswerClient } from './upstream/ark/company-answer.js';
 
 type QccDependency = Pick<QccGateway, 'call' | 'close'>;
 type SearchDependency = Pick<DoubaoSearchClient, 'search'>
@@ -37,6 +39,8 @@ export interface ApplicationOverrides {
   searchClient?: SearchDependency;
   ark?: ArkDependency;
   contactExtractor?: ContactExtractorDependency;
+  companyAnswer?: Pick<CompanyAnswerClient, 'answer'>;
+  questionTimeoutMs?: number;
   logSink?: LogSink;
   now?: () => Date;
 }
@@ -140,6 +144,28 @@ export function createApplication(
     maxTotalCalls: config.maxTotalUpstreamCalls,
     now: overrides.now,
   });
+  const questionService = new CompanyQuestionService({
+    profiles, assessments, profileTtlDays: config.profileCacheTtlDays,
+    now: overrides.now,
+    requestTimeoutMs: overrides.questionTimeoutMs,
+    qccFactory: signal => overrides.qccGateway === undefined
+      ? new QccGateway({
+        urls: {
+          company: config.qccMcpCompanyUrl, risk: config.qccMcpRiskUrl,
+          ipr: config.qccMcpIprUrl, operation: config.qccMcpOperationUrl,
+        },
+        apiKey: config.qccApiKey, signal,
+      })
+      : { call: overrides.qccGateway.call.bind(overrides.qccGateway), close: async () => undefined },
+    searchFactory: signal => overrides.searchClient ?? new DoubaoSearchClient({
+      url: config.doubaoSearchApiUrl, apiKey: config.doubaoSearchApiKey,
+      now: overrides.now, signal,
+    }),
+    answerFactory: signal => overrides.companyAnswer ?? new CompanyAnswerClient({
+      url: config.arkApiUrl, model: config.arkModel, credential: config.arkCredential,
+      requestMaxBytes: config.arkRequestMaxBytes, signal,
+    }),
+  });
   const qccResearch = new QccResearchCollector(qccGateway, overrides.now);
   const runner = new AssessmentRunner({
     assessments,
@@ -175,6 +201,7 @@ export function createApplication(
     getAssessmentStatus: input => activity.track(() => assessmentService.status(input)),
     getAssessmentReport: input => activity.track(() => assessmentService.report(input)),
     getContacts: input => activity.track(() => contactService.get(input)),
+    askCompany: input => activity.track(() => questionService.ask(input, abortController.signal)),
   });
   const app = createHttpApp(config, token => tokenService.verify(token), servicesFor);
 

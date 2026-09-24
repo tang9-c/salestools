@@ -43,6 +43,9 @@ export function initializeDatabase(database: DatabaseSync): DatabaseSync {
   if (!assessmentColumns.some(column => column.name === 'result_json')) {
     database.exec('ALTER TABLE assessments ADD COLUMN result_json TEXT');
   }
+  if (!assessmentColumns.some(column => column.name === 'evidence_snapshot_json')) {
+    database.exec('ALTER TABLE assessments ADD COLUMN evidence_snapshot_json TEXT');
+  }
   migrateLegacyIndustryAudits(database);
   return database;
 }

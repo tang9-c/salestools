@@ -27,6 +27,8 @@ function noOpServices(): McpServices {
     getAssessmentStatus: async () => processing,
     getAssessmentReport: async () => processing,
     getContacts: async () => ({ companies: [], warnings: [], collectedAt: new Date(0).toISOString() }),
+    askCompany: async () => ({ status: 'insufficient', legalName: 'unused', markdown: 'unused',
+      usedFreshResearch: false, collectedAt: null, sources: [] }),
   };
 }
 

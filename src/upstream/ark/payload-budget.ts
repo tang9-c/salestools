@@ -263,6 +263,7 @@ const SEARCH_PRIORITY: Readonly<Record<SearchQuery['purpose'], number>> = {
   official_products: 4,
   expansion_financing: 5,
   quality: 6,
+  question: 7,
 };
 
 const LINKED_SEARCH_DIVERSITY_PRIORITY: Readonly<Record<SearchQuery['purpose'], number>> = {
@@ -273,6 +274,7 @@ const LINKED_SEARCH_DIVERSITY_PRIORITY: Readonly<Record<SearchQuery['purpose'], 
   quality: 4,
   procurement: 5,
   expansion_financing: 6,
+  question: 7,
 };
 
 function stableSort<T>(values: readonly T[], priority: (value: T) => number): T[] {

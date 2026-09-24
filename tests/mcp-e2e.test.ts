@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import type { ContactExtractionCandidate, ResearchBundle, ResearchItem } from '../src/contracts/index.js';
 import { AssessmentRepository } from '../src/db/assessment-repository.js';
@@ -374,5 +374,133 @@ describe('MCP HTTP simulated end-to-end', () => {
       runtime = undefined;
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it('answers a SolidWorks follow-up from a generated evidence snapshot without changing the report', async () => {
+    const database = initializeDatabase(new DatabaseSync(':memory:'));
+    const search = vi.fn(async (query: SearchQuery): Promise<ResearchItem[]> => [{
+      ...fakeSearchItem(query),
+      title: `${LEGAL_NAME}招聘 SolidWorks 工程师`,
+      summary: `${LEGAL_NAME}岗位要求熟练使用 SolidWorks`,
+      publishedAt: '2026-08-01T00:00:00.000Z',
+    }]);
+    const answer = vi.fn(async () => ({ claims: [{
+      category: 'supported' as const,
+      text: '招聘岗位要求 SolidWorks 技能；这不能证明已有采购计划。',
+      evidenceIds: ['search-recruitment'],
+    }], omittedCount: 0, includedEvidenceIds: ['search-recruitment'] }));
+    runtime = createApplication(loadConfig(env), {
+      database,
+      qccGateway: { call: async (_server, tool) => fakeQccPayload(tool), close: async () => undefined },
+      searchClient: { search }, companyAnswer: { answer },
+      ark: {
+        planBatches: fakeArkPlan,
+        extractWithAudit: async bundle => {
+          const result = fakeArkExtraction(bundle);
+          const source = bundle.items.find(item => item.evidenceId === 'search-recruitment');
+          if (source === undefined) return result;
+          return {
+            ...result,
+            evidence: {
+              ...result.evidence,
+              evidence: [{
+                evidenceId: source.evidenceId, title: source.title, url: source.url,
+                originalPublisher: source.originalPublisher, originalDomain: source.originalDomain,
+                publishedAt: source.publishedAt, collectedAt: source.collectedAt,
+                mentionedName: source.mentionedName, entityScope: source.entityScope,
+                entityMatch: source.entityMatch, matchBasis: source.matchBasis,
+              }],
+              facts: [{
+                factId: 'solidworks-hiring', statement: '招聘岗位要求 SolidWorks 技能',
+                kind: 'recruitment' as const, productTags: ['solidworks' as const],
+                strength: 'direct' as const, evidenceIds: [source.evidenceId],
+                entityScope: source.entityScope, entityMatch: source.entityMatch,
+                matchBasis: source.matchBasis,
+              }],
+            },
+          };
+        },
+      },
+      logSink: { write: () => undefined },
+    });
+    const token = runtime.tokenService.create('sales');
+    const listener = await runtime.listen(0, '127.0.0.1');
+    const endpoint = `http://127.0.0.1:${(listener.address() as AddressInfo).port}/mcp`;
+    const client = await connect(endpoint, token, 'follow-up-e2e');
+    clients.push(client);
+
+    expect((await call(client, 'get_company_profile', { query: LEGAL_NAME })).source_status).toBe('completed');
+    const task = await call(client, 'submit_assessment', { legal_name: LEGAL_NAME, credit_code: CREDIT_CODE });
+    const id = String(task.assessment_id);
+    let status: Record<string, unknown> = {};
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      status = await call(client, 'get_assessment_status', { assessment_id: id });
+      if (status.status !== 'processing') break;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    expect(status.status).toBe('completed');
+    const before = await call(client, 'get_assessment_report', { assessment_id: id });
+    const storedBefore = new AssessmentRepository(database).get(id);
+    expect(storedBefore?.evidenceSnapshot?.items.map(item => item.evidenceId)).toContain('search-recruitment');
+    const searchCalls = search.mock.calls.length;
+    const followUp = await call(client, 'ask_company', {
+      legal_name: LEGAL_NAME, credit_code: CREDIT_CODE,
+      question: '这条 SolidWorks 招聘支持什么结论？', assessment_id: id,
+    });
+    expect(followUp).toMatchObject({ status: 'answered', used_fresh_research: false });
+    expect(String(followUp.markdown)).toContain('不能证明已有采购计划');
+    expect(search.mock.calls).toHaveLength(searchCalls);
+    expect(answer).toHaveBeenCalledTimes(1);
+    expect(await call(client, 'get_assessment_report', { assessment_id: id })).toEqual(before);
+    expect(new AssessmentRepository(database).get(id)).toEqual(storedBefore);
+  });
+
+  it('answers with only a confirmed profile, degrades a failed source, and times out a later request', async () => {
+    let hangSearch = false;
+    let sawAbort = false;
+    const search = vi.fn((query: SearchQuery, signal?: AbortSignal): Promise<ResearchItem[]> => {
+      if (!hangSearch) return Promise.resolve([fakeSearchItem(query)]);
+      return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => {
+        sawAbort = true;
+        reject(new Error('aborted'));
+      }, { once: true }));
+    });
+    const answer = vi.fn(async () => ({
+      claims: [{ category: 'supported' as const, text: '公开资料展示招聘信息',
+        evidenceIds: ['search-recruitment'] }],
+      omittedCount: 0, includedEvidenceIds: ['search-recruitment'],
+    }));
+    runtime = createApplication(loadConfig(env), {
+      qccGateway: {
+        call: async (_server, tool) => {
+          if (tool === 'get_recruitment_info') throw new Error('QCC unavailable');
+          return fakeQccPayload(tool);
+        },
+        close: async () => undefined,
+      },
+      searchClient: { search }, companyAnswer: { answer },
+      questionTimeoutMs: 100,
+      logSink: { write: () => undefined },
+    });
+    const token = runtime.tokenService.create('sales');
+    const listener = await runtime.listen(0, '127.0.0.1');
+    const endpoint = `http://127.0.0.1:${(listener.address() as AddressInfo).port}/mcp`;
+    const client = await connect(endpoint, token, 'profile-only-e2e');
+    clients.push(client);
+    expect((await call(client, 'get_company_profile', { query: LEGAL_NAME })).source_status).toBe('completed');
+    const first = await call(client, 'ask_company', {
+      legal_name: LEGAL_NAME, credit_code: CREDIT_CODE, question: '最近招聘有什么情况？',
+    });
+    expect(first.status).toBe('answered');
+    expect(String(first.markdown)).toContain('企查查定向查询失败');
+    expect(first.used_fresh_research).toBe(true);
+    hangSearch = true;
+    const second = await call(client, 'ask_company', {
+      legal_name: LEGAL_NAME, credit_code: CREDIT_CODE, question: '最近发布了什么产品？',
+    });
+    expect(second.status).toBe('failed');
+    expect(String(second.markdown)).toContain('超时');
+    expect(sawAbort).toBe(true);
+    expect(answer).toHaveBeenCalledTimes(1);
   });
 });

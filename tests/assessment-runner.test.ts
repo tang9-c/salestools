@@ -501,6 +501,39 @@ describe('AssessmentRunner', () => {
     });
   });
 
+  it('stores only report-referenced research and related facts in the compact snapshot', async () => {
+    const runtime = setup();
+    runtime.dependencies.ark = {
+      planBatches: vi.fn((bundle: ResearchBundle) => batchPlan(bundle, [bundle.items])),
+      extractWithAudit: vi.fn(async (bundle: ResearchBundle) => {
+        const source = bundle.items[0]!;
+        return auditedExtraction(bundle, {
+          ...evidence(bundle),
+          evidence: [{
+            evidenceId: source.evidenceId, title: source.title, url: source.url,
+            originalPublisher: source.originalPublisher, originalDomain: source.originalDomain,
+            publishedAt: source.publishedAt, collectedAt: source.collectedAt,
+            mentionedName: source.mentionedName, entityScope: source.entityScope,
+            entityMatch: source.entityMatch, matchBasis: source.matchBasis,
+          }],
+          facts: [{
+            factId: 'software-use', statement: '岗位要求 SolidWorks', kind: 'recruitment',
+            productTags: ['solidworks'], strength: 'direct', evidenceIds: [source.evidenceId],
+            entityScope: 'legal_entity', entityMatch: 'confirmed', matchBasis: ['法定名称一致'],
+          }],
+        });
+      }),
+    };
+
+    await new AssessmentRunner(runtime.dependencies).run(runtime.task.assessmentId);
+
+    const snapshot = runtime.assessments.get(runtime.task.assessmentId)?.evidenceSnapshot;
+    expect(snapshot?.items.map(entry => entry.evidenceId)).toEqual(['qcc-profile']);
+    expect(snapshot?.items[0]?.excerpt).toContain('机器人研发');
+    expect(snapshot?.facts.map(fact => fact.factId)).toEqual(['software-use']);
+    expect(JSON.stringify(snapshot)).not.toContain('doubao_search-web');
+  });
+
   it('keeps the completed report and result audit when the decision log sink throws', async () => {
     const write = vi.fn((line: string) => {
       if (line.includes('"assessment_decision"')) throw new Error('log sink unavailable');

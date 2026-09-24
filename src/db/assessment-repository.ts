@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   AssessmentResultAuditSchema,
+  EvidenceSnapshotSchema,
   OpportunityLevelSchema,
   ProductKeySchema,
   ReportModelSchema,
@@ -10,6 +11,7 @@ import {
   type ProductKey,
   type ReportModel,
   type AssessmentResultAudit,
+  type EvidenceSnapshot,
 } from '../contracts/index.js';
 
 export class AssessmentNotFoundError extends Error {
@@ -41,6 +43,7 @@ export interface AssessmentCompletion {
   sourceStatus: ReportModel['sourceStatus'];
   collectedAt: string;
   resultAudit: AssessmentResultAudit;
+  evidenceSnapshot?: EvidenceSnapshot | null;
 }
 
 export interface AssessmentRecord {
@@ -55,6 +58,7 @@ export interface AssessmentRecord {
   overallOpportunity: OpportunityLevel | null;
   sourceStatus: ReportModel['sourceStatus'] | null;
   resultAudit: AssessmentResultAudit | null;
+  evidenceSnapshot: EvidenceSnapshot | null;
   collectedAt: string | null;
   errorMessage: string | null;
   createdAt: string;
@@ -82,6 +86,7 @@ interface AssessmentRow {
   overall_opportunity: string | null;
   source_status_json: string | null;
   result_json: string | null;
+  evidence_snapshot_json: string | null;
   collected_at: string | null;
   error_message: string | null;
   created_at: string;
@@ -105,6 +110,7 @@ function toRecord(row: AssessmentRow): AssessmentRecord {
     overallOpportunity: row.overall_opportunity === null ? null : OpportunityLevelSchema.parse(row.overall_opportunity),
     sourceStatus: row.source_status_json === null ? null : reportSourceStatusSchema.parse(JSON.parse(row.source_status_json)),
     resultAudit: row.result_json === null ? null : AssessmentResultAuditSchema.parse(JSON.parse(row.result_json)),
+    evidenceSnapshot: row.evidence_snapshot_json === null ? null : EvidenceSnapshotSchema.parse(JSON.parse(row.evidence_snapshot_json)),
     collectedAt: row.collected_at === null ? null : UtcTimestampSchema.parse(row.collected_at),
     errorMessage: row.error_message,
     createdAt: UtcTimestampSchema.parse(row.created_at),
@@ -176,6 +182,18 @@ export class AssessmentRepository {
     return row === undefined ? null : toRecord(row);
   }
 
+  findLatestCompletedWithSnapshot(creditCode: string, now: Date, ttlDays: number): AssessmentRecord | null {
+    const row = this.database.prepare(`
+      SELECT * FROM assessments
+      WHERE credit_code = ? AND status = 'completed'
+        AND evidence_snapshot_json IS NOT NULL AND collected_at >= ?
+        AND completed_at IS NOT NULL AND completed_at >= ?
+      ORDER BY completed_at DESC, created_at DESC
+      LIMIT 1
+    `).get(creditCode, ttlCutoff(now, ttlDays), ttlCutoff(now, ttlDays)) as unknown as AssessmentRow | undefined;
+    return row === undefined ? null : toRecord(row);
+  }
+
   completeAssessment(assessmentId: string, result: AssessmentCompletion, now: Date): AssessmentRecord {
     const completedAt = now.toISOString();
     const recommendedProduct = result.recommendedProduct === null
@@ -184,6 +202,8 @@ export class AssessmentRepository {
     const overallOpportunity = OpportunityLevelSchema.parse(result.overallOpportunity);
     const sourceStatus = reportSourceStatusSchema.parse(result.sourceStatus);
     const resultAudit = AssessmentResultAuditSchema.parse(result.resultAudit);
+    const evidenceSnapshot = result.evidenceSnapshot === undefined || result.evidenceSnapshot === null
+      ? null : EvidenceSnapshotSchema.parse(result.evidenceSnapshot);
     const collectedAt = UtcTimestampSchema.parse(result.collectedAt);
     const update = this.database.prepare(`
       UPDATE assessments SET
@@ -193,6 +213,7 @@ export class AssessmentRepository {
         overall_opportunity = ?,
         source_status_json = ?,
         result_json = ?,
+        evidence_snapshot_json = ?,
         collected_at = ?,
         error_message = NULL,
         completed_at = ?,
@@ -205,6 +226,7 @@ export class AssessmentRepository {
       overallOpportunity,
       JSON.stringify(sourceStatus),
       JSON.stringify(resultAudit),
+      evidenceSnapshot === null ? null : JSON.stringify(evidenceSnapshot),
       collectedAt,
       completedAt,
       completedAt,

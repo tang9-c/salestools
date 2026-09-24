@@ -3,6 +3,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   AssessmentIdInputSchema,
+  AskCompanyInputSchema,
   CompanyProfileInputSchema,
   GetContactsInputSchema,
   SubmitAssessmentInputSchema,
@@ -103,6 +104,16 @@ const expectedContacts = {
   warnings: [],
   collected_at: collectedAt,
 };
+const companyAnswer = {
+  status: 'answered' as const, legalName: '测试制造有限公司',
+  markdown: '# 招聘证据说明', usedFreshResearch: false, collectedAt,
+  sources: [{ title: '招聘信息', source: 'qcc' as const, url: null, publishedAt: null }],
+};
+const expectedCompanyAnswer = {
+  status: 'answered', legal_name: '测试制造有限公司', markdown: '# 招聘证据说明',
+  used_fresh_research: false, collected_at: collectedAt,
+  sources: [{ title: '招聘信息', source: 'qcc', url: null, published_at: null }],
+};
 
 function services(overrides: Partial<McpServices> = {}): McpServices {
   return {
@@ -111,6 +122,7 @@ function services(overrides: Partial<McpServices> = {}): McpServices {
     getAssessmentStatus: async () => status,
     getAssessmentReport: async () => report,
     getContacts: async () => contacts,
+    askCompany: async () => companyAnswer,
     ...overrides,
   };
 }
@@ -151,15 +163,18 @@ describe('MCP tool schemas', () => {
     expect(GetContactsInputSchema.safeParse({ query: 'x'.repeat(49) }).success).toBe(false);
     expect(GetContactsInputSchema.safeParse({ query: '测试', region_hint: 'x'.repeat(17) }).success).toBe(false);
     expect(GetContactsInputSchema.safeParse({ query: '测试', force_refresh: true }).success).toBe(false);
+    expect(AskCompanyInputSchema.safeParse({ legal_name: '测试制造有限公司', credit_code: '91310000TEST000001', question: 'SolidWorks 招聘说明什么？' }).success).toBe(true);
+    expect(AskCompanyInputSchema.safeParse({ legal_name: '测试制造有限公司', credit_code: '91310000TEST000001', question: '', extra: true }).success).toBe(false);
+    expect(AskCompanyInputSchema.safeParse({ legal_name: '测试制造有限公司', credit_code: '91310000TEST000001', question: 'x', assessment_id: 'bad' }).success).toBe(false);
   });
 
-  it('registers exactly five tools with selection rules and cache metadata only where allowed', async () => {
+  it('registers exactly six tools with selection rules and cache metadata only where allowed', async () => {
     const connection = await connectedClient(services());
     const listed = await connection.client.listTools();
     const byName = new Map(listed.tools.map(tool => [tool.name, tool]));
 
     expect([...byName.keys()].sort()).toEqual([
-      'get_assessment_report', 'get_assessment_status', 'get_company_profile', 'get_contacts', 'submit_assessment',
+      'ask_company', 'get_assessment_report', 'get_assessment_status', 'get_company_profile', 'get_contacts', 'submit_assessment',
     ]);
     expect(byName.get('get_company_profile')?.description).toMatch(/default|默认|ambiguous|模糊/i);
     expect(byName.get('submit_assessment')?.description).toMatch(/explicit|明确|formal|正式/i);
@@ -189,7 +204,7 @@ describe('MCP tool schemas', () => {
     await connection.server.close();
   });
 
-  it('returns matching text and structured content for all five output contracts', async () => {
+  it('returns matching text and structured content for all six output contracts', async () => {
     const observedInputs: unknown[] = [];
     const connection = await connectedClient(services({
       getCompanyProfile: async input => {
@@ -212,6 +227,10 @@ describe('MCP tool schemas', () => {
         observedInputs.push(input);
         return contacts;
       },
+      askCompany: async input => {
+        observedInputs.push(input);
+        return companyAnswer;
+      },
     }));
     const calls = [
       ['get_company_profile', { query: '测试公司', region_hint: '上海' }, expectedProfile],
@@ -219,6 +238,7 @@ describe('MCP tool schemas', () => {
       ['get_assessment_status', { assessment_id: assessmentId }, expectedStatus],
       ['get_assessment_report', { assessment_id: assessmentId }, expectedReport],
       ['get_contacts', { query: '测试制造', region_hint: '上海' }, expectedContacts],
+      ['ask_company', { legal_name: '测试制造有限公司', credit_code: '91310000TEST000001', question: 'SolidWorks 招聘说明什么？', assessment_id: assessmentId }, expectedCompanyAnswer],
     ] as const;
 
     for (const [name, args, expected] of calls) {
@@ -234,6 +254,7 @@ describe('MCP tool schemas', () => {
       { assessmentId },
       { assessmentId },
       { query: '测试制造', regionHint: '上海' },
+      { legalName: '测试制造有限公司', creditCode: '91310000TEST000001', question: 'SolidWorks 招聘说明什么？', assessmentId },
     ]);
 
     await connection.client.close();
@@ -255,6 +276,30 @@ describe('MCP tool schemas', () => {
     expect(result.isError).toBe(true);
     expect(calls).toBe(0);
 
+    await connection.client.close();
+    await connection.server.close();
+  });
+
+  it('returns normal structured results for insufficient and failed follow-ups', async () => {
+    let calls = 0;
+    const connection = await connectedClient(services({
+      askCompany: async () => {
+        calls += 1;
+        return { status: calls === 1 ? 'insufficient' : 'failed',
+          legalName: '测试制造有限公司', markdown: calls === 1 ? '证据不足' : '追问失败',
+          usedFreshResearch: true, collectedAt: null, sources: [] };
+      },
+    }));
+    const args = { legal_name: '测试制造有限公司', credit_code: '91310000TEST000001', question: '最近有何扩张？' };
+    for (const status of ['insufficient', 'failed']) {
+      const result = await connection.client.callTool({ name: 'ask_company', arguments: args });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ status, legal_name: '测试制造有限公司' });
+      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(result.structuredContent) }]);
+    }
+    const invalid = await connection.client.callTool({ name: 'ask_company', arguments: { ...args, extra: true } });
+    expect(invalid.isError).toBe(true);
+    expect(calls).toBe(2);
     await connection.client.close();
     await connection.server.close();
   });

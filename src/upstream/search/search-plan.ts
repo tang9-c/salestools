@@ -23,6 +23,7 @@ export const SearchQuerySchema = DoubaoWebSearchRequestSchema.extend({
     'recruitment',
     'procurement',
     'expansion_financing',
+    'question',
   ]),
   subjectLegalName: z.string().min(1),
   subjectAliases: z.array(z.string().min(1)),
@@ -40,7 +41,7 @@ export const SearchQuerySchema = DoubaoWebSearchRequestSchema.extend({
   if (isDynamic && query.Filter.TimeRange !== 'OneYear') {
     context.addIssue({ code: 'custom', message: 'dynamic queries require OneYear' });
   }
-  if (!isDynamic && query.Filter.TimeRange !== undefined) {
+  if (!isDynamic && query.purpose !== 'question' && query.Filter.TimeRange !== undefined) {
     context.addIssue({ code: 'custom', message: 'non-dynamic queries must omit TimeRange' });
   }
 });
@@ -97,4 +98,27 @@ export function buildSearchPlan(identity: IdentityProfile): SearchQuery[] {
       searchedName,
     });
   });
+}
+
+export function buildQuestionSearchPlan(identity: IdentityProfile, question: string): SearchQuery[] {
+  const names = normalizedNames(identity);
+  const searchedName = names.find(name => name.length < 80);
+  if (searchedName === undefined) return [];
+  const dynamic = /(?:最新|近期|最近|目前|当前|趋势|近一年|今年|发布|招聘|融资|扩产|招标|采购)/u.test(question);
+  const purpose: SearchQuery['purpose'] = /(?:招聘|岗位|职位)/u.test(question) ? 'recruitment'
+    : /(?:融资|扩产)/u.test(question) ? 'expansion_financing'
+      : /(?:招标|采购)/u.test(question) ? 'procurement' : 'question';
+  const aliases = names.filter(name => name !== identity.legalName.normalize('NFKC').trim());
+  const suffixes = [question.normalize('NFKC').trim(), `${question.normalize('NFKC').trim()} 官网`];
+  const uniqueQueries = [...new Set(suffixes.map(suffix =>
+    `${searchedName} ${suffix.slice(0, Math.max(1, 100 - searchedName.length - 1))}`.slice(0, 100)))];
+  return uniqueQueries.map(query => SearchQuerySchema.parse({
+    Query: query,
+    SearchType: 'web', Count: 10,
+    Filter: { NeedUrl: true, NeedContent: true, ...(dynamic || purpose === 'recruitment' ? { TimeRange: 'OneYear' as const } : {}) },
+    purpose,
+    subjectLegalName: identity.legalName, subjectAliases: aliases,
+    subjectOfficialDomains: [...identity.officialDomains],
+    subjectRegisteredAddress: identity.registeredAddress, searchedName,
+  }));
 }

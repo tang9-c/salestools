@@ -1,6 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import type { OpportunityLevel, ProductKey, ResearchSourceStatus } from '../contracts/index.js';
 import type { ContactServiceOutput } from '../contacts/contact-service.js';
+import type { CompanyQuestionInput } from '../orchestration/company-question-service.js';
+import type { CompanyQuestionResult } from '../contracts/index.js';
 import {
   AssessmentIdInputSchema,
   AssessmentReportOutputSchema,
@@ -9,6 +11,8 @@ import {
   CompanyProfileOutputSchema,
   GetContactsInputSchema,
   GetContactsOutputSchema,
+  AskCompanyInputSchema,
+  AskCompanyOutputSchema,
   SubmitAssessmentInputSchema,
   SubmitAssessmentOutputSchema,
 } from './tool-schemas.js';
@@ -108,6 +112,7 @@ export interface McpServices {
   getAssessmentStatus(input: AssessmentServiceInput): Awaitable<AssessmentStatusServiceOutput>;
   getAssessmentReport(input: AssessmentServiceInput): Awaitable<AssessmentReportServiceOutput>;
   getContacts(input: CompanyProfileServiceInput): Awaitable<ContactServiceOutput>;
+  askCompany(input: CompanyQuestionInput): Awaitable<CompanyQuestionResult>;
 }
 
 export type { ContactServiceOutput } from '../contacts/contact-service.js';
@@ -268,6 +273,27 @@ export function buildMcpServer(services: McpServices): McpServer {
     query: input.query,
     ...(input.region_hint === undefined ? {} : { regionHint: input.region_hint }),
   }))));
+
+  server.registerTool('ask_company', {
+    description: '针对已确认的单个法定主体追问具体销售研究问题；优先引用报告证据，必要时定向补查，不修改原评估。',
+    inputSchema: AskCompanyInputSchema,
+    outputSchema: AskCompanyOutputSchema,
+  }, async input => {
+    const answer = await services.askCompany({
+    legalName: input.legal_name,
+    creditCode: input.credit_code,
+    question: input.question,
+    ...(input.assessment_id === undefined ? {} : { assessmentId: input.assessment_id }),
+    });
+    return toolResult(AskCompanyOutputSchema.parse({
+      status: answer.status, legal_name: answer.legalName, markdown: answer.markdown,
+      used_fresh_research: answer.usedFreshResearch, collected_at: answer.collectedAt,
+      sources: answer.sources.map(source => ({
+        title: source.title, source: source.source, url: source.url,
+        published_at: source.publishedAt,
+      })),
+    }));
+  });
 
   return server;
 }

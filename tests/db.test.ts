@@ -15,6 +15,7 @@ import {
   ContactSnapshotDataError,
   ContactSnapshotRepository,
 } from '../src/db/contact-snapshot-repository.js';
+import type { EvidenceSnapshot } from '../src/contracts/index.js';
 
 const now = new Date('2026-08-29T12:00:00.000Z');
 const identity = {
@@ -233,12 +234,15 @@ describe('SQLite repositories', () => {
     const migrated = openDatabase(legacyPath);
     expect(migrated.prepare('PRAGMA table_info(assessments)').all())
       .toEqual(expect.arrayContaining([expect.objectContaining({ name: 'result_json', type: 'TEXT' })]));
+    expect(migrated.prepare('PRAGMA table_info(assessments)').all())
+      .toEqual(expect.arrayContaining([expect.objectContaining({ name: 'evidence_snapshot_json', type: 'TEXT' })]));
     const assessments = new AssessmentRepository(migrated);
     expect(assessments.get(legacyAssessmentId)).toMatchObject({
       assessmentId: legacyAssessmentId,
       status: 'completed',
       reportMarkdown: '# 旧版报告',
       resultAudit: null,
+      evidenceSnapshot: null,
     });
     expect(assessments.createOrReuseAssessment(assessmentInput, false, now, 30)).toMatchObject({
       created: false,
@@ -257,6 +261,35 @@ describe('SQLite repositories', () => {
     migrated.close();
 
     expect(() => openDatabase(legacyPath).close()).not.toThrow();
+  });
+
+  it('round-trips a compact evidence snapshot with the completed report and selects the latest reusable one', () => {
+    const assessments = new AssessmentRepository(db);
+    const first = assessments.createOrReuseAssessment(assessmentInput, false, now, 30).record;
+    const snapshot = {
+      collectedAt: now.toISOString(),
+      items: [{
+        evidenceId: 'qcc-profile', source: 'qcc', sourceKind: 'company', title: '招聘记录',
+        url: null, originalPublisher: '企查查', originalDomain: null, publishedAt: null,
+        collectedAt: now.toISOString(), mentionedName: identity.legalName,
+        entityScope: 'legal_entity', entityMatch: 'confirmed', matchBasis: ['法定名称一致'],
+        excerpt: '招聘 SolidWorks 工程师', excerptTruncated: false,
+      }],
+      facts: [{
+        factId: 'fact-1', statement: '招聘 SolidWorks 工程师', kind: 'recruitment',
+        productTags: ['solidworks'], strength: 'direct', evidenceIds: ['qcc-profile'],
+        entityScope: 'legal_entity', entityMatch: 'confirmed', matchBasis: ['法定名称一致'],
+      }],
+    } satisfies EvidenceSnapshot;
+    assessments.completeAssessment(first.assessmentId, { ...completedResult, evidenceSnapshot: snapshot }, now);
+    expect(assessments.get(first.assessmentId)?.evidenceSnapshot).toEqual(snapshot);
+    expect(assessments.findLatestCompletedWithSnapshot(identity.creditCode, new Date('2026-09-28T12:00:00.000Z'), 30)?.assessmentId)
+      .toBe(first.assessmentId);
+    expect(assessments.findLatestCompletedWithSnapshot(identity.creditCode, new Date('2026-09-28T12:00:00.001Z'), 30))
+      .toBeNull();
+    const row = db.prepare('SELECT evidence_snapshot_json FROM assessments WHERE assessment_id = ?')
+      .get(first.assessmentId) as { evidence_snapshot_json: string };
+    expect(JSON.parse(row.evidence_snapshot_json)).toEqual(snapshot);
   });
 
   it('normalizes legacy industry audit JSON without rewriting historical Markdown', () => {

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { IdentityProfile } from '../src/contracts/index.js';
 import { UpstreamError } from '../src/orchestration/retry.js';
 import { DoubaoSearchClient } from '../src/upstream/search/doubao-client.js';
-import { buildSearchPlan, SearchQuerySchema } from '../src/upstream/search/search-plan.js';
+import { buildQuestionSearchPlan, buildSearchPlan, SearchQuerySchema } from '../src/upstream/search/search-plan.js';
 import { mapDoubaoSearchResponse } from '../src/upstream/search/mapper.js';
 
 const identity: IdentityProfile = {
@@ -33,6 +33,14 @@ function searchPayload(result: Record<string, unknown>, logId?: string): unknown
 }
 
 describe('buildSearchPlan', () => {
+  it('builds at most two bounded question searches while marking recent questions dynamic', () => {
+    const queries = buildQuestionSearchPlan(identity, `最近有哪些产品发布？${'技术'.repeat(80)}`);
+    expect(queries.length).toBeGreaterThan(0);
+    expect(queries.length).toBeLessThanOrEqual(2);
+    expect(queries.every(query => query.Query.length <= 100 && query.Filter.TimeRange === 'OneYear')).toBe(true);
+    expect(queries.every(query => query.subjectLegalName === identity.legalName)).toBe(true);
+    expect(buildQuestionSearchPlan(identity, 'SolidWorks 岗位要求')[0]?.purpose).toBe('recruitment');
+  });
   it('builds eight bounded deterministic web queries from only the confirmed legal name or aliases', () => {
     const first = buildSearchPlan(identity);
     const second = buildSearchPlan(identity);

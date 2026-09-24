@@ -27,6 +27,25 @@ export const GetContactsInputSchema = z.object({
   region_hint: z.string().trim().min(1).max(16).optional(),
 }).strict();
 
+export const AskCompanyInputSchema = z.object({
+  legal_name: z.string().trim().min(1).max(256),
+  credit_code: z.string().regex(/^[0-9A-Z]{18}$/u),
+  question: z.string().trim().min(1).max(1000),
+  assessment_id: z.uuid().optional(),
+}).strict();
+
+export const AskCompanyOutputSchema = z.object({
+  status: z.enum(['answered', 'insufficient', 'failed']),
+  legal_name: z.string(),
+  markdown: z.string(),
+  used_fresh_research: z.boolean(),
+  collected_at: z.iso.datetime({ offset: true }).nullable(),
+  sources: z.array(z.object({
+    title: z.string(), source: z.enum(['qcc', 'doubao_search']),
+    url: z.string().nullable(), published_at: z.iso.datetime({ offset: true }).nullable(),
+  }).strict()),
+}).strict();
+
 export {
   AssessmentReportOutputSchema,
   AssessmentStatusOutputSchema,
@@ -38,3 +57,4 @@ export {
 export type CompanyProfileInput = z.infer<typeof CompanyProfileInputSchema>;
 export type SubmitAssessmentInput = z.infer<typeof SubmitAssessmentInputSchema>;
 export type GetContactsInput = z.infer<typeof GetContactsInputSchema>;
+export type AskCompanyInput = z.infer<typeof AskCompanyInputSchema>;

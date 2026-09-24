@@ -3,6 +3,7 @@ import {
   ResearchBundleSchema,
   type AssessmentResultAudit,
   type EvidenceBundle,
+  type EvidenceSnapshot,
   type IdentityProfile,
   type ReportModel,
   type ResearchBundle,
@@ -91,6 +92,29 @@ function failedCollection(label: string, source: UpstreamSource, error: unknown)
     items: [],
     sourceStatus: { status: 'failed', error: safeError },
     gaps: [`${label}：${safeError}`],
+  };
+}
+
+function buildEvidenceSnapshot(research: ResearchBundle, model: ReportModel): EvidenceSnapshot {
+  const referenced = new Set(model.evidence.map(entry => entry.evidenceId));
+  return {
+    collectedAt: research.collectedAt,
+    items: research.items.filter((entry, index, items) => referenced.has(entry.evidenceId)
+      && items.findIndex(candidate => candidate.evidenceId === entry.evidenceId) === index).map(entry => {
+      const raw = entry.content ?? entry.summary;
+      const excerpt = raw === null ? null : raw.slice(0, 600);
+      return {
+        evidenceId: entry.evidenceId, source: entry.source, sourceKind: entry.sourceKind,
+        title: entry.title, url: entry.url, originalPublisher: entry.originalPublisher,
+        originalDomain: entry.originalDomain, publishedAt: entry.publishedAt,
+        collectedAt: entry.collectedAt, mentionedName: entry.mentionedName,
+        entityScope: entry.entityScope, entityMatch: entry.entityMatch,
+        matchBasis: entry.matchBasis, excerpt,
+        excerptTruncated: raw !== null && raw.length > 600,
+      };
+    }),
+    facts: model.facts.filter(fact => fact.evidenceIds.length > 0
+      && fact.evidenceIds.every(id => referenced.has(id))),
   };
 }
 
@@ -289,6 +313,7 @@ export class AssessmentRunner {
           sourceStatus: model.sourceStatus,
           collectedAt: model.collectedAt,
           resultAudit,
+          evidenceSnapshot: buildEvidenceSnapshot(research, model),
         }, this.now());
         try {
           this.options.logger.logAssessmentDecision({
