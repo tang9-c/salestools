@@ -68,9 +68,12 @@ export class CompanyAnswerClient {
     const maxBytes = this.options.requestMaxBytes ?? ARK_REQUEST_MAX_BYTES;
     const selected: SnapshotItem[] = [];
     for (const item of input.items) {
-      const trial = [...selected, item];
+      const compact = item.excerpt !== null && item.excerpt.length > 240
+        ? { ...item, excerpt: item.excerpt.slice(0, 240), excerptTruncated: true }
+        : item;
+      const trial = [...selected, compact];
       const serialized = body(this.options.model, input, trial, input.items.length - trial.length);
-      if (Buffer.byteLength(serialized, 'utf8') <= maxBytes) selected.push(item);
+      if (Buffer.byteLength(serialized, 'utf8') <= maxBytes) selected.push(compact);
     }
     if (selected.length === 0) throw new ArkInvalidOutputError('INPUT_TOO_LARGE', 'Company answer has no fitting evidence');
     const omittedCount = input.items.length - selected.length;

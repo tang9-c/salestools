@@ -48,6 +48,17 @@ export const SearchQuerySchema = DoubaoWebSearchRequestSchema.extend({
 
 export type SearchQuery = z.infer<typeof SearchQuerySchema>;
 export type DoubaoWebSearchRequest = z.infer<typeof DoubaoWebSearchRequestSchema>;
+export type QuestionTopic = 'products' | 'recruitment' | 'expansion' | 'procurement';
+
+export function questionTopics(question: string): QuestionTopic[] {
+  const topicText = question.replace(/产品经理/gu, '');
+  return ([
+    ['products', /(?:产品|新品|新机型)/u],
+    ['recruitment', /(?:招聘|岗位|职位|JD)/iu],
+    ['expansion', /(?:融资|扩产|产能|扩张|新工厂)/u],
+    ['procurement', /(?:采购公告|招标|招投标|中标|采购项目)/u],
+  ] as const).flatMap(([topic, pattern]) => pattern.test(topicText) ? [topic] : []);
+}
 
 const plans = [
   { purpose: 'official_products', terms: '官网 产品 技术' },
@@ -100,7 +111,9 @@ export function buildSearchPlan(identity: IdentityProfile): SearchQuery[] {
   });
 }
 
-export function buildQuestionSearchPlan(identity: IdentityProfile, question: string): SearchQuery[] {
+export function buildQuestionSearchPlan(
+  identity: IdentityProfile, question: string, qccCovered?: QuestionTopic,
+): SearchQuery[] {
   const names = normalizedNames(identity);
   const searchedName = names.find(name => name.length < 80);
   if (searchedName === undefined) return [];
@@ -109,14 +122,33 @@ export function buildQuestionSearchPlan(identity: IdentityProfile, question: str
     : /(?:融资|扩产)/u.test(question) ? 'expansion_financing'
       : /(?:招标|采购)/u.test(question) ? 'procurement' : 'question';
   const aliases = names.filter(name => name !== identity.legalName.normalize('NFKC').trim());
-  const suffixes = [question.normalize('NFKC').trim(), `${question.normalize('NFKC').trim()} 官网`];
-  const uniqueQueries = [...new Set(suffixes.map(suffix =>
-    `${searchedName} ${suffix.slice(0, Math.max(1, 100 - searchedName.length - 1))}`.slice(0, 100)))];
-  return uniqueQueries.map(query => SearchQuerySchema.parse({
-    Query: query,
+  const topics = questionTopics(question);
+  const selectedTopics = (topics.length > 2 && qccCovered !== undefined
+    ? topics.filter(topic => topic !== qccCovered) : topics).slice(0, 2);
+  const terms: Record<QuestionTopic, string> = {
+    products: '产品 新品 发布 官网', recruitment: '招聘 岗位 工程师',
+    expansion: '融资 扩产 产能', procurement: '采购公告 招标 数字化',
+  };
+  const topicPurpose: Record<QuestionTopic, SearchQuery['purpose']> = {
+    products: 'question', recruitment: 'recruitment',
+    expansion: 'expansion_financing', procurement: 'procurement',
+  };
+  const planned = selectedTopics.length === 0
+    ? [question.normalize('NFKC').trim(), `${question.normalize('NFKC').trim()} 官网`]
+      .map(text => ({ text, purpose }))
+    : selectedTopics.length === 1
+      ? [{ text: terms[selectedTopics[0]!], purpose: topicPurpose[selectedTopics[0]!] },
+        { text: question.normalize('NFKC').trim(), purpose: topicPurpose[selectedTopics[0]!] }]
+      : selectedTopics.map(topic => ({ text: terms[topic], purpose: topicPurpose[topic] }));
+  const uniqueQueries = [...new Map(planned.map(entry => {
+    const query = `${searchedName} ${entry.text.slice(0, Math.max(1, 100 - searchedName.length - 1))}`.slice(0, 100);
+    return [query, { query, purpose: entry.purpose }] as const;
+  })).values()];
+  return uniqueQueries.map(entry => SearchQuerySchema.parse({
+    Query: entry.query,
     SearchType: 'web', Count: 10,
-    Filter: { NeedUrl: true, NeedContent: true, ...(dynamic || purpose === 'recruitment' ? { TimeRange: 'OneYear' as const } : {}) },
-    purpose,
+    Filter: { NeedUrl: true, NeedContent: true, ...(dynamic || entry.purpose === 'recruitment' ? { TimeRange: 'OneYear' as const } : {}) },
+    purpose: entry.purpose,
     subjectLegalName: identity.legalName, subjectAliases: aliases,
     subjectOfficialDomains: [...identity.officialDomains],
     subjectRegisteredAddress: identity.registeredAddress, searchedName,

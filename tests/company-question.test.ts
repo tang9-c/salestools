@@ -4,7 +4,8 @@ import { AssessmentRepository } from '../src/db/assessment-repository.js';
 import { initializeDatabase } from '../src/db/database.js';
 import { ProfileRepository } from '../src/db/profile-repository.js';
 import { CompanyQuestionService } from '../src/orchestration/company-question-service.js';
-import type { ResearchItem } from '../src/contracts/index.js';
+import type { CompanyAnswerClaim, ResearchItem } from '../src/contracts/index.js';
+import type { CompanyAnswerInput } from '../src/upstream/ark/company-answer.js';
 import type { SearchQuery } from '../src/upstream/search/search-plan.js';
 
 const NOW = new Date('2026-09-24T00:00:00.000Z');
@@ -57,13 +58,15 @@ describe('CompanyQuestionService', () => {
     const assessments = new AssessmentRepository(db);
     const collectedAt = new Date(NOW.getTime() - (options.snapshotAgeDays ?? 23) * 86_400_000).toISOString();
     const snapshot = { collectedAt, items: [{ ...snapshotItem, collectedAt }], facts: [snapshotFact] };
-    const qccCall = vi.fn(async () => {
+    const qccCall = vi.fn(async (): Promise<unknown> => {
       if (options.qccFails) throw new Error('QCC unavailable');
       return { Data: [] };
     });
     const qccClose = vi.fn(async () => undefined);
     const search = vi.fn(async (_query: SearchQuery, _signal?: AbortSignal): Promise<ResearchItem[]> => []);
-    const answer = vi.fn(async () => ({ claims: [{
+    const answer = vi.fn(async (_input: CompanyAnswerInput): Promise<{
+      claims: CompanyAnswerClaim[]; includedEvidenceIds?: string[]; omittedCount?: number;
+    }> => ({ claims: [{
       category: 'supported' as const, text: '该岗位要求 SolidWorks 技能，不能据此断定采购计划。',
       evidenceIds: ['qcc-recruitment-1'],
     }] }));
@@ -109,6 +112,22 @@ describe('CompanyQuestionService', () => {
     expect(runtime.qccCall).not.toHaveBeenCalled();
     expect(runtime.search).not.toHaveBeenCalled();
     expect(runtime.assessments.get(assessmentId)).toEqual(before);
+  });
+
+  it('keeps distinct evidence records even when they share one source URL', async () => {
+    const runtime = setup();
+    const id = runtime.complete();
+    const stored = runtime.assessments.get(id)!;
+    runtime.db.prepare('UPDATE assessments SET evidence_snapshot_json = ? WHERE assessment_id = ?').run(
+      JSON.stringify({ ...stored.evidenceSnapshot, items: [
+        { ...snapshotItem, url: 'https://example.cn/jobs' },
+        { ...snapshotItem, evidenceId: 'qcc-recruitment-2', title: '另一个 SolidWorks 岗位',
+          url: 'https://example.cn/jobs' },
+      ] }), id,
+    );
+    await runtime.service.ask({ ...runtime.input, assessmentId: id });
+    expect(runtime.answer.mock.calls[0]?.[0].items.map(item => item.evidenceId))
+      .toEqual(['qcc-recruitment-1', 'qcc-recruitment-2']);
   });
 
   it('does not reuse an expired snapshot or parse an old report without one', async () => {
@@ -172,9 +191,70 @@ describe('CompanyQuestionService', () => {
       category: 'supported', text: '2026 年 9 月发布新品', evidenceIds: ['web-1'],
     }] });
     const result = await runtime.service.ask({ ...runtime.input, question: '最近招聘和产品发布有什么信息？' });
-    expect(result.status).toBe('answered');
+    expect(result.status).toBe('insufficient');
     expect(result.markdown).toContain('企查查定向查询失败');
     expect(result.markdown).toContain('https://example.cn/news');
+    expect(result.markdown).toContain('招聘');
+  });
+
+  it('does not let thirty hiring records crowd out product evidence or mark a partial answer complete', async () => {
+    const runtime = setup();
+    runtime.qccCall.mockResolvedValue({
+      企业名称: identity.legalName,
+      招聘信息: Array.from({ length: 30 }, (_, index) => ({
+        招聘职位: `工程师 ${index + 1}`, 发布日期: '2026-08-01',
+      })),
+    });
+    runtime.search.mockImplementation(async query => query.Query.includes('产品')
+      ? Array.from({ length: 20 }, (_, index) => ({
+        evidenceId: `product-${index + 1}`, source: 'doubao_search' as const,
+        sourceKind: 'web' as const, title: `${identity.legalName}产品发布 ${index + 1}`,
+        url: `https://example.cn/products/${index + 1}`, originalPublisher: '企业官网',
+        originalDomain: 'example.cn', summary: `${identity.legalName}发布机器人新品`,
+        content: null, publishedAt: NOW.toISOString(), collectedAt: NOW.toISOString(),
+        mentionedName: identity.legalName, entityScope: 'legal_entity' as const,
+        entityMatch: 'confirmed' as const, matchBasis: ['法定名称一致'],
+        query: query.Query, position: index + 1, logId: null,
+      })) : []);
+    runtime.answer.mockImplementation(async input => ({
+      claims: [
+        { category: 'supported' as const, text: '该企业发布了1条招聘信息',
+          evidenceIds: [input.items.find(item => item.source === 'qcc')!.evidenceId,
+            input.items.find(item => item.source === 'doubao_search')!.evidenceId] },
+        { category: 'supported' as const, text: '该企业没有产品发布',
+          evidenceIds: [input.items.find(item => item.source === 'qcc')!.evidenceId] },
+        { category: 'unknown' as const, text: '未查询到产品发布', evidenceIds: [] },
+      ],
+      includedEvidenceIds: input.items.slice(0, 10).map(item => item.evidenceId),
+      omittedCount: 40,
+    }));
+    const result = await runtime.service.ask({ ...runtime.input,
+      question: '最近一年有哪些产品发布和招聘信号？' });
+    const sent = runtime.answer.mock.calls[0]![0].items.slice(0, 10);
+    expect(sent.some(item => item.source === 'qcc')).toBe(true);
+    expect(sent.some(item => item.source === 'doubao_search')).toBe(true);
+    expect(result.status).toBe('insufficient');
+    expect(result.markdown).toContain('产品发布');
+    expect(result.markdown).toContain('尚未回答');
+    expect(result.markdown).toContain('本次引用的招聘材料');
+    expect(result.markdown).not.toContain('发布了1条招聘信息');
+    expect(result.markdown).not.toContain('未查询到产品发布');
+    expect(result.markdown).not.toContain('没有产品发布');
+    expect(result.markdown).toContain('未纳入 40 条材料');
+
+    runtime.answer.mockImplementation(async input => ({
+      claims: [
+        { category: 'supported', text: '该企业发布新品',
+          evidenceIds: [input.items.find(item => item.source === 'doubao_search')!.evidenceId] },
+        { category: 'supported', text: '该企业招聘工程师',
+          evidenceIds: [input.items.find(item => item.source === 'qcc')!.evidenceId] },
+      ],
+      includedEvidenceIds: input.items.slice(0, 10).map(item => item.evidenceId), omittedCount: 40,
+    }));
+    const noPurchaseJudgment = await runtime.service.ask({ ...runtime.input,
+      question: '最近一年有哪些产品发布和招聘信号？这些资料能否证明已有软件采购计划？' });
+    expect(noPurchaseJudgment.status).toBe('insufficient');
+    expect(noPurchaseJudgment.markdown).toContain('软件采购计划');
   });
 
   it('discards unsupported citations and undated quantitative trend claims', async () => {

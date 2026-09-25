@@ -15,6 +15,31 @@ function item(index: number): SnapshotItem {
 }
 
 describe('CompanyAnswerClient', () => {
+  it('keeps both evidence themes inside a bounded request when source excerpts are long', async () => {
+    let selected: Array<{ source: string; title: string }> = [];
+    let bytes = 0;
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = String(init?.body);
+      bytes = Buffer.byteLength(body, 'utf8');
+      selected = JSON.parse(JSON.parse(body).messages[1].content).items;
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"claims":[]}' } }] }), { status: 200 });
+    });
+    const client = new CompanyAnswerClient({
+      url: 'https://ark.example.cn/chat/completions', model: 'test-model', credential: 'secret',
+      requestMaxBytes: 6_144, fetchFn,
+    });
+    const items = Array.from({ length: 20 }, (_, index) => ({
+      ...item(index + 1), source: index % 2 === 0 ? 'qcc' as const : 'doubao_search' as const,
+      title: index % 2 === 0 ? `测试公司招聘 ${index + 1}` : `测试公司产品发布 ${index + 1}`,
+      excerpt: index % 2 === 0 ? '机器人工程师岗位要求'.repeat(50) : '机器人新品发布技术资料'.repeat(50),
+    }));
+    await client.answer({ legalName: '测试公司有限公司', question: '产品发布和招聘？', items, facts: [] });
+    expect(bytes).toBeLessThanOrEqual(6_144);
+    expect(selected.filter(entry => entry.source === 'qcc').length).toBeGreaterThanOrEqual(2);
+    expect(selected.filter(entry => entry.source === 'doubao_search').length).toBeGreaterThanOrEqual(2);
+    expect(selected.some(entry => entry.title.includes('招聘'))).toBe(true);
+    expect(selected.some(entry => entry.title.includes('产品发布'))).toBe(true);
+  });
   it('makes one bounded Ark request, reports omitted evidence, and returns only parsed claims', async () => {
     let bytes = 0;
     let requestBody = '';

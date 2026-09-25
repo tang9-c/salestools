@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { IdentityProfile } from '../src/contracts/index.js';
 import { UpstreamError } from '../src/orchestration/retry.js';
 import { DoubaoSearchClient } from '../src/upstream/search/doubao-client.js';
-import { buildQuestionSearchPlan, buildSearchPlan, SearchQuerySchema } from '../src/upstream/search/search-plan.js';
+import { buildQuestionSearchPlan, buildSearchPlan, questionTopics, SearchQuerySchema } from '../src/upstream/search/search-plan.js';
 import { mapDoubaoSearchResponse } from '../src/upstream/search/mapper.js';
 
 const identity: IdentityProfile = {
@@ -33,6 +33,19 @@ function searchPayload(result: Record<string, unknown>, logId?: string): unknown
 }
 
 describe('buildSearchPlan', () => {
+  it('does not mistake a product-manager hiring question for a product launch question', () => {
+    expect(questionTopics('最近招聘产品经理吗？')).toEqual(['recruitment']);
+  });
+  it('searches product releases and hiring separately without treating a purchase inference as a procurement search', () => {
+    const queries = buildQuestionSearchPlan(identity,
+      '最近一年有哪些机器人产品发布与招聘信号？这些资料能否证明已有软件采购计划？');
+    expect(queries).toHaveLength(2);
+    expect(queries[0]?.Query).toMatch(/产品|新品/u);
+    expect(queries[0]?.Query).not.toMatch(/招聘|采购计划/u);
+    expect(queries[1]?.Query).toMatch(/招聘|岗位/u);
+    expect(queries[1]?.Query).not.toMatch(/产品发布|采购计划/u);
+    expect(queries.every(query => query.Filter.TimeRange === 'OneYear')).toBe(true);
+  });
   it('builds at most two bounded question searches while marking recent questions dynamic', () => {
     const queries = buildQuestionSearchPlan(identity, `最近有哪些产品发布？${'技术'.repeat(80)}`);
     expect(queries.length).toBeGreaterThan(0);
