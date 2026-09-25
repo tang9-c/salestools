@@ -1,25 +1,34 @@
 ---
 name: salestools-customer-assessment
-description: Use when a user wants to look up a Chinese company, run a formal sales opportunity assessment, check an assessment, read its report, or find public evidence about relevant business contacts through the salestools MCP.
+description: Use when a user wants to look up a Chinese company, ask a specific question about a confirmed company or report evidence, run or check a sales assessment, read its report, or find public business contacts through the salestools MCP.
 ---
 
 # 使用 Salestools 客户体检
 
 ## 核心原则
 
-先判断用户是要“初步了解”“正式销售评估”还是“查询关键岗位”。Skill 只编排 MCP 工具并解释结果；事实、证据和产品机会均以服务端返回为准，不自行补算或改写等级。
+先区分“初步了解”“单企业定向追问”“正式销售评估”和“查询关键岗位”。Skill 只编排 MCP 工具并解释结果；事实、证据和产品机会均以服务端返回为准，不自行补算或改写等级。
 
 ## 调用路由
 
 | 用户意图 | 行为 |
 |---|---|
 | 看一下、了解公司、基本情况，或意图不明确 | 调用 `get_company_profile`，不要启动正式评估 |
+| 针对已确认主体问具体问题、解释某条报告证据、查近期产品/招聘/扩张信号 | 调用 `ask_company`；无需先生成或重读完整评估报告 |
 | 正式评估、客户体检、产品机会、销售切入点 | 先调用 `get_company_profile` 校验并保存主体，再确认后调用 `submit_assessment` |
 | 查看进度 | 使用已有 `assessment_id` 调用 `get_assessment_status` |
 | 查看报告 | 调用 `get_assessment_report`；若仍在处理，只报告当前状态 |
 | 查负责人、研发、技术、IT、采购或质量岗位 | 调用 `get_contacts`；说明结果来自公开网页，不等于法人主体认证 |
 
 若所需 Salestools 工具不可用，明确说明 MCP 尚未连接或当前客户端未提供这些工具，不模拟结果。
+
+## 定向追问
+
+- `ask_company` 需要 `legal_name`、18 位 `credit_code` 和用户的具体 `question`。两项主体信息齐备时可直接调用，由服务端核验有效画像；若缺少其中一项，先调用 `get_company_profile`，多候选时请用户选定，不猜测。服务端提示主体未确认时，重新调用画像工具核对，不把用户口头确认当成缓存仍有效。
+- 已有对应报告 UUID 时可传 `assessment_id`，以便解释该报告证据；没有 UUID 也可直接追问，不要求先提交正式评估，但不能声称结果一定来自用户此前看过的某份特定报告。用户要求核对特定历史报告而未给 UUID 时，请其提供 ID。指定报告不属于该主体、未完成或不存在时，按服务端失败提示处理，不改用其它主体资料。
+- 追问是同步的一次性研究，不修改原报告或七产品评级。回答优先呈现服务端的“资料直接支持”“可能的解释”“仍需核实”和“尚未回答”，保留实际引用来源及缺口。不要用 `get_assessment_report` 代替证据级追问。
+- `answered` 表示本次已给出有依据的回答；`insufficient` 可包含部分已核实事实，应连同未答问题一起呈现；`failed` 或超时表示本次未完成，不自行补造结论或声称后台会继续完成。`used_fresh_research` 只说明是否补查，不等于资料完整。
+- 招聘可支持岗位/技能需求，不能单独证明软件采购计划；单一来源失败、证据被容量限制或没有直达链接时，按原样保留限定语。不要把“本次未查到”表述成“企业不存在”。
 
 ## 主体与正式评估
 
