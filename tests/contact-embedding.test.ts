@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EmbeddingClient, EmbeddingError } from '../src/contacts/embedding-client.js';
+import { VectorIndexer, buildEmbeddingText } from '../src/contacts/vector-indexer.js';
+import type { GraphClient, GraphOp } from '../src/contacts/graph-client.js';
 
 const endpoint = 'https://embedding.example.cn/api/v3/embeddings';
 
@@ -69,5 +71,163 @@ describe('EmbeddingClient', () => {
       fetchFn: fetchFn as typeof fetch });
     await expect(client.embed('  ')).rejects.toBeInstanceOf(EmbeddingError);
     expect(fetchFn).not.toHaveBeenCalled();
+  });
+});
+
+class MemoryVectorGraph implements GraphClient {
+  version = 1;
+  archived = false;
+  state = 'pending';
+  failNextPut = false;
+  failedHold?: Promise<void>;
+  readonly puts: Record<string, unknown>[] = [];
+  readonly retryResults = new Map<string, Record<string, unknown>>();
+
+  async request<T>(op: GraphOp, payload: unknown): Promise<T> {
+    const input = payload as Record<string, unknown>;
+    if (op === 'get_contact') {
+      return (this.archived ? null : {
+        entity: { entity_id: 'person-1', label: 'Person', properties: {
+          name: '陈晓', description: '负责工业软件', email: ['private@example.cn'],
+          hasOccupation: [{ name: '销售经理' }], hasCredential: [{ name: '工程师证书' }], skills: ['CAD'],
+        }, metadata: { version: this.version } },
+        relations: [{ relation_type: 'worksFor', source_id: 'person-1', target_id: 'org-1',
+          properties: { role: { roleName: '销售总监' } } }], version: this.version,
+      }) as T;
+    }
+    if (op === 'put_vector') {
+      this.puts.push({ ...input });
+      if (this.failNextPut) { this.failNextPut = false; throw new Error('response lost'); }
+      if (input.content_version !== this.version || this.archived) throw new Error('STALE_VERSION');
+      this.state = 'ready';
+      return { entity_id: input.entity_id, index_status: 'ready' } as T;
+    }
+    if (op === 'set_vector_state') {
+      if (input.state === 'pending') {
+        const prior = this.retryResults.get(String(input.operation_id));
+        if (prior) return { ...prior, replayed: true } as T;
+        if (this.state !== 'failed' || input.content_version !== this.version) throw new Error('INVALID_RETRY');
+        this.state = 'pending';
+        const result = { entity_id: input.entity_id, content_version: this.version,
+          index_status: 'pending', replayed: false };
+        this.retryResults.set(String(input.operation_id), result);
+        return result as T;
+      }
+      if (input.content_version === this.version && !this.archived && this.state !== 'ready') this.state = 'failed';
+      await this.failedHold;
+      return { index_status: this.state } as T;
+    }
+    throw new Error(`unexpected ${op}`);
+  }
+
+  async close(): Promise<void> {}
+}
+
+describe('VectorIndexer', () => {
+  it('indexes asynchronously after a successful write with actual model and dimension', async () => {
+    const graph = new MemoryVectorGraph();
+    let finish!: (value: { model: string; vector: number[] }) => void;
+    const embedding = { embed: vi.fn(() => new Promise<{ model: string; vector: number[] }>(resolve => { finish = resolve; })) };
+    const indexer = new VectorIndexer({ graph, embedding, model: 'embed-v1' });
+    expect(indexer.index('person-1', 1)).toBe(true);
+    await vi.waitFor(() => expect(embedding.embed).toHaveBeenCalledOnce());
+    expect(graph.puts).toEqual([]);
+    finish({ model: 'embed-v1', vector: [0.25, -0.5] });
+    await indexer.whenIdle();
+    expect(graph.puts).toEqual([{ operation_id: 'vector:person-1:1:embed-v1', actor: 'system',
+      entity_id: 'person-1', content_version: 1, model: 'embed-v1', dimension: 2, vector: [0.25, -0.5] }]);
+    expect(graph.state).toBe('ready');
+  });
+
+  it('marks a failed attempt and retries only after an explicit actor operation', async () => {
+    const graph = new MemoryVectorGraph();
+    const embedding = { embed: vi.fn().mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ model: 'embed-v1', vector: [1] }) };
+    const indexer = new VectorIndexer({ graph, embedding, model: 'embed-v1' });
+    indexer.index('person-1', 1);
+    await indexer.whenIdle();
+    expect(graph.state).toBe('failed');
+    expect(graph.puts).toEqual([]);
+    expect(await indexer.retryFailed('person-1', 'retry-1', 'sales-a')).toEqual({
+      entity_id: 'person-1', content_version: 1, index_status: 'pending', replayed: false,
+    });
+    await indexer.whenIdle();
+    expect(graph.state).toBe('ready');
+    expect(await indexer.retryFailed('person-1', 'retry-1', 'sales-a')).toMatchObject({ replayed: true });
+    expect(embedding.embed).toHaveBeenCalledTimes(2);
+  });
+
+  it('replays the same acceptance after the contact is archived in this process', async () => {
+    const graph = new MemoryVectorGraph();
+    graph.state = 'failed';
+    const embedding = { embed: vi.fn(async () => ({ model: 'embed-v1', vector: [1] })) };
+    const indexer = new VectorIndexer({ graph, embedding, model: 'embed-v1' });
+    const first = await indexer.retryFailed('person-1', 'retry-archived', 'sales-a');
+    graph.archived = true;
+    const replay = await indexer.retryFailed('person-1', 'retry-archived', 'sales-a');
+    expect(replay).toEqual({ ...first, replayed: true });
+    await indexer.whenIdle();
+    expect(graph.puts).toEqual([]);
+  });
+
+  it('queues a retry accepted while the failed attempt is still unwinding', async () => {
+    const graph = new MemoryVectorGraph();
+    let releaseFailure!: () => void;
+    graph.failedHold = new Promise<void>(resolve => { releaseFailure = resolve; });
+    const embedding = { embed: vi.fn().mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ model: 'embed-v1', vector: [1] }) };
+    const indexer = new VectorIndexer({ graph, embedding, model: 'embed-v1' });
+    indexer.index('person-1', 1);
+    await vi.waitFor(() => expect(graph.state).toBe('failed'));
+    await indexer.retryFailed('person-1', 'retry-race', 'sales-a');
+    releaseFailure();
+    await indexer.whenIdle();
+    expect(graph.state).toBe('ready');
+    expect(embedding.embed).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops a stale result after an edit and never writes it to the graph', async () => {
+    const graph = new MemoryVectorGraph();
+    let finish!: (value: { model: string; vector: number[] }) => void;
+    const embedding = { embed: () => new Promise<{ model: string; vector: number[] }>(resolve => { finish = resolve; }) };
+    const indexer = new VectorIndexer({ graph, embedding, model: 'embed-v1' });
+    indexer.index('person-1', 1);
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    graph.version = 2;
+    finish({ model: 'embed-v1', vector: [1] });
+    await indexer.whenIdle();
+    expect(graph.puts).toEqual([]);
+  });
+
+  it('reuses the identical vector payload after a lost write response', async () => {
+    const graph = new MemoryVectorGraph();
+    graph.failNextPut = true;
+    const embedding = { embed: vi.fn(async () => ({ model: 'embed-v1', vector: [1, 2, 3] })) };
+    const indexer = new VectorIndexer({ graph, embedding, model: 'embed-v1' });
+    indexer.index('person-1', 1);
+    await indexer.whenIdle();
+    expect(graph.state).toBe('failed');
+    await indexer.retryFailed('person-1', 'retry-lost-1', 'sales-a');
+    await indexer.whenIdle();
+    expect(graph.puts).toHaveLength(2);
+    expect(graph.puts[1]).toEqual(graph.puts[0]);
+    expect(embedding.embed).toHaveBeenCalledTimes(1);
+    expect(graph.state).toBe('ready');
+  });
+
+  it('embeds only approved descriptive fields and role facts', () => {
+    const text = buildEmbeddingText({ entity: { entity_id: 'person-1', label: 'Person',
+      properties: { name: '陈晓', description: '联系 private@example.cn 或 wx-private，负责 CAD',
+        email: ['private@example.cn'], telephone: ['13800138000'],
+        contactPoint: [{ telephone: ['12345678'] }], skills: ['CAD'],
+        hasOccupation: [{ name: '工程师' }], hasCredential: [{ name: '工程师证书' }],
+      }, extensions: { instantMessaging: [{ platform: 'wechat', accountId: 'wx-private' }] } },
+    relations: [{ relation_type: 'worksFor', source_id: 'person-1',
+        properties: { role: { roleName: '主管' } } }] });
+    expect(text).toContain('陈晓');
+    expect(text).toContain('CAD');
+    expect(text).toContain('工程师证书');
+    expect(text).toContain('主管');
+    expect(text).not.toMatch(/private@example\.cn|13800138000|12345678|wx-private/u);
   });
 });
