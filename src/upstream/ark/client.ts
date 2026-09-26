@@ -1,4 +1,3 @@
-import { z } from 'zod';
 import type { EvidenceBundle, ResearchBundle } from '../../contracts/index.js';
 import { UpstreamError } from '../../orchestration/retry.js';
 import { ArkEvidenceValidationError, validateArkEvidence } from './evidence-validator.js';
@@ -9,14 +8,7 @@ import {
 } from './payload-budget.js';
 import { buildArkMessages } from './prompt.js';
 import { planArkBatches, type ArkBatchPlan } from './batch-plan.js';
-
-const ArkResponseSchema = z.object({
-  choices: z.array(z.object({
-    message: z.object({
-      content: z.string(),
-    }).passthrough(),
-  }).passthrough()).min(1),
-}).passthrough();
+import { ArkTransportError, requestArkJsonContent } from './json-request.js';
 
 export interface ArkEvidenceServiceOptions {
   url: string;
@@ -27,8 +19,6 @@ export interface ArkEvidenceServiceOptions {
   requestMaxBytes?: number;
   requestTimeoutMs?: number;
 }
-
-const ARK_REQUEST_TIMEOUT_MS = 120_000;
 
 export interface ArkEvidenceExtraction {
   readonly evidence: EvidenceBundle;
@@ -121,54 +111,16 @@ export class ArkEvidenceService {
       throw new ArkInvalidOutputError('INPUT_TOO_LARGE', 'Ark request exceeds the UTF-8 byte budget');
     }
     const compactBundle = selection.bundle;
-    const timeoutSignal = AbortSignal.timeout(this.options.requestTimeoutMs ?? ARK_REQUEST_TIMEOUT_MS);
-    const requestSignal = this.options.signal === undefined
-      ? timeoutSignal
-      : AbortSignal.any([this.options.signal, timeoutSignal]);
-    let response: Response;
+    let content: string;
     try {
-      response = await this.fetchFn(this.options.url, {
-        method: 'POST',
-        signal: requestSignal,
-        headers: {
-          Authorization: `Bearer ${this.options.credential}`,
-          'Content-Type': 'application/json',
-        },
-        body: requestBody,
-      });
+      content = await requestArkJsonContent({ url: this.options.url, credential: this.options.credential,
+        body: requestBody, fetchFn: this.fetchFn, signal: this.options.signal,
+        timeoutMs: this.options.requestTimeoutMs });
     } catch (error) {
-      if (this.options.signal?.aborted === true) {
-        throw new ArkUnavailableError('ABORTED', 'Ark request aborted', { cause: error });
-      }
-      if (timeoutSignal.aborted) {
-        throw new ArkUnavailableError('TIMEOUT', 'Ark request timed out', { cause: error });
-      }
-      throw new ArkUnavailableError('NETWORK_ERROR', 'Ark request failed', { cause: error });
+      if (error instanceof ArkTransportError) throw new ArkUnavailableError(error.code, error.message, { cause: error });
+      throw error;
     }
-
-    if (!response.ok) {
-      throw new ArkUnavailableError('REMOTE_HTTP_ERROR', `Ark HTTP ${response.status}`);
-    }
-
-    let envelope: unknown;
-    try {
-      envelope = await response.json();
-    } catch (error) {
-      if (this.options.signal?.aborted === true) {
-        throw new ArkUnavailableError('ABORTED', 'Ark request aborted', { cause: error });
-      }
-      if (timeoutSignal.aborted) {
-        throw new ArkUnavailableError('TIMEOUT', 'Ark request timed out', { cause: error });
-      }
-      throw new ArkUnavailableError('INVALID_RESPONSE', 'Ark returned an invalid API response', { cause: error });
-    }
-
-    const parsed = ArkResponseSchema.safeParse(envelope);
-    if (!parsed.success) {
-      throw new ArkUnavailableError('INVALID_RESPONSE', 'Ark response has no model content', { cause: parsed.error });
-    }
-
-    const candidate = jsonContent(parsed.data.choices[0].message.content);
+    const candidate = jsonContent(content);
     try {
       const validated = validateArkEvidence(compactBundle, candidate);
       return {
