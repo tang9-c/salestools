@@ -103,6 +103,15 @@ it('rejects user payload paths and unknown operations without sending them to th
   await expect(graph.request<{ nonce: string }>('health', { nonce: 'safe' })).resolves.toMatchObject({ nonce: 'safe' });
 });
 
+it('allows ontology field_path evidence in a graph write payload', async () => {
+  const graph = await client();
+  await expect(graph.request('save_contact', {
+    operation_id: 'op-1', actor: 'user-a', label: 'Person',
+    set_properties: { name: '陈晓' },
+    evidence: [{ field_path: 'properties.name', value: '陈晓', source_type: 'manual' }],
+  })).resolves.toMatchObject({ concurrent: 1 });
+});
+
 it('honors an aborted queued request without disrupting the active request', async () => {
   const graph = await client();
   const first = graph.request('health', { nonce: 'first', delay: 30 });
@@ -112,4 +121,27 @@ it('honors an aborted queued request without disrupting the active request', asy
   controller.abort();
   await outcome;
   await expect(first).resolves.toMatchObject({ nonce: 'first' });
+});
+
+it('recovers the worker after cancelling an active request', async () => {
+  const graph = await client();
+  const controller = new AbortController();
+  const active = graph.request('health', { mode: 'hang' }, controller.signal);
+  const aborted = expect(active).rejects.toThrow(/GRAPH_ABORTED/);
+  const next = graph.request<{ nonce: string }>('health', { nonce: 'next' });
+  controller.abort();
+  await aborted;
+  await expect(next).resolves.toMatchObject({ nonce: 'next' });
+  await expect(graph.request<{ nonce: string }>('health', { nonce: 'after' }))
+    .resolves.toMatchObject({ nonce: 'after' });
+});
+
+it('rejects a bounded queue while the worker is stuck', async () => {
+  const graph = await client();
+  const active = graph.request('health', { mode: 'hang' }).catch(() => undefined);
+  const queued = Array.from({ length: 32 }, (_, index) =>
+    graph.request('health', { nonce: String(index) }).catch(() => undefined));
+  await expect(graph.request('health', { nonce: 'overflow' })).rejects.toThrow(/GRAPH_QUEUE_FULL/);
+  await graph.close(50);
+  await Promise.all([active, ...queued]);
 });

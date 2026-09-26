@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 
 const maxFrameBytes = 256 * 1024;
+const maxQueuedRequests = 32;
 const graphOps = new Set([
   'health', 'get_contact', 'list_relations', 'save_contact', 'save_relation',
   'merge_contacts', 'archive_contact', 'restore_contact', 'archive_relation',
@@ -41,7 +42,8 @@ function hasPathField(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(hasPathField);
   if (value === null || typeof value !== 'object') return false;
   return Object.entries(value).some(([key, child]) =>
-    /(?:path|bin|command|executable)$/i.test(key) || hasPathField(child));
+    (key !== 'field_path' && key !== 'value_path' && /(?:path|bin|command|executable)$/i.test(key))
+      || hasPathField(child));
 }
 
 function waitAtMost(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
@@ -52,27 +54,40 @@ function waitAtMost(promise: Promise<unknown>, timeoutMs: number): Promise<boole
 }
 
 export class ContactGraphClient implements GraphClient {
-  private readonly child: ChildProcessWithoutNullStreams;
-  private readonly exited: Promise<void>;
+  private child!: ChildProcessWithoutNullStreams;
+  private exited!: Promise<void>;
   private readonly queue: Pending[] = [];
   private active: Pending | null = null;
   private buffer = Buffer.alloc(0);
   private nextId = 1;
   private stopped = false;
+  private restarting = false;
   private closing = false;
   private closePromise: Promise<void> | null = null;
 
-  constructor(options: { command: string; dbPath: string }) {
+  constructor(private readonly options: { command: string; dbPath: string }) {
     if (!isAbsolute(options.command) || !options.dbPath) throw new GraphClientError('GRAPH_CONFIGURATION_ERROR');
-    this.child = spawn(options.command, [], {
-      env: { ...process.env, CONTACT_GRAPH_SQLITE_PATH: options.dbPath },
+    this.startWorker();
+  }
+
+  private startWorker(): void {
+    const child = spawn(this.options.command, [], {
+      env: { ...process.env, CONTACT_GRAPH_SQLITE_PATH: this.options.dbPath },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    this.exited = new Promise(resolve => this.child.once('close', () => resolve()));
-    this.child.stdout.on('data', (chunk: Buffer) => this.receive(chunk));
-    this.child.stderr.on('data', () => undefined);
-    this.child.once('error', () => this.failAll('GRAPH_PROCESS_ERROR'));
-    this.child.once('close', () => this.failAll('GRAPH_PROCESS_EXITED'));
+    this.child = child;
+    this.buffer = Buffer.alloc(0);
+    this.exited = new Promise(resolve => child.once('close', () => resolve()));
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (this.child === child && !this.restarting) this.receive(chunk);
+    });
+    child.stderr.on('data', () => undefined);
+    child.once('error', () => {
+      if (this.child === child && !this.restarting) this.failAll('GRAPH_PROCESS_ERROR');
+    });
+    child.once('close', () => {
+      if (this.child === child && !this.restarting) this.failAll('GRAPH_PROCESS_EXITED');
+    });
   }
 
   request<T>(op: GraphOp, payload: unknown, signal?: AbortSignal): Promise<T> {
@@ -95,6 +110,9 @@ export class ContactGraphClient implements GraphClient {
     if (Buffer.byteLength(frame, 'utf8') > maxFrameBytes) {
       return Promise.reject(new GraphClientError('GRAPH_FRAME_TOO_LARGE'));
     }
+    if (this.queue.length >= maxQueuedRequests) {
+      return Promise.reject(new GraphClientError('GRAPH_QUEUE_FULL'));
+    }
 
     return new Promise<T>((resolve, reject) => {
       let settle!: () => void;
@@ -107,7 +125,18 @@ export class ContactGraphClient implements GraphClient {
       if (signal) {
         pending.onAbort = () => {
           if (this.active === pending) {
-            this.failAll('GRAPH_ABORTED');
+            const old = this.child;
+            this.restarting = true;
+            this.finishActive(undefined, new GraphClientError('GRAPH_ABORTED'));
+            old.kill('SIGTERM');
+            const killTimer = setTimeout(() => old.kill('SIGKILL'), 1_000);
+            killTimer.unref();
+            old.once('close', () => {
+              clearTimeout(killTimer);
+              if (!this.closing && !this.stopped) this.startWorker();
+              this.restarting = false;
+              this.sendNext();
+            });
           } else {
             const index = this.queue.indexOf(pending);
             if (index >= 0) this.queue.splice(index, 1);
@@ -122,12 +151,13 @@ export class ContactGraphClient implements GraphClient {
   }
 
   private sendNext(): void {
-    if (this.active || this.stopped) return;
+    if (this.active || this.stopped || this.restarting) return;
     const pending = this.queue.shift();
     if (!pending) return;
     this.active = pending;
-    this.child.stdin.write(pending.frame, error => {
-      if (error) this.failAll('GRAPH_WRITE_ERROR');
+    const child = this.child;
+    child.stdin.write(pending.frame, error => {
+      if (error && this.child === child && !this.restarting) this.failAll('GRAPH_WRITE_ERROR');
     });
   }
 
