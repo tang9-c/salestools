@@ -54,6 +54,8 @@ codex mcp add salestools \
 
 开启时设置 `CONTACT_GRAPH_ENABLED=true`，并保持 `CONTACT_GRAPH_SQLITE_PATH` 与 `SQLITE_PATH` 不同。若容器的 `--env-file` 基于 `.env.example`，必须把其中的相对路径和占位路径改为 `SQLITE_PATH=/data/salestools.sqlite`、`CONTACT_GRAPH_SQLITE_PATH=/data/contact-graph.sqlite`、`CONTACT_GRAPH_BIN=/usr/local/bin/contact-graph`、`CONTACT_PYTHON_BIN=/opt/contact-worker/.venv/bin/python`；环境文件会覆盖镜像默认值。本地源码运行则先执行 `cargo build --locked --release --manifest-path rust/contact-graph/Cargo.toml` 和 `uv sync --project python --locked`，再在 `.env` 中填写绝对路径。语义检索可选，需要分别设置 `ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL`；它们与用于抽取/问答的方舟配置相互独立，未配置时仍可使用关键词检索。
 
+当前 Feigenbaum 网关的 `doubao-embedding-vision-251215` 已实测使用 `ARK_EMBEDDING_API_URL=https://aigw.feigenbaum.com.cn/v1/embeddings`、`ARK_EMBEDDING_MODEL=doubao-embedding-vision-251215`。该模型要求 `input: [{"type":"text","text":"..."}]`，结果位于 `data.embedding`；客户端会按模型名使用此格式，普通文本向量模型继续使用标准 Embeddings 格式。参见[火山方舟多模态向量化文档](https://docs.volcengine.com/docs/ark/vectorization?lang=zh)。
+
 新工具包括 `get_contact`、`save_contact`、`merge_contacts`、`delete_contact`、`save_contact_relation`、`delete_contact_relation`、`search_contacts`、`ask_contacts`、`import_contacts`、`get_contact_import`、`commit_contact_import` 和 `cancel_contact_import`。配置好向量端点时还提供 `retry_contact_index`，仅用于重试当前版本的失败索引。保存、合并、删除和导入提交需要由用户核对候选、证据及版本；相同手机号只是可能同人的线索，不自动合并。文件上传先调用 `/contact-files`，之后通过 `import_contacts` 获取预览，再选择创建、合并或跳过并提交；上传本身不会创建联系人。每文件最多 20 MB、PDF 最多 50 页，默认最多保留 10 个待处理文件；这些上限可通过 `.env.example` 的 `CONTACT_MAX_*` 和 `CONTACT_IMPORT_*` 项调整。
 
 已有公开网页联系人快照可先查看数量，再在停服维护窗口完成带备份的首次同步：

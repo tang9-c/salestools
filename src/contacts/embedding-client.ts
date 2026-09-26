@@ -41,6 +41,7 @@ export class EmbeddingClient {
   async embed(text: string, signal?: AbortSignal): Promise<EmbeddingResult> {
     if (!text.trim()) throw new EmbeddingError('INVALID_INPUT');
     if (signal?.aborted) throw new EmbeddingError('ABORTED');
+    const multimodal = /(?:^|[-/])embedding-vision(?:-|$)/iu.test(this.options.model);
 
     const timeoutSignal = AbortSignal.timeout(this.options.requestTimeoutMs ?? 30_000);
     const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
@@ -53,7 +54,8 @@ export class EmbeddingClient {
           Authorization: `Bearer ${this.options.credential}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ model: this.options.model, input: text }),
+        body: JSON.stringify({ model: this.options.model,
+          input: multimodal ? [{ type: 'text', text }] : text }),
       }), requestSignal);
     } catch (error) {
       throw new EmbeddingError(signal?.aborted ? 'ABORTED' : timeoutSignal.aborted ? 'TIMEOUT' : 'NETWORK_ERROR',
@@ -75,10 +77,12 @@ export class EmbeddingClient {
       throw new EmbeddingError('INVALID_RESPONSE');
     }
     const data = envelope.data;
-    if (!Array.isArray(data) || !data[0] || typeof data[0] !== 'object' || Array.isArray(data[0])) {
+    const item = Array.isArray(data) ? data[0]
+      : multimodal && data && typeof data === 'object' ? data : undefined;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
       throw new EmbeddingError('INVALID_RESPONSE');
     }
-    const vector: unknown = (data[0] as Record<string, unknown>).embedding;
+    const vector: unknown = (item as Record<string, unknown>).embedding;
     if (!Array.isArray(vector) || vector.length === 0
         || !vector.every(value => typeof value === 'number' && Number.isFinite(value))) {
       throw new EmbeddingError('INVALID_RESPONSE');

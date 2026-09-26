@@ -24,6 +24,19 @@ describe('EmbeddingClient', () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
+  it('uses the vision multimodal payload and reads its object-shaped embedding', async () => {
+    const url = 'https://aigw.feigenbaum.com.cn/v1/embeddings';
+    const model = 'doubao-embedding-vision-251215';
+    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(_url).toBe(url);
+      expect(JSON.parse(String(init?.body))).toEqual({ model,
+        input: [{ type: 'text', text: '联系人语义查询' }] });
+      return Response.json({ model, data: { object: 'embedding', embedding: [0.25, -0.5, 1] } });
+    });
+    const client = new EmbeddingClient({ url, model, credential: 'secret', fetchFn: fetchFn as typeof fetch });
+    expect(await client.embed('联系人语义查询')).toEqual({ model, vector: [0.25, -0.5, 1] });
+  });
+
   it.each([
     { body: { data: [{ embedding: [] }] }, name: 'empty vector' },
     { body: { data: [{ embedding: [0.1, '0.2'] }] }, name: 'non-number' },

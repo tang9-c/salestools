@@ -278,7 +278,8 @@ async function run(): Promise<number> {
     [doc.file, createHash('sha256').update(await readFile(new URL(doc.file, documentDirectory))).digest('hex')])));
   const sourceHashes = Object.fromEntries(await Promise.all([
     'python/uv.lock', 'python/contact_worker/parser.py', 'src/contacts/document-extractor.ts',
-    'src/contacts/contact-answer.ts', 'src/contracts/contact-graph.ts', 'scripts/evaluate-contacts.ts',
+    'src/contacts/contact-answer.ts', 'src/contacts/embedding-client.ts',
+    'src/contracts/contact-graph.ts', 'scripts/evaluate-contacts.ts',
   ].map(async file => [file, createHash('sha256').update(await readFile(resolve(root, file))).digest('hex')])));
   const mcpUrl = process.env.CONTACT_EVAL_MCP_URL;
   const uploadUrl = process.env.CONTACT_EVAL_UPLOAD_URL;
@@ -422,7 +423,7 @@ async function run(): Promise<number> {
       '', '| 问答案例 | 通过 | 失败细节 |', '| --- | --- | --- |',
       ...answers.map(item => `| ${item.id} | ${item.result.passes} | ${markdown(item.result.failures)} |`), '',
       comparison || '若跨页、多人物归属或证据定位案例阻断门槛，须按计划以同一样本、同一 Ark 模型和 8 批/16 次调用预算进行一次固定 Docling Graph 对比，并记录两侧精确率、召回率、证据正确率、耗时、调用次数及下一步决策。当前未运行该对比。', '',
-    ].join('\n');
+    ].join('\n').trimEnd() + '\n';
     await writeFile(outputPath, report);
     process.stdout.write(`${JSON.stringify({ summary, report: fileURLToPath(outputPath) })}\n`);
     return !metadataComplete ? 2 : overallPass ? 0 : 1;
