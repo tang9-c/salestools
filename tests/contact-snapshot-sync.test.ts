@@ -1,6 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { SnapshotSync } from '../src/contacts/snapshot-sync.js';
+import { runContactSync } from '../src/cli/contact-sync.js';
 import type { GraphClient, GraphOp } from '../src/contacts/graph-client.js';
 import { ContactSnapshotRepository } from '../src/db/contact-snapshot-repository.js';
 import { initializeDatabase } from '../src/db/database.js';
@@ -84,4 +88,75 @@ it('does not replay before the backup marker is recorded', async () => {
   const sync = new SnapshotSync(snapshots, graph);
   await expect(sync.runBatch(2)).resolves.toBe(0);
   expect(calls).toEqual(['get_sync_cursor']);
+});
+
+it('creates a readable backup before setting the marker and replaying', async () => {
+  const snapshots = fixture();
+  const directory = await mkdtemp(resolve(tmpdir(), 'contact-sync-'));
+  try {
+    const backupPath = resolve(directory, 'legacy.sqlite');
+    const database = databases.at(-1)!;
+    let initialized = false;
+    let cursor = 0;
+    const calls: GraphOp[] = [];
+    const graph: GraphClient = {
+      request: async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+        calls.push(op);
+        if (op === 'get_sync_cursor') {
+          return { initialized, last_snapshot_id: cursor } as T;
+        }
+        const input = payload as { initialize?: boolean; snapshots: Array<{ snapshot_id: number }> };
+        if (input.initialize) {
+          const copy = new DatabaseSync(backupPath, { readOnly: true });
+          expect(copy.prepare('SELECT COUNT(*) AS n FROM contact_query_snapshots').get()).toEqual({ n: 3 });
+          copy.close();
+          initialized = true;
+        } else {
+          cursor = input.snapshots.at(-1)!.snapshot_id;
+        }
+        return { initialized, last_snapshot_id: cursor } as T;
+      },
+      close: async () => {},
+    };
+    await expect(runContactSync(['--backup', backupPath], {
+      database, sqlitePath: ':memory:', graph,
+    })).resolves.toMatchObject({ source_count: 3, last_snapshot_id: 3 });
+    expect(calls).toContain('sync_snapshots');
+    expect(snapshots.findAfter(0, 10)).toHaveLength(3);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('dry-run reads legacy rows without contacting or changing the graph', async () => {
+  fixture();
+  const graph: GraphClient = {
+    request: async () => { throw new Error('graph must remain untouched'); },
+    close: async () => {},
+  };
+  await expect(runContactSync(['--dry-run'], {
+    database: databases.at(-1)!, sqlitePath: ':memory:', graph,
+  })).resolves.toEqual({ source_count: 3, last_snapshot_id: 3 });
+});
+
+it('refuses to initialize sync when the requested backup cannot be created', async () => {
+  fixture();
+  const calls: GraphOp[] = [];
+  const graph: GraphClient = {
+    request: async <T>(op: GraphOp): Promise<T> => {
+      calls.push(op);
+      return { initialized: false, last_snapshot_id: 0 } as T;
+    },
+    close: async () => {},
+  };
+  const directory = await mkdtemp(resolve(tmpdir(), 'contact-sync-missing-'));
+  try {
+    const destination = resolve(directory, 'nonexistent', 'backup.sqlite');
+    await expect(runContactSync(['--backup', destination], {
+      database: databases.at(-1)!, sqlitePath: ':memory:', graph,
+    })).rejects.toThrow();
+    expect(calls).toEqual(['get_sync_cursor']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

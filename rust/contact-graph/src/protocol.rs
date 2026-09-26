@@ -78,8 +78,15 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
             Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
             Err(err) => error(request_id, err.code, &err.message),
         },
-        "sync_snapshots" | "get_sync_cursor" | "search_keyword" | "search_vector"
-        | "put_vector" | "set_vector_state" => error(
+        "sync_snapshots" => match store.sync_snapshots(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "get_sync_cursor" => match store.get_sync_cursor() {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "search_keyword" | "search_vector" | "put_vector" | "set_vector_state" => error(
             request_id,
             "UNAVAILABLE",
             "Operation is not implemented yet",

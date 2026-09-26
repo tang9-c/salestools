@@ -258,7 +258,8 @@ impl Store {
             CREATE TABLE IF NOT EXISTS source_mapping (
                 source_key TEXT PRIMARY KEY,
                 entity_id TEXT NOT NULL REFERENCES entity_ids(entity_id),
-                relation_id TEXT REFERENCES relation_ids(relation_id)
+                relation_id TEXT REFERENCES relation_ids(relation_id),
+                source_json TEXT
             );
             CREATE INDEX IF NOT EXISTS source_mapping_entity ON source_mapping(entity_id);
             CREATE TABLE IF NOT EXISTS operation_results (
@@ -301,6 +302,16 @@ impl Store {
             );
             ",
         )?;
+        let source_columns = graph
+            .connection()
+            .prepare("PRAGMA table_info(source_mapping)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if !source_columns.iter().any(|column| column == "source_json") {
+            graph
+                .connection()
+                .execute("ALTER TABLE source_mapping ADD COLUMN source_json TEXT", [])?;
+        }
         Ok(Self { graph })
     }
 

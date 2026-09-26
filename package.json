@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "tokens": "node dist/cli/tokens.js",
-    "contacts:upload": "node dist/cli/contact-upload.js"
+    "contacts:upload": "node dist/cli/contact-upload.js",
+    "contacts:sync": "node dist/cli/contact-sync.js"
   },
   "keywords": [],
   "author": "",
