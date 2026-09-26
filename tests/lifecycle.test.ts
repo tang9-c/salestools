@@ -126,6 +126,22 @@ describe('ActivityTracker', () => {
 });
 
 describe('application shutdown lifecycle', () => {
+  it('refuses to serve when interrupted graph state cannot be recovered', async () => {
+    for (const failedOp of ['recover_import_jobs', 'set_vector_state'] as const) {
+      const graph = {
+        request: vi.fn(async (op: GraphOp) => {
+          if (op === failedOp) throw new Error('graph unavailable');
+          return { initialized: true, last_snapshot_id: 0 };
+        }),
+        close: vi.fn(async () => undefined),
+      } as unknown as GraphClient;
+      const runtime = createApplication({ ...config, contactGraphEnabled: true }, { graphClient: graph });
+      try {
+        await expect(runtime.listen(0, '127.0.0.1')).rejects.toThrow('graph unavailable');
+        expect(graph.request).toHaveBeenCalledWith(failedOp, expect.any(Object));
+      } finally { await runtime.close(5); }
+    }
+  });
   const runtimes: RunningApplication[] = [];
   const clients: Client[] = [];
   afterEach(async () => {

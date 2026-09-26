@@ -317,10 +317,10 @@ export function createApplication(
       if (graphClient) {
         await graphClient.request('recover_import_jobs', {
           operation_id: `import-recovery:${randomUUID()}`, actor: 'system',
-        }).catch(() => undefined);
+        });
         await graphClient.request('set_vector_state', {
           action: 'recover_interrupted', operation_id: `vector-recovery:${randomUUID()}`, actor: 'system',
-        }).catch(() => undefined);
+        });
       }
       queue.start();
       server = app.listen(port, host);
@@ -363,7 +363,8 @@ export function createApplication(
 
 export async function startApplication(env: NodeJS.ProcessEnv = process.env): Promise<RunningApplication> {
   const runtime = createApplication(loadConfig(env));
-  await runtime.listen();
+  try { await runtime.listen(); }
+  catch (error) { await runtime.close().catch(() => undefined); throw error; }
   return runtime;
 }
 
