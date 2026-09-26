@@ -1,0 +1,97 @@
+%PDF-1.3
+%‚„œ”
+1 0 obj
+<<
+/Producer (pypdf)
+>>
+endobj
+2 0 obj
+<<
+/Type /Pages
+/Count 2
+/Kids [ 5 0 R 7 0 R ]
+>>
+endobj
+3 0 obj
+<<
+/Type /Catalog
+/Pages 2 0 R
+>>
+endobj
+4 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+5 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 4 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents 6 0 R
+>>
+endobj
+6 0 obj
+<<
+/Length 266
+>>
+stream
+BT /F1 12 Tf 50 735 Td (FICTIONAL PROFILE: Jordan Hale) Tj ET
+BT /F1 12 Tf 50 703 Td (Profile ID JH-204) Tj ET
+BT /F1 12 Tf 50 671 Td (Aurora Systems - Account Lead) Tj ET
+BT /F1 12 Tf 50 639 Td (Jordan Hale worked for Aurora Systems from 2021-03 to 2023-11.) Tj ET
+
+endstream
+endobj
+7 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 4 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents 8 0 R
+>>
+endobj
+8 0 obj
+<<
+/Length 254
+>>
+stream
+BT /F1 12 Tf 50 735 Td (FICTIONAL PROFILE: Jordan Hale) Tj ET
+BT /F1 12 Tf 50 703 Td (Same Profile ID JH-204) Tj ET
+BT /F1 12 Tf 50 671 Td (Boreal Tech - Regional Lead) Tj ET
+BT /F1 12 Tf 50 639 Td (Jordan Hale works for Boreal Tech from 2024-02.) Tj ET
+
+endstream
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000015 00000 n 
+0000000054 00000 n 
+0000000119 00000 n 
+0000000168 00000 n 
+0000000238 00000 n 
+0000000370 00000 n 
+0000000687 00000 n 
+0000000819 00000 n 
+trailer
+<<
+/Size 9
+/Root 3 0 R
+/Info 1 0 R
+>>
+startxref
+1124
+%%EOF

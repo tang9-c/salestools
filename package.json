@@ -10,7 +10,8 @@
     "dev": "tsx src/index.ts",
     "tokens": "node dist/cli/tokens.js",
     "contacts:upload": "node dist/cli/contact-upload.js",
-    "contacts:sync": "node dist/cli/contact-sync.js"
+    "contacts:sync": "node dist/cli/contact-sync.js",
+    "contacts:evaluate": "tsx scripts/evaluate-contacts.ts"
   },
   "keywords": [],
   "author": "",
