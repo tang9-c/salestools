@@ -37,6 +37,33 @@ fn count(store: &Store, table: &str) -> i64 {
 }
 
 #[test]
+fn unlocated_file_evidence_cannot_commit_without_manual_confirmation() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let mut proposed = candidate("uncertain", "Invented Person");
+    proposed["can_commit"] = json!(false);
+    proposed["evidence"] = json!([{
+        "field_path":"properties.name", "value":"Invented Person",
+        "source_type":"file", "file_name":"uncertain.pdf", "file_sha256":"abc",
+        "quote":"unclear text", "locator_status":"unavailable",
+        "collected_at":"2026-09-26T00:00:00.000Z"
+    }]);
+    let import_id = ready(&store, vec![proposed]);
+    let mut commit = json!({"operation_id":format!("contact-import:{import_id}"),
+        "actor":"reviewer","import_id":import_id,"expected_version":2,
+        "choices":[{"candidate_id":"uncertain","action":"create"}]});
+    assert_eq!(
+        store.commit_import(&commit).unwrap_err().code,
+        "VALIDATION_ERROR"
+    );
+    assert_eq!(count(&store, "kg_entities"), 0);
+    commit["choices"][0]["evidence"] = json!([proof("properties.name", json!("Invented Person"))]);
+    let confirmed = store.commit_import(&commit).unwrap();
+    assert_eq!(confirmed["status"], "committed");
+    assert_eq!(count(&store, "kg_entities"), 1);
+}
+
+#[test]
 fn preserves_located_file_evidence_for_a_confirmed_spouse_relation() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("graph.sqlite")).unwrap();

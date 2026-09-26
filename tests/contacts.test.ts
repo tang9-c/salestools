@@ -355,6 +355,14 @@ describe('ContactService', () => {
     });
   });
 
+  it('removes private contact values embedded in public source URLs', async () => {
+    const source = webResult({ url: 'https://example.cn/team?email=lin.private@example.com&phone=13800138000#phone=13800138000' });
+    const result = await service({ searches: [[source], []],
+      extracted: [candidate({ sourceUrl: source.url })] }).get({ query: '测试制造' });
+    expect(result.companies[0]?.contacts[0]?.sourceUrl).toBe('https://example.cn/team');
+    expect(JSON.stringify(result)).not.toMatch(/lin\.private@|13800138000/u);
+  });
+
   it('returns partial results with a safe warning when one search fails', async () => {
     const result = await service({
       searches: [

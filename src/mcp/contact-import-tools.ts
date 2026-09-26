@@ -55,8 +55,8 @@ export function registerContactImportTools(server: McpServer, imports: ContactIm
   server.registerTool('commit_contact_import', {
     description: '逐个选择创建、合并或跳过，再一次性提交已审核候选；operation_id 固定为 contact-import:<import_id>。',
     inputSchema: z.object({ import_id: id, preview_version: z.int().positive(),
-      operation_id: operationId, choices: z.array(choice).max(100),
-      relation_choices: z.array(relationChoice).max(100).optional() }).strict(),
+      operation_id: operationId, choices: z.array(choice).max(800),
+      relation_choices: z.array(relationChoice).max(800).optional() }).strict(),
   }, async (input, context) => result(await imports.commit(input, actor(context))));
 
   server.registerTool('cancel_contact_import', {

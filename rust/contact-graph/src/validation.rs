@@ -394,6 +394,19 @@ pub fn ensure_value_evidence(
             other => quote.contains(&other.to_string()),
         }
     }
+    fn supports_value(record: &Value, value: &Value) -> bool {
+        match record.get("source_type").and_then(Value::as_str) {
+            Some("manual") => record["locator_status"] == "not_applicable",
+            Some("file" | "web") => {
+                record["locator_status"] == "located"
+                    && record
+                        .get("quote")
+                        .and_then(Value::as_str)
+                        .is_some_and(|quote| quote_supports(value, quote))
+            }
+            _ => false,
+        }
+    }
     for record in evidence {
         if let Some(leaf) = record.get("value_path").and_then(Value::as_str) {
             if leaf == "@type"
@@ -424,24 +437,20 @@ pub fn ensure_value_evidence(
                     .collect();
                 let supported = if let Some(object) = selected.as_object() {
                     matching.iter().any(|record| {
-                        record.get("value_path").is_none()
-                            && (record.get("source_type").and_then(Value::as_str) == Some("manual")
-                                || record
-                                    .get("quote")
-                                    .and_then(Value::as_str)
-                                    .is_some_and(|quote| quote_supports(selected, quote)))
+                        record.get("value_path").is_none() && supports_value(record, selected)
                     }) || object
                         .keys()
                         .filter(|key| key.as_str() != "@type")
                         .all(|key| {
                             matching.iter().any(|record| {
                                 record.get("value_path").and_then(Value::as_str) == Some(key)
+                                    && supports_value(record, &object[key])
                             })
                         })
                 } else {
-                    matching
-                        .iter()
-                        .any(|record| record.get("value_path").is_none())
+                    matching.iter().any(|record| {
+                        record.get("value_path").is_none() && supports_value(record, selected)
+                    })
                 };
                 if !supported {
                     return Err(format!("Missing evidence for {path} value"));

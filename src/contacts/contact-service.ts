@@ -363,19 +363,37 @@ export class ContactService {
 }
 
 function toServiceOutput(output: GetContactsOutput): ContactServiceOutput {
+  // Public search only needs a navigable source. Query and fragment often carry
+  // direct contact values; keep those in private provenance, never in this API.
+  const publicUrl = (value: string): string => {
+    const url = new URL(value);
+    url.search = '';
+    url.hash = '';
+    const directContact = /(?:[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}|\+?\d[\d\s().-]{5,}\d)/iu;
+    if (directContact.test(url.hostname)) return 'https://redacted.invalid/';
+    let path = url.pathname;
+    for (let step = 0; step < 3; step += 1) {
+      try { path = decodeURIComponent(path); }
+      catch { break; }
+    }
+    if (directContact.test(path)) {
+      url.pathname = '/';
+    }
+    return url.toString();
+  };
   return {
     companies: output.companies.map(company => ({
       companyName: company.company_name,
       contacts: company.contacts.map(contact => ({
         name: contact.name,
         title: contact.title,
-        sourceUrl: contact.source_url,
+        sourceUrl: publicUrl(contact.source_url),
         publishedAt: contact.published_at,
       })),
       historicalContacts: company.historical_contacts.map(contact => ({
         name: contact.name,
         title: contact.title,
-        sourceUrl: contact.source_url,
+        sourceUrl: publicUrl(contact.source_url),
         publishedAt: contact.published_at,
         firstSeenAt: contact.first_seen_at,
         lastSeenAt: contact.last_seen_at,
