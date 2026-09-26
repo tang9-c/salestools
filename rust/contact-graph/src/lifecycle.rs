@@ -169,6 +169,7 @@ impl Store {
         let update = format!("UPDATE {table} SET metadata_json=?1 WHERE {column}=?2");
         tx.execute(&update, params![meta.to_string(), id])
             .map_err(internal)?;
+        let mut indexed_source: Option<String> = None;
         if relation {
             let source: Option<String> = tx.query_row(
                 "SELECT source.entity_id FROM relation_ids ids JOIN kg_relations r ON r.id=ids.kg_id
@@ -180,6 +181,7 @@ impl Store {
             ).optional().map_err(internal)?;
             if let Some(source) = source {
                 crate::vectors::invalidate_vector(&tx, &source)?;
+                indexed_source = Some(source);
             }
         } else if restore {
             crate::vectors::invalidate_vector(&tx, id)?;
@@ -187,7 +189,8 @@ impl Store {
             crate::vectors::retire_vector(&tx, id)?;
         }
         let result = if relation {
-            json!({"relation_id":id,"version":meta["version"],"replayed":false})
+            json!({"relation_id":id,"version":meta["version"],"replayed":false,
+                "indexed_source_id": indexed_source})
         } else {
             json!({"entity_id":id,"version":meta["version"],"replayed":false})
         };

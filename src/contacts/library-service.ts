@@ -4,11 +4,33 @@ type Payload = Record<string, unknown>;
 
 /** The authenticated MCP caller owns every write; callers cannot supply an actor. */
 export class ContactLibraryService {
-  constructor(private readonly graph: GraphClient) {}
+  constructor(private readonly graph: GraphClient,
+    private readonly onChanged?: (entityId: string, contentVersion: number) => void) {}
+
+  private async schedule(entityId: unknown): Promise<void> {
+    if (!this.onChanged || typeof entityId !== 'string') return;
+    try {
+      const detail = await this.get(entityId);
+      const entity = detail?.entity as { label?: string } | undefined;
+      const version = detail?.index_content_version;
+      if (entity?.label === 'Person' && typeof version === 'number' && version > 0) {
+        this.onChanged(entityId, version);
+      }
+    } catch { /* Indexing is independent of the committed graph write. */ }
+  }
 
   private async write<T>(op: GraphOp, input: Payload, actor: string): Promise<T> {
     if (!actor.trim()) throw new Error('Authenticated client is required');
-    return this.graph.request<T>(op, { ...input, actor });
+    const result = await this.graph.request<T>(op, { ...input, actor });
+    const output = result as Payload;
+    if (op === 'save_contact' || op === 'restore_contact' || op === 'merge_contacts') {
+      void this.schedule(op === 'merge_contacts' ? output.target_id : output.entity_id);
+    } else if (op === 'save_relation' && output.relation_type === 'worksFor') {
+      void this.schedule(output.source_id);
+    } else if (op === 'archive_relation') {
+      void this.schedule(output.indexed_source_id);
+    }
+    return result;
   }
 
   get(entityId: string): Promise<Record<string, unknown> | null> {

@@ -23,6 +23,10 @@ import { ImportJobs } from './contacts/import-jobs.js';
 import { ContactImportService } from './contacts/import-service.js';
 import { parseLocalDocument } from './contacts/document-worker.js';
 import { DocumentExtractor } from './contacts/document-extractor.js';
+import { EmbeddingClient } from './contacts/embedding-client.js';
+import { VectorIndexer } from './contacts/vector-indexer.js';
+import { ContactSearch } from './contacts/contact-search.js';
+import { ContactAnswerService } from './contacts/contact-answer.js';
 import { createHttpApp } from './mcp/http-app.js';
 import type { McpServices } from './mcp/tools.js';
 import { AssessmentRunner } from './orchestration/assessment-runner.js';
@@ -128,7 +132,24 @@ export function createApplication(
       dbPath: config.contactGraphSqlitePath!,
     })
     : undefined;
-  const contactLibrary = graphClient === undefined ? undefined : new ContactLibraryService(graphClient);
+  const embedding = graphClient && config.embeddingEnabled
+    ? new EmbeddingClient({ url: config.embeddingApiUrl!, model: config.embeddingModel!,
+      credential: config.embeddingCredential! }) : undefined;
+  const vectorIndexer = graphClient && embedding
+    ? new VectorIndexer({ graph: graphClient, embedding, model: config.embeddingModel! }) : undefined;
+  const contactSearch = graphClient ? new ContactSearch(graphClient, embedding) : undefined;
+  const contactAnswer = graphClient && contactSearch ? new ContactAnswerService({
+    graph: graphClient,
+    resolvePeople: async name => {
+      const page = await contactSearch.search({ name, mode: 'keyword', limit: 50 });
+      return page.items.filter(item => item.label === 'Person' && item.name)
+        .map(item => ({ entity_id: item.entity_id, name: item.name! }));
+    },
+    ark: { url: config.arkApiUrl, model: config.arkModel,
+      credential: config.arkCredential, requestMaxBytes: config.arkRequestMaxBytes },
+  }) : undefined;
+  const contactLibrary = graphClient === undefined ? undefined : new ContactLibraryService(graphClient,
+    (entityId, version) => { vectorIndexer?.index(entityId, version); });
   const pythonProjectDir = fileURLToPath(new URL('../python/', import.meta.url));
   const contactImport = graphClient === undefined ? undefined : new ContactImportService({
     graph: graphClient, uploads: uploadStore, jobs: importJobs,
@@ -259,6 +280,9 @@ export function createApplication(
   const servicesFor = (userId: string): McpServices => ({
     contactLibrary,
     contactImport,
+    contactSearch,
+    contactAnswer,
+    vectorIndexer,
     getCompanyProfile: input => activity.track(() => profileService.get(input.query, input.regionHint)),
     submitAssessment: input => activity.track(() => assessmentService.submit(input, userId)),
     getAssessmentStatus: input => activity.track(() => assessmentService.status(input)),
@@ -294,6 +318,9 @@ export function createApplication(
         await graphClient.request('recover_import_jobs', {
           operation_id: `import-recovery:${randomUUID()}`, actor: 'system',
         }).catch(() => undefined);
+        await graphClient.request('set_vector_state', {
+          action: 'recover_interrupted', operation_id: `vector-recovery:${randomUUID()}`, actor: 'system',
+        }).catch(() => undefined);
       }
       queue.start();
       server = app.listen(port, host);
@@ -313,6 +340,7 @@ export function createApplication(
         const completedNormally = await waitAtMost(normalDrain, timeoutMs);
         if (completedNormally) {
           await importJobs.recover();
+          await vectorIndexer?.whenIdle();
           await closeUpstreams();
           await app.closeMcpHandler();
         } else {

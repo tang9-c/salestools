@@ -3,6 +3,9 @@ import type { OpportunityLevel, ProductKey, ResearchSourceStatus } from '../cont
 import type { ContactServiceOutput } from '../contacts/contact-service.js';
 import type { ContactLibraryService } from '../contacts/library-service.js';
 import type { ContactImportService } from '../contacts/import-service.js';
+import type { ContactSearch } from '../contacts/contact-search.js';
+import type { VectorIndexer } from '../contacts/vector-indexer.js';
+import type { ContactAnswerService } from '../contacts/contact-answer.js';
 import type { CompanyQuestionInput } from '../orchestration/company-question-service.js';
 import type { CompanyQuestionResult } from '../contracts/index.js';
 import {
@@ -20,6 +23,8 @@ import {
 } from './tool-schemas.js';
 import { registerContactTools } from './contact-tools.js';
 import { registerContactImportTools } from './contact-import-tools.js';
+import { registerContactSearchTools } from './contact-search-tools.js';
+import { registerContactAnswerTools } from './contact-answer-tools.js';
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -119,6 +124,9 @@ export interface McpServices {
   askCompany(input: CompanyQuestionInput): Awaitable<CompanyQuestionResult>;
   contactLibrary?: ContactLibraryService;
   contactImport?: ContactImportService;
+  contactSearch?: ContactSearch;
+  vectorIndexer?: VectorIndexer;
+  contactAnswer?: ContactAnswerService;
 }
 
 export type { ContactServiceOutput } from '../contacts/contact-service.js';
@@ -238,6 +246,8 @@ export function buildMcpServer(services: McpServices): McpServer {
 
   if (services.contactLibrary) registerContactTools(server, services.contactLibrary);
   if (services.contactImport) registerContactImportTools(server, services.contactImport);
+  if (services.contactSearch) registerContactSearchTools(server, services.contactSearch, services.vectorIndexer);
+  if (services.contactAnswer) registerContactAnswerTools(server, services.contactAnswer);
 
   server.registerTool('get_company_profile', {
     description: 'Default tool for basic company-profile lookups and ambiguous requests; use it before any formal assessment.',
