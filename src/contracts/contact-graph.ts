@@ -224,6 +224,7 @@ const propertyFields = new Set([
   'hasOccupation', 'hasCredential', 'contactPoint', 'faxNumber', 'image', 'disambiguatingDescription',
 ]);
 const evidenceField = z.string().refine(value => value === '$relation'
+  || /^properties\.role\.(roleName|startDate|endDate)$/u.test(value)
   || (value.startsWith('properties.') && propertyFields.has(value.slice('properties.'.length)))
   || /^extensions\.(nativePlace|hobbies|maritalStatus|instantMessaging)$/u.test(value)
   || /^metadata\.(employment_status|status_as_of)$/u.test(value), 'Invalid evidence field path');
@@ -242,6 +243,16 @@ export const ContactEvidenceSchema = z.object({
   collected_at: UtcTimestampSchema,
   confirmed_by: text.optional(), confirmed_at: UtcTimestampSchema.optional(),
 }).strict().superRefine((value, context) => {
+  if (value.subject_kind === 'entity' && (value.field_path === '$relation'
+    || value.field_path.startsWith('properties.role.')
+    || value.field_path.startsWith('metadata.'))) {
+    context.addIssue({ code: 'custom', message: 'Relation evidence path requires a relation subject' });
+  }
+  if (value.subject_kind === 'relation' && value.field_path !== '$relation'
+    && !value.field_path.startsWith('properties.role.')
+    && !value.field_path.startsWith('metadata.')) {
+    context.addIssue({ code: 'custom', message: 'Entity evidence path requires an entity subject' });
+  }
   if (value.source_type === 'file' && (!value.file_name || !value.file_sha256)) {
     context.addIssue({ code: 'custom', message: 'File evidence requires file name and SHA-256' });
   }

@@ -75,6 +75,12 @@ describe('shared contact graph contract', () => {
       collected_at: '2026-09-26T00:00:00.000Z', confirmed_by: 'user-a',
       confirmed_at: '2026-09-26T00:00:00.000Z', locator_status: 'not_applicable',
     }).value).toBe('chen@example.com');
+    expect(ContactEvidenceSchema.safeParse({
+      evidence_id: 'ev_role', subject_kind: 'relation', subject_id: 'r_1',
+      field_path: 'properties.role.roleName', value: '销售经理', source_type: 'file',
+      file_name: 'resume.pdf', file_sha256: 'a'.repeat(64), quote: '销售经理', page: 2,
+      collected_at: '2026-09-26T00:00:00.000Z', locator_status: 'located',
+    }).success).toBe(true);
     expect(ParsedBlockSchema.parse(fixture('block-valid')).page).toBe(2);
     expect(ParsedBlockSchema.safeParse(fixture('block-invalid')).success).toBe(false);
   });
