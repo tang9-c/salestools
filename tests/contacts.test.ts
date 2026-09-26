@@ -285,6 +285,26 @@ function service(options: {
 }
 
 describe('ContactService', () => {
+  it('keeps the old search output unchanged when graph sync fails after append', async () => {
+    let syncAttempts = 0;
+    const base = await service({
+      searches: [[webResult()], []],
+      extracted: [candidate()],
+    }).get({ query: '测试制造' });
+    const failed = await new ContactService({
+      snapshots: new MemoryContactSnapshots(),
+      searchClient: { searchWeb: async () => [webResult()] },
+      extractor: { extract: async () => ({
+        contacts: [candidate()],
+        selection: { totalPages: 1, includedPages: 1, textTruncated: false },
+      }) },
+      now: () => new Date(collectedAt),
+      onSnapshotAppended: () => { syncAttempts += 1; throw new Error('graph unavailable'); },
+    }).get({ query: '测试制造' });
+    expect(syncAttempts).toBe(1);
+    expect(JSON.stringify(failed)).toBe(JSON.stringify(base));
+  });
+
   it('returns only candidates supported by the same searched page', async () => {
     const thirdParty = webResult({
       title: '测试制造有限公司人员信息',

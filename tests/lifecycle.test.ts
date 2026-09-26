@@ -13,6 +13,8 @@ import type { IdentityProfile } from '../src/contracts/index.js';
 import { AssessmentRepository } from '../src/db/assessment-repository.js';
 import { initializeDatabase } from '../src/db/database.js';
 import { ProfileRepository } from '../src/db/profile-repository.js';
+import { ContactSnapshotRepository } from '../src/db/contact-snapshot-repository.js';
+import type { GraphClient, GraphOp } from '../src/contacts/graph-client.js';
 import { createApplication, type RunningApplication } from '../src/index.js';
 import { ActivityTracker } from '../src/orchestration/activity-tracker.js';
 
@@ -131,13 +133,40 @@ describe('application shutdown lifecycle', () => {
     await Promise.allSettled(runtimes.splice(0).map(runtime => runtime.close(5)));
   });
 
+  it('drains backed-up legacy snapshots on startup', async () => {
+    const database = initializeDatabase(new DatabaseSync(':memory:'));
+    new ContactSnapshotRepository(database).append({
+      cacheKey: 'a'.repeat(64), normalizedQuery: '甲公司', normalizedRegionHint: null,
+      payload: { companies: [{ company_name: '甲公司', contacts: [{
+        name: '张明', title: '总监', source_url: 'https://example.com/a', published_at: null,
+      }] }], warnings: [], collected_at: '2026-09-26T00:00:00.000Z' },
+      storedAt: '2026-09-26T00:00:00.000Z',
+    });
+    const calls: GraphOp[] = [];
+    let cursor = 0;
+    const graphClient: GraphClient = {
+      request: async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+        calls.push(op);
+        if (op === 'get_sync_cursor') return { initialized: true, last_snapshot_id: cursor } as T;
+        cursor = (payload as { snapshots: Array<{ snapshot_id: number }> }).snapshots.at(-1)!.snapshot_id;
+        return { last_snapshot_id: cursor } as T;
+      },
+      close: async () => {},
+    };
+    const runtime = createApplication({ ...config, contactGraphEnabled: true },
+      { database, graphClient });
+    runtimes.push(runtime);
+    await vi.waitFor(() => expect(calls).toContain('sync_snapshots'));
+    expect(cursor).toBe(1);
+  });
+
   it('starts the configured graph worker only when enabled and closes it during shutdown', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'graph-lifecycle-'));
     try {
       const command = resolve(directory, 'worker');
       const marker = resolve(directory, 'closed');
       const started = resolve(directory, 'started');
-      await writeFile(command, `#!/usr/bin/env node\nconst fs = require('node:fs');\nfs.writeFileSync(${JSON.stringify(started)}, 'started');\nprocess.on('exit', () => fs.writeFileSync(${JSON.stringify(marker)}, 'closed'));\nprocess.stdin.resume();\n`);
+      await writeFile(command, `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst readline = require('node:readline');\nfs.writeFileSync(${JSON.stringify(started)}, 'started');\nprocess.on('exit', () => fs.writeFileSync(${JSON.stringify(marker)}, 'closed'));\nreadline.createInterface({ input: process.stdin }).on('line', line => { const request = JSON.parse(line); process.stdout.write(JSON.stringify({ version: 1, request_id: request.request_id, ok: true, result: { initialized: false, last_snapshot_id: 0 } }) + '\\n'); });\n`);
       await chmod(command, 0o755);
       const runtime = createApplication({ ...config,
         contactGraphEnabled: true,

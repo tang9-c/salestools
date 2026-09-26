@@ -15,6 +15,7 @@ import { ContactSnapshotRepository } from './db/contact-snapshot-repository.js';
 import { JsonlLogger, type LogSink } from './logging/logger.js';
 import { ContactService, type ContactExtractorDependency } from './contacts/contact-service.js';
 import { ContactGraphClient, type GraphClient } from './contacts/graph-client.js';
+import { SnapshotSync } from './contacts/snapshot-sync.js';
 import { UploadStore } from './contacts/upload-store.js';
 import { ImportJobs } from './contacts/import-jobs.js';
 import { createHttpApp } from './mcp/http-app.js';
@@ -122,6 +123,8 @@ export function createApplication(
       dbPath: config.contactGraphSqlitePath!,
     })
     : undefined;
+  const snapshotSync = graphClient === undefined ? undefined : new SnapshotSync(contactSnapshots, graphClient);
+  void snapshotSync?.schedule().catch(() => undefined);
   const qccGateway = overrides.qccGateway ?? new QccGateway({
     urls: {
       company: config.qccMcpCompanyUrl,
@@ -167,6 +170,7 @@ export function createApplication(
     },
     extractor: contactExtractor,
     snapshots: contactSnapshots,
+    onSnapshotAppended: snapshotSync === undefined ? undefined : () => snapshotSync.schedule(),
     cacheLogger: logger,
     now: overrides.now,
   });

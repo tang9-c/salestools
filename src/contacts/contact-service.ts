@@ -38,6 +38,7 @@ export interface ContactServiceOptions {
   searchClient: ContactSearchDependency;
   extractor: ContactExtractorDependency;
   snapshots: ContactSnapshotStore;
+  onSnapshotAppended?: () => void | Promise<void>;
   cacheLogger?: ContactCacheLoggerDependency;
   now?: () => Date;
 }
@@ -310,6 +311,11 @@ export class ContactService {
       payload,
       storedAt,
     }));
+    try {
+      void Promise.resolve(this.options.onSnapshotAppended?.()).catch(() => undefined);
+    } catch {
+      // Graph synchronization must not change the legacy search response.
+    }
     return this.render(identity.cacheKey);
   }
 

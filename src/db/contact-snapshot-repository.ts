@@ -129,4 +129,20 @@ export class ContactSnapshotRepository implements ContactSnapshotStore {
     `).all(validateCacheKey(cacheKey)) as unknown as ContactSnapshotRow[];
     return rows.map(toStoredSnapshot);
   }
+
+  findAfter(snapshotId: number, limit: number): StoredContactSnapshot[] {
+    if (!Number.isSafeInteger(snapshotId) || snapshotId < 0
+      || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error('Invalid snapshot cursor or batch size');
+    }
+    const rows = this.database.prepare(`
+      SELECT snapshot_id, cache_key, normalized_query, normalized_region_hint,
+             result_json, collected_at, stored_at
+      FROM contact_query_snapshots
+      WHERE snapshot_id > ?
+      ORDER BY snapshot_id ASC
+      LIMIT ?
+    `).all(snapshotId, limit) as unknown as ContactSnapshotRow[];
+    return rows.map(toStoredSnapshot);
+  }
 }

@@ -132,6 +132,9 @@ describe('SQLite repositories', () => {
 
     expect(repository.findAll(contactCacheKey).map(snapshot => snapshot.payload))
       .toEqual([contactSnapshotPayload, newerPayload]);
+    expect(repository.findAfter(0, 1).map(snapshot => snapshot.snapshotId)).toEqual([1]);
+    expect(repository.findAfter(1, 2).map(snapshot => snapshot.snapshotId)).toEqual([2]);
+    expect(repository.findAfter(2, 2)).toEqual([]);
     expect(repository.findLatest(contactCacheKey)?.payload).toEqual(newerPayload);
     expect(repository.findFresh(
       contactCacheKey, new Date('2026-10-05T00:00:00.000Z'), 30,
