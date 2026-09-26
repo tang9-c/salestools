@@ -10,12 +10,12 @@ fn library_entity_and_app_row_roll_back_together() -> Result<(), Box<dyn std::er
         let id = kg.insert_entity(&Entity::new("Person", "测试人"))?;
         tx.execute("INSERT INTO app_probe(id) VALUES(?1)", [id])?;
     }
-    let entity_count: i64 = kg
-        .connection()
-        .query_row("SELECT count(*) FROM kg_entities", [], |row| row.get(0))?;
-    let app_count: i64 = kg
-        .connection()
-        .query_row("SELECT count(*) FROM app_probe", [], |row| row.get(0))?;
+    let entity_count: i64 =
+        kg.connection()
+            .query_row("SELECT count(*) FROM kg_entities", [], |row| row.get(0))?;
+    let app_count: i64 =
+        kg.connection()
+            .query_row("SELECT count(*) FROM app_probe", [], |row| row.get(0))?;
     assert_eq!((entity_count, app_count), (0, 0));
     Ok(())
 }

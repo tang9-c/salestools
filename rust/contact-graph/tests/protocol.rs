@@ -15,11 +15,25 @@ fn worker_survives_malformed_line_and_replies_to_next_health_request() {
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     writeln!(stdin, "not json").unwrap();
-    writeln!(stdin, "{}", json!({"version":1,"request_id":"req-1","op":"health","payload":{"nonce":"ok"}})).unwrap();
-    writeln!(stdin, "{}", json!({"version":1,"request_id":"req-2","op":"unknown","payload":{}})).unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({"version":1,"request_id":"req-1","op":"health","payload":{"nonce":"ok"}})
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({"version":1,"request_id":"req-2","op":"unknown","payload":{}})
+    )
+    .unwrap();
     drop(stdin);
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success(), "worker stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "worker stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let frames: Vec<Value> = String::from_utf8(output.stdout)
         .unwrap()
         .lines()

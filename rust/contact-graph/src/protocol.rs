@@ -19,13 +19,14 @@ fn error(request_id: Value, code: &str, message: &str) -> Value {
     })
 }
 
-pub fn parse_and_dispatch(line: &[u8], _store: &Store) -> Value {
+pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
     let request: Request = match serde_json::from_slice(line) {
         Ok(request) => request,
         Err(_) => return error(Value::Null, "BAD_REQUEST", "Malformed request frame"),
     };
     let request_id = Value::String(request.request_id.clone());
-    if request.version != 1 || request.request_id.trim().is_empty() || !request.payload.is_object() {
+    if request.version != 1 || request.request_id.trim().is_empty() || !request.payload.is_object()
+    {
         return error(request_id, "BAD_REQUEST", "Invalid request envelope");
     }
     match request.op.as_str() {
@@ -33,15 +34,38 @@ pub fn parse_and_dispatch(line: &[u8], _store: &Store) -> Value {
             "version": 1, "request_id": request_id, "ok": true,
             "result": { "nonce": request.payload.get("nonce").cloned().unwrap_or(Value::Null) }
         }),
-        "get_contact" | "list_relations" | "save_contact" | "save_relation"
-        | "merge_contacts" | "archive_contact" | "restore_contact" | "archive_relation"
-        | "commit_import" | "sync_snapshots" | "get_sync_cursor" | "put_import_job"
-        | "get_import_job" | "search_keyword" | "search_vector" | "put_vector"
-        | "set_vector_state" => error(request_id, "UNAVAILABLE", "Operation is not implemented yet"),
+        "save_contact" => match store.save_contact(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "get_contact" => match store.get_contact(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "put_import_job" => match store.put_import_job(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "get_import_job" => match store.get_import_job(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "list_relations" | "save_relation" | "merge_contacts" | "archive_contact"
+        | "restore_contact" | "archive_relation" | "commit_import" | "sync_snapshots"
+        | "get_sync_cursor" | "search_keyword" | "search_vector" | "put_vector"
+        | "set_vector_state" => error(
+            request_id,
+            "UNAVAILABLE",
+            "Operation is not implemented yet",
+        ),
         _ => error(request_id, "UNKNOWN_OPERATION", "Unknown graph operation"),
     }
 }
 
 pub fn frame_too_large() -> Value {
-    error(Value::Null, "FRAME_TOO_LARGE", "Request frame exceeds 256 KiB")
+    error(
+        Value::Null,
+        "FRAME_TOO_LARGE",
+        "Request frame exceeds 256 KiB",
+    )
 }
