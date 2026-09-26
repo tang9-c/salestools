@@ -26,6 +26,7 @@ WORKDIR /opt/contact-worker
 COPY python/pyproject.toml python/uv.lock ./
 COPY python/contact_worker ./contact_worker
 RUN uv sync --locked --no-dev --no-editable --python /usr/bin/python3
+RUN .venv/bin/python -c "import torch, torchvision; assert torch.version.cuda is None, 'GPU Torch entered CPU image'"
 COPY scripts/contact-runtime-smoke.py /tmp/contact-runtime-smoke.py
 # This runs real Docling image OCR while the model download is still available.
 RUN .venv/bin/python /tmp/contact-runtime-smoke.py --ocr-only
