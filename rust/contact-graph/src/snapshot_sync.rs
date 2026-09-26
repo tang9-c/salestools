@@ -157,6 +157,50 @@ fn resolved_entity(tx: &Transaction<'_>, initial: &str) -> Result<(String, bool)
     Err(AppError::validation("Merged contact chain is too deep"))
 }
 
+// A new title intentionally has a different identity key. Before treating it as a new
+// person, honor a user's archive of the same observed external source, including
+// observations written before this guard existed.
+fn archived_source(
+    tx: &Transaction<'_>,
+    cache_key: &str,
+    company_name: &str,
+    person_name: &str,
+    source_url: &str,
+) -> Result<Option<String>, AppError> {
+    let mut statement = tx
+        .prepare(
+            "SELECT entity_id,source_json FROM source_mapping \
+         WHERE source_key LIKE 'snapshot-observation:%' \
+         AND json_extract(source_json,'$.cache_key')=?1 \
+         AND json_extract(source_json,'$.source_url')=?2",
+        )
+        .map_err(AppError::internal)?;
+    let rows = statement
+        .query_map(params![cache_key, source_url], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(AppError::internal)?;
+    for row in rows {
+        let (id, raw) = row.map_err(AppError::internal)?;
+        let source: Value = serde_json::from_str(&raw).map_err(AppError::internal)?;
+        if source
+            .get("company_name")
+            .and_then(Value::as_str)
+            .map(normalized)
+            != Some(company_name.to_owned())
+            || source.get("name").and_then(Value::as_str).map(normalized)
+                != Some(person_name.to_owned())
+        {
+            continue;
+        }
+        let (resolved, archived) = resolved_entity(tx, &id)?;
+        if archived {
+            return Ok(Some(resolved));
+        }
+    }
+    Ok(None)
+}
+
 fn new_entity(
     store: &Store,
     tx: &Transaction<'_>,
@@ -307,6 +351,14 @@ fn apply_snapshot(
             let (person_id, relation_id, archived) = if let Some((id, relation)) = known {
                 let (resolved, archived) = resolved_entity(tx, &id)?;
                 (resolved, relation, archived)
+            } else if let Some(id) = archived_source(
+                tx,
+                &snapshot.cache_key,
+                &company_name,
+                &person_name,
+                &contact.source_url,
+            )? {
+                (id, None, true)
             } else {
                 let organization = mapped(tx, &organization_key)?;
                 let (organization_id, organization_kg) = if let Some((id, _)) = organization {

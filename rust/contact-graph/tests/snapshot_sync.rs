@@ -193,6 +193,126 @@ fn snapshot_sync_retains_archived_source_and_does_not_globally_dedupe_names() {
 }
 
 #[test]
+fn archived_snapshot_source_stays_hidden_when_its_title_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    initialize(&store);
+    let original = snapshot(1, "总监", "query-a");
+    assert_eq!(sync(&store, 1, 1, vec![original.clone()])["ok"], true);
+    let person_id: String = store
+        .graph
+        .connection()
+        .query_row(
+            "SELECT entity_id FROM source_mapping WHERE source_key='snapshot-observation:1:0:0'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        request(
+            &store,
+            "archive_contact",
+            json!({
+                "operation_id":"archive-before-role-change", "actor":"user-a",
+                "entity_id":person_id, "expected_version":1
+            })
+        )["ok"],
+        true
+    );
+
+    let mut changed = snapshot(2, "经理", "query-a");
+    changed["companies"][0]["contacts"][0]["source_url"] =
+        original["companies"][0]["contacts"][0]["source_url"].clone();
+    let result = sync(&store, 2, 2, vec![changed]);
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(
+        count(&store, "entity_ids"),
+        2,
+        "archived Person must not be recreated"
+    );
+    assert_eq!(
+        count(&store, "relation_ids"),
+        1,
+        "new title must not revive employment"
+    );
+    let mapped_id: String = store
+        .graph
+        .connection()
+        .query_row(
+            "SELECT entity_id FROM source_mapping WHERE source_key='snapshot-observation:2:0:0'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(mapped_id, person_id);
+    let mapped_relation: Option<String> = store
+        .graph
+        .connection()
+        .query_row(
+            "SELECT relation_id FROM source_mapping WHERE source_key='snapshot-observation:2:0:0'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        mapped_relation, None,
+        "changed title is not attached to the old role"
+    );
+    let source: String = store
+        .graph
+        .connection()
+        .query_row(
+            "SELECT source_json FROM source_mapping WHERE source_key='snapshot-observation:2:0:0'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&source).unwrap()["role_name"],
+        "经理"
+    );
+    assert_eq!(
+        request(&store, "get_contact", json!({"entity_id":person_id}))["result"],
+        Value::Null
+    );
+
+    let mut other_query = snapshot(3, "经理", "query-b");
+    other_query["companies"][0]["contacts"][0]["source_url"] =
+        original["companies"][0]["contacts"][0]["source_url"].clone();
+    assert_eq!(sync(&store, 3, 3, vec![other_query])["ok"], true);
+    assert_eq!(
+        count(&store, "entity_ids"),
+        4,
+        "a different query scope remains independent"
+    );
+}
+
+#[test]
+fn active_snapshot_source_preserves_separate_title_observations() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    initialize(&store);
+    let original = snapshot(1, "总监", "query-a");
+    let mut changed = snapshot(2, "经理", "query-a");
+    changed["companies"][0]["contacts"][0]["source_url"] =
+        original["companies"][0]["contacts"][0]["source_url"].clone();
+    assert_eq!(sync(&store, 1, 2, vec![original, changed])["ok"], true);
+    assert_eq!(count(&store, "entity_ids"), 3);
+    assert_eq!(count(&store, "relation_ids"), 2);
+    let distinct: i64 = store
+        .graph
+        .connection()
+        .query_row(
+            "SELECT COUNT(DISTINCT entity_id) FROM source_mapping WHERE source_key IN \
+         ('snapshot-observation:1:0:0','snapshot-observation:2:0:0')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(distinct, 2);
+}
+
+#[test]
 fn snapshot_sync_rolls_back_facts_and_cursor_on_invalid_batch() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
