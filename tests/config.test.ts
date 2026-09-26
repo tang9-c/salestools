@@ -37,6 +37,48 @@ const valid = {
 };
 
 describe('loadConfig', () => {
+  const contactLimits = {
+    CONTACT_MAX_PENDING_FILES: 10,
+    CONTACT_MAX_FILE_BYTES: 20_971_520,
+    CONTACT_MAX_PDF_PAGES: 50,
+    CONTACT_MAX_IMAGE_PIXELS: 25_000_000,
+    CONTACT_MAX_TEMP_BYTES: 1_073_741_824,
+    CONTACT_IMPORT_TIMEOUT_MS: 900_000,
+    CONTACT_IMPORT_CONCURRENCY: 1,
+    CONTACT_EXTRACT_MAX_BATCHES: 8,
+    CONTACT_EXTRACT_MAX_MODEL_CALLS: 16,
+  } as const;
+
+  it('defaults every contact upload and processing limit', () => {
+    expect(loadConfig(valid as NodeJS.ProcessEnv)).toMatchObject(contactLimits);
+  });
+
+  it.each(Object.keys(contactLimits))('accepts a positive override and rejects invalid %s', key => {
+    const overridden = loadConfig({ ...valid, [key]: '2' } as NodeJS.ProcessEnv);
+    expect((overridden as unknown as Record<string, unknown>)[key]).toBe(2);
+    for (const bad of ['0', '-1', '1.5', 'not-a-number']) {
+      expect(() => loadConfig({ ...valid, [key]: bad } as NodeJS.ProcessEnv))
+        .toThrow(`Invalid configuration: ${key}`);
+    }
+  });
+
+  it('wires the configured upload capacity into the running application', async () => {
+    const application = createApplication(loadConfig({ ...valid, CONTACT_MAX_PENDING_FILES: '1' } as NodeJS.ProcessEnv),
+      { database: new DatabaseSync(':memory:') });
+    await application.uploadStore.reserve();
+    await expect(application.uploadStore.reserve()).rejects.toThrow('CAPACITY_FULL');
+    await application.close();
+  });
+
+  it('requires an absolute Python runtime override and enforces hard document ceilings', () => {
+    expect(() => loadConfig({ ...valid, CONTACT_PYTHON_BIN: './python' } as NodeJS.ProcessEnv))
+      .toThrow('Invalid configuration: CONTACT_PYTHON_BIN');
+    expect(loadConfig({ ...valid, CONTACT_PYTHON_BIN: '/opt/contact/python' } as NodeJS.ProcessEnv).contactPythonBin)
+      .toBe('/opt/contact/python');
+    expect(() => loadConfig({ ...valid, CONTACT_MAX_FILE_BYTES: '20971521' } as NodeJS.ProcessEnv))
+      .toThrow('Invalid configuration: CONTACT_MAX_FILE_BYTES');
+  });
+
   it('ignores undeclared process keys before strict parsing', () => {
     expect(loadConfig({ ...valid, PATH: '/usr/bin', HOME: '/tmp/home', SHELL: '/bin/zsh' } as NodeJS.ProcessEnv))
       .toMatchObject({ maxQccCalls: 8 });

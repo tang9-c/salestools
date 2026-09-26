@@ -1,5 +1,8 @@
 import { type Server } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { config as loadDotEnv } from 'dotenv';
 import { TokenService } from './auth/token-service.js';
@@ -12,6 +15,8 @@ import { ContactSnapshotRepository } from './db/contact-snapshot-repository.js';
 import { JsonlLogger, type LogSink } from './logging/logger.js';
 import { ContactService, type ContactExtractorDependency } from './contacts/contact-service.js';
 import { ContactGraphClient, type GraphClient } from './contacts/graph-client.js';
+import { UploadStore } from './contacts/upload-store.js';
+import { ImportJobs } from './contacts/import-jobs.js';
 import { createHttpApp } from './mcp/http-app.js';
 import type { McpServices } from './mcp/tools.js';
 import { AssessmentRunner } from './orchestration/assessment-runner.js';
@@ -50,6 +55,8 @@ export interface ApplicationOverrides {
 export interface RunningApplication {
   readonly tokenService: TokenService;
   readonly graphClient?: GraphClient;
+  readonly uploadStore: UploadStore;
+  readonly importJobs: ImportJobs;
   listen(port?: number, host?: string): Promise<Server>;
   close(timeoutMs?: number): Promise<void>;
 }
@@ -93,6 +100,22 @@ export function createApplication(
   const contactSnapshots = new ContactSnapshotRepository(database);
   const logger = new JsonlLogger(overrides.logSink ?? stdoutSink, overrides.now);
   const tokenService = new TokenService(new TokenRepository(database), overrides.now);
+  const ephemeralUploads = config.sqlitePath === ':memory:';
+  const uploadDirectory = ephemeralUploads
+    ? mkdtempSync(join(tmpdir(), 'contact-uploads-'))
+    : join(dirname(resolve(config.sqlitePath)), '.contact-uploads');
+  const uploadStore = new UploadStore({ directory: uploadDirectory,
+    maxPendingFiles: config.contactMaxPendingFiles,
+    maxFileBytes: config.contactMaxFileBytes,
+    maxPdfPages: config.contactMaxPdfPages,
+    maxImagePixels: config.contactMaxImagePixels,
+    maxTempBytes: config.contactMaxTempBytes,
+    pythonBin: config.contactPythonBin,
+    now: overrides.now });
+  const importJobs = new ImportJobs({ concurrency: config.contactImportConcurrency,
+    timeoutMs: config.contactImportTimeoutMs,
+    reserve: () => uploadStore.reserve(), release: id => uploadStore.release(id),
+    submit: id => { uploadStore.markSubmitted(id); } });
   const graphClient = config.contactGraphEnabled
     ? overrides.graphClient ?? new ContactGraphClient({
       command: config.contactGraphBin!,
@@ -212,7 +235,7 @@ export function createApplication(
     getContacts: input => activity.track(() => contactService.get(input)),
     askCompany: input => activity.track(() => questionService.ask(input, abortController.signal)),
   });
-  const app = createHttpApp(config, token => tokenService.verify(token), servicesFor);
+  const app = createHttpApp(config, token => tokenService.verify(token), servicesFor, uploadStore);
 
   let upstreamClosing: Promise<void> | null = null;
   const closeUpstreams = (): Promise<void> => {
@@ -231,8 +254,11 @@ export function createApplication(
   return {
     tokenService,
     graphClient,
+    uploadStore,
+    importJobs,
     async listen(port = config.port, host = '0.0.0.0') {
       if (server !== null) throw new Error('Application is already listening');
+      await uploadStore.cleanupOrphans();
       queue.start();
       server = app.listen(port, host);
       await new Promise<void>((resolve, reject) => {
@@ -250,10 +276,12 @@ export function createApplication(
         const normalDrain = listenerClosed.then(() => activity.whenIdle());
         const completedNormally = await waitAtMost(normalDrain, timeoutMs);
         if (completedNormally) {
+          await importJobs.recover();
           await closeUpstreams();
           await app.closeMcpHandler();
         } else {
           abortController.abort();
+          await importJobs.recover();
           await closeUpstreams();
           void app.closeMcpHandler().catch(() => undefined);
           server?.closeIdleConnections();
@@ -261,6 +289,8 @@ export function createApplication(
           await activity.whenIdle();
         }
         database.close();
+        await uploadStore.close();
+        if (ephemeralUploads) rmSync(uploadDirectory, { recursive: true, force: true });
       })();
       return closing;
     },

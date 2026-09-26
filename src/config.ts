@@ -8,6 +8,10 @@ const CONFIG_KEYS = [
   'ARK_REQUEST_MAX_BYTES', 'MAX_QCC_CALLS', 'MAX_SEARCH_CALLS', 'MAX_ARK_CALLS', 'MAX_TOTAL_UPSTREAM_CALLS',
   'PROFILE_CACHE_TTL_DAYS', 'ASSESSMENT_CACHE_TTL_DAYS', 'MAX_CONCURRENT_ASSESSMENTS',
   'CONTACT_GRAPH_ENABLED', 'CONTACT_GRAPH_SQLITE_PATH', 'CONTACT_GRAPH_BIN',
+  'CONTACT_MAX_PENDING_FILES', 'CONTACT_MAX_FILE_BYTES', 'CONTACT_MAX_PDF_PAGES',
+  'CONTACT_MAX_IMAGE_PIXELS', 'CONTACT_MAX_TEMP_BYTES', 'CONTACT_IMPORT_TIMEOUT_MS',
+  'CONTACT_IMPORT_CONCURRENCY', 'CONTACT_EXTRACT_MAX_BATCHES', 'CONTACT_EXTRACT_MAX_MODEL_CALLS',
+  'CONTACT_PYTHON_BIN',
 ] as const;
 
 const nonEmptyString = z.string().trim().min(1);
@@ -62,6 +66,16 @@ const configSchema = z.object({
   CONTACT_GRAPH_ENABLED: z.enum(['true', 'false']).default('false').transform(value => value === 'true'),
   CONTACT_GRAPH_SQLITE_PATH: nonEmptyString.optional(),
   CONTACT_GRAPH_BIN: nonEmptyString.optional(),
+  CONTACT_MAX_PENDING_FILES: positiveInteger.default(10),
+  CONTACT_MAX_FILE_BYTES: positiveInteger.max(20 * 1024 * 1024).default(20 * 1024 * 1024),
+  CONTACT_MAX_PDF_PAGES: positiveInteger.max(50).default(50),
+  CONTACT_MAX_IMAGE_PIXELS: positiveInteger.max(25_000_000).default(25_000_000),
+  CONTACT_MAX_TEMP_BYTES: positiveInteger.max(1024 * 1024 * 1024).default(1024 * 1024 * 1024),
+  CONTACT_IMPORT_TIMEOUT_MS: positiveInteger.default(900_000),
+  CONTACT_IMPORT_CONCURRENCY: positiveInteger.default(1),
+  CONTACT_EXTRACT_MAX_BATCHES: positiveInteger.max(8).default(8),
+  CONTACT_EXTRACT_MAX_MODEL_CALLS: positiveInteger.max(16).default(16),
+  CONTACT_PYTHON_BIN: nonEmptyString.optional(),
 }).strict().superRefine((config, context) => {
   const configuredMaximum = config.MAX_QCC_CALLS + config.MAX_SEARCH_CALLS + config.MAX_ARK_CALLS;
   if (config.MAX_TOTAL_UPSTREAM_CALLS < configuredMaximum) {
@@ -79,6 +93,9 @@ const configSchema = z.object({
     if (!config.CONTACT_GRAPH_BIN || !isAbsolute(config.CONTACT_GRAPH_BIN)) {
       context.addIssue({ code: 'custom', path: ['CONTACT_GRAPH_BIN'], message: 'absolute graph executable required' });
     }
+  }
+  if (config.CONTACT_PYTHON_BIN && !isAbsolute(config.CONTACT_PYTHON_BIN)) {
+    context.addIssue({ code: 'custom', path: ['CONTACT_PYTHON_BIN'], message: 'absolute Python executable required' });
   }
 });
 
@@ -109,6 +126,16 @@ export type AppConfig = ParsedConfig & {
   contactGraphEnabled: boolean;
   contactGraphSqlitePath?: string;
   contactGraphBin?: string;
+  contactMaxPendingFiles: number;
+  contactMaxFileBytes: number;
+  contactMaxPdfPages: number;
+  contactMaxImagePixels: number;
+  contactMaxTempBytes: number;
+  contactImportTimeoutMs: number;
+  contactImportConcurrency: number;
+  contactExtractMaxBatches: number;
+  contactExtractMaxModelCalls: number;
+  contactPythonBin?: string;
   allowedOriginUrls: Set<string>;
   allowedOriginHostnames: Set<string>;
 };
@@ -151,6 +178,16 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     contactGraphEnabled: parsed.data.CONTACT_GRAPH_ENABLED,
     contactGraphSqlitePath: parsed.data.CONTACT_GRAPH_SQLITE_PATH,
     contactGraphBin: parsed.data.CONTACT_GRAPH_BIN,
+    contactMaxPendingFiles: parsed.data.CONTACT_MAX_PENDING_FILES,
+    contactMaxFileBytes: parsed.data.CONTACT_MAX_FILE_BYTES,
+    contactMaxPdfPages: parsed.data.CONTACT_MAX_PDF_PAGES,
+    contactMaxImagePixels: parsed.data.CONTACT_MAX_IMAGE_PIXELS,
+    contactMaxTempBytes: parsed.data.CONTACT_MAX_TEMP_BYTES,
+    contactImportTimeoutMs: parsed.data.CONTACT_IMPORT_TIMEOUT_MS,
+    contactImportConcurrency: parsed.data.CONTACT_IMPORT_CONCURRENCY,
+    contactExtractMaxBatches: parsed.data.CONTACT_EXTRACT_MAX_BATCHES,
+    contactExtractMaxModelCalls: parsed.data.CONTACT_EXTRACT_MAX_MODEL_CALLS,
+    contactPythonBin: parsed.data.CONTACT_PYTHON_BIN,
     allowedOriginUrls: new Set(originUrls),
     allowedOriginHostnames: new Set(originUrls.map(value => new URL(value).hostname)),
   };
