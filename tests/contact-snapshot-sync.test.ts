@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { SnapshotSync } from '../src/contacts/snapshot-sync.js';
+import { SnapshotSync, SnapshotSyncFrameError } from '../src/contacts/snapshot-sync.js';
 import { runContactSync } from '../src/cli/contact-sync.js';
 import type { GraphClient, GraphOp } from '../src/contacts/graph-client.js';
 import { ContactSnapshotRepository } from '../src/db/contact-snapshot-repository.js';
@@ -159,4 +159,68 @@ it('refuses to initialize sync when the requested backup cannot be created', asy
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+it('splits a large ordered batch before the graph JSON Lines frame limit', async () => {
+  const database = initializeDatabase(new DatabaseSync(':memory:'));
+  databases.push(database);
+  const snapshots = new ContactSnapshotRepository(database);
+  for (let index = 1; index <= 20; index += 1) {
+    snapshots.append({
+      cacheKey: 'b'.repeat(64), normalizedQuery: '甲公司', normalizedRegionHint: null,
+      payload: { companies: [{ company_name: '甲公司', contacts: [{
+        name: '张明', title: '总监',
+        source_url: `https://example.com/${'x'.repeat(15_000)}${index}`, published_at: null,
+      }] }], warnings: [], collected_at: '2026-09-26T00:00:00.000Z' },
+      storedAt: '2026-09-26T00:00:00.000Z',
+    });
+  }
+  let cursor = 0;
+  const sizes: number[] = [];
+  const graph: GraphClient = {
+    request: async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+      if (op === 'get_sync_cursor') return { initialized: true, last_snapshot_id: cursor } as T;
+      const frame = `${JSON.stringify({ version: 1, request_id: 'g_1', op, payload })}\n`;
+      expect(Buffer.byteLength(frame, 'utf8')).toBeLessThanOrEqual(256 * 1024);
+      const rows = (payload as { snapshots: Array<{ snapshot_id: number }> }).snapshots;
+      sizes.push(rows.length);
+      cursor = rows.at(-1)!.snapshot_id;
+      return { last_snapshot_id: cursor } as T;
+    },
+    close: async () => {},
+  };
+  await new SnapshotSync(snapshots, graph).schedule(20);
+  expect(cursor).toBe(20);
+  expect(sizes.length).toBeGreaterThan(1);
+  expect(sizes.reduce((total, size) => total + size, 0)).toBe(20);
+});
+
+it('marks a single oversized snapshot instead of retrying the same unsendable frame', async () => {
+  const database = initializeDatabase(new DatabaseSync(':memory:'));
+  databases.push(database);
+  const snapshots = new ContactSnapshotRepository(database);
+  snapshots.append({
+    cacheKey: 'c'.repeat(64), normalizedQuery: '甲公司', normalizedRegionHint: null,
+    payload: { companies: [{ company_name: '甲公司', contacts: [{
+      name: '张明', title: '总监',
+      source_url: `https://example.com/${'x'.repeat(270_000)}`, published_at: null,
+    }] }], warnings: [], collected_at: '2026-09-26T00:00:00.000Z' },
+    storedAt: '2026-09-26T00:00:00.000Z',
+  });
+  const sent: GraphOp[] = [];
+  const graph: GraphClient = {
+    request: async <T>(op: GraphOp): Promise<T> => {
+      sent.push(op);
+      return { initialized: true, last_snapshot_id: 0 } as T;
+    },
+    close: async () => {},
+  };
+  const sync = new SnapshotSync(snapshots, graph);
+  await expect(sync.runBatch(20)).rejects.toBeInstanceOf(SnapshotSyncFrameError);
+  expect(sync.lastFailure).toMatchObject({ code: 'SNAPSHOT_FRAME_TOO_LARGE', snapshotId: 1 });
+  expect(sent).toEqual(['get_sync_cursor']);
+  const reports: Array<{ code: string; snapshotId: number }> = [];
+  const scheduled = new SnapshotSync(snapshots, graph, failure => { reports.push(failure); });
+  await expect(scheduled.schedule()).rejects.toBeInstanceOf(SnapshotSyncFrameError);
+  expect(reports).toMatchObject([{ code: 'SNAPSHOT_FRAME_TOO_LARGE', snapshotId: 1 }]);
 });
