@@ -118,6 +118,7 @@ export function scoreExtraction(prediction: unknown, truth: Document): {
       const predictedRole = obj(obj(relation.properties).role);
       const expectedRole = expectedRelation.role ?? {};
       for (const field of new Set([...Object.keys(expectedRole), ...Object.keys(predictedRole)])) {
+        if (field === '@type') continue;
         const want = expectedRole[field as keyof typeof expectedRole];
         const got = predictedRole[field];
         if (typeof want === 'string' && typeof got === 'string'

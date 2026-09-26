@@ -261,6 +261,16 @@ fn insert_evidence(
     Ok(())
 }
 
+fn unbind_preview_evidence(item: &Value) -> Value {
+    let mut proof = item.clone();
+    if let Some(fields) = proof.as_object_mut() {
+        fields.remove("evidence_id");
+        fields.remove("subject_kind");
+        fields.remove("subject_id");
+    }
+    proof
+}
+
 fn commit_relations(
     store: &Store,
     tx: &rusqlite::Transaction<'_>,
@@ -350,7 +360,7 @@ fn commit_relations(
                             !quote.trim().is_empty() && quote.chars().count() <= 500
                         })
                     {
-                        let mut located = item.clone();
+                        let mut located = unbind_preview_evidence(item);
                         located["value"] =
                             json!({"relation_type":kind,"source_id":source,"target_id":target});
                         proof.push(located);
@@ -376,7 +386,7 @@ fn commit_relations(
                 let located = item.get("source_type").and_then(Value::as_str) == Some("manual")
                     || item.get("locator_status").and_then(Value::as_str) == Some("located");
                 if selected.is_some() && selected == item.get("value") && quote_matches && located {
-                    proof.push(item.clone());
+                    proof.push(unbind_preview_evidence(item));
                 }
             }
         }

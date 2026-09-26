@@ -71,6 +71,8 @@ fn preserves_located_file_evidence_for_a_confirmed_spouse_relation() {
     person["relation_suggestions"] = json!([{
         "source_candidate_id":"a","target_candidate_id":"b","relation_type":"spouse",
         "properties":{},"evidence":[{
+            "evidence_id":"preview-relation-proof",
+            "subject_kind":"relation","subject_id":"a:b",
             "field_path":"$relation",
             "value":{"relation_type":"spouse","source_id":"a","target_id":"b"},
             "source_type":"file","file_name":"resume.pdf","file_sha256":"aaa",

@@ -91,7 +91,7 @@ describe('fixed contact quality scorer', () => {
       { candidate_id: 'p1', properties: { name: 'Jordan Hale' }, evidence: [{ field_path: 'properties.name',
         value: 'Jordan Hale', page: 1, quote: 'Jordan Hale' }], relation_suggestions: [{
           source_candidate_id: 'p1', target_candidate_id: 'o1', relation_type: 'worksFor',
-          properties: { role: { startDate: '2024-02-01' } },
+          properties: { role: { '@type': 'OrganizationRole', startDate: '2024-02-01' } },
           evidence: [{ page: 1, quote: 'Jordan Hale works for Boreal Tech from 2024-02' }],
         }] },
       { candidate_id: 'o1', properties: { name: 'Boreal Tech' }, evidence: [{ field_path: 'properties.name',
