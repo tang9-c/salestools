@@ -1,6 +1,6 @@
 # salestools 快速入门
 
-这份指南只覆盖 Codex 客户端的 MCP 注册和五个工具的完整使用流程。它假设 salestools 服务端已经部署，并且你已经拿到服务端的 HTTPS 地址和个人 Bearer Token。
+这份指南覆盖联系人本地文件批量上传，以及 Codex 客户端的 MCP 注册和五个原有工具的使用流程。它假设 salestools 服务端已经部署，并且你已经拿到服务端的 HTTPS 地址和个人 Bearer Token。
 
 ## 你需要准备什么
 
@@ -10,6 +10,19 @@
 - 你的销售用户标识，例如 `sales-qx`。
 
 MCP 注册不会替你部署服务端，也不会创建 Token。服务端地址和 Token 缺一不可。
+
+## 批量上传本地联系人文件
+
+联系人导入功能启用后，可在本仓库目录运行上传 CLI。它只接受本地 PDF、JPG、JPEG、PNG 文件，每个文件最多 20 MB。先构建，再设置完整上传地址与个人 Token，最后依次列出文件路径：
+
+```bash
+npm run build
+export CONTACT_UPLOAD_URL='https://你的服务域名/contact-files'
+export CONTACT_UPLOAD_TOKEN='粘贴管理员提供的 Token'
+npm run contacts:upload -- ./简历.pdf ./名片.png
+```
+
+CLI 逐个上传并输出 JSON：`accepted` 列出已接收的本地路径和 `file_id`，`unuploaded` 列出失败文件及尚未尝试的文件。容量满额时以非零状态结束；请记录已接收的 `file_id`，待服务端释放名额后自行重试 `unuploaded` 中的路径。上传不会自动发起联系人抽取、等待名额或续传。Token 只从 `CONTACT_UPLOAD_TOKEN` 环境变量读取，不要作为命令行参数传入。
 
 ## 1. 在终端保存 Token
 
