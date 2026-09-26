@@ -1,6 +1,6 @@
 # salestools 快速入门
 
-这份指南覆盖联系人本地文件批量上传，以及 Codex 客户端的 MCP 注册和五个原有工具的使用流程。它假设 salestools 服务端已经部署，并且你已经拿到服务端的 HTTPS 地址和个人 Bearer Token。
+这份指南覆盖联系人本地文件上传、共享图谱，以及 Codex 客户端的 MCP 注册和原有五个工具。它假设 salestools 服务端已经部署，并且你已经拿到服务端的 HTTPS 地址和个人 Bearer Token。
 
 ## 你需要准备什么
 
@@ -23,6 +23,10 @@ npm run contacts:upload -- ./简历.pdf ./名片.png
 ```
 
 CLI 逐个上传并输出 JSON：`accepted` 列出已接收的本地路径和 `file_id`，`unuploaded` 列出失败文件及尚未尝试的文件。容量满额时以非零状态结束；请记录已接收的 `file_id`，待服务端释放名额后自行重试 `unuploaded` 中的路径。上传不会自动发起联系人抽取、等待名额或续传。Token 只从 `CONTACT_UPLOAD_TOKEN` 环境变量读取，不要作为命令行参数传入。
+
+上传成功后，在启用了 `CONTACT_GRAPH_ENABLED=true` 的服务中，使用返回的 `file_id` 调用 `import_contacts`，并自定一个以后重试仍保持不变的 `operation_id`。再用 `get_contact_import` 查看状态、候选和短证据。核对姓名、单位、任职时间、联系方式及可能重复的人之后，使用 `commit_contact_import` 的 `choices` 为每个候选选择 `create`、`merge` 或 `skip`；合并还需目标 `entity_id` 和当前版本。关系同样要核对，必要时填写 `relation_choices`。提交时使用预览返回的 `preview_version`，且 `operation_id` 固定为 `contact-import:<import_id>`。不准备提交时可用 `cancel_contact_import`；系统不会因号码相同而自动合并，也不会把 OCR 推测直接写成正式档案。
+
+图谱中查人使用 `search_contacts`（姓名、关键词、组织、职位、技能，可分页）；查看完整档案和证据使用 `get_contact`；问配偶、亲子或任职等问题使用 `ask_contacts`，同名或证据不足会要求澄清或拒答。`get_contacts` 保持原有公开网页搜索与快照语义，不是共享图谱查询。语义/混合检索只有在服务端另配 `ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL` 后可用；未配置时选 `mode=keyword`。失败索引可用 `retry_contact_index` 指定 `entity_id` 和稳定的 `operation_id` 重试。
 
 ## 1. 在终端保存 Token
 
@@ -68,6 +72,8 @@ submit_assessment
 get_assessment_status
 get_assessment_report
 ```
+
+若管理员开启共享图谱，还应看到 `search_contacts`、`get_contact`、`ask_contacts`、`import_contacts`、`get_contact_import` 和 `commit_contact_import` 等联系人工具。看不到时先让管理员检查 `CONTACT_GRAPH_ENABLED` 与独立图谱库路径；这不影响上列原有工具。
 
 ## 3. 先查企业基础画像
 

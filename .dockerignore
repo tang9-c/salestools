@@ -8,3 +8,5 @@ dist
 coverage
 docs
 tests
+python/.venv
+rust/contact-graph/target

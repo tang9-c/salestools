@@ -2,7 +2,7 @@
 
 这是一个单进程、单实例的远程 MCP 服务。它先返回企业基础画像，再按需异步生成带可追溯来源的中文销售机会报告。只有真实 HTTP(S) 直接 URL 才渲染为链接；QCC 上游未提供直接 URL 时报告明确显示“来源链接不可用”。v0.1 使用 Node.js 24、TypeScript、SQLite、企查查 MCP、豆包搜索 HTTP API和火山方舟。
 
-首次使用请阅读 [MCP 快速入门](docs/QUICKSTART.md)，其中包含 Codex 注册、Token 配置和五个工具的完整使用路径。
+首次使用请阅读 [MCP 快速入门](docs/QUICKSTART.md)，其中包含 Codex 注册、Token 配置、原有五个工具及共享联系人图谱的使用路径。
 
 ## 本地运行
 
@@ -48,6 +48,23 @@ codex mcp add salestools \
 - `get_assessment_status`：轮询 `processing`、`completed` 或 `failed`。
 - `get_assessment_report`：读取完成后的 Markdown 报告，或返回当前处理/失败状态。
 
+## 共享联系人图谱（可选）
+
+`CONTACT_GRAPH_ENABLED` 默认 `false`。开启后，服务使用独立的 `/data/contact-graph.sqlite` 保存 `Person`、`Organization`、字段证据和关系；原有 `get_contacts` 仍按企业关键词搜索公开网页，不等同于 `search_contacts` 查询共享图谱。镜像内已包含锁定依赖的 Docling OCR worker 与 Rust `contact-graph` worker；同一 `/data` 卷应保留主库和图谱库。
+
+开启时设置 `CONTACT_GRAPH_ENABLED=true`，并保持 `CONTACT_GRAPH_SQLITE_PATH` 与 `SQLITE_PATH` 不同。若容器的 `--env-file` 基于 `.env.example`，必须把其中的相对路径和占位路径改为 `SQLITE_PATH=/data/salestools.sqlite`、`CONTACT_GRAPH_SQLITE_PATH=/data/contact-graph.sqlite`、`CONTACT_GRAPH_BIN=/usr/local/bin/contact-graph`、`CONTACT_PYTHON_BIN=/opt/contact-worker/.venv/bin/python`；环境文件会覆盖镜像默认值。本地源码运行则先执行 `cargo build --locked --release --manifest-path rust/contact-graph/Cargo.toml` 和 `uv sync --project python --locked`，再在 `.env` 中填写绝对路径。语义检索可选，需要分别设置 `ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL`；它们与用于抽取/问答的方舟配置相互独立，未配置时仍可使用关键词检索。
+
+新工具包括 `get_contact`、`save_contact`、`merge_contacts`、`delete_contact`、`save_contact_relation`、`delete_contact_relation`、`search_contacts`、`ask_contacts`、`import_contacts`、`get_contact_import`、`commit_contact_import` 和 `cancel_contact_import`。配置好向量端点时还提供 `retry_contact_index`，仅用于重试当前版本的失败索引。保存、合并、删除和导入提交需要由用户核对候选、证据及版本；相同手机号只是可能同人的线索，不自动合并。文件上传先调用 `/contact-files`，之后通过 `import_contacts` 获取预览，再选择创建、合并或跳过并提交；上传本身不会创建联系人。每文件最多 20 MB、PDF 最多 50 页，默认最多保留 10 个待处理文件；这些上限可通过 `.env.example` 的 `CONTACT_MAX_*` 和 `CONTACT_IMPORT_*` 项调整。
+
+已有公开网页联系人快照可先查看数量，再在停服维护窗口完成带备份的首次同步：
+
+```bash
+npm run contacts:sync -- --dry-run
+npm run contacts:sync -- --backup /data/salestools-before-contact-sync.sqlite
+```
+
+第二条要求图谱功能已开启，备份目的路径为尚不存在的绝对 `.sqlite` 文件。CLI 会校验备份完整性后同步快照；再次运行会从图谱游标继续。服务启动后也会同步后续快照。导入中的临时上传文件不跨进程保留：重启后未完成任务标记失败，用户需重新上传并导入；已经提交的图谱事实不会回滚。
+
 基础画像和正式报告默认各复用 30 天，由 `PROFILE_CACHE_TTL_DAYS`、`ASSESSMENT_CACHE_TTL_DAYS` 调整。`force_refresh=true` 忽略已完成报告缓存，但不会复制正在处理的任务。`cache_hit` 只出现在画像和提交结果；状态与报告结果不包含缓存字段。
 
 `get_contacts` 固定执行两类豆包宽查询：一类覆盖企业官网、官方新闻、公众号和会议嘉宾，另一类覆盖招投标、专利以及研发、技术、信息化、采购和质量负责人。结果只保留页面明确出现的姓名、职位、原始 URL 和发布日期；不返回或推测邮箱、电话等直接联系方式。无明确职位的专利发明人或招投标联系人不会返回。候选来源由服务端根据页面内容、域名和豆包返回的发布者元数据作启发式筛选，而不是信任模型分类；官方新闻还要求域名和发布者同时命中服务端允许列表。由于该工具不调用企查查或其他权威主体库，该筛选可能误判，也不构成官网域名所有权或法人主体认证。
@@ -80,7 +97,7 @@ docker run --rm -p 3000:3000 \
   salestools-mcp:v0.1
 ```
 
-镜像使用非 root 用户，SQLite 固定写入挂载的 `/data/salestools.sqlite`，镜像中不包含 `.env`。SQLite 是单副本、单进程队列设计：一个数据库文件只能由一个服务副本拥有；不要运行多个副本共享同一个 SQLite 文件。如需横向扩展，必须先迁移到具备并发协调能力的存储和队列方案。
+镜像使用非 root 用户，SQLite 固定写入挂载的 `/data/salestools.sqlite`，可选图谱写入同卷的 `/data/contact-graph.sqlite`；镜像中不包含 `.env`。运行前可用 `docker run --rm salestools-mcp:v0.1 /opt/contact-worker/.venv/bin/python /usr/local/bin/contact-runtime-smoke.py` 验证真实 Docling OCR 和 Rust 图谱临时读写。发布 workflow 在推送 GHCR 前分别构建并 smoke `linux/amd64`、`linux/arm64`。SQLite 是单副本、单进程队列设计：一个数据库文件只能由一个服务副本拥有；不要运行多个副本共享同一个 SQLite 文件。如需横向扩展，必须先迁移到具备并发协调能力的存储和队列方案。
 
 反向代理必须：
 
