@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readCompleteContact, type GraphClient } from './graph-client.js';
-import type { EmbeddingClient, EmbeddingResult } from './embedding-client.js';
+import { embeddingModelCompatible, type EmbeddingClient, type EmbeddingResult } from './embedding-client.js';
 
 type RecordValue = Record<string, unknown>;
 
@@ -239,7 +239,7 @@ export class VectorIndexer {
         const input = buildEmbeddingText(snapshot);
         if (!input) throw new Error('EMPTY_EMBEDDING_INPUT');
         const result: EmbeddingResult = await this.options.embedding.embed(input);
-        if (result.model !== this.options.model || !Array.isArray(result.vector) || !result.vector.length
+        if (!embeddingModelCompatible(this.options.model, result.model) || !Array.isArray(result.vector) || !result.vector.length
             || !result.vector.every(value => typeof value === 'number' && Number.isFinite(value))) {
           throw new Error('INVALID_EMBEDDING');
         }

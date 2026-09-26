@@ -11,6 +11,11 @@ export interface EmbeddingResult {
   vector: number[];
 }
 
+export function embeddingModelCompatible(configured: string, actual: string): boolean {
+  return configured === actual || configured === 'embedding-vision'
+    && /^doubao-embedding-vision-\d{6}$/u.test(actual);
+}
+
 export class EmbeddingError extends Error {
   constructor(readonly code: 'INVALID_INPUT' | 'ABORTED' | 'TIMEOUT' | 'NETWORK_ERROR'
     | 'REMOTE_HTTP_ERROR' | 'INVALID_RESPONSE', options?: ErrorOptions) {
@@ -73,7 +78,11 @@ export class EmbeddingClient {
       throw new EmbeddingError('INVALID_RESPONSE');
     }
     const envelope = payload as Record<string, unknown>;
-    if ('model' in envelope && envelope.model !== this.options.model) {
+    if (this.options.model === 'embedding-vision' && typeof envelope.model !== 'string') {
+      throw new EmbeddingError('INVALID_RESPONSE');
+    }
+    const actualModel = typeof envelope.model === 'string' ? envelope.model : this.options.model;
+    if (!embeddingModelCompatible(this.options.model, actualModel)) {
       throw new EmbeddingError('INVALID_RESPONSE');
     }
     const data = envelope.data;
@@ -87,6 +96,6 @@ export class EmbeddingClient {
         || !vector.every(value => typeof value === 'number' && Number.isFinite(value))) {
       throw new EmbeddingError('INVALID_RESPONSE');
     }
-    return { model: this.options.model, vector: [...vector] as number[] };
+    return { model: actualModel, vector: [...vector] as number[] };
   }
 }

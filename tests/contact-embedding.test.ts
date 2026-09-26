@@ -37,6 +37,21 @@ describe('EmbeddingClient', () => {
     expect(await client.embed('联系人语义查询')).toEqual({ model, vector: [0.25, -0.5, 1] });
   });
 
+  it('accepts the gateway alias and reports the resolved model version', async () => {
+    const client = new EmbeddingClient({ url: endpoint, model: 'embedding-vision', credential: 'secret',
+      fetchFn: (async () => Response.json({ model: 'doubao-embedding-vision-251215',
+        data: { object: 'embedding', embedding: [0.25, -0.5] } })) as typeof fetch });
+    expect(await client.embed('联系人语义查询')).toEqual({
+      model: 'doubao-embedding-vision-251215', vector: [0.25, -0.5],
+    });
+  });
+
+  it('does not index an alias response without its resolved model version', async () => {
+    const client = new EmbeddingClient({ url: endpoint, model: 'embedding-vision', credential: 'secret',
+      fetchFn: (async () => Response.json({ data: { embedding: [0.25] } })) as typeof fetch });
+    await expect(client.embed('联系人语义查询')).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
   it.each([
     { body: { data: [{ embedding: [] }] }, name: 'empty vector' },
     { body: { data: [{ embedding: [0.1, '0.2'] }] }, name: 'non-number' },
@@ -157,6 +172,15 @@ class MemoryVectorGraph implements GraphClient {
 }
 
 describe('VectorIndexer', () => {
+  it('stores the resolved version when the configured model is the gateway alias', async () => {
+    const graph = new MemoryVectorGraph();
+    const embedding = { embed: vi.fn(async () => ({ model: 'doubao-embedding-vision-251215',
+      vector: [0.25, -0.5] })) };
+    const indexer = new VectorIndexer({ graph, embedding, model: 'embedding-vision' });
+    expect(indexer.index('person-1', 1)).toBe(true);
+    await indexer.whenIdle();
+    expect(graph.puts[0]).toMatchObject({ model: 'doubao-embedding-vision-251215', dimension: 2 });
+  });
   it('indexes asynchronously after a successful write with actual model and dimension', async () => {
     const graph = new MemoryVectorGraph();
     let finish!: (value: { model: string; vector: number[] }) => void;
