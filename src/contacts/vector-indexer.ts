@@ -77,6 +77,7 @@ interface ContactSnapshot {
   entity?: { metadata?: { version?: number } };
   version?: number;
   index_content_version?: number;
+  index_status?: string;
 }
 
 function indexVersion(snapshot: ContactSnapshot | null): number | undefined {
@@ -165,12 +166,32 @@ export class VectorIndexer {
       throw new Error('INVALID_GRAPH_RESPONSE');
     }
     this.retryPayloads.set(retryKey, { entityId, version });
-    if (!result.replayed) {
-      const key = `${entityId}\0${version}\0${this.options.model}`;
-      if (this.scheduled.has(key)) this.reschedule.add(key);
-      else this.enqueue(entityId, version, true);
+    if (result.replayed) {
+      const current = await this.options.graph.request<ContactSnapshot | null>('get_contact', { entity_id: entityId });
+      if (current?.index_status === 'failed' && indexVersion(current) === version) {
+        if (this.queue.length + this.active >= (this.options.maxPending ?? 32)) throw new Error('INDEX_QUEUE_FULL');
+        try {
+          await this.options.graph.request('set_vector_state', {
+            action: 'set', operation_id: `vector-resume:${entityId}:${version}:${randomUUID()}`,
+            actor: 'system', entity_id: entityId, content_version: version, state: 'pending',
+          });
+        } catch (error) {
+          const latest = await this.options.graph.request<ContactSnapshot | null>('get_contact', { entity_id: entityId });
+          if (latest && indexVersion(latest) === version && latest.index_status === 'failed') throw error;
+          return result;
+        }
+        this.scheduleAccepted(entityId, version);
+      }
+    } else {
+      this.scheduleAccepted(entityId, version);
     }
     return result;
+  }
+
+  private scheduleAccepted(entityId: string, version: number): void {
+    const key = `${entityId}\0${version}\0${this.options.model}`;
+    if (this.scheduled.has(key)) this.reschedule.add(key);
+    else this.enqueue(entityId, version, true);
   }
 
   whenIdle(): Promise<void> {

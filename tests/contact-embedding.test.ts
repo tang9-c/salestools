@@ -96,6 +96,7 @@ class MemoryVectorGraph implements GraphClient {
         relations: [{ relation_type: 'worksFor', source_id: 'person-1', target_id: 'org-1',
           properties: { role: { roleName: '销售总监' } } }], version: this.version,
         index_content_version: this.indexContentVersion,
+        index_status: this.state,
       }) as T;
     }
     if (op === 'put_vector') {
@@ -108,12 +109,18 @@ class MemoryVectorGraph implements GraphClient {
       return { entity_id: input.entity_id, index_status: 'ready' } as T;
     }
     if (op === 'set_vector_state') {
+      if (input.action === 'recover_interrupted') {
+        const recovered = this.state === 'pending' ? 1 : 0;
+        if (recovered) this.state = 'failed';
+        return { recovered, replayed: false } as T;
+      }
       if (input.state === 'pending') {
         this.pendingWrites.push({ ...input });
         const prior = this.retryResults.get(String(input.operation_id));
         if (prior) return { ...prior, replayed: true } as T;
         if (input.actor === 'system') {
-          if (this.state !== 'unindexed' || input.content_version !== (this.indexContentVersion ?? this.version)) {
+          if (!['unindexed', 'failed'].includes(this.state)
+              || input.content_version !== (this.indexContentVersion ?? this.version)) {
             throw new Error('INVALID_INITIAL_INDEX');
           }
         } else if (this.state !== 'failed' || input.content_version !== (this.indexContentVersion ?? this.version)) {
@@ -186,6 +193,33 @@ describe('VectorIndexer', () => {
     expect(replay).toEqual({ ...first, replayed: true });
     await indexer.whenIdle();
     expect(graph.puts).toEqual([]);
+  });
+
+  it('resumes an interrupted retry after restart when the same operation ID is replayed', async () => {
+    const graph = new MemoryVectorGraph();
+    graph.state = 'failed';
+    const oldEmbedding = { embed: vi.fn(() => new Promise<{ model: string; vector: number[] }>(() => undefined)) };
+    const beforeRestart = new VectorIndexer({ graph, embedding: oldEmbedding, model: 'embed-v1' });
+    const accepted = await beforeRestart.retryFailed('person-1', 'retry-after-crash', 'sales-a');
+    await vi.waitFor(() => expect(oldEmbedding.embed).toHaveBeenCalledOnce());
+    expect(graph.state).toBe('pending');
+
+    // The old process is gone; startup recovery marks its pending graph row failed.
+    expect(await graph.request('set_vector_state', { action: 'recover_interrupted', actor: 'system',
+      operation_id: 'recover-after-crash' })).toEqual({ recovered: 1, replayed: false });
+    expect(graph.state).toBe('failed');
+    const resumedEmbedding = { embed: vi.fn(async () => ({ model: 'embed-v1', vector: [0.75, 0.25] })) };
+    const afterRestart = new VectorIndexer({ graph, embedding: resumedEmbedding, model: 'embed-v1' });
+    const replay = await afterRestart.retryFailed('person-1', 'retry-after-crash', 'sales-a');
+    expect(replay).toEqual({ ...accepted, replayed: true });
+    await afterRestart.whenIdle();
+    expect(graph.state).toBe('ready');
+    expect(graph.puts).toHaveLength(1);
+    expect(graph.puts[0]?.vector).toEqual([0.75, 0.25]);
+    expect(resumedEmbedding.embed).toHaveBeenCalledOnce();
+    expect(graph.pendingWrites.map(write => write.operation_id)).toEqual([
+      'retry-after-crash', 'retry-after-crash', expect.stringMatching(/^vector-resume:person-1:1:/u),
+    ]);
   });
 
   it('queues a retry accepted while the failed attempt is still unwinding', async () => {
