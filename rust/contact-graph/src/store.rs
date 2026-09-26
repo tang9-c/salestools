@@ -525,6 +525,7 @@ impl Store {
             )
             .map_err(AppError::internal)?;
         }
+        crate::vectors::invalidate_vector(&tx, &entity_id)?;
         for record in new_evidence {
             tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'entity',?2,?3,?4,?5)",
                 params![record["evidence_id"].as_str(), entity_id, record["field_path"].as_str(), record["value"].to_string(), record.to_string()])
@@ -596,6 +597,18 @@ impl Store {
             }
         }
         let version = entity_json["metadata"]["version"].clone();
+        let vector: Option<(u64, String)> = self
+            .graph
+            .connection()
+            .query_row(
+                "SELECT content_version,status FROM vector_meta WHERE entity_id=?1",
+                [entity_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(AppError::internal)?;
+        let (index_content_version, index_status) =
+            vector.unwrap_or((version.as_u64().unwrap_or(1), "unindexed".into()));
         let relations = self.list_relations(&json!({"entity_id":entity_id}))?;
         let mut evidence = entity_evidence;
         for relation in relations.as_array().unwrap() {
@@ -614,7 +627,8 @@ impl Store {
             }
         }
         Ok(
-            json!({"entity":entity_json,"evidence":evidence,"relations":relations,"conflicts":conflicts,"version":version}),
+            json!({"entity":entity_json,"evidence":evidence,"relations":relations,"conflicts":conflicts,
+                "version":version,"index_content_version":index_content_version,"index_status":index_status}),
         )
     }
 

@@ -169,6 +169,23 @@ impl Store {
         let update = format!("UPDATE {table} SET metadata_json=?1 WHERE {column}=?2");
         tx.execute(&update, params![meta.to_string(), id])
             .map_err(internal)?;
+        if relation {
+            let source: Option<String> = tx.query_row(
+                "SELECT source.entity_id FROM relation_ids ids JOIN kg_relations r ON r.id=ids.kg_id
+                 JOIN entity_ids source ON source.kg_id=r.source_id JOIN entity_meta sm ON sm.entity_id=source.entity_id
+                 WHERE ids.relation_id=?1 AND r.rel_type='worksFor'
+                 AND json_extract(sm.metadata_json,'$.archived_at') IS NULL
+                 AND json_extract(sm.metadata_json,'$.merged_into') IS NULL",
+                [id], |row| row.get(0),
+            ).optional().map_err(internal)?;
+            if let Some(source) = source {
+                crate::vectors::invalidate_vector(&tx, &source)?;
+            }
+        } else if restore {
+            crate::vectors::invalidate_vector(&tx, id)?;
+        } else {
+            crate::vectors::retire_vector(&tx, id)?;
+        }
         let result = if relation {
             json!({"relation_id":id,"version":meta["version"],"replayed":false})
         } else {
@@ -558,6 +575,8 @@ impl Store {
                 .map_err(internal)?;
             }
         }
+        crate::vectors::retire_vector(&tx, &input.source_id)?;
+        crate::vectors::invalidate_vector(&tx, &input.target_id)?;
         let result = json!({"source_id":input.source_id,"target_id":input.target_id,
             "source_version":source_meta["version"],"target_version":target_meta["version"],"replayed":false});
         save_result(

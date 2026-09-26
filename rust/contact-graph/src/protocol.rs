@@ -94,11 +94,18 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
             Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
             Err(err) => error(request_id, err.code, &err.message),
         },
-        "search_vector" | "put_vector" | "set_vector_state" => error(
-            request_id,
-            "UNAVAILABLE",
-            "Operation is not implemented yet",
-        ),
+        "search_vector" => match store.search_vector(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "put_vector" => match store.put_vector(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "set_vector_state" => match store.set_vector_state(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
         _ => error(request_id, "UNKNOWN_OPERATION", "Unknown graph operation"),
     }
 }
