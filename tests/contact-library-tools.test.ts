@@ -1,8 +1,11 @@
-import { Client } from '@modelcontextprotocol/client';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
+import type { AddressInfo } from 'node:net';
 import { describe, expect, it, vi } from 'vitest';
 import { ContactLibraryService } from '../src/contacts/library-service.js';
 import type { GraphClient, GraphOp } from '../src/contacts/graph-client.js';
+import { loadConfig } from '../src/config.js';
+import { createApplication } from '../src/index.js';
 import { buildMcpServer, type McpServices } from '../src/mcp/tools.js';
 
 function fakeGraph() {
@@ -50,6 +53,50 @@ describe('shared contact library tools', () => {
     } finally {
       await client.close();
       await server.close();
+    }
+  });
+
+  it('binds graph writes to each authenticated HTTP client identity', async () => {
+    const graph = fakeGraph();
+    graph.request.mockImplementation(async (op: GraphOp, payload: unknown) => {
+      if (op === 'get_sync_cursor') return { initialized: false, last_snapshot_id: 0 };
+      return { entity_id: 'p_1', version: 1, replayed: false, payload };
+    });
+    const config = loadConfig({
+      PORT: '3000', PUBLIC_MCP_HOST: '127.0.0.1', ALLOWED_ORIGINS: 'https://codex.example.cn',
+      SQLITE_PATH: ':memory:', QCC_MCP_COMPANY_URL: 'https://agent.qcc.com/mcp/company/stream',
+      QCC_MCP_RISK_URL: 'https://agent.qcc.com/mcp/risk/stream',
+      QCC_MCP_IPR_URL: 'https://agent.qcc.com/mcp/ipr/stream',
+      QCC_MCP_OPERATION_URL: 'https://agent.qcc.com/mcp/operation/stream', QCC_API_KEY: 'fake-qcc',
+      DOUBAO_SEARCH_API_URL: 'https://search.example.cn/search', DOUBAO_SEARCH_API_KEY: 'fake-search',
+      ARK_API_URL: 'https://ark.example.cn/chat', ARK_MODEL: 'fake-model', ARK_CREDENTIAL: 'fake-ark',
+      CONTACT_GRAPH_ENABLED: 'true', CONTACT_GRAPH_BIN: '/bin/true',
+      CONTACT_GRAPH_SQLITE_PATH: '/tmp/contact-library-tools.sqlite',
+    });
+    const runtime = createApplication(config, { graphClient: graph });
+    const clients: Client[] = [];
+    try {
+      const server = await runtime.listen(0, '127.0.0.1');
+      for (const name of ['sales-a', 'sales-b']) {
+        const token = runtime.tokenService.create(name);
+        const client = new Client({ name, version: '1.0.0' });
+        await client.connect(new StreamableHTTPClientTransport(
+          new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`),
+          { requestInit: { headers: { Authorization: `Bearer ${token}` } } },
+        ));
+        clients.push(client);
+        const response = await client.callTool({ name: 'save_contact', arguments: {
+          operation_id: `save-${name}`, label: 'Person', set_properties: { name: '测试人' },
+        } });
+        expect(response.isError).not.toBe(true);
+      }
+      const actors = graph.request.mock.calls
+        .filter(([op]) => op === 'save_contact')
+        .map(([, payload]) => (payload as { actor: string }).actor);
+      expect(actors).toEqual(['sales-a', 'sales-b']);
+    } finally {
+      await Promise.allSettled(clients.map(client => client.close()));
+      await runtime.close(5);
     }
   });
 });
