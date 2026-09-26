@@ -79,6 +79,22 @@ describe('loadConfig', () => {
       .toThrow('Invalid configuration: CONTACT_MAX_FILE_BYTES');
   });
 
+  it('enables a separate embedding endpoint only when URL, model and credential are all present', () => {
+    expect(loadConfig(valid as NodeJS.ProcessEnv).embeddingEnabled).toBe(false);
+    expect(loadConfig({ ...valid, ARK_EMBEDDING_API_URL: 'https://embed.example.cn/v1/embeddings',
+      ARK_EMBEDDING_MODEL: 'embed-v1', ARK_EMBEDDING_CREDENTIAL: 'separate-secret',
+    } as NodeJS.ProcessEnv)).toMatchObject({
+      embeddingEnabled: true, embeddingApiUrl: 'https://embed.example.cn/v1/embeddings',
+      embeddingModel: 'embed-v1', embeddingCredential: 'separate-secret',
+    });
+    expect(loadConfig({ ...valid, ARK_EMBEDDING_API_URL: 'https://embed.example.cn/v1/embeddings',
+      ARK_EMBEDDING_MODEL: ' ', ARK_EMBEDDING_CREDENTIAL: 'separate-secret',
+    } as NodeJS.ProcessEnv).embeddingEnabled).toBe(false);
+    expect(() => loadConfig({ ...valid, ARK_EMBEDDING_API_URL: 'http://embed.example.cn/embeddings',
+      ARK_EMBEDDING_MODEL: 'embed-v1', ARK_EMBEDDING_CREDENTIAL: 'secret',
+    } as NodeJS.ProcessEnv)).toThrow('ARK_EMBEDDING_API_URL');
+  });
+
   it('ignores undeclared process keys before strict parsing', () => {
     expect(loadConfig({ ...valid, PATH: '/usr/bin', HOME: '/tmp/home', SHELL: '/bin/zsh' } as NodeJS.ProcessEnv))
       .toMatchObject({ maxQccCalls: 8 });

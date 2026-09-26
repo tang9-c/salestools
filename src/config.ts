@@ -5,6 +5,7 @@ const CONFIG_KEYS = [
   'PORT', 'PUBLIC_MCP_HOST', 'ALLOWED_ORIGINS', 'SQLITE_PATH',
   'QCC_MCP_COMPANY_URL', 'QCC_MCP_RISK_URL', 'QCC_MCP_IPR_URL', 'QCC_MCP_OPERATION_URL', 'QCC_API_KEY',
   'DOUBAO_SEARCH_API_URL', 'DOUBAO_SEARCH_API_KEY', 'ARK_API_URL', 'ARK_MODEL', 'ARK_CREDENTIAL',
+  'ARK_EMBEDDING_API_URL', 'ARK_EMBEDDING_MODEL', 'ARK_EMBEDDING_CREDENTIAL',
   'ARK_REQUEST_MAX_BYTES', 'MAX_QCC_CALLS', 'MAX_SEARCH_CALLS', 'MAX_ARK_CALLS', 'MAX_TOTAL_UPSTREAM_CALLS',
   'PROFILE_CACHE_TTL_DAYS', 'ASSESSMENT_CACHE_TTL_DAYS', 'MAX_CONCURRENT_ASSESSMENTS',
   'CONTACT_GRAPH_ENABLED', 'CONTACT_GRAPH_SQLITE_PATH', 'CONTACT_GRAPH_BIN',
@@ -16,6 +17,7 @@ const CONFIG_KEYS = [
 
 const nonEmptyString = z.string().trim().min(1);
 const httpsUrl = nonEmptyString.url().startsWith('https://');
+const optionalTrimmed = z.string().trim().optional().transform(value => value || undefined);
 const positiveInteger = z.coerce.number().int().min(1);
 const minimumArkRequestBytes = 6_144;
 
@@ -55,6 +57,9 @@ const configSchema = z.object({
   ARK_API_URL: httpsUrl,
   ARK_MODEL: nonEmptyString,
   ARK_CREDENTIAL: nonEmptyString,
+  ARK_EMBEDDING_API_URL: optionalTrimmed.refine(value => value === undefined || httpsUrl.safeParse(value).success),
+  ARK_EMBEDDING_MODEL: optionalTrimmed,
+  ARK_EMBEDDING_CREDENTIAL: optionalTrimmed,
   ARK_REQUEST_MAX_BYTES: positiveInteger.min(minimumArkRequestBytes).default(12_288),
   MAX_QCC_CALLS: positiveInteger.default(8),
   MAX_SEARCH_CALLS: positiveInteger.default(8),
@@ -115,6 +120,10 @@ export type AppConfig = ParsedConfig & {
   arkApiUrl: string;
   arkModel: string;
   arkCredential: string;
+  embeddingEnabled: boolean;
+  embeddingApiUrl?: string;
+  embeddingModel?: string;
+  embeddingCredential?: string;
   arkRequestMaxBytes: number;
   maxQccCalls: number;
   maxSearchCalls: number;
@@ -167,6 +176,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     arkApiUrl: parsed.data.ARK_API_URL,
     arkModel: parsed.data.ARK_MODEL,
     arkCredential: parsed.data.ARK_CREDENTIAL,
+    embeddingEnabled: Boolean(parsed.data.ARK_EMBEDDING_API_URL
+      && parsed.data.ARK_EMBEDDING_MODEL && parsed.data.ARK_EMBEDDING_CREDENTIAL),
+    embeddingApiUrl: parsed.data.ARK_EMBEDDING_API_URL,
+    embeddingModel: parsed.data.ARK_EMBEDDING_MODEL,
+    embeddingCredential: parsed.data.ARK_EMBEDDING_CREDENTIAL,
     arkRequestMaxBytes: parsed.data.ARK_REQUEST_MAX_BYTES,
     maxQccCalls: parsed.data.MAX_QCC_CALLS,
     maxSearchCalls: parsed.data.MAX_SEARCH_CALLS,
