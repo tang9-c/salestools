@@ -28,6 +28,19 @@ describe('document extraction', () => {
     expect(result.processedBlockIds).toEqual(['b1', 'b2']);
   });
 
+  it('keeps a cited single email when the model sends a scalar instead of an array', async () => {
+    const input = [{ block_id: 'email', text: 'Avery Moss avery@example.invalid', page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',
+      properties: { name: 'Avery Moss', email: 'avery@example.invalid' },
+      evidence: [
+        { field_path: 'properties.name', value: 'Avery Moss', block_id: 'email', quote: 'Avery Moss' },
+        { field_path: 'properties.email', value: 'avery@example.invalid', block_id: 'email', quote: 'avery@example.invalid' },
+      ], relation_suggestions: [] }]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0]).toMatchObject({ properties: { email: ['avery@example.invalid'] }, can_commit: true });
+    expect(result.candidates[0].evidence).toHaveLength(2);
+  });
+
   it('keeps cross-page employment within one batch and does not use the public-search contact prompt', async () => {
     const fetchFn = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
@@ -36,12 +49,18 @@ describe('document extraction', () => {
       return response([person('a', '陈晓', 'b1'), {
         candidate_id: 'o', label: 'Organization', properties: { name: '星辰科技' },
         evidence: [{ field_path: 'properties.name', value: '星辰科技', block_id: 'b3', quote: '星辰科技' }],
-        relation_suggestions: [{ source_candidate_id: 'a', target_candidate_id: 'o', relation_type: 'worksFor', properties: { role: { '@type': 'OrganizationRole', roleName: '经理' } }, evidence: [{ block_id: 'b3', quote: '任职星辰科技经理' }] }],
+        relation_suggestions: [{ source_candidate_id: 'a', target_candidate_id: 'o', relation_type: 'worksFor', properties: { role: { '@type': 'OrganizationRole', roleName: '经理' } }, evidence: [
+          { block_id: 'b3', quote: '任职星辰科技经理' },
+          { field_path: 'properties.role.roleName', value: '经理', block_id: 'b3', quote: '任职星辰科技经理' },
+        ] }],
       }]);
     });
     const result = await extractor(fetchFn).extract([...blocks.slice(0, 1), { block_id: 'b3', text: '任职星辰科技经理', page: 2 }], new AbortController().signal);
     expect(result.candidates[1].relation_suggestions[0]).toMatchObject({ source_candidate_id: result.candidates[0].candidate_id, target_candidate_id: result.candidates[1].candidate_id });
     expect(result.candidates[1].relation_suggestions[0].evidence[0]).toMatchObject({
+      field_path: '$relation', page: 2, locator_status: 'located',
+    });
+    expect(result.candidates[1].relation_suggestions[0].evidence[1]).toMatchObject({
       field_path: 'properties.role.roleName', value: '经理', page: 2, locator_status: 'located',
     });
     expect(result.candidates[1].evidence[0]).toMatchObject({ page: 2, locator_status: 'located' });
@@ -123,6 +142,25 @@ describe('document extraction', () => {
     const result = await extractor(fetchFn).extract(source, new AbortController().signal);
     expect(result.candidates[0].relation_suggestions[0].properties)
       .toEqual({ role: { '@type': 'OrganizationRole' } });
+  });
+
+  it('anchors suggested role values to the exact shared source block', async () => {
+    const input = [{ block_id: 'role', text: 'Avery Moss works for Cedar Labs from 2020-06. Cedar Labs - Sales Engineer.', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      { ...person('p', 'Avery Moss', 'role'), relation_suggestions: [{
+        source_candidate_id: 'p', target_candidate_id: 'o', relation_type: 'worksFor',
+        properties: { role: { '@type': 'OrganizationRole', roleName: 'Sales Engineer', startDate: '2020-06' } },
+        evidence: [{ block_id: 'role', quote: 'Avery Moss works for Cedar Labs from 2020-06' }],
+      }] },
+      { candidate_id: 'o', label: 'Organization', properties: { name: 'Cedar Labs' },
+        evidence: [{ field_path: 'properties.name', value: 'Cedar Labs', block_id: 'role', quote: 'Cedar Labs' }] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    const relation = result.candidates[0].relation_suggestions[0];
+    expect(relation.evidence.map(item => [item.field_path, item.value, item.page])).toEqual(expect.arrayContaining([
+      ['properties.role.roleName', 'Sales Engineer', 1],
+      ['properties.role.startDate', '2020-06', 1],
+    ]));
   });
 
   it('treats document instructions as text and rejects invented/invalid schema output', async () => {

@@ -204,14 +204,20 @@ export class DocumentExtractor {
           if (localIds.has(modelCandidate.candidate_id)) { warnings.push('候选编号重复'); continue; }
           localIds.add(modelCandidate.candidate_id);
           const id = `${prefix}:${modelCandidate.candidate_id}`;
+          const properties = { ...modelCandidate.properties };
+          for (const field of ['telephone', 'email', 'alternateName', 'skills', 'sameAs',
+            'knowsAbout', 'knowsLanguage', 'award', 'faxNumber']) {
+            if (typeof properties[field] === 'string') properties[field] = [properties[field]];
+          }
+          const selectedCandidate = { ...modelCandidate, properties };
           const evidence = modelCandidate.evidence.flatMap(proof => {
-            const item = evidenceFor(proof, modelCandidate, id, blockMap, this.options);
+            const item = evidenceFor(proof, selectedCandidate, id, blockMap, this.options);
             if (!item) warnings.push('候选证据引用或字段值无效');
             return item ? [item] : [];
           });
           const candidateWarnings: string[] = [];
           const sourceFields = [
-            ...Object.entries(modelCandidate.properties).map(([key, value]) => [`properties.${key}`, value] as const),
+            ...Object.entries(properties).map(([key, value]) => [`properties.${key}`, value] as const),
             ...(modelCandidate.label === 'Person' ? Object.entries(modelCandidate.extensions ?? {}).map(([key, value]) => [`extensions.${key}`, value] as const) : []),
           ];
           for (const [fieldPath, fieldValue] of sourceFields) {
@@ -236,8 +242,7 @@ export class DocumentExtractor {
               const block = blockMap.get(proof.block_id);
               if (!block || !quoteLocated(block, proof.quote) || [...proof.quote].length > 500) return [];
               const role = relationProperties.role as Record<string, unknown> | undefined;
-              const fieldPath = proof.field_path ?? (typeof role?.roleName === 'string'
-                ? 'properties.role.roleName' : '$relation');
+              const fieldPath = proof.field_path ?? '$relation';
               const roleField = fieldPath.startsWith('properties.role.')
                 ? role?.[fieldPath.slice('properties.role.'.length)] : undefined;
               if (fieldPath !== '$relation'
@@ -255,6 +260,25 @@ export class DocumentExtractor {
                 quote: proof.quote, ...(block.page === undefined ? {} : { page: block.page }),
                 locator_status: 'located' as const, collected_at: this.options.collectedAt ?? new Date().toISOString() }];
             });
+            if (relation.relation_type === 'worksFor' && relationEvidence.some(proof => proof.field_path === '$relation')) {
+              const role = relationProperties.role as Record<string, unknown> | undefined;
+              const sourceName = output.candidates.find(other => other.candidate_id === relation.source_candidate_id)?.properties.name;
+              const targetName = output.candidates.find(other => other.candidate_id === relation.target_candidate_id)?.properties.name;
+              for (const field of ['roleName', 'startDate', 'endDate']) {
+                const value = role?.[field];
+                if (typeof value !== 'string' || typeof sourceName !== 'string' || typeof targetName !== 'string'
+                  || relationEvidence.some(proof => proof.field_path === `properties.role.${field}`)) continue;
+                const block = batch.find(item => item.text.includes(value)
+                  && item.text.includes(sourceName) && item.text.includes(targetName));
+                if (!block) continue;
+                relationEvidence.push({ evidence_id: randomUUID(), subject_kind: 'relation',
+                  subject_id: `${prefix}:${relation.source_candidate_id}:${relation.target_candidate_id}`,
+                  field_path: `properties.role.${field}`, value, source_type: 'file',
+                  file_name: this.options.fileName, file_sha256: this.options.fileSha256,
+                  quote: value, ...(block.page === undefined ? {} : { page: block.page }),
+                  locator_status: 'located', collected_at: this.options.collectedAt ?? new Date().toISOString() });
+              }
+            }
             const hasDirectStatement = relation.relation_type !== 'worksFor'
               || relationEvidence.some(proof => typeof proof.quote === 'string'
                 && /\b(?:works?\s+for|worked\s+for|employed\s+by|works?\s+at)\b|任职|就职|受雇于/iu.test(proof.quote));
@@ -266,9 +290,9 @@ export class DocumentExtractor {
               relation_type: relation.relation_type, properties: relationProperties, evidence: relationEvidence, uncertain: relation.uncertain }];
           });
           const candidate = ImportCandidateSchema.safeParse({ candidate_id: id, label: modelCandidate.label,
-            properties: modelCandidate.properties, ...(modelCandidate.label === 'Person' ? { extensions: modelCandidate.extensions ?? {} } : {}),
+            properties, ...(modelCandidate.label === 'Person' ? { extensions: modelCandidate.extensions ?? {} } : {}),
             evidence, relation_suggestions, warnings: candidateWarnings,
-            can_commit: Boolean(modelCandidate.properties.name) && candidateWarnings.length === 0 });
+            can_commit: Boolean(properties.name) && candidateWarnings.length === 0 });
           if (candidate.success) candidates.push(candidate.data);
           else warnings.push('候选字段不符合联系人契约');
         }
