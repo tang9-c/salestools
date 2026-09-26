@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { config as loadDotEnv } from 'dotenv';
 import { TokenService } from './auth/token-service.js';
 import { loadConfig, type AppConfig } from './config.js';
@@ -19,6 +19,9 @@ import { ContactLibraryService } from './contacts/library-service.js';
 import { SnapshotSync } from './contacts/snapshot-sync.js';
 import { UploadStore } from './contacts/upload-store.js';
 import { ImportJobs } from './contacts/import-jobs.js';
+import { ContactImportService } from './contacts/import-service.js';
+import { parseLocalDocument } from './contacts/document-worker.js';
+import { DocumentExtractor } from './contacts/document-extractor.js';
 import { createHttpApp } from './mcp/http-app.js';
 import type { McpServices } from './mcp/tools.js';
 import { AssessmentRunner } from './orchestration/assessment-runner.js';
@@ -125,6 +128,25 @@ export function createApplication(
     })
     : undefined;
   const contactLibrary = graphClient === undefined ? undefined : new ContactLibraryService(graphClient);
+  const pythonProjectDir = fileURLToPath(new URL('../python/', import.meta.url));
+  const contactImport = graphClient === undefined ? undefined : new ContactImportService({
+    graph: graphClient, uploads: uploadStore, jobs: importJobs,
+    parse: (file, signal) => parseLocalDocument({
+      pythonBin: config.contactPythonBin ?? join(pythonProjectDir, '.venv', 'bin', 'python'),
+      projectDir: pythonProjectDir, filePath: file.tempPath,
+      fileType: file.mime === 'application/pdf' ? 'pdf' : file.mime === 'image/png' ? 'png' : 'jpg',
+      documentId: file.fileId,
+      limits: { max_file_bytes: config.contactMaxFileBytes, max_pages: config.contactMaxPdfPages,
+        max_page_pixels: config.contactMaxImagePixels, max_temp_bytes: config.contactMaxTempBytes },
+    }, signal),
+    extract: (blocks, file, signal) => new DocumentExtractor({
+      url: config.arkApiUrl, model: config.arkModel, credential: config.arkCredential,
+      fileName: file.fileName, fileSha256: file.sha256, collectedAt: file.uploadedAt,
+      requestMaxBytes: config.arkRequestMaxBytes,
+      maxBatches: config.contactExtractMaxBatches,
+      maxModelCalls: config.contactExtractMaxModelCalls,
+    }).extract(blocks, signal),
+  });
   const snapshotSync = graphClient === undefined ? undefined : new SnapshotSync(contactSnapshots, graphClient);
   void snapshotSync?.schedule().catch(() => undefined);
   const qccGateway = overrides.qccGateway ?? new QccGateway({
@@ -235,6 +257,7 @@ export function createApplication(
   });
   const servicesFor = (userId: string): McpServices => ({
     contactLibrary,
+    contactImport,
     getCompanyProfile: input => activity.track(() => profileService.get(input.query, input.regionHint)),
     submitAssessment: input => activity.track(() => assessmentService.submit(input, userId)),
     getAssessmentStatus: input => activity.track(() => assessmentService.status(input)),

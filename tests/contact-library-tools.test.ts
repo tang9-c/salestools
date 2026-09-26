@@ -9,7 +9,7 @@ import { createApplication } from '../src/index.js';
 import { buildMcpServer, type McpServices } from '../src/mcp/tools.js';
 
 function fakeGraph() {
-  const request = vi.fn(async (op: GraphOp, payload: unknown) => {
+  const request = vi.fn(async (op: GraphOp, payload: unknown): Promise<unknown> => {
     if (op === 'get_contact') return {
       entity: { entity_id: 'p_1', label: 'Person', properties: { name: '测试人' } },
       evidence: [], conflicts: [], relations: [], version: 1,
