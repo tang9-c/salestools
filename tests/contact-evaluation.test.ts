@@ -101,6 +101,31 @@ describe('fixed contact quality scorer', () => {
     expect(result.failures).toEqual(expect.arrayContaining([expect.stringContaining('startDate')]));
   });
 
+  it('rejects a correct employment date without its own page evidence', () => {
+    const truth = { id: 'role-proof', file: 'role.pdf', kind: 'text_pdf',
+      pages: [{ page: 1, text: 'Jordan Hale works for Boreal Tech from 2024-02.' }],
+      facts: [
+        { owner: 'jordan', field: 'name', value: 'Jordan Hale', page: 1, quote: 'Jordan Hale' },
+        { owner: 'boreal', field: 'name', value: 'Boreal Tech', page: 1, quote: 'Boreal Tech' },
+      ],
+      relations: [{ source: 'jordan', target: 'boreal', type: 'worksFor', page: 1,
+        quote: 'Jordan Hale works for Boreal Tech', role: { startDate: '2024-02' } }],
+      complexity: ['evidence_location'] } as const;
+    const result = scoreExtraction({ candidates: [
+      { candidate_id: 'p', properties: { name: 'Jordan Hale' },
+        evidence: [{ field_path: 'properties.name', value: 'Jordan Hale', page: 1, quote: 'Jordan Hale' }],
+        relation_suggestions: [{ source_candidate_id: 'p', target_candidate_id: 'o',
+          relation_type: 'worksFor', properties: { role: { startDate: '2024-02' } },
+          evidence: [{ page: 1, quote: 'Jordan Hale works for Boreal Tech' }] }] },
+      { candidate_id: 'o', properties: { name: 'Boreal Tech' },
+        evidence: [{ field_path: 'properties.name', value: 'Boreal Tech', page: 1, quote: 'Boreal Tech' }],
+        relation_suggestions: [] },
+    ] }, truth);
+    expect(result.counts).toEqual({ tp: 4, fp: 0, fn: 0 });
+    expect(result.evidenceErrors).toEqual(expect.arrayContaining([expect.stringContaining('role.startDate')]));
+    expect(result.passes).toBe(false);
+  });
+
   it('rejects a person extracted as an organization even when the name and citation match', () => {
     const truth = { id: 'kind', file: 'kind.pdf', kind: 'text_pdf',
       pages: [{ page: 1, text: 'Mira Chen' }], entities: [{ id: 'mira', label: 'Person' }],

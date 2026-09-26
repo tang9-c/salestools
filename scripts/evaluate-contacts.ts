@@ -121,8 +121,17 @@ export function scoreExtraction(prediction: unknown, truth: Document): {
         const want = expectedRole[field as keyof typeof expectedRole];
         const got = predictedRole[field];
         if (typeof want === 'string' && typeof got === 'string'
-          && fieldValue(field, got) === fieldValue(field, want)) tp += 1;
-        else {
+          && fieldValue(field, got) === fieldValue(field, want)) {
+          tp += 1;
+          if (!list(relation.evidence).map(obj).some(proof =>
+            proof.field_path === `properties.role.${field}` && proof.value === got
+            && proof.page === expectedRelation.page && typeof proof.quote === 'string'
+            && (proof.quote as string).includes(got)
+            && truth.pages.some(page => page.page === expectedRelation.page
+              && page.text.includes(proof.quote as string)))) {
+            evidenceErrors.push(`evidence/page relation ${relationKey} role.${field}`);
+          }
+        } else {
           if (typeof want === 'string') { fn += 1; failures.push(`FN relation ${field}: ${want}`); }
           if (typeof got === 'string') { fp += 1; failures.push(`FP relation ${field}: ${got}`); }
         }
