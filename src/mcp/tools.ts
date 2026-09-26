@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import type { OpportunityLevel, ProductKey, ResearchSourceStatus } from '../contracts/index.js';
 import type { ContactServiceOutput } from '../contacts/contact-service.js';
+import type { ContactLibraryService } from '../contacts/library-service.js';
 import type { CompanyQuestionInput } from '../orchestration/company-question-service.js';
 import type { CompanyQuestionResult } from '../contracts/index.js';
 import {
@@ -16,6 +17,7 @@ import {
   SubmitAssessmentInputSchema,
   SubmitAssessmentOutputSchema,
 } from './tool-schemas.js';
+import { registerContactTools } from './contact-tools.js';
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -113,6 +115,7 @@ export interface McpServices {
   getAssessmentReport(input: AssessmentServiceInput): Awaitable<AssessmentReportServiceOutput>;
   getContacts(input: CompanyProfileServiceInput): Awaitable<ContactServiceOutput>;
   askCompany(input: CompanyQuestionInput): Awaitable<CompanyQuestionResult>;
+  contactLibrary?: ContactLibraryService;
 }
 
 export type { ContactServiceOutput } from '../contacts/contact-service.js';
@@ -229,6 +232,8 @@ function contactsOutput(output: ContactServiceOutput) {
 
 export function buildMcpServer(services: McpServices): McpServer {
   const server = new McpServer({ name: 'target-customer-assessment', version: '0.1.0' });
+
+  if (services.contactLibrary) registerContactTools(server, services.contactLibrary);
 
   server.registerTool('get_company_profile', {
     description: 'Default tool for basic company-profile lookups and ambiguous requests; use it before any formal assessment.',
