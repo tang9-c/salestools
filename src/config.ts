@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isAbsolute, resolve } from 'node:path';
 
 const CONFIG_KEYS = [
   'PORT', 'PUBLIC_MCP_HOST', 'ALLOWED_ORIGINS', 'SQLITE_PATH',
@@ -6,6 +7,7 @@ const CONFIG_KEYS = [
   'DOUBAO_SEARCH_API_URL', 'DOUBAO_SEARCH_API_KEY', 'ARK_API_URL', 'ARK_MODEL', 'ARK_CREDENTIAL',
   'ARK_REQUEST_MAX_BYTES', 'MAX_QCC_CALLS', 'MAX_SEARCH_CALLS', 'MAX_ARK_CALLS', 'MAX_TOTAL_UPSTREAM_CALLS',
   'PROFILE_CACHE_TTL_DAYS', 'ASSESSMENT_CACHE_TTL_DAYS', 'MAX_CONCURRENT_ASSESSMENTS',
+  'CONTACT_GRAPH_ENABLED', 'CONTACT_GRAPH_SQLITE_PATH', 'CONTACT_GRAPH_BIN',
 ] as const;
 
 const nonEmptyString = z.string().trim().min(1);
@@ -57,6 +59,9 @@ const configSchema = z.object({
   PROFILE_CACHE_TTL_DAYS: positiveInteger.default(30),
   ASSESSMENT_CACHE_TTL_DAYS: positiveInteger.default(30),
   MAX_CONCURRENT_ASSESSMENTS: positiveInteger.default(1),
+  CONTACT_GRAPH_ENABLED: z.enum(['true', 'false']).default('false').transform(value => value === 'true'),
+  CONTACT_GRAPH_SQLITE_PATH: nonEmptyString.optional(),
+  CONTACT_GRAPH_BIN: nonEmptyString.optional(),
 }).strict().superRefine((config, context) => {
   const configuredMaximum = config.MAX_QCC_CALLS + config.MAX_SEARCH_CALLS + config.MAX_ARK_CALLS;
   if (config.MAX_TOTAL_UPSTREAM_CALLS < configuredMaximum) {
@@ -65,6 +70,15 @@ const configSchema = z.object({
       path: ['MAX_TOTAL_UPSTREAM_CALLS'],
       message: 'total upstream calls must cover configured source budgets',
     });
+  }
+  if (config.CONTACT_GRAPH_ENABLED) {
+    if (!config.CONTACT_GRAPH_SQLITE_PATH ||
+        resolve(config.CONTACT_GRAPH_SQLITE_PATH) === resolve(config.SQLITE_PATH)) {
+      context.addIssue({ code: 'custom', path: ['CONTACT_GRAPH_SQLITE_PATH'], message: 'separate graph path required' });
+    }
+    if (!config.CONTACT_GRAPH_BIN || !isAbsolute(config.CONTACT_GRAPH_BIN)) {
+      context.addIssue({ code: 'custom', path: ['CONTACT_GRAPH_BIN'], message: 'absolute graph executable required' });
+    }
   }
 });
 
@@ -92,6 +106,9 @@ export type AppConfig = ParsedConfig & {
   profileCacheTtlDays: number;
   assessmentCacheTtlDays: number;
   maxConcurrentAssessments: number;
+  contactGraphEnabled: boolean;
+  contactGraphSqlitePath?: string;
+  contactGraphBin?: string;
   allowedOriginUrls: Set<string>;
   allowedOriginHostnames: Set<string>;
 };
@@ -131,6 +148,9 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     profileCacheTtlDays: parsed.data.PROFILE_CACHE_TTL_DAYS,
     assessmentCacheTtlDays: parsed.data.ASSESSMENT_CACHE_TTL_DAYS,
     maxConcurrentAssessments: parsed.data.MAX_CONCURRENT_ASSESSMENTS,
+    contactGraphEnabled: parsed.data.CONTACT_GRAPH_ENABLED,
+    contactGraphSqlitePath: parsed.data.CONTACT_GRAPH_SQLITE_PATH,
+    contactGraphBin: parsed.data.CONTACT_GRAPH_BIN,
     allowedOriginUrls: new Set(originUrls),
     allowedOriginHostnames: new Set(originUrls.map(value => new URL(value).hostname)),
   };

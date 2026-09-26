@@ -44,6 +44,7 @@ describe('loadConfig', () => {
 
   it('applies v0.1 defaults', () => {
     expect(loadConfig(valid as NodeJS.ProcessEnv)).toMatchObject({
+      contactGraphEnabled: false,
       maxQccCalls: 8,
       maxSearchCalls: 8,
       maxArkCalls: 16,
@@ -53,6 +54,29 @@ describe('loadConfig', () => {
       assessmentCacheTtlDays: 30,
       maxConcurrentAssessments: 1,
     });
+  });
+
+  it('requires an explicitly configured binary and separate database when graph is enabled', () => {
+    expect(() => loadConfig({ ...valid, CONTACT_GRAPH_ENABLED: 'true' } as NodeJS.ProcessEnv))
+      .toThrow(/CONTACT_GRAPH_BIN|CONTACT_GRAPH_SQLITE_PATH/);
+    expect(() => loadConfig({ ...valid, CONTACT_GRAPH_ENABLED: 'true',
+      CONTACT_GRAPH_BIN: '/tmp/contact-graph', CONTACT_GRAPH_SQLITE_PATH: ':memory:',
+    } as NodeJS.ProcessEnv)).toThrow(/CONTACT_GRAPH_SQLITE_PATH/);
+    expect(loadConfig({ ...valid, CONTACT_GRAPH_ENABLED: 'true',
+      CONTACT_GRAPH_BIN: '/tmp/contact-graph', CONTACT_GRAPH_SQLITE_PATH: '/tmp/contacts.sqlite',
+    } as NodeJS.ProcessEnv)).toMatchObject({
+      contactGraphEnabled: true,
+      contactGraphBin: '/tmp/contact-graph',
+      contactGraphSqlitePath: '/tmp/contacts.sqlite',
+    });
+  });
+
+  it('rejects a relative graph executable or invalid enable flag without leaking values', () => {
+    expect(() => loadConfig({ ...valid, CONTACT_GRAPH_ENABLED: 'yes' } as NodeJS.ProcessEnv))
+      .toThrow('Invalid configuration: CONTACT_GRAPH_ENABLED');
+    expect(() => loadConfig({ ...valid, CONTACT_GRAPH_ENABLED: 'true',
+      CONTACT_GRAPH_BIN: './secret-bin', CONTACT_GRAPH_SQLITE_PATH: '/tmp/contacts.sqlite',
+    } as NodeJS.ProcessEnv)).toThrow('Invalid configuration: CONTACT_GRAPH_BIN');
   });
 
   it('defaults the Ark request byte budget and rejects a budget below its immutable request', () => {

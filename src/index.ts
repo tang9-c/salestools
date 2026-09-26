@@ -11,6 +11,7 @@ import { TokenRepository } from './db/token-repository.js';
 import { ContactSnapshotRepository } from './db/contact-snapshot-repository.js';
 import { JsonlLogger, type LogSink } from './logging/logger.js';
 import { ContactService, type ContactExtractorDependency } from './contacts/contact-service.js';
+import { ContactGraphClient, type GraphClient } from './contacts/graph-client.js';
 import { createHttpApp } from './mcp/http-app.js';
 import type { McpServices } from './mcp/tools.js';
 import { AssessmentRunner } from './orchestration/assessment-runner.js';
@@ -43,10 +44,12 @@ export interface ApplicationOverrides {
   questionTimeoutMs?: number;
   logSink?: LogSink;
   now?: () => Date;
+  graphClient?: GraphClient;
 }
 
 export interface RunningApplication {
   readonly tokenService: TokenService;
+  readonly graphClient?: GraphClient;
   listen(port?: number, host?: string): Promise<Server>;
   close(timeoutMs?: number): Promise<void>;
 }
@@ -90,6 +93,12 @@ export function createApplication(
   const contactSnapshots = new ContactSnapshotRepository(database);
   const logger = new JsonlLogger(overrides.logSink ?? stdoutSink, overrides.now);
   const tokenService = new TokenService(new TokenRepository(database), overrides.now);
+  const graphClient = config.contactGraphEnabled
+    ? overrides.graphClient ?? new ContactGraphClient({
+      command: config.contactGraphBin!,
+      dbPath: config.contactGraphSqlitePath!,
+    })
+    : undefined;
   const qccGateway = overrides.qccGateway ?? new QccGateway({
     urls: {
       company: config.qccMcpCompanyUrl,
@@ -212,6 +221,7 @@ export function createApplication(
       qccGateway.close(),
       searchClient.close?.() ?? Promise.resolve(),
       ark.close?.() ?? Promise.resolve(),
+      graphClient?.close() ?? Promise.resolve(),
     ]).then(() => undefined);
     return upstreamClosing;
   };
@@ -220,6 +230,7 @@ export function createApplication(
   let closing: Promise<void> | null = null;
   return {
     tokenService,
+    graphClient,
     async listen(port = config.port, host = '0.0.0.0') {
       if (server !== null) throw new Error('Application is already listening');
       queue.start();

@@ -1,0 +1,115 @@
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
+import { afterEach, expect, it } from 'vitest';
+import { ContactGraphClient } from '../src/contacts/graph-client.js';
+
+const directories: string[] = [];
+const clients: ContactGraphClient[] = [];
+
+afterEach(async () => {
+  await Promise.allSettled(clients.splice(0).map(client => client.close(50)));
+  await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
+});
+
+async function fakeGraphBinary(): Promise<string> {
+  const directory = await mkdtemp(resolve(tmpdir(), 'graph-bridge-'));
+  directories.push(directory);
+  const command = resolve(directory, 'graph-worker');
+  await writeFile(command, `#!/usr/bin/env node
+const readline = require('node:readline');
+let pending = 0;
+readline.createInterface({ input: process.stdin }).on('line', input => {
+  const request = JSON.parse(input);
+  pending += 1;
+  const concurrent = pending;
+  if (request.payload.mode === 'die') process.exit(7);
+  if (request.payload.mode === 'hang') return;
+  if (request.payload.mode === 'malformed') { process.stdout.write('{broken\\n'); return; }
+  if (request.payload.mode === 'oversize') { process.stdout.write('x'.repeat(256 * 1024 + 1)); return; }
+  if (request.payload.mode === 'wrong_id') { process.stdout.write(JSON.stringify({ version: 1, request_id: 'other', ok: true, result: {} }) + '\\n'); return; }
+  const send = () => {
+    process.stdout.write(JSON.stringify({ version: 1, request_id: request.request_id, ok: true,
+      result: { nonce: request.payload.nonce, concurrent, dbPath: process.env.CONTACT_GRAPH_SQLITE_PATH } }) + '\\n');
+    pending -= 1;
+  };
+  setTimeout(send, request.payload.delay ?? 0);
+});
+`);
+  await chmod(command, 0o755);
+  const syntax = spawnSync(process.execPath, ['--check', command], { encoding: 'utf8' });
+  if (syntax.status !== 0) throw new Error(syntax.stderr);
+  return command;
+}
+
+async function client(): Promise<ContactGraphClient> {
+  const instance = new ContactGraphClient({ command: await fakeGraphBinary(), dbPath: '/tmp/server-selected-graph.sqlite' });
+  clients.push(instance);
+  return instance;
+}
+
+it('keeps concurrent calls paired by request ID and sends one request at a time', async () => {
+  const graph = await client();
+  const [a, b] = await Promise.all([
+    graph.request<{ nonce: string; concurrent: number; dbPath: string }>('health', { nonce: 'a', delay: 20 }),
+    graph.request<{ nonce: string; concurrent: number; dbPath: string }>('health', { nonce: 'b' }),
+  ]);
+  expect(a).toEqual({ nonce: 'a', concurrent: 1, dbPath: '/tmp/server-selected-graph.sqlite' });
+  expect(b).toEqual({ nonce: 'b', concurrent: 1, dbPath: '/tmp/server-selected-graph.sqlite' });
+});
+
+it('rejects a killed child and its in-flight work', async () => {
+  const graph = await client();
+  await expect(graph.request('health', { mode: 'die' })).rejects.toThrow(/GRAPH_/);
+  await expect(graph.request('health', {})).rejects.toThrow(/GRAPH_/);
+});
+
+it.each(['malformed', 'oversize', 'wrong_id'])('rejects an unsafe %s response frame', async mode => {
+  const graph = await client();
+  await expect(graph.request('health', { mode })).rejects.toThrow(/GRAPH_/);
+});
+
+it('closes boundedly when a child ignores an in-flight request', async () => {
+  const graph = await client();
+  const pending = graph.request('health', { mode: 'hang' });
+  const outcome = expect(pending).rejects.toThrow(/GRAPH_/);
+  const start = Date.now();
+  await graph.close(50);
+  expect(Date.now() - start).toBeLessThan(1_000);
+  await outcome;
+});
+
+it('rejects new work as soon as shutdown begins', async () => {
+  const graph = await client();
+  const pending = graph.request('health', { mode: 'hang' });
+  const outcome = expect(pending).rejects.toThrow(/GRAPH_/);
+  const closing = graph.close(300);
+  const admission = await Promise.race([
+    graph.request('health', {}).then(() => 'accepted', error => (error as Error).message),
+    new Promise<string>(resolveTimeout => setTimeout(() => resolveTimeout('still waiting'), 50)),
+  ]);
+  expect(admission).toBe('GRAPH_CLOSED');
+  await closing;
+  await outcome;
+});
+
+it('rejects user payload paths and unknown operations without sending them to the worker', async () => {
+  const graph = await client();
+  await expect(graph.request('health', { nested: { path: '/tmp/attacker.sqlite' } })).rejects.toThrow(/GRAPH_/);
+  await expect(graph.request('health', { dbPath: '/tmp/attacker.sqlite' })).rejects.toThrow(/GRAPH_/);
+  await expect(graph.request('health', { toJSON: () => ({ filePath: '/tmp/attacker.sqlite' }) })).rejects.toThrow(/GRAPH_/);
+  await expect(graph.request('arbitrary_sql' as 'health', {})).rejects.toThrow(/GRAPH_/);
+  await expect(graph.request<{ nonce: string }>('health', { nonce: 'safe' })).resolves.toMatchObject({ nonce: 'safe' });
+});
+
+it('honors an aborted queued request without disrupting the active request', async () => {
+  const graph = await client();
+  const first = graph.request('health', { nonce: 'first', delay: 30 });
+  const controller = new AbortController();
+  const queued = graph.request('health', { nonce: 'second' }, controller.signal);
+  const outcome = expect(queued).rejects.toThrow(/GRAPH_/);
+  controller.abort();
+  await outcome;
+  await expect(first).resolves.toMatchObject({ nonce: 'first' });
+});

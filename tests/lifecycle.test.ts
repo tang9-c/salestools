@@ -1,5 +1,9 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { request as httpRequest } from 'node:http';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createConnection, type Socket } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
@@ -125,6 +129,28 @@ describe('application shutdown lifecycle', () => {
   afterEach(async () => {
     await Promise.allSettled(clients.splice(0).map(client => client.close()));
     await Promise.allSettled(runtimes.splice(0).map(runtime => runtime.close(5)));
+  });
+
+  it('starts the configured graph worker only when enabled and closes it during shutdown', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'graph-lifecycle-'));
+    try {
+      const command = resolve(directory, 'worker');
+      const marker = resolve(directory, 'closed');
+      const started = resolve(directory, 'started');
+      await writeFile(command, `#!/usr/bin/env node\nconst fs = require('node:fs');\nfs.writeFileSync(${JSON.stringify(started)}, 'started');\nprocess.on('exit', () => fs.writeFileSync(${JSON.stringify(marker)}, 'closed'));\nprocess.stdin.resume();\n`);
+      await chmod(command, 0o755);
+      const runtime = createApplication({ ...config,
+        contactGraphEnabled: true,
+        contactGraphBin: command,
+        contactGraphSqlitePath: resolve(directory, 'graph.sqlite'),
+      }, { database: new DatabaseSync(':memory:') });
+      runtimes.push(runtime);
+      await vi.waitFor(() => expect(existsSync(started)).toBe(true), { timeout: 2_000 });
+      await runtime.close(500);
+      expect(await readFile(marker, 'utf8')).toBe('closed');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('keeps upstream and SQLite open until an in-flight profile request finishes normally', async () => {
