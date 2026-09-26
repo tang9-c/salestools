@@ -28,6 +28,8 @@ CLI 逐个上传并输出 JSON：`accepted` 列出已接收的本地路径和 `f
 
 图谱中查人使用 `search_contacts`（姓名、关键词、组织、职位、技能，可分页）；查看完整档案和证据使用 `get_contact`；问配偶、亲子或任职等问题使用 `ask_contacts`，同名或证据不足会要求澄清或拒答。`get_contacts` 保持原有公开网页搜索与快照语义，不是共享图谱查询。语义/混合检索只有在服务端另配 `ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL` 后可用；未配置时选 `mode=keyword`。失败索引可用 `retry_contact_index` 指定 `entity_id` 和稳定的 `operation_id` 重试。
 
+发布前的质量评测会上传 12 份虚构样本并创建联系人，因此只在使用**一次性数据库**的隔离测试服务上运行。给评测进程设置 `CONTACT_EVAL_MCP_URL`（以 `/mcp` 结尾）、`CONTACT_EVAL_UPLOAD_URL`（同源、以 `/contact-files` 结尾）和 `CONTACT_EVAL_TOKEN`，并提供 `CONTACT_EVAL_DEPLOY_REVISION`、`CONTACT_EVAL_DOCLING_VERSION`、`CONTACT_EVAL_OCR_VERSION` 以记录版本；模型元数据读取 `ARK_API_URL`、`ARK_MODEL`、`ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`，也可使用对应的 `CONTACT_EVAL_*` 覆盖项。运行 `npm run contacts:evaluate`，查看 `docs/validation/contact-management-quality.md`；退出码 0 表示全部门槛通过，1 表示已验证失败，2 表示配置不完整。评测端无需读取或打印模型凭据；服务端的模型凭据请只保存在其本地环境中。
+
 ## 1. 在终端保存 Token
 
 在当前终端会话中设置环境变量：

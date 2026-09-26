@@ -53,9 +53,9 @@ label 只能 Person 或 Organization。Person.properties 使用 Schema.org Perso
 // evidence inside each property and emit numeric candidate IDs.
 const SHAPE_PROMPT = `严格输出结构：candidates 是数组；每个候选必须有 candidate_id（字符串）、label、properties（只放原始字段值）、evidence（独立数组）、relation_suggestions（数组）。
 例如字段 name 必须写成 properties:{"name":"原文姓名"}，对应证据放在 evidence:[{"field_path":"properties.name","value":"原文姓名","block_id":"真实块ID","quote":"原文姓名"}]。不能写 properties:{"name":{"evidence":...}}；candidate_id 不能是数字。
-telephone、email、alternateName、skills、sameAs、contactPoint 等复数属性必须是数组，即使只有一项；name、jobTitle 等为字符串。relation_suggestions 只能是 []，或元素形如 {"source_candidate_id":"c1","target_candidate_id":"c2","relation_type":"worksFor","properties":{},"evidence":[{"block_id":"真实块ID","quote":"支持关系的原文"}],"uncertain":false}。关系不确定或无直接引文就输出 []，不能使用 predicate/subject_id/object_id。示例文字不可当作真实联系人输出。`;
+telephone、email、alternateName、skills、sameAs、contactPoint 等复数属性必须是数组，即使只有一项；name、jobTitle 等为字符串。relation_suggestions 只能是 []，或元素形如 {"source_candidate_id":"c1","target_candidate_id":"c2","relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole"}},"evidence":[{"block_id":"真实块ID","quote":"支持关系的原文"}],"uncertain":false}。关系不确定或无直接引文就输出 []，不能使用 predicate/subject_id/object_id。示例文字不可当作真实联系人输出。`;
 // An organization printed next to a person on a card is not proof of employment.
-const RELATION_PROMPT = `仅原文明确说 works for/任职 等才输出 worksFor；名片上姓名、公司、职位并列不算关系。明确任职时 properties.role 填可见的 roleName/startDate/endDate；每个 role 字段另给 evidence:{field_path:"properties.role.字段",value:原值,block_id,quote}，关系本身另给不含 field_path 的引文。勿推断 current 或缺失日期。`;
+const RELATION_PROMPT = `仅原文明确说 works for/任职 等才输出 worksFor；名片上姓名、公司、职位并列不算关系。worksFor 必须有 properties:{"role":{"@type":"OrganizationRole"}}，明确职位/日期时在 role 填原文可见的 roleName/startDate/endDate；每个 role 字段另给 evidence:{field_path:"properties.role.字段",value:原值,block_id,quote}，关系本身另给不含 field_path 的引文。勿推断 current 或缺失日期。`;
 
 function request(model: string, batch: readonly ParsedBlock[]): string {
   return JSON.stringify({ model, messages: [
@@ -227,10 +227,15 @@ export class DocumentExtractor {
               || !output.candidates.some(other => other.candidate_id === relation.target_candidate_id)) {
               warnings.push('关系引用无效'); return [];
             }
+            // An empty OrganizationRole carries no inferred job facts, but it is
+            // required by the graph write contract for every worksFor edge.
+            const relationProperties = relation.relation_type === 'worksFor'
+              && Object.keys(relation.properties).length === 0
+              ? { role: { '@type': 'OrganizationRole' } } : relation.properties;
             const relationEvidence: ContactEvidence[] = relation.evidence.flatMap(proof => {
               const block = blockMap.get(proof.block_id);
               if (!block || !quoteLocated(block, proof.quote) || [...proof.quote].length > 500) return [];
-              const role = relation.properties.role as Record<string, unknown> | undefined;
+              const role = relationProperties.role as Record<string, unknown> | undefined;
               const fieldPath = proof.field_path ?? (typeof role?.roleName === 'string'
                 ? 'properties.role.roleName' : '$relation');
               const roleField = fieldPath.startsWith('properties.role.')
@@ -258,7 +263,7 @@ export class DocumentExtractor {
               return [];
             }
             return [{ source_candidate_id: `${prefix}:${relation.source_candidate_id}`, target_candidate_id: `${prefix}:${relation.target_candidate_id}`,
-              relation_type: relation.relation_type, properties: relation.properties, evidence: relationEvidence, uncertain: relation.uncertain }];
+              relation_type: relation.relation_type, properties: relationProperties, evidence: relationEvidence, uncertain: relation.uncertain }];
           });
           const candidate = ImportCandidateSchema.safeParse({ candidate_id: id, label: modelCandidate.label,
             properties: modelCandidate.properties, ...(modelCandidate.label === 'Person' ? { extensions: modelCandidate.extensions ?? {} } : {}),

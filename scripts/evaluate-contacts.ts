@@ -206,7 +206,10 @@ export function summarizeQuality(counts: Count,
 
 async function call(client: Client, name: string, args: Json): Promise<Json> {
   const response = await client.callTool({ name, arguments: args });
-  if (response.isError || !response.structuredContent) throw new Error(`${name}: tool error`);
+  if (response.isError || !response.structuredContent) {
+    const detail = response.content.find(item => item.type === 'text')?.text;
+    throw new Error(`${name}: ${detail?.slice(0, 160) ?? 'tool error'}`);
+  }
   return obj(response.structuredContent);
 }
 async function upload(file: Document, endpoint: URL, token: string): Promise<string> {
