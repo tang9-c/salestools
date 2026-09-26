@@ -155,6 +155,6 @@ mod tests {
         );
         assert_eq!(result["request_id"], "req");
         assert_eq!(result["error"]["code"], "RESPONSE_TOO_LARGE");
-        assert!(serde_json::to_vec(&result).unwrap().len() + 1 <= MAX_FRAME_BYTES);
+        assert!(serde_json::to_vec(&result).unwrap().len() < MAX_FRAME_BYTES);
     }
 }
