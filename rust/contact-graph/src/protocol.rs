@@ -50,10 +50,36 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
             Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
             Err(err) => error(request_id, err.code, &err.message),
         },
-        "list_relations" | "save_relation" | "merge_contacts" | "archive_contact"
-        | "restore_contact" | "archive_relation" | "commit_import" | "sync_snapshots"
-        | "get_sync_cursor" | "search_keyword" | "search_vector" | "put_vector"
-        | "set_vector_state" => error(
+        "save_relation" => match store.save_relation(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "list_relations" => match store.list_relations(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "archive_contact" => match store.archive_contact(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "restore_contact" => match store.restore_contact(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "archive_relation" => match store.archive_relation(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "merge_contacts" => match store.merge_contacts(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "commit_import" => match store.commit_import(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "sync_snapshots" | "get_sync_cursor" | "search_keyword" | "search_vector"
+        | "put_vector" | "set_vector_state" => error(
             request_id,
             "UNAVAILABLE",
             "Operation is not implemented yet",

@@ -18,13 +18,13 @@ pub struct AppError {
 }
 
 impl AppError {
-    fn validation(message: impl Into<String>) -> Self {
+    pub(crate) fn validation(message: impl Into<String>) -> Self {
         Self {
             code: "VALIDATION_ERROR",
             message: message.into(),
         }
     }
-    fn internal(error: impl std::fmt::Display) -> Self {
+    pub(crate) fn internal(error: impl std::fmt::Display) -> Self {
         Self {
             code: "INTERNAL_ERROR",
             message: error.to_string(),
@@ -60,11 +60,11 @@ struct PutImportJobInput {
     data: Value,
 }
 
-fn now_utc() -> String {
+pub(crate) fn now_utc() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-fn canonical_hash(value: &Value) -> Result<String, AppError> {
+pub(crate) fn canonical_hash(value: &Value) -> Result<String, AppError> {
     let bytes = serde_json::to_vec(value).map_err(AppError::internal)?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))
 }
@@ -75,7 +75,7 @@ fn as_object(value: &Value) -> Result<&Map<String, Value>, AppError> {
         .ok_or_else(|| AppError::validation("Expected object"))
 }
 
-fn collect_evidence(
+pub(crate) fn collect_evidence(
     input: &[Value],
     subject_id: &str,
     label: &str,
@@ -380,6 +380,11 @@ impl Store {
                 return Err(AppError::validation("Entity label cannot change"));
             }
             let metadata: Value = serde_json::from_str(&meta_json).map_err(AppError::internal)?;
+            if metadata.get("archived_at").is_some() || metadata.get("merged_into").is_some() {
+                return Err(AppError::validation(
+                    "Archived or merged contact cannot be edited",
+                ));
+            }
             if input.expected_version != metadata["version"].as_u64() {
                 return Err(AppError {
                     code: "VERSION_CONFLICT",
@@ -551,19 +556,23 @@ impl Store {
         let Some((kg_id, metadata_json, extensions_json)) = found else {
             return Ok(Value::Null);
         };
+        let metadata: Value = serde_json::from_str(&metadata_json).map_err(AppError::internal)?;
+        if metadata.get("archived_at").is_some() || metadata.get("merged_into").is_some() {
+            return Ok(Value::Null);
+        }
         let entity = self.graph.get_entity(kg_id).map_err(AppError::internal)?;
         let properties = serde_json::to_value(entity.properties).map_err(AppError::internal)?;
-        let evidence = self.read_evidence(entity_id)?;
+        let entity_evidence = self.read_evidence(entity_id)?;
         let mut entity_json = json!({
             "entity_id":entity_id,"label":entity.entity_type,"properties":properties,
-            "metadata":serde_json::from_str::<Value>(&metadata_json).map_err(AppError::internal)?
+            "metadata":metadata
         });
         if let Some(extensions_json) = extensions_json {
             entity_json["extensions"] =
                 serde_json::from_str(&extensions_json).map_err(AppError::internal)?;
         }
         let mut conflicts = Vec::new();
-        for record in &evidence {
+        for record in &entity_evidence {
             if let Some(path) = record["field_path"].as_str() {
                 let selected = selected_value(&properties, entity_json.get("extensions"), path);
                 let matches = selected.is_some_and(|current| match current {
@@ -576,8 +585,25 @@ impl Store {
             }
         }
         let version = entity_json["metadata"]["version"].clone();
+        let relations = self.list_relations(&json!({"entity_id":entity_id}))?;
+        let mut evidence = entity_evidence;
+        for relation in relations.as_array().unwrap() {
+            let relation_id = relation["relation_id"].as_str().unwrap();
+            let mut statement = self.graph.connection().prepare(
+                "SELECT record_json FROM evidence WHERE subject_kind='relation' AND subject_id=?1 ORDER BY rowid",
+            ).map_err(AppError::internal)?;
+            let rows = statement
+                .query_map([relation_id], |row| row.get::<_, String>(0))
+                .map_err(AppError::internal)?;
+            for row in rows {
+                evidence.push(
+                    serde_json::from_str(&row.map_err(AppError::internal)?)
+                        .map_err(AppError::internal)?,
+                );
+            }
+        }
         Ok(
-            json!({"entity":entity_json,"evidence":evidence,"relations":[],"conflicts":conflicts,"version":version}),
+            json!({"entity":entity_json,"evidence":evidence,"relations":relations,"conflicts":conflicts,"version":version}),
         )
     }
 

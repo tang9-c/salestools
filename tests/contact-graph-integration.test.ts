@@ -7,7 +7,7 @@ import { expect, it } from 'vitest';
 
 const binary = fileURLToPath(new URL('../rust/contact-graph/target/debug/contact-graph', import.meta.url));
 
-async function callWorker(path: string, request: unknown): Promise<Record<string, unknown>> {
+async function callWorker(path: string, request: Record<string, unknown>): Promise<Record<string, unknown>> {
   const child = spawn(binary, [], {
     env: { ...process.env, CONTACT_GRAPH_SQLITE_PATH: path }, stdio: ['pipe', 'pipe', 'pipe'],
   });
