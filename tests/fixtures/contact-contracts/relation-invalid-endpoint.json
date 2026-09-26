@@ -1,0 +1,10 @@
+{
+  "source_label": "Organization",
+  "target_label": "Person",
+  "relation": {
+    "relation_type": "worksFor",
+    "source_id": "o_1",
+    "target_id": "p_1",
+    "properties": {"role": {"@type": "OrganizationRole"}}
+  }
+}

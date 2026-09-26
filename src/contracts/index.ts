@@ -12,6 +12,8 @@ export * from './opportunity.js';
 export * from './report.js';
 export * from './result-audit.js';
 export * from './contact.js';
+export * from './contact-graph.js';
+export * from './contact-import.js';
 export * from './company-question.js';
 
 export const CandidateSchema = z.object({

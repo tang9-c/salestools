@@ -1,0 +1,129 @@
+[
+  {
+    "id": "minimal_person",
+    "entrypoint": "person_properties",
+    "input": {"name": "李明"},
+    "expected_valid": true
+  },
+  {
+    "id": "all_added_person_fields",
+    "entrypoint": "person_properties",
+    "input": {
+      "name": "陈晓", "givenName": "晓", "familyName": "陈", "additionalName": "中",
+      "honorificPrefix": "Dr.", "honorificSuffix": "PhD", "birthDate": "1988-05",
+      "deathDate": "2025", "gender": "女", "nationality": [{"@type": "Country", "name": "中国"}],
+      "birthPlace": {"@type": "Place", "name": "绍兴"},
+      "homeLocation": {"@type": "Place", "name": "上海"},
+      "workLocation": [{"@type": "Place", "name": "北京"}],
+      "knowsAbout": ["制造业"], "knowsLanguage": ["中文原文"], "award": ["示例奖"],
+      "hasOccupation": [{"@type": "Occupation", "name": "工程师"}],
+      "hasCredential": [{"@type": "EducationalOccupationalCredential", "name": "硕士学位", "educationalLevel": "硕士"}],
+      "contactPoint": [{"@type": "ContactPoint", "contactType": "助理", "telephone": ["010-12345678"], "email": []}],
+      "faxNumber": ["010-87654321"], "image": "https://example.com/avatar.png",
+      "disambiguatingDescription": "上海的同名人士"
+    },
+    "expected_valid": true
+  },
+  {
+    "id": "invalid_nested_place_key",
+    "entrypoint": "person_properties",
+    "input": {"name": "陈晓", "birthPlace": {"@type": "Place", "name": "绍兴", "district": "越城"}},
+    "expected_valid": false
+  },
+  {
+    "id": "invalid_life_date_order",
+    "entrypoint": "person_properties",
+    "input": {"name": "陈晓", "birthDate": "2025", "deathDate": "2024"},
+    "expected_valid": false
+  },
+  {
+    "id": "invalid_unknown_business_field",
+    "entrypoint": "person_properties",
+    "input": {"name": "陈晓", "bio": "不是白名单属性"},
+    "expected_valid": false
+  },
+  {
+    "id": "organization_identifier",
+    "entrypoint": "organization_properties",
+    "input": {"name": "示例科技", "identifier": [{"@type": "PropertyValue", "propertyID": "CN-USCC", "value": "91310000EXAMPLE"}]},
+    "expected_valid": true
+  },
+  {
+    "id": "invalid_organization_person_field",
+    "entrypoint": "organization_properties",
+    "input": {"name": "示例科技", "gender": "女"},
+    "expected_valid": false
+  },
+  {
+    "id": "multiple_person_accounts",
+    "entrypoint": "person_extensions",
+    "input": {"nativePlace": "浙江绍兴", "hobbies": ["徒步", "阅读"], "maritalStatus": {"status": "married", "asOf": "2026-09"}, "instantMessaging": [{"platform": "wechat", "accountId": "work"}, {"platform": "wechat", "accountId": "personal"}]},
+    "expected_valid": true
+  },
+  {
+    "id": "invalid_inferred_account_nickname",
+    "entrypoint": "person_extensions",
+    "input": {"hobbies": [], "instantMessaging": [{"platform": "wechat", "accountId": ""}]},
+    "expected_valid": false
+  },
+  {
+    "id": "invalid_duplicate_account",
+    "entrypoint": "person_extensions",
+    "input": {"hobbies": [], "instantMessaging": [{"platform": "wechat", "accountId": "same"}, {"platform": "wechat", "accountId": "same", "label": "工作"}]},
+    "expected_valid": false
+  },
+  {
+    "id": "invalid_unknown_marital_status",
+    "entrypoint": "person_extensions",
+    "input": {"hobbies": [], "instantMessaging": [], "maritalStatus": {"status": "single"}},
+    "expected_valid": false
+  },
+  {
+    "id": "invalid_unknown_extension",
+    "entrypoint": "person_extensions",
+    "input": {"hobbies": [], "instantMessaging": [], "personality": "外向"},
+    "expected_valid": false
+  },
+  {
+    "id": "valid_partial_role_date",
+    "entrypoint": "relation",
+    "input": {"relation_id": "r_1", "source_id": "p_1", "target_id": "o_1", "relation_type": "worksFor", "properties": {"role": {"@type": "OrganizationRole", "startDate": "2022", "endDate": "2024-03"}}, "metadata": {"version": 1, "created_at": "2026-09-26T00:00:00.000Z", "updated_at": "2026-09-26T00:00:00.000Z"}},
+    "expected_valid": true
+  },
+  {
+    "id": "invalid_current_with_end_date",
+    "entrypoint": "relation",
+    "input": {"relation_id": "r_2", "source_id": "p_1", "target_id": "o_1", "relation_type": "worksFor", "properties": {"role": {"@type": "OrganizationRole", "endDate": "2024"}}, "metadata": {"version": 1, "created_at": "2026-09-26T00:00:00.000Z", "updated_at": "2026-09-26T00:00:00.000Z", "employment_status": "current", "status_as_of": "2026-09-26"}},
+    "expected_valid": false
+  },
+  {
+    "id": "valid_children_inverse_input",
+    "entrypoint": "relation",
+    "input": {"relation_id": "r_3", "source_id": "p_parent", "target_id": "p_child", "relation_type": "children", "properties": {}, "metadata": {"version": 1, "created_at": "2026-09-26T00:00:00.000Z", "updated_at": "2026-09-26T00:00:00.000Z"}},
+    "expected_valid": true
+  },
+  {
+    "id": "valid_evidence_leaf",
+    "entrypoint": "evidence",
+    "input": {"evidence_id": "ev_1", "subject_kind": "entity", "subject_id": "p_1", "field_path": "properties.hasCredential", "value": {"@type": "EducationalOccupationalCredential", "name": "硕士学位", "educationalLevel": "硕士"}, "value_path": "educationalLevel", "source_type": "manual", "collected_at": "2026-09-26T00:00:00.000Z", "locator_status": "not_applicable"},
+    "expected_valid": true
+  },
+  {
+    "id": "invalid_unknown_evidence_field",
+    "entrypoint": "evidence",
+    "input": {"evidence_id": "ev_2", "subject_kind": "entity", "subject_id": "p_1", "field_path": "properties.bio", "value": "虚构", "source_type": "manual", "collected_at": "2026-09-26T00:00:00.000Z", "locator_status": "not_applicable"},
+    "expected_valid": false
+  },
+  {
+    "id": "valid_parsed_block",
+    "entrypoint": "parsed_block",
+    "input": {"block_id": "b_1", "text": "陈晓，销售经理", "page": 2, "source_ref": "page-2/item-3"},
+    "expected_valid": true
+  },
+  {
+    "id": "invalid_parsed_block_page",
+    "entrypoint": "parsed_block",
+    "input": {"block_id": "b_2", "text": "陈晓", "page": 0},
+    "expected_valid": false
+  }
+]
