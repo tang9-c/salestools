@@ -30,6 +30,77 @@ struct KeywordInput {
     limit: Option<i64>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdentityInput {
+    phones: Vec<String>,
+    emails: Vec<String>,
+    accounts: Vec<String>,
+}
+
+/// Exact, bounded lookup used only to suggest a human-reviewed merge.
+pub fn find_identity_candidates(store: &Store, raw: &Value) -> Result<Value, AppError> {
+    let input: IdentityInput =
+        serde_json::from_value(raw.clone()).map_err(|error| invalid(error.to_string()))?;
+    if input.phones.len() > 20
+        || input.emails.len() > 20
+        || input.accounts.len() > 20
+        || input
+            .phones
+            .iter()
+            .chain(&input.emails)
+            .chain(&input.accounts)
+            .any(|value| value.is_empty() || value.len() > 200)
+    {
+        return Err(invalid("Invalid identity lookup values"));
+    }
+    let phones = serde_json::to_string(&input.phones).map_err(internal)?;
+    let emails = serde_json::to_string(&input.emails).map_err(internal)?;
+    let accounts = serde_json::to_string(&input.accounts).map_err(internal)?;
+    let sql = format!(
+        r#"
+        SELECT i.entity_id {FROM_VISIBLE}
+          AND e.entity_type='Person'
+          AND (
+            EXISTS (SELECT 1 FROM json_each(e.properties,'$.telephone') value
+              JOIN json_each(:phones) needle
+              ON replace(replace(replace(replace(value.value,' ',''),'-',''),'(',''),')','')=needle.value)
+            OR EXISTS (SELECT 1 FROM json_each(e.properties,'$.email') value
+              JOIN json_each(:emails) needle ON lower(value.value)=needle.value)
+            OR EXISTS (SELECT 1 FROM json_each(e.properties,'$.contactPoint') point
+              JOIN json_each(json_extract(point.value,'$.telephone')) value
+              JOIN json_each(:phones) needle
+              ON replace(replace(replace(replace(value.value,' ',''),'-',''),'(',''),')','')=needle.value
+              WHERE lower(json_extract(point.value,'$.contactType')) IN ('self','personal','本人','私人'))
+            OR EXISTS (SELECT 1 FROM json_each(e.properties,'$.contactPoint') point
+              JOIN json_each(json_extract(point.value,'$.email')) value
+              JOIN json_each(:emails) needle ON lower(value.value)=needle.value
+              WHERE lower(json_extract(point.value,'$.contactType')) IN ('self','personal','本人','私人'))
+            OR EXISTS (SELECT 1 FROM json_each(m.extensions_json,'$.instantMessaging') account
+              JOIN json_each(:accounts) needle
+              ON lower(json_extract(account.value,'$.platform')) || char(0) ||
+                 json_extract(account.value,'$.accountId')=needle.value)
+          )
+        ORDER BY i.entity_id LIMIT 51
+    "#
+    );
+    let mut statement = store.graph.connection().prepare(&sql).map_err(internal)?;
+    let matches = statement
+        .query_map(
+            named_params! {
+                ":phones":phones, ":emails":emails, ":accounts":accounts,
+            },
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(internal)?;
+    let mut ids = matches
+        .map(|row| row.map_err(internal))
+        .collect::<Result<Vec<_>, _>>()?;
+    let truncated = ids.len() > 50;
+    ids.truncate(50);
+    Ok(json!({"entity_ids": ids, "truncated": truncated}))
+}
+
 fn filter(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
         let trimmed = value.trim();

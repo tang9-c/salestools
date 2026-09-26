@@ -98,6 +98,31 @@ fn ids(result: &Value) -> Vec<String> {
 }
 
 #[test]
+fn identity_lookup_suggests_changed_name_by_exact_phone_without_auto_merge() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let saved = request(
+        &store,
+        "save_contact",
+        json!({
+            "operation_id":"old-name","actor":"tester","label":"Person",
+            "set_properties":{"name":"旧姓名","telephone":["+86 138-0013-8000"]},
+            "evidence":[proof("properties.name",json!("旧姓名")),
+                proof("properties.telephone",json!("+86 138-0013-8000"))]
+        }),
+    );
+    assert_eq!(saved["ok"], true, "{saved}");
+    let id = saved["result"]["entity_id"].as_str().unwrap();
+    let found = search::find_identity_candidates(
+        &store,
+        &json!({"phones":["+8613800138000"],"emails":[],"accounts":[]}),
+    )
+    .unwrap();
+    assert_eq!(found["entity_ids"], json!([id]));
+    assert_eq!(search(&store, json!({"name":"新姓名"}))["total"], 0);
+}
+
+#[test]
 fn search_finds_old_name_and_skill_without_merging_same_name_people() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path().join("graph.sqlite")).unwrap();

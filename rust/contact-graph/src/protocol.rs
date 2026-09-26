@@ -94,6 +94,14 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
             Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
             Err(err) => error(request_id, err.code, &err.message),
         },
+        "find_identity_candidates" => {
+            match crate::search::find_identity_candidates(store, &request.payload) {
+                Ok(result) => {
+                    json!({"version":1,"request_id":request_id,"ok":true,"result":result})
+                }
+                Err(err) => error(request_id, err.code, &err.message),
+            }
+        }
         "search_vector" => match store.search_vector(&request.payload) {
             Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
             Err(err) => error(request_id, err.code, &err.message),
