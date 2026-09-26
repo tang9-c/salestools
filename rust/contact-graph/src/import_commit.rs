@@ -329,6 +329,24 @@ fn commit_relations(
         if let Some(original) = suggestion.get("evidence").and_then(Value::as_array) {
             for item in original {
                 let path = item.get("field_path").and_then(Value::as_str);
+                if path == Some("$relation") {
+                    let candidate_value = json!({"relation_type":choice.relation_type,
+                        "source_id":choice.source_candidate_id,"target_id":choice.target_candidate_id});
+                    let quote = item.get("quote").and_then(Value::as_str);
+                    if item.get("source_type").and_then(Value::as_str) == Some("file")
+                        && item.get("locator_status").and_then(Value::as_str) == Some("located")
+                        && item.get("value") == Some(&candidate_value)
+                        && quote.is_some_and(|quote| {
+                            !quote.trim().is_empty() && quote.chars().count() <= 500
+                        })
+                    {
+                        let mut located = item.clone();
+                        located["value"] =
+                            json!({"relation_type":kind,"source_id":source,"target_id":target});
+                        proof.push(located);
+                    }
+                    continue;
+                }
                 let selected = path
                     .and_then(|path| {
                         path.strip_prefix("properties.role.")
@@ -647,6 +665,7 @@ impl Store {
                     params![entity_id,metadata.to_string(),extensions.as_ref().map(Value::to_string)]).map_err(AppError::internal)?;
             }
             insert_evidence(&tx, &entity_id, &new_evidence)?;
+            crate::vectors::invalidate_vector(&tx, &entity_id)?;
             tx.execute(
                 "INSERT INTO source_mapping(source_key,entity_id) VALUES(?1,?2)",
                 params![

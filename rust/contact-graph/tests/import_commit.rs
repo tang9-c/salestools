@@ -37,6 +37,37 @@ fn count(store: &Store, table: &str) -> i64 {
 }
 
 #[test]
+fn preserves_located_file_evidence_for_a_confirmed_spouse_relation() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let mut person = candidate("a", "陈晓");
+    person["relation_suggestions"] = json!([{
+        "source_candidate_id":"a","target_candidate_id":"b","relation_type":"spouse",
+        "properties":{},"evidence":[{
+            "field_path":"$relation",
+            "value":{"relation_type":"spouse","source_id":"a","target_id":"b"},
+            "source_type":"file","file_name":"resume.pdf","file_sha256":"aaa",
+            "quote":"陈晓与李华为配偶","page":2,"locator_status":"located",
+            "collected_at":"2026-09-26T00:00:00.000Z"
+        }],"uncertain":false
+    }]);
+    let import_id = ready(&store, vec![person, candidate("b", "李华")]);
+    let saved = store.commit_import(&json!({
+        "operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+        "import_id":import_id,"expected_version":2,
+        "choices":[{"candidate_id":"a","action":"create"},{"candidate_id":"b","action":"create"}],
+        "relation_choices":[{"source_candidate_id":"a","target_candidate_id":"b",
+            "relation_type":"spouse","properties":{}}]
+    })).unwrap();
+    let relation_id = saved["relations"][0]["relation_id"].as_str().unwrap();
+    let source: String = store.graph.connection().query_row(
+        "SELECT json_extract(record_json,'$.source_type') FROM evidence WHERE subject_kind='relation' AND subject_id=?1 AND json_extract(record_json,'$.source_type')='file'",
+        [relation_id], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(source, "file");
+}
+
+#[test]
 fn creates_selected_candidate_skips_other_and_replays_before_version_check() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("graph.sqlite");
