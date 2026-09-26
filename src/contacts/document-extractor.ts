@@ -49,10 +49,15 @@ const SYSTEM_PROMPT = `你是文件中的联系人候选抽取器，只返回严
 每人、每组织独立候选，candidate_id 仅在本次请求内唯一；禁止按同名跨块合并。
 label 只能 Person 或 Organization。Person.properties 使用 Schema.org Person 字段：name,alternateName,description,telephone,email,address,url,sameAs,jobTitle,skills,givenName,familyName,additionalName,honorificPrefix,honorificSuffix,birthDate,deathDate,gender,nationality,birthPlace,homeLocation,workLocation,knowsAbout,knowsLanguage,award,hasOccupation,hasCredential,contactPoint,faxNumber,image,disambiguatingDescription；extensions 仅 nativePlace,hobbies,maritalStatus,instantMessaging。Organization.properties 仅 name,alternateName,description,telephone,email,address,url,sameAs,legalName,identifier。
 每个字段值须有 evidence：{field_path,value,block_id,quote}，quote 为对应 block 原文短引文；关系可用 relation_suggestions，端点仅引用同批 candidate_id。不得补造缺失值、区号、页码或日期。无法确认归属就拆开候选。允许文件中的电话、邮箱及微信，不应用公开搜索的岗位筛选。`;
+// Keep the required JSON shape explicit: smaller chat models otherwise nest
+// evidence inside each property and emit numeric candidate IDs.
+const SHAPE_PROMPT = `严格输出结构：candidates 是数组；每个候选必须有 candidate_id（字符串）、label、properties（只放原始字段值）、evidence（独立数组）、relation_suggestions（数组）。
+例如字段 name 必须写成 properties:{"name":"原文姓名"}，对应证据放在 evidence:[{"field_path":"properties.name","value":"原文姓名","block_id":"真实块ID","quote":"原文姓名"}]。不能写 properties:{"name":{"evidence":...}}；candidate_id 不能是数字。
+telephone、email、alternateName、skills、sameAs、contactPoint 等复数属性必须是数组，即使只有一项；name、jobTitle 等为字符串。relation_suggestions 只能是 []，或元素形如 {"source_candidate_id":"c1","target_candidate_id":"c2","relation_type":"worksFor","properties":{},"evidence":[{"block_id":"真实块ID","quote":"支持关系的原文"}],"uncertain":false}。关系不确定或无直接引文就输出 []，不能使用 predicate/subject_id/object_id。示例文字不可当作真实联系人输出。`;
 
 function request(model: string, batch: readonly ParsedBlock[]): string {
   return JSON.stringify({ model, messages: [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: `${SYSTEM_PROMPT}\n${SHAPE_PROMPT}` },
     { role: 'user', content: JSON.stringify({ blocks: batch }) },
   ], response_format: { type: 'json_object' }, temperature: 0 });
 }
