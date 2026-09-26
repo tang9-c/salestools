@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { GraphClient } from './graph-client.js';
+import { readCompleteContact, type GraphClient } from './graph-client.js';
 import type { EmbeddingClient, EmbeddingResult } from './embedding-client.js';
 
 type RecordValue = Record<string, unknown>;
@@ -219,7 +219,7 @@ export class VectorIndexer {
   }
 
   private async current(entityId: string, contentVersion: number): Promise<unknown | null> {
-    const snapshot = await this.options.graph.request<ContactSnapshot | null>('get_contact', { entity_id: entityId });
+    const snapshot = await readCompleteContact(this.options.graph, entityId, { evidence: false });
     const version = indexVersion(snapshot);
     return version === contentVersion ? snapshot : null;
   }

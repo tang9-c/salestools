@@ -3,6 +3,8 @@ use serde_json::{json, Value};
 
 use crate::store::Store;
 
+pub const MAX_FRAME_BYTES: usize = 256 * 1024;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -19,6 +21,19 @@ fn error(request_id: Value, code: &str, message: &str) -> Value {
     })
 }
 
+fn bounded_response(response: Value, request_id: Value) -> Value {
+    // Include the newline written by main so Node never sees an oversized frame.
+    if serde_json::to_vec(&response).is_ok_and(|frame| frame.len() < MAX_FRAME_BYTES) {
+        response
+    } else {
+        error(
+            request_id,
+            "RESPONSE_TOO_LARGE",
+            "Response frame exceeds 256 KiB",
+        )
+    }
+}
+
 pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
     let request: Request = match serde_json::from_slice(line) {
         Ok(request) => request,
@@ -29,7 +44,8 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
     {
         return error(request_id, "BAD_REQUEST", "Invalid request envelope");
     }
-    match request.op.as_str() {
+    let response_id = request_id.clone();
+    let response = match request.op.as_str() {
         "health" => json!({
             "version": 1, "request_id": request_id, "ok": true,
             "result": { "nonce": request.payload.get("nonce").cloned().unwrap_or(Value::Null) }
@@ -115,7 +131,8 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
             Err(err) => error(request_id, err.code, &err.message),
         },
         _ => error(request_id, "UNKNOWN_OPERATION", "Unknown graph operation"),
-    }
+    };
+    bounded_response(response, response_id)
 }
 
 pub fn frame_too_large() -> Value {
@@ -124,4 +141,20 @@ pub fn frame_too_large() -> Value {
         "FRAME_TOO_LARGE",
         "Request frame exceeds 256 KiB",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_result_is_a_short_error_with_the_same_request_id() {
+        let result = bounded_response(
+            json!({"request_id":"req", "result":"x".repeat(MAX_FRAME_BYTES)}),
+            json!("req"),
+        );
+        assert_eq!(result["request_id"], "req");
+        assert_eq!(result["error"]["code"], "RESPONSE_TOO_LARGE");
+        assert!(serde_json::to_vec(&result).unwrap().len() + 1 <= MAX_FRAME_BYTES);
+    }
 }

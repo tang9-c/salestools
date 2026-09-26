@@ -46,6 +46,29 @@ describe('evidenced contact answers', () => {
     expect(answer.answer).not.toContain('现在的妻子');
   });
 
+  it('reads later evidence pages before deciding whether a relation is supported', async () => {
+    const spouse = relation('r1', 'p1', 'p2', 'spouse');
+    const request = vi.fn(async (op: GraphOp, payload: unknown) => {
+      if (op !== 'get_contact') throw new Error(`unexpected ${op}`);
+      const input = payload as { entity_id: string; evidence_offset?: number };
+      if (input.entity_id === 'p2') return detail('p2', '王明');
+      if (input.evidence_offset === 1) return {
+        ...detail('p1', '陈晓', [], [proof('r1', 'later', '陈晓的配偶是王明')]),
+        pagination: { evidence: { total: 2, next_offset: null },
+          relations: { total: 1, next_offset: null } },
+      };
+      return { ...detail('p1', '陈晓', [spouse], [proof('other', 'earlier', '无关证据')]),
+        pagination: { evidence: { total: 2, next_offset: 1 },
+          relations: { total: 1, next_offset: null } } };
+    });
+    const graph = { request, close: vi.fn(async () => undefined) } as unknown as GraphClient;
+    const ask = new ContactAnswerService({ graph, resolvePeople: async () => [] });
+    const result = await ask.ask({ question: '陈晓的配偶是谁？', entity_id: 'p1' });
+    expect(result.status).toBe('answered');
+    expect(result.citations[0]?.evidence_id).toBe('later');
+    expect(request).toHaveBeenCalledWith('get_contact', expect.objectContaining({ evidence_offset: 1 }));
+  });
+
   it('respects parent direction when asked from child or parent', async () => {
     const r = relation('r-parent', 'child', 'parent', 'parent');
     const records = { child: detail('child', '小明', [r], [proof('r-parent', 'ep', '小明的父亲是王先生', '$relation', { relation_type: 'parent' })]),

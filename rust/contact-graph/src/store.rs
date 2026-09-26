@@ -75,6 +75,23 @@ fn as_object(value: &Value) -> Result<&Map<String, Value>, AppError> {
         .ok_or_else(|| AppError::validation("Expected object"))
 }
 
+fn contact_page(raw: &Value, prefix: &str) -> Result<(usize, usize), AppError> {
+    let offset_key = format!("{prefix}_offset");
+    let limit_key = format!("{prefix}_limit");
+    let offset = raw
+        .get(&offset_key)
+        .map_or(Some(0), Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| AppError::validation(format!("Invalid {offset_key}")))?;
+    let limit = raw
+        .get(&limit_key)
+        .map_or(Some(50), Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| (1..=50).contains(value))
+        .ok_or_else(|| AppError::validation(format!("Invalid {limit_key}")))?;
+    Ok((offset, limit))
+}
+
 pub(crate) fn collect_evidence(
     input: &[Value],
     subject_id: &str,
@@ -582,6 +599,8 @@ impl Store {
     }
 
     pub fn get_contact(&self, raw: &Value) -> Result<Value, AppError> {
+        let (evidence_offset, evidence_limit) = contact_page(raw, "evidence")?;
+        let (relation_offset, relation_limit) = contact_page(raw, "relation")?;
         let entity_id = raw
             .get("entity_id")
             .and_then(Value::as_str)
@@ -607,19 +626,6 @@ impl Store {
         if let Some(extensions_json) = extensions_json {
             entity_json["extensions"] =
                 serde_json::from_str(&extensions_json).map_err(AppError::internal)?;
-        }
-        let mut conflicts = Vec::new();
-        for record in &entity_evidence {
-            if let Some(path) = record["field_path"].as_str() {
-                let selected = selected_value(&properties, entity_json.get("extensions"), path);
-                let matches = selected.is_some_and(|current| match current {
-                    Value::Array(values) => values.contains(&record["value"]),
-                    other => other == &record["value"],
-                });
-                if !matches {
-                    conflicts.push(record.clone());
-                }
-            }
         }
         let version = entity_json["metadata"]["version"].clone();
         let vector: Option<(u64, String)> = self
@@ -651,9 +657,47 @@ impl Store {
                 );
             }
         }
+        let evidence_total = evidence.len();
+        let evidence: Vec<Value> = evidence
+            .into_iter()
+            .skip(evidence_offset)
+            .take(evidence_limit)
+            .collect();
+        let mut conflicts = Vec::new();
+        for record in &evidence {
+            if record["subject_kind"] != "entity" {
+                continue;
+            }
+            if let Some(path) = record["field_path"].as_str() {
+                let selected = selected_value(&properties, entity_json.get("extensions"), path);
+                let matches = selected.is_some_and(|current| match current {
+                    Value::Array(values) => values.contains(&record["value"]),
+                    other => other == &record["value"],
+                });
+                if !matches {
+                    conflicts.push(record.clone());
+                }
+            }
+        }
+        let relations = relations.as_array().unwrap();
+        let relation_total = relations.len();
+        let relation_page: Vec<Value> = relations
+            .iter()
+            .skip(relation_offset)
+            .take(relation_limit)
+            .cloned()
+            .collect();
+        let evidence_next = (evidence_offset.saturating_add(evidence.len()) < evidence_total)
+            .then_some(evidence_offset.saturating_add(evidence.len()));
+        let relation_next = (relation_offset.saturating_add(relation_page.len()) < relation_total)
+            .then_some(relation_offset.saturating_add(relation_page.len()));
         Ok(
-            json!({"entity":entity_json,"evidence":evidence,"relations":relations,"conflicts":conflicts,
-                "version":version,"index_content_version":index_content_version,"index_status":index_status}),
+            json!({"entity":entity_json,"evidence":evidence,"relations":relation_page,"conflicts":conflicts,
+            "pagination":{"evidence":{"offset":evidence_offset,"limit":evidence_limit,
+                "total":evidence_total,"next_offset":evidence_next},
+                "relations":{"offset":relation_offset,"limit":relation_limit,
+                "total":relation_total,"next_offset":relation_next}},
+            "version":version,"index_content_version":index_content_version,"index_status":index_status}),
         )
     }
 

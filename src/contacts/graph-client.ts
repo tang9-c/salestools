@@ -22,6 +22,78 @@ export interface GraphClient {
   close(timeoutMs?: number): Promise<void>;
 }
 
+interface ContactPageState { total: number; next_offset: number | null }
+
+function contactPageState(value: unknown): { evidence: ContactPageState; relations: ContactPageState } | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const pagination = (value as Record<string, unknown>).pagination;
+  if (pagination === undefined) return null; // Legacy test doubles return a complete record.
+  if (!pagination || typeof pagination !== 'object' || Array.isArray(pagination)) {
+    throw new GraphClientError('GRAPH_INVALID_RESPONSE');
+  }
+  const fields = pagination as Record<string, unknown>;
+  const parse = (raw: unknown): ContactPageState => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new GraphClientError('GRAPH_INVALID_RESPONSE');
+    const page = raw as Record<string, unknown>;
+    if (!Number.isSafeInteger(page.total) || (page.total as number) < 0
+      || (page.next_offset !== null && (!Number.isSafeInteger(page.next_offset)
+        || (page.next_offset as number) < 0 || (page.next_offset as number) > (page.total as number)))) {
+      throw new GraphClientError('GRAPH_INVALID_RESPONSE');
+    }
+    return { total: page.total as number, next_offset: page.next_offset as number | null };
+  };
+  return { evidence: parse(fields.evidence), relations: parse(fields.relations) };
+}
+
+/** Internal consumers need all cited facts; the MCP tool deliberately exposes pages instead. */
+export async function readCompleteContact(graph: GraphClient, entityId: string, options: {
+  evidence?: boolean; relations?: boolean;
+} = {}): Promise<Record<string, unknown> | null> {
+  const first = await graph.request<Record<string, unknown> | null>('get_contact', { entity_id: entityId });
+  if (!first) return null;
+  const initial = contactPageState(first);
+  if (!initial) return first;
+  const includeEvidence = options.evidence !== false;
+  const includeRelations = options.relations !== false;
+  const evidence = includeEvidence && Array.isArray(first.evidence) ? [...first.evidence] : [];
+  const relations = includeRelations && Array.isArray(first.relations) ? [...first.relations] : [];
+  let state = initial;
+  const maxPages = 40;
+  for (let pageIndex = 1; (includeEvidence && state.evidence.next_offset !== null)
+    || (includeRelations && state.relations.next_offset !== null); pageIndex++) {
+    if (pageIndex >= maxPages) throw new GraphClientError('GRAPH_CONTACT_PAGE_LIMIT');
+    const evidenceOffset = includeEvidence ? state.evidence.next_offset ?? state.evidence.total : state.evidence.total;
+    const relationOffset = includeRelations ? state.relations.next_offset ?? state.relations.total : state.relations.total;
+    const next = await graph.request<Record<string, unknown> | null>('get_contact', {
+      entity_id: entityId, evidence_offset: evidenceOffset, relation_offset: relationOffset,
+      evidence_limit: 50, relation_limit: 50,
+    });
+    if (!next || next.version !== first.version || next.index_content_version !== first.index_content_version
+      || !Array.isArray(next.evidence) || !Array.isArray(next.relations)) {
+      throw new GraphClientError('GRAPH_CONTACT_CHANGED_DURING_READ');
+    }
+    const following = contactPageState(next);
+    if (!following || following.evidence.total !== initial.evidence.total
+      || following.relations.total !== initial.relations.total
+      || (state.evidence.next_offset !== null && following.evidence.next_offset !== null
+        && following.evidence.next_offset <= evidenceOffset)
+      || (state.relations.next_offset !== null && following.relations.next_offset !== null
+        && following.relations.next_offset <= relationOffset)) {
+      throw new GraphClientError('GRAPH_INVALID_RESPONSE');
+    }
+    if (includeEvidence && state.evidence.next_offset !== null) evidence.push(...next.evidence);
+    if (includeRelations && state.relations.next_offset !== null) relations.push(...next.relations);
+    state = following;
+  }
+  if ((includeEvidence && evidence.length !== initial.evidence.total)
+    || (includeRelations && relations.length !== initial.relations.total)) {
+    throw new GraphClientError('GRAPH_INVALID_RESPONSE');
+  }
+  return { ...first, evidence, relations,
+    pagination: { evidence: includeEvidence ? { total: evidence.length, next_offset: null } : initial.evidence,
+      relations: includeRelations ? { total: relations.length, next_offset: null } : initial.relations } };
+}
+
 export class GraphClientError extends Error {
   constructor(readonly code: string) {
     super(code);

@@ -9,7 +9,13 @@ const version = z.int().positive();
 const fields = z.record(z.string().min(1), z.unknown());
 const proof = z.array(z.record(z.string().min(1), z.unknown())).max(256);
 
-const getInput = z.object({ entity_id: id }).strict();
+const getInput = z.object({
+  entity_id: id,
+  evidence_offset: z.int().nonnegative().optional(),
+  evidence_limit: z.int().min(1).max(50).optional(),
+  relation_offset: z.int().nonnegative().optional(),
+  relation_limit: z.int().min(1).max(50).optional(),
+}).strict();
 const saveInput = z.object({
   operation_id: operationId,
   action: z.enum(['save', 'restore']).default('save'),
@@ -65,10 +71,10 @@ function actor(context: { http?: { authInfo?: { clientId?: string } } }): string
 
 export function registerContactTools(server: McpServer, library: ContactLibraryService): void {
   server.registerTool('get_contact', {
-    description: '读取共享联系人档案、字段证据、冲突及全部当前关系；与公开网页搜索 get_contacts 区分。',
+    description: '分页读取共享联系人档案、字段证据、冲突及当前关系；用 pagination.next_offset 继续获取后续证据或关系。与公开网页搜索 get_contacts 区分。',
     inputSchema: getInput,
-  }, async ({ entity_id }) => {
-    const contact = await library.get(entity_id);
+  }, async ({ entity_id, ...page }) => {
+    const contact = await library.get(entity_id, page);
     return result(contact ?? { found: false });
   });
 

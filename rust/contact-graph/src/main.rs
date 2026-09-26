@@ -1,8 +1,6 @@
-use contact_graph::protocol::{frame_too_large, parse_and_dispatch};
+use contact_graph::protocol::{frame_too_large, parse_and_dispatch, MAX_FRAME_BYTES};
 use contact_graph::store::Store;
 use std::io::{self, BufRead, Write};
-
-const MAX_FRAME_BYTES: usize = 256 * 1024;
 
 fn next_line(reader: &mut impl BufRead) -> io::Result<Option<(Vec<u8>, bool)>> {
     let mut line = Vec::new();

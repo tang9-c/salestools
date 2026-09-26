@@ -31,7 +31,7 @@ describe('shared contact library tools', () => {
     expect(graph.request).toHaveBeenCalledTimes(1);
   });
 
-  it('registers graph tools only when a graph library is available and returns the complete record', async () => {
+  it('registers graph tools and forwards contact page offsets', async () => {
     const graph = fakeGraph();
     const server = buildMcpServer({ contactLibrary: new ContactLibraryService(graph) } as McpServices);
     const client = new Client({ name: 'test', version: '1.0.0' });
@@ -44,8 +44,15 @@ describe('shared contact library tools', () => {
         'get_contact', 'save_contact', 'merge_contacts', 'delete_contact',
         'save_contact_relation', 'delete_contact_relation',
       ]));
-      const record = await client.callTool({ name: 'get_contact', arguments: { entity_id: 'p_1' } });
+      const record = await client.callTool({ name: 'get_contact', arguments: {
+        entity_id: 'p_1', evidence_offset: 50, evidence_limit: 10,
+        relation_offset: 20, relation_limit: 10,
+      } });
       expect(record.structuredContent).toMatchObject({ entity: { entity_id: 'p_1' }, version: 1 });
+      expect(graph.request).toHaveBeenCalledWith('get_contact', {
+        entity_id: 'p_1', evidence_offset: 50, evidence_limit: 10,
+        relation_offset: 20, relation_limit: 10,
+      });
       const denied = await client.callTool({ name: 'save_contact', arguments: {
         operation_id: 'op', label: 'Person', set_properties: { name: '测试人' }, actor: 'forged',
       } });

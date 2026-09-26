@@ -3,7 +3,7 @@ import {
   ContactEntitySchema, ContactEvidenceSchema, ContactRelationSchema,
   type ContactEntity, type ContactEvidence, type ContactRelation,
 } from '../contracts/index.js';
-import type { GraphClient } from './graph-client.js';
+import { GraphClientError, readCompleteContact, type GraphClient } from './graph-client.js';
 import { requestArkJsonContent } from '../upstream/ark/json-request.js';
 
 export type ContactAnswerStatus = 'answered' | 'clarify' | 'insufficient' | 'failed';
@@ -116,7 +116,7 @@ export class ContactAnswerService {
   constructor(private readonly options: ContactAnswerOptions) {}
 
   private async get(id: string): Promise<Detail | null> {
-    const raw = await this.options.graph.request<unknown>('get_contact', { entity_id: id });
+    const raw = await readCompleteContact(this.options.graph, id);
     if (!raw || typeof raw !== 'object') return null;
     const record = raw as Record<string, unknown>;
     const entity = ContactEntitySchema.safeParse(record.entity);
@@ -275,7 +275,10 @@ export class ContactAnswerService {
       } catch {
         return { status: 'failed', answer: '联系人事实已检索到，但自然语言回答暂不可用。', citations, facts };
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof GraphClientError && error.code === 'GRAPH_CONTACT_PAGE_LIMIT') {
+        return { status: 'insufficient', answer: '联系人记录过多，无法完整核对关系证据。', citations: [], facts: [] };
+      }
       return { status: 'failed', answer: '联系人资料暂不可用。', citations: [], facts: [] };
     }
   }
