@@ -57,6 +57,8 @@
 | a09 | true | [] |
 | a10 | true | [] |
 
+当前剩余验收阻断只有语义检索。`.env` 的 `ARK_EMBEDDING_API_URL` 指向 `/v1/chat/completions`；实测向量请求得到聊天接口的 `field messages is required` 错误。评测在 25 次向量调用尝试后仍是 Top-5 0/10，**这不能证明向量排序质量**。须把该项改为与 `ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL` 匹配、能接受 embeddings 请求的真实端点，再重跑 `npm run contacts:evaluate`；达到 Top-5 至少 9/10 前不宣称可上线。
+
 ## 同预算 Docling Graph 对比与决策
 
 触发原因：早期复测中跨页同人归并与 OCR 分块的任职字段证据未过门槛。使用固定 [`docling-graph@bbcd0e4`](https://github.com/docling-project/docling-graph/tree/bbcd0e4846fadfcadac2800784783e59cd2722a9)、同一组 12 份合成文件、同一 Ark 聊天模型 `lite32k`，以 `run_pipeline` 的 `many-to-one`/`direct` 路径运行一次。对比模板只含 Person/Organization 的 `name`、`jobTitle`、`email`、`telephone` 与 `worksFor`，所以共同口径只统计这些字段和关系，**不把上游未建模的任职日期算作它的漏抽**。全程硬限 16 次实际 LiteLLM completion 调用；上游每份文件用了 2 次，因此前 8 份完成后预算已尽，余下 4 张名片未调用远端模型。
@@ -68,5 +70,3 @@
 | 当前实现，全部 12 份完整契约 | 69/0/0 | 100% / 100% | 0 | 字段与关系的证据错误 0 | 239.3 秒端到端；抽取 12 次调用 |
 
 上游在无任职陈述的简历、人物简介和噪声扫描件中补出了 `worksFor`，并把带分机号电话 `+86 10 5555 0101 转 208` 改为 `+861055550101转208`。它在重复档案编号跨页归并上表现较好，但这份一次性对比的模板、处理范围和耗时范围与完整本地评测不同，不能据此推断一般场景性能。决策：继续使用当前 Docling 解析加固定联系人抽取层；不把 Docling Graph 加入生产依赖，也不实现双后端切换。
-
-剩余验收阻断只有语义检索。当前 `.env` 的 `ARK_EMBEDDING_API_URL` 指向 `/v1/chat/completions`；实测向量请求得到聊天接口的 `field messages is required` 错误。评测在 25 次向量调用尝试后仍是 Top-5 0/10，**这不能证明向量排序质量**。须把该项改为与 `ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL` 匹配、能接受 embeddings 请求的真实端点，再重跑 `npm run contacts:evaluate`；达到 Top-5 至少 9/10 前不宣称可上线。
