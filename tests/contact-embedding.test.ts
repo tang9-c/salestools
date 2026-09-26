@@ -76,11 +76,13 @@ describe('EmbeddingClient', () => {
 
 class MemoryVectorGraph implements GraphClient {
   version = 1;
+  indexContentVersion?: number;
   archived = false;
-  state = 'pending';
+  state = 'unindexed';
   failNextPut = false;
   failedHold?: Promise<void>;
   readonly puts: Record<string, unknown>[] = [];
+  readonly pendingWrites: Record<string, unknown>[] = [];
   readonly retryResults = new Map<string, Record<string, unknown>>();
 
   async request<T>(op: GraphOp, payload: unknown): Promise<T> {
@@ -93,27 +95,38 @@ class MemoryVectorGraph implements GraphClient {
         }, metadata: { version: this.version } },
         relations: [{ relation_type: 'worksFor', source_id: 'person-1', target_id: 'org-1',
           properties: { role: { roleName: '销售总监' } } }], version: this.version,
+        index_content_version: this.indexContentVersion,
       }) as T;
     }
     if (op === 'put_vector') {
       this.puts.push({ ...input });
       if (this.failNextPut) { this.failNextPut = false; throw new Error('response lost'); }
-      if (input.content_version !== this.version || this.archived) throw new Error('STALE_VERSION');
+      if (input.content_version !== (this.indexContentVersion ?? this.version) || this.archived) {
+        throw new Error('STALE_VERSION');
+      }
       this.state = 'ready';
       return { entity_id: input.entity_id, index_status: 'ready' } as T;
     }
     if (op === 'set_vector_state') {
       if (input.state === 'pending') {
+        this.pendingWrites.push({ ...input });
         const prior = this.retryResults.get(String(input.operation_id));
         if (prior) return { ...prior, replayed: true } as T;
-        if (this.state !== 'failed' || input.content_version !== this.version) throw new Error('INVALID_RETRY');
+        if (input.actor === 'system') {
+          if (this.state !== 'unindexed' || input.content_version !== (this.indexContentVersion ?? this.version)) {
+            throw new Error('INVALID_INITIAL_INDEX');
+          }
+        } else if (this.state !== 'failed' || input.content_version !== (this.indexContentVersion ?? this.version)) {
+          throw new Error('INVALID_RETRY');
+        }
         this.state = 'pending';
-        const result = { entity_id: input.entity_id, content_version: this.version,
+        const result = { entity_id: input.entity_id, content_version: this.indexContentVersion ?? this.version,
           index_status: 'pending', replayed: false };
         this.retryResults.set(String(input.operation_id), result);
         return result as T;
       }
-      if (input.content_version === this.version && !this.archived && this.state !== 'ready') this.state = 'failed';
+      if (input.content_version === (this.indexContentVersion ?? this.version)
+          && !this.archived && this.state !== 'ready') this.state = 'failed';
       await this.failedHold;
       return { index_status: this.state } as T;
     }
@@ -131,11 +144,16 @@ describe('VectorIndexer', () => {
     const indexer = new VectorIndexer({ graph, embedding, model: 'embed-v1' });
     expect(indexer.index('person-1', 1)).toBe(true);
     await vi.waitFor(() => expect(embedding.embed).toHaveBeenCalledOnce());
+    expect(graph.state).toBe('pending');
+    expect(graph.pendingWrites).toEqual([{ action: 'set', operation_id: 'vector-pending:person-1:1:embed-v1',
+      actor: 'system', entity_id: 'person-1', content_version: 1, state: 'pending' }]);
     expect(graph.puts).toEqual([]);
     finish({ model: 'embed-v1', vector: [0.25, -0.5] });
     await indexer.whenIdle();
     expect(graph.puts).toEqual([{ operation_id: 'vector:person-1:1:embed-v1', actor: 'system',
       entity_id: 'person-1', content_version: 1, model: 'embed-v1', dimension: 2, vector: [0.25, -0.5] }]);
+    expect(graph.pendingWrites).toEqual([{ action: 'set', operation_id: 'vector-pending:person-1:1:embed-v1',
+      actor: 'system', entity_id: 'person-1', content_version: 1, state: 'pending' }]);
     expect(graph.state).toBe('ready');
   });
 
@@ -197,6 +215,32 @@ describe('VectorIndexer', () => {
     finish({ model: 'embed-v1', vector: [1] });
     await indexer.whenIdle();
     expect(graph.puts).toEqual([]);
+  });
+
+  it('uses independent index content version when a role changes without an entity edit', async () => {
+    const graph = new MemoryVectorGraph();
+    graph.indexContentVersion = 2;
+    const embedding = { embed: vi.fn(async () => ({ model: 'embed-v1', vector: [1] })) };
+    const indexer = new VectorIndexer({ graph, embedding, model: 'embed-v1' });
+    indexer.index('person-1', 2);
+    await indexer.whenIdle();
+    expect(graph.state).toBe('ready');
+    expect(graph.puts[0]?.content_version).toBe(2);
+    expect(graph.pendingWrites[0]?.content_version).toBe(2);
+  });
+
+  it('retries the current role version even when entity metadata version is older', async () => {
+    const graph = new MemoryVectorGraph();
+    graph.indexContentVersion = 2;
+    graph.state = 'failed';
+    const embedding = { embed: vi.fn(async () => ({ model: 'embed-v1', vector: [1] })) };
+    const indexer = new VectorIndexer({ graph, embedding, model: 'embed-v1' });
+    const result = await indexer.retryFailed('person-1', 'retry-role-2', 'sales-a');
+    expect(result.content_version).toBe(2);
+    await indexer.whenIdle();
+    expect(graph.state).toBe('ready');
+    expect(graph.pendingWrites).toHaveLength(1);
+    expect(graph.pendingWrites[0]?.actor).toBe('sales-a');
   });
 
   it('reuses the identical vector payload after a lost write response', async () => {

@@ -76,6 +76,11 @@ export function buildEmbeddingText(snapshot: unknown): string {
 interface ContactSnapshot {
   entity?: { metadata?: { version?: number } };
   version?: number;
+  index_content_version?: number;
+}
+
+function indexVersion(snapshot: ContactSnapshot | null): number | undefined {
+  return snapshot?.index_content_version ?? snapshot?.version ?? snapshot?.entity?.metadata?.version;
 }
 
 interface VectorPayload {
@@ -88,7 +93,7 @@ interface VectorPayload {
   vector: number[];
 }
 
-interface Work { entityId: string; contentVersion: number; key: string }
+interface Work { entityId: string; contentVersion: number; key: string; pendingRecorded: boolean }
 
 export interface VectorIndexerOptions {
   graph: GraphClient;
@@ -116,6 +121,10 @@ export class VectorIndexer {
 
   /** Queue after the primary graph transaction commits; this method never waits for the model. */
   index(entityId: string, contentVersion: number): boolean {
+    return this.enqueue(entityId, contentVersion, false);
+  }
+
+  private enqueue(entityId: string, contentVersion: number, pendingRecorded: boolean): boolean {
     if (!entityId.trim() || !Number.isInteger(contentVersion) || contentVersion < 1) return false;
     const key = `${entityId}\0${contentVersion}\0${this.options.model}`;
     if (this.scheduled.has(key)) return true;
@@ -128,7 +137,7 @@ export class VectorIndexer {
       return false;
     }
     this.scheduled.add(key);
-    this.queue.push({ entityId, contentVersion, key });
+    this.queue.push({ entityId, contentVersion, key, pendingRecorded });
     queueMicrotask(() => this.pump());
     return true;
   }
@@ -145,7 +154,7 @@ export class VectorIndexer {
     }
     const snapshot = prior ? null
       : await this.options.graph.request<ContactSnapshot | null>('get_contact', { entity_id: entityId });
-    const version = prior?.version ?? snapshot?.version ?? snapshot?.entity?.metadata?.version;
+    const version = prior?.version ?? indexVersion(snapshot);
     if (!Number.isInteger(version) || !version || version < 1) throw new Error('CONTACT_NOT_FOUND');
     const result = await this.options.graph.request<{
       entity_id: string; content_version: number; index_status: 'pending'; replayed: boolean;
@@ -159,7 +168,7 @@ export class VectorIndexer {
     if (!result.replayed) {
       const key = `${entityId}\0${version}\0${this.options.model}`;
       if (this.scheduled.has(key)) this.reschedule.add(key);
-      else this.index(entityId, version);
+      else this.enqueue(entityId, version, true);
     }
     return result;
   }
@@ -181,7 +190,7 @@ export class VectorIndexer {
       void this.run(work).finally(() => {
         this.active -= 1;
         this.scheduled.delete(work.key);
-        if (this.reschedule.delete(work.key)) this.index(work.entityId, work.contentVersion);
+        if (this.reschedule.delete(work.key)) this.enqueue(work.entityId, work.contentVersion, true);
         this.pump();
         this.resolveIdle();
       });
@@ -190,7 +199,7 @@ export class VectorIndexer {
 
   private async current(entityId: string, contentVersion: number): Promise<unknown | null> {
     const snapshot = await this.options.graph.request<ContactSnapshot | null>('get_contact', { entity_id: entityId });
-    const version = snapshot?.version ?? snapshot?.entity?.metadata?.version;
+    const version = indexVersion(snapshot);
     return version === contentVersion ? snapshot : null;
   }
 
@@ -198,6 +207,12 @@ export class VectorIndexer {
     try {
       const snapshot = await this.current(work.entityId, work.contentVersion);
       if (!snapshot) { this.retained.delete(work.key); return; }
+      if (!work.pendingRecorded) {
+        await this.options.graph.request('set_vector_state', {
+          action: 'set', operation_id: `vector-pending:${work.entityId}:${work.contentVersion}:${this.options.model}`,
+          actor: 'system', entity_id: work.entityId, content_version: work.contentVersion, state: 'pending',
+        });
+      }
       let payload = this.retained.get(work.key);
       if (!payload) {
         const input = buildEmbeddingText(snapshot);
