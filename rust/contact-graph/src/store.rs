@@ -94,6 +94,11 @@ pub(crate) fn collect_evidence(
         "source_url",
         "quote",
         "page",
+        "evidence_id",
+        "subject_kind",
+        "subject_id",
+        "confirmed_by",
+        "confirmed_at",
     ];
     let mut output = Vec::new();
     for item in input {
@@ -124,6 +129,29 @@ pub(crate) fn collect_evidence(
             .get("collected_at")
             .and_then(Value::as_str)
             .ok_or_else(|| AppError::validation("Missing evidence collected_at"))?;
+        let evidence_id = match fields.get("evidence_id") {
+            Some(Value::String(id)) if !id.trim().is_empty() => id.clone(),
+            Some(_) => return Err(AppError::validation("Invalid evidence_id")),
+            None => format!("ev_{}", Uuid::new_v4().as_simple()),
+        };
+        if fields
+            .get("subject_kind")
+            .is_some_and(|kind| kind != "entity")
+            || fields
+                .get("subject_id")
+                .is_some_and(|id| id.as_str().is_none_or(|id| id.trim().is_empty()))
+            || fields
+                .get("confirmed_by")
+                .is_some_and(|actor| actor.as_str().is_none_or(|actor| actor.trim().is_empty()))
+            || fields.get("confirmed_at").is_some_and(|date| {
+                date.as_str()
+                    .is_none_or(|date| chrono::DateTime::parse_from_rfc3339(date).is_err())
+            })
+        {
+            return Err(AppError::validation(
+                "Invalid evidence subject or confirmation",
+            ));
+        }
         if chrono::DateTime::parse_from_rfc3339(collected).is_err() {
             return Err(AppError::validation("Invalid collected_at"));
         }
@@ -139,10 +167,7 @@ pub(crate) fn collect_evidence(
             _ => return Err(AppError::validation("Invalid evidence source or locator")),
         }
         let mut record = fields.clone();
-        record.insert(
-            "evidence_id".into(),
-            Value::String(format!("ev_{}", Uuid::new_v4().as_simple())),
-        );
+        record.insert("evidence_id".into(), Value::String(evidence_id));
         record.insert("subject_kind".into(), Value::String("entity".into()));
         record.insert("subject_id".into(), Value::String(subject_id.into()));
         record.insert("confirmed_by".into(), Value::String(actor.into()));

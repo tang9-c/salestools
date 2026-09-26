@@ -140,6 +140,16 @@ fn candidate<'a>(value: &'a Value, id: &str) -> Result<CandidateView<'a>, AppErr
         .get("evidence")
         .and_then(Value::as_array)
         .ok_or_else(|| validation("Candidate evidence is required"))?;
+    for item in evidence {
+        let proof = object(item)?;
+        if proof
+            .get("subject_kind")
+            .is_some_and(|kind| kind != "entity")
+            || proof.get("subject_id").is_some_and(|subject| subject != id)
+        {
+            return Err(validation("Candidate evidence subject mismatch"));
+        }
+    }
     if fields.get("can_commit").and_then(Value::as_bool).is_none() {
         return Err(validation("Candidate can_commit flag is required"));
     }
