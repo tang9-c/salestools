@@ -58,6 +58,17 @@ describe('fixed contact quality scorer', () => {
     expect(result.passes).toBe(false);
   });
 
+  it('accepts a Docling quote whose page text only differs by line breaks', () => {
+    const truth = { id: 'whitespace', file: 'case.pdf', kind: 'text_pdf',
+      pages: [{ page: 2, text: 'FICTIONAL PROFILE: Nora Webb\nOpen Harbor - Operations Director' }],
+      facts: [{ owner: 'nora', field: 'name', value: 'Nora Webb', page: 2, quote: 'Nora Webb' }],
+      relations: [], complexity: [] } as const;
+    const result = scoreExtraction({ candidates: [{ candidate_id: 'n', label: 'Person',
+      properties: { name: 'Nora Webb' }, evidence: [{ field_path: 'properties.name', value: 'Nora Webb',
+        page: 2, quote: 'Nora Webb Open Harbor - Operations Director' }], relation_suggestions: [] }] }, truth);
+    expect(result.evidenceErrors).toEqual([]);
+  });
+
   it('does not accept an uncited relation or silently collapse duplicate people', () => {
     const truth = { id: 'roles', file: 'roles.pdf', kind: 'text_pdf',
       pages: [{ page: 1, text: 'Avery Moss works for Cedar Labs.' }],
@@ -167,6 +178,20 @@ describe('fixed contact quality scorer', () => {
         quote: 'Mira Chen works at Helio Works.' }], facts: [{ subject_id: 'mira', predicate: 'worksFor',
           object: 'Helio Works', evidence_id: 'fabricated-id' }] },
     { ...truth, allowedEvidenceIds: ['ev-1'] }).passes).toBe(false);
+  });
+
+  it('accepts a longer cited passage when it is on the annotated source page', () => {
+    const truth = { status: 'answered', requiredQuote: 'Avery Moss', citations: [{
+      file_name: 'case.pdf', page: 1, quote: 'FICTIONAL PROFILE: Avery Moss',
+    }], facts: [{ predicate: 'name', object: 'Avery Moss' }], allowedEvidenceIds: ['ev-1'] } as const;
+    const sourcePages = [{ file_name: 'case.pdf', page: 1,
+      text: 'FICTIONAL PROFILE: Avery Moss\nAvery Moss works for Cedar Labs.' }];
+    const response = { status: 'answered', citations: [{ evidence_id: 'ev-1', file_name: 'case.pdf',
+      page: 1, quote: 'Avery Moss works for Cedar Labs.' }], facts: [{ predicate: 'name',
+        object: 'Avery Moss', evidence_id: 'ev-1' }] };
+    expect(scoreAnswer(response, truth, sourcePages).passes).toBe(true);
+    expect(scoreAnswer({ ...response, citations: [{ ...response.citations[0],
+      quote: 'Avery Moss works for Invented Co.' }] }, truth, sourcePages).passes).toBe(false);
   });
 
   it('requires all gates, including exact answer statuses and zero fabrication', () => {

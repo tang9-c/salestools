@@ -94,7 +94,8 @@ export function scoreExtraction(prediction: unknown, truth: Document): {
       item.field_path === `properties.${fact.field}`
       && typeof item.value === 'string' && fieldValue(fact.field, item.value) === fieldValue(fact.field, fact.value)
       && item.page === fact.page && typeof item.quote === 'string'
-      && truth.pages.some(page => page.page === fact.page && page.text.includes(item.quote as string))
+      && truth.pages.some(page => page.page === fact.page
+        && normalize(page.text).includes(normalize(item.quote as string)))
       && (item.quote as string).includes(fact.quote));
     if (!evidence) evidenceErrors.push(`evidence/page ${fact.owner}.${fact.field}: ${fact.value}`);
   }
@@ -129,7 +130,7 @@ export function scoreExtraction(prediction: unknown, truth: Document): {
             && proof.page === expectedRelation.page && typeof proof.quote === 'string'
             && (proof.quote as string).includes(got)
             && truth.pages.some(page => page.page === expectedRelation.page
-              && page.text.includes(proof.quote as string)))) {
+              && normalize(page.text).includes(normalize(proof.quote as string))))) {
             evidenceErrors.push(`evidence/page relation ${relationKey} role.${field}`);
           }
         } else {
@@ -139,7 +140,8 @@ export function scoreExtraction(prediction: unknown, truth: Document): {
       }
       if (!list(relation.evidence).map(obj).some(proof => proof.page === expectedRelation.page
         && typeof proof.quote === 'string'
-        && truth.pages.some(page => page.page === expectedRelation.page && page.text.includes(proof.quote as string))
+        && truth.pages.some(page => page.page === expectedRelation.page
+          && normalize(page.text).includes(normalize(proof.quote as string)))
         && (expectedRelation.quote.includes(proof.quote) || proof.quote.includes(expectedRelation.quote)))) {
         evidenceErrors.push(`evidence/page relation ${relationKey}`);
       }
@@ -162,7 +164,8 @@ export function scoreSearch(prediction: unknown, targetId: string): { passes: bo
 }
 
 export function scoreAnswer(prediction: unknown, truth: Pick<AnswerCase,
-  'status' | 'citations' | 'facts' | 'requiredQuote' | 'allowedEvidenceIds'>): {
+  'status' | 'citations' | 'facts' | 'requiredQuote' | 'allowedEvidenceIds'>,
+sourcePages: readonly { file_name: string; page: number; text: string }[] = []): {
   passes: boolean; statusCorrect: boolean; fabricatedCitations: number; failures: string[];
 } {
   const result = obj(prediction);
@@ -171,11 +174,15 @@ export function scoreAnswer(prediction: unknown, truth: Pick<AnswerCase,
   const citations = list(result.citations).map(obj);
   const requiredTerms = [truth.requiredQuote, ...(truth.facts ?? []).map(fact => fact.object)].filter(
     (item): item is string => typeof item === 'string' && item.length > 0);
+  const quoteOnPage = (quote: string, expected: { file_name: string; page: number; quote: string }) =>
+    quote.length > 0 && (sourcePages.length === 0 ? expected.quote.includes(quote)
+      : sourcePages.some(page => page.file_name === expected.file_name && page.page === expected.page
+        && normalize(page.text).includes(normalize(quote))));
   let fabricatedCitations = 0;
   for (const citation of citations) {
     const quote = phrase(citation.quote);
     const supported = truth.citations.some(expected => citation.file_name === expected.file_name
-      && citation.page === expected.page && expected.quote.includes(quote) && quote.length > 0
+      && citation.page === expected.page && quoteOnPage(quote, expected)
       && typeof citation.evidence_id === 'string' && citation.evidence_id.length > 0
       && (!truth.allowedEvidenceIds || truth.allowedEvidenceIds.includes(citation.evidence_id))
       && (requiredTerms.length === 0 || requiredTerms.some(term => quote.includes(term))));
@@ -183,7 +190,7 @@ export function scoreAnswer(prediction: unknown, truth: Pick<AnswerCase,
   }
   for (const expected of truth.citations) if (!citations.some(citation =>
     citation.file_name === expected.file_name && citation.page === expected.page
-    && typeof citation.quote === 'string' && expected.quote.includes(citation.quote))) {
+    && typeof citation.quote === 'string' && quoteOnPage(citation.quote, expected))) {
     failures.push(`missing citation ${expected.file_name}:${expected.page}`);
   }
   const actualFacts = list(result.facts).map(obj);
@@ -363,6 +370,8 @@ async function run(): Promise<number> {
       } catch (error) { searches.push({ id: item.id, passes: false, rank: null, error: String(error) }); }
     }
     const answers: Array<{ id: string; result: ReturnType<typeof scoreAnswer> }> = [];
+    const annotatedPages = dataset.documents.flatMap(doc => doc.pages.map(page =>
+      ({ file_name: doc.file, ...page })));
     for (const item of dataset.answers) {
       try {
         const subject = item.subject ? ids.get(item.subject) : undefined;
@@ -370,7 +379,7 @@ async function run(): Promise<number> {
           question: item.question, ...(subject ? { entity_id: subject } : {}),
         });
         answers.push({ id: item.id, result: scoreAnswer(response,
-          { ...item, allowedEvidenceIds: [...evidenceIds] }) });
+          { ...item, allowedEvidenceIds: [...evidenceIds] }, annotatedPages) });
       } catch (error) {
         answers.push({ id: item.id, result: { passes: false, statusCorrect: false,
           fabricatedCitations: 0, failures: [String(error)] } });
