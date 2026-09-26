@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import math
 import os
+import errno
+import resource
+import signal
 import tempfile
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, Callable
 
@@ -103,6 +106,50 @@ def convert_local(path: Path) -> Any:
     return converter.convert(str(path)).document
 
 
+def _scratch_bytes(path: Path) -> int:
+    total = 0
+    for directory, _, names in os.walk(path):
+        for name in names:
+            try:
+                total += (Path(directory) / name).stat().st_size
+            except FileNotFoundError:
+                continue
+    return total
+
+
+@contextmanager
+def _watch_scratch(path: Path, max_bytes: int):
+    """Interrupt conversion as soon as the dedicated worker samples an overage."""
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    previous_file_handler = signal.getsignal(signal.SIGXFSZ)
+    previous_file_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+
+    def check_budget(_signum, _frame):
+        if _scratch_bytes(path) > max_bytes:
+            raise ParseError("TEMP_BYTES_EXCEEDED")
+
+    def file_limit_exceeded(_signum, _frame):
+        raise ParseError("TEMP_BYTES_EXCEEDED")
+
+    try:
+        signal.signal(signal.SIGALRM, check_budget)
+        signal.signal(signal.SIGXFSZ, file_limit_exceeded)
+        old_soft, old_hard = previous_file_limit
+        file_cap = max_bytes if old_soft == resource.RLIM_INFINITY else min(max_bytes, old_soft)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (file_cap, old_hard))
+        signal.setitimer(signal.ITIMER_REAL, 0.05, 0.05)
+        yield
+        check_budget(None, None)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        resource.setrlimit(resource.RLIMIT_FSIZE, previous_file_limit)
+        signal.signal(signal.SIGALRM, previous_handler)
+        signal.signal(signal.SIGXFSZ, previous_file_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+
+
 def _frame_size(block: dict[str, Any], request_id: str) -> int:
     frame = {"version": 1, "request_id": request_id, "kind": "block", "block": block}
     return len(json.dumps(frame, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -186,13 +233,10 @@ def parse(path: str | Path, file_type: str, document_id: str,
             os.environ["TMPDIR"] = scratch
             tempfile.tempdir = scratch
             try:
-                with open(os.devnull, "w", encoding="utf-8") as sink:
-                    with redirect_stdout(sink), redirect_stderr(sink):
-                        document = (converter or convert_local)(local_path)
-                used = sum((Path(directory) / name).stat().st_size
-                           for directory, _, names in os.walk(scratch) for name in names)
-                if used > bounds["max_temp_bytes"]:
-                    raise ParseError("TEMP_BYTES_EXCEEDED")
+                with _watch_scratch(Path(scratch), bounds["max_temp_bytes"]):
+                    with open(os.devnull, "w", encoding="utf-8") as sink:
+                        with redirect_stdout(sink), redirect_stderr(sink):
+                            document = (converter or convert_local)(local_path)
             finally:
                 tempfile.tempdir = old_tempdir
                 if old_tmpdir is None:
@@ -201,6 +245,10 @@ def parse(path: str | Path, file_type: str, document_id: str,
                     os.environ["TMPDIR"] = old_tmpdir
     except ParseError:
         raise
+    except OSError as error:
+        if error.errno == errno.EFBIG:
+            raise ParseError("TEMP_BYTES_EXCEEDED") from error
+        raise ParseError("CONVERSION_FAILED") from error
     except Exception as error:
         raise ParseError("CONVERSION_FAILED") from error
     items = (item for item, _ in document.iterate_items()) if hasattr(document, "iterate_items") else iter(

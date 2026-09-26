@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,6 +27,13 @@ def test_pdf_blocks_keep_real_page_number():
     assert blocks[1]["source_ref"] == "#/texts/1"
 
 
+def test_real_docling_text_pdf_retains_second_page():
+    blocks = parse(FIXTURES / "synthetic-resume.pdf", "pdf", "real-pdf")
+    assert any(block.get("page") == 1 and "Lin Xiang" in block["text"] for block in blocks)
+    assert any(block.get("page") == 2 and "Alpha Studio" in block["text"] for block in blocks)
+    assert all(block.get("source_ref", "").startswith("#/") for block in blocks)
+
+
 def test_missing_provenance_omits_page():
     blocks = parse(FIXTURES / "synthetic-resume.pdf", "pdf", "document-1",
                    converter=fake_converter(item("林想")))
@@ -52,6 +60,14 @@ def test_png_card_uses_image_conversion_path():
     blocks = parse(FIXTURES / "synthetic-card.png", "png", "document-2", converter=convert)
     assert seen == [FIXTURES / "synthetic-card.png"]
     assert blocks[0]["text"] == "虚构联系人 叶青"
+
+
+def test_real_docling_png_card_runs_ocr():
+    blocks = parse(FIXTURES / "synthetic-card.png", "png", "real-card")
+    text = " ".join(block["text"] for block in blocks)
+    assert "Robin Vale" in text
+    assert "Sample Studio" in text
+    assert all(block.get("page") == 1 for block in blocks)
 
 
 def test_rejects_oversized_image_before_conversion(tmp_path):
@@ -89,12 +105,14 @@ def test_rejects_malformed_input_and_type_mismatch(tmp_path):
 
 def test_split_oversized_utf8_block_preserves_content_and_source():
     original = {"block_id": "doc:0", "text": "甲" * 100_000, "page": 2, "source_ref": "#/texts/1"}
-    parts = split_block(original)
+    parts = split_block(original, request_id="r")
     assert len(parts) > 1
     assert "".join(part["text"] for part in parts) == original["text"]
     assert all(part["source_ref"] == original["source_ref"] and part["page"] == 2 for part in parts)
     assert len({part["block_id"] for part in parts}) == len(parts)
-    assert all(len(part["text"].encode("utf-8")) < 256 * 1024 for part in parts)
+    assert all(len(json.dumps({"version": 1, "request_id": "r", "kind": "block", "block": part},
+                              ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= 256 * 1024
+               for part in parts)
 
 
 def test_converter_output_never_reaches_worker_streams(capsys):
@@ -129,6 +147,42 @@ def test_conversion_scratch_is_bounded_and_removed():
         parse(FIXTURES / "synthetic-resume.pdf", "pdf", "doc",
               limits={"max_temp_bytes": 10}, converter=convert)
     assert not scratch[0].exists()
+
+
+def test_scratch_limit_interrupts_running_conversion():
+    import os
+    import time
+    finished = []
+    def convert(path):
+        (Path(os.environ["TMPDIR"]) / "intermediate-a").write_bytes(b"x" * 6)
+        (Path(os.environ["TMPDIR"]) / "intermediate-b").write_bytes(b"x" * 6)
+        time.sleep(0.7)
+        finished.append(True)
+        return fake_converter(item("safe"))(path)
+    with pytest.raises(ParseError, match="TEMP_BYTES_EXCEEDED"):
+        parse(FIXTURES / "synthetic-resume.pdf", "pdf", "doc",
+              limits={"max_temp_bytes": 10}, converter=convert)
+    assert not finished
+
+
+def test_transient_oversized_scratch_file_is_rejected():
+    import os
+    import resource
+    import signal
+    previous_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+    previous_alarm = signal.getsignal(signal.SIGALRM)
+    previous_file_signal = signal.getsignal(signal.SIGXFSZ)
+    def convert(path):
+        temporary = Path(os.environ["TMPDIR"]) / "brief-spike"
+        temporary.write_bytes(b"x" * 20)
+        temporary.unlink()
+        return fake_converter(item("safe"))(path)
+    with pytest.raises(ParseError, match="TEMP_BYTES_EXCEEDED"):
+        parse(FIXTURES / "synthetic-resume.pdf", "pdf", "doc",
+              limits={"max_temp_bytes": 10}, converter=convert)
+    assert resource.getrlimit(resource.RLIMIT_FSIZE) == previous_limit
+    assert signal.getsignal(signal.SIGALRM) == previous_alarm
+    assert signal.getsignal(signal.SIGXFSZ) == previous_file_signal
 
 
 def test_invalid_multi_page_span_does_not_guess_page():
