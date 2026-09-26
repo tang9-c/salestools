@@ -278,7 +278,7 @@ async function run(): Promise<number> {
     [doc.file, createHash('sha256').update(await readFile(new URL(doc.file, documentDirectory))).digest('hex')])));
   const sourceHashes = Object.fromEntries(await Promise.all([
     'python/uv.lock', 'python/contact_worker/parser.py', 'src/contacts/document-extractor.ts',
-    'src/contacts/contact-answer.ts', 'src/contracts/contact-graph.ts',
+    'src/contacts/contact-answer.ts', 'src/contracts/contact-graph.ts', 'scripts/evaluate-contacts.ts',
   ].map(async file => [file, createHash('sha256').update(await readFile(resolve(root, file))).digest('hex')])));
   const mcpUrl = process.env.CONTACT_EVAL_MCP_URL;
   const uploadUrl = process.env.CONTACT_EVAL_UPLOAD_URL;
@@ -401,6 +401,11 @@ async function run(): Promise<number> {
     const metadataComplete = Object.values(metadata).every(value => typeof value === 'string' && value.length > 0);
     const labelErrors = rows.reduce((sum, row) => sum + row.result.labelErrors, 0);
     const overallPass = summary.passes && serviceErrors === 0 && labelErrors === 0;
+    const comparisonHeading = '## 同预算 Docling Graph 对比与决策';
+    const previousReport = await readFile(outputPath, 'utf8').catch(() => '');
+    const comparison = previousReport.includes(`annotations SHA-256：${fixtureHash}`)
+      && previousReport.includes(comparisonHeading)
+      ? previousReport.slice(previousReport.indexOf(comparisonHeading)) : '';
     const report = [
       '# 联系人质量评测', '',
       `状态：${!metadataComplete ? 'unverified-config' : overallPass ? 'verified-pass' : 'verified-fail'}`, '',
@@ -408,7 +413,7 @@ async function run(): Promise<number> {
       `逐文件 SHA-256：${markdown(fileHashes)}`, '',
       `运行时间：${new Date().toISOString()}；耗时：${Date.now() - startedAt} ms`, '',
       `服务端点：${mcp.origin}；部署与模型元数据：${markdown(metadata)}`, '',
-      `本地锁文件、Docling 解析器、抽取提示词、问答提示词和契约 SHA-256：${markdown(sourceHashes)}`, '',
+      `本地锁文件、Docling 解析器、抽取提示词、问答提示词、契约和评测脚本 SHA-256：${markdown(sourceHashes)}`, '',
       `微平均 precision=${summary.precision.toFixed(4)}，recall=${summary.recall.toFixed(4)}；semantic Top-5=${summary.semanticTop5}/10；问答=${summary.answeredCorrectly}/10；伪造关系=${summary.fabricatedRelations}；伪造引用=${summary.fabricatedCitations}；证据错误=${summary.evidenceErrors}；实体类型错误=${labelErrors}；服务错误=${serviceErrors}`, '',
       '| 文档 | TP/FP/FN | 关系伪造 | 实体类型错误 | 证据错误 | 失败细节 |', '| --- | --- | --- | --- | --- | --- |',
       ...rows.map(({ id, result }) => `| ${id} | ${result.counts.tp}/${result.counts.fp}/${result.counts.fn} | ${result.fabricatedRelations} | ${result.labelErrors} | ${result.evidenceErrors.length} | ${markdown([...result.failures, ...result.evidenceErrors])} |`),
@@ -416,7 +421,7 @@ async function run(): Promise<number> {
       ...searches.map(item => `| ${item.id} | ${item.passes} | ${item.rank ?? item.error ?? 'miss'} |`),
       '', '| 问答案例 | 通过 | 失败细节 |', '| --- | --- | --- |',
       ...answers.map(item => `| ${item.id} | ${item.result.passes} | ${markdown(item.result.failures)} |`), '',
-      '若跨页、多人物归属或证据定位案例阻断门槛，须按计划以同一样本、同一 Ark 模型和 8 批/16 次调用预算进行一次固定 Docling Graph 对比，并记录两侧精确率、召回率、证据正确率、耗时、调用次数及下一步决策。当前未运行该对比。', '',
+      comparison || '若跨页、多人物归属或证据定位案例阻断门槛，须按计划以同一样本、同一 Ark 模型和 8 批/16 次调用预算进行一次固定 Docling Graph 对比，并记录两侧精确率、召回率、证据正确率、耗时、调用次数及下一步决策。当前未运行该对比。', '',
     ].join('\n');
     await writeFile(outputPath, report);
     process.stdout.write(`${JSON.stringify({ summary, report: fileURLToPath(outputPath) })}\n`);
