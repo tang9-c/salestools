@@ -304,11 +304,16 @@ async function run(): Promise<number> {
         counts.tp += scored.counts.tp; counts.fp += scored.counts.fp; counts.fn += scored.counts.fn;
         // The isolated graph is disposable; incorrect previews still fail extraction scoring.
         const choices = list(result.candidates).map(candidate => ({
-          candidate_id: phrase(obj(candidate).candidate_id), action: 'create',
+          candidate_id: phrase(obj(candidate).candidate_id),
+          action: obj(candidate).can_commit === true ? 'create' : 'skip',
         }));
+        const selected = new Set(choices.filter(choice => choice.action === 'create')
+          .map(choice => choice.candidate_id));
         const relationChoices = list(result.candidates).flatMap(candidate =>
           list(obj(candidate).relation_suggestions).map(obj).filter(relation =>
-            doc.relations.some(expected => scored.candidateIds[expected.source] === relation.source_candidate_id
+            selected.has(phrase(relation.source_candidate_id))
+              && selected.has(phrase(relation.target_candidate_id))
+              && doc.relations.some(expected => scored.candidateIds[expected.source] === relation.source_candidate_id
               && scored.candidateIds[expected.target] === relation.target_candidate_id
               && expected.type === relation.relation_type))
             .map(relation => ({ source_candidate_id: relation.source_candidate_id,

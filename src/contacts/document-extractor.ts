@@ -54,10 +54,12 @@ label 只能 Person 或 Organization。Person.properties 使用 Schema.org Perso
 const SHAPE_PROMPT = `严格输出结构：candidates 是数组；每个候选必须有 candidate_id（字符串）、label、properties（只放原始字段值）、evidence（独立数组）、relation_suggestions（数组）。
 例如字段 name 必须写成 properties:{"name":"原文姓名"}，对应证据放在 evidence:[{"field_path":"properties.name","value":"原文姓名","block_id":"真实块ID","quote":"原文姓名"}]。不能写 properties:{"name":{"evidence":...}}；candidate_id 不能是数字。
 telephone、email、alternateName、skills、sameAs、contactPoint 等复数属性必须是数组，即使只有一项；name、jobTitle 等为字符串。relation_suggestions 只能是 []，或元素形如 {"source_candidate_id":"c1","target_candidate_id":"c2","relation_type":"worksFor","properties":{},"evidence":[{"block_id":"真实块ID","quote":"支持关系的原文"}],"uncertain":false}。关系不确定或无直接引文就输出 []，不能使用 predicate/subject_id/object_id。示例文字不可当作真实联系人输出。`;
+// An organization printed next to a person on a card is not proof of employment.
+const RELATION_PROMPT = `仅原文明确说 works for/任职 等才输出 worksFor；名片上姓名、公司、职位并列不算关系。明确任职时 properties.role 填可见的 roleName/startDate/endDate；每个 role 字段另给 evidence:{field_path:"properties.role.字段",value:原值,block_id,quote}，关系本身另给不含 field_path 的引文。勿推断 current 或缺失日期。`;
 
 function request(model: string, batch: readonly ParsedBlock[]): string {
   return JSON.stringify({ model, messages: [
-    { role: 'system', content: `${SYSTEM_PROMPT}\n${SHAPE_PROMPT}` },
+    { role: 'system', content: `${SYSTEM_PROMPT}\n${SHAPE_PROMPT}\n${RELATION_PROMPT}` },
     { role: 'user', content: JSON.stringify({ blocks: batch }) },
   ], response_format: { type: 'json_object' }, temperature: 0 });
 }
@@ -248,6 +250,13 @@ export class DocumentExtractor {
                 quote: proof.quote, ...(block.page === undefined ? {} : { page: block.page }),
                 locator_status: 'located' as const, collected_at: this.options.collectedAt ?? new Date().toISOString() }];
             });
+            const hasDirectStatement = relation.relation_type !== 'worksFor'
+              || relationEvidence.some(proof => typeof proof.quote === 'string'
+                && /\b(?:works?\s+for|worked\s+for|employed\s+by|works?\s+at)\b|任职|就职|受雇于/iu.test(proof.quote));
+            if (relationEvidence.length === 0 || !hasDirectStatement) {
+              warnings.push('关系缺少可定位的直接陈述');
+              return [];
+            }
             return [{ source_candidate_id: `${prefix}:${relation.source_candidate_id}`, target_candidate_id: `${prefix}:${relation.target_candidate_id}`,
               relation_type: relation.relation_type, properties: relation.properties, evidence: relationEvidence, uncertain: relation.uncertain }];
           });
