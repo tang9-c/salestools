@@ -1,4 +1,5 @@
 import { type Server } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -289,6 +290,11 @@ export function createApplication(
     async listen(port = config.port, host = '0.0.0.0') {
       if (server !== null) throw new Error('Application is already listening');
       await uploadStore.cleanupOrphans();
+      if (graphClient) {
+        await graphClient.request('recover_import_jobs', {
+          operation_id: `import-recovery:${randomUUID()}`, actor: 'system',
+        }).catch(() => undefined);
+      }
       queue.start();
       server = app.listen(port, host);
       await new Promise<void>((resolve, reject) => {

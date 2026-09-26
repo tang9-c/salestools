@@ -1,7 +1,9 @@
 pub mod import_commit;
+pub mod import_recovery;
 pub mod lifecycle;
 pub mod protocol;
 pub mod relations;
+pub mod search;
 pub mod snapshot_sync;
 pub mod store;
 pub mod validation;

@@ -78,6 +78,10 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
             Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
             Err(err) => error(request_id, err.code, &err.message),
         },
+        "recover_import_jobs" => match store.recover_import_jobs(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
         "sync_snapshots" => match store.sync_snapshots(&request.payload) {
             Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
             Err(err) => error(request_id, err.code, &err.message),
@@ -86,7 +90,11 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
             Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
             Err(err) => error(request_id, err.code, &err.message),
         },
-        "search_keyword" | "search_vector" | "put_vector" | "set_vector_state" => error(
+        "search_keyword" => match crate::search::search_keyword(store, &request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "search_vector" | "put_vector" | "set_vector_state" => error(
             request_id,
             "UNAVAILABLE",
             "Operation is not implemented yet",
