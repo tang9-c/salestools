@@ -241,26 +241,34 @@ fn new_relation(
     Ok(id)
 }
 
+struct EvidenceField<'a> {
+    subject_kind: &'a str,
+    subject_id: &'a str,
+    path: &'a str,
+    value: &'a str,
+}
+
+struct EvidenceSource<'a> {
+    contact: &'a Contact,
+    collected_at: &'a str,
+    now: &'a str,
+}
+
 fn evidence(
     tx: &Transaction<'_>,
-    subject_kind: &str,
-    subject_id: &str,
-    path: &str,
-    value: &str,
-    contact: &Contact,
-    collected_at: &str,
-    now: &str,
+    field: EvidenceField<'_>,
+    source: &EvidenceSource<'_>,
 ) -> Result<(), AppError> {
     let record = json!({
         "evidence_id":format!("ev_{}", Uuid::new_v4().as_simple()),
-        "subject_kind":subject_kind,"subject_id":subject_id,
-        "field_path":path,"value":value,"source_type":"web",
-        "source_url":contact.source_url,"locator_status":"located",
-        "collected_at":collected_at,"confirmed_by":"system","confirmed_at":now
+        "subject_kind":field.subject_kind,"subject_id":field.subject_id,
+        "field_path":field.path,"value":field.value,"source_type":"web",
+        "source_url":source.contact.source_url,"locator_status":"located",
+        "collected_at":source.collected_at,"confirmed_by":"system","confirmed_at":source.now
     });
     tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,?2,?3,?4,?5,?6)",
-        params![record["evidence_id"].as_str(),subject_kind,subject_id,path,
-            json!(value).to_string(),record.to_string()]).map_err(AppError::internal)?;
+        params![record["evidence_id"].as_str(),field.subject_kind,field.subject_id,field.path,
+            json!(field.value).to_string(),record.to_string()]).map_err(AppError::internal)?;
     Ok(())
 }
 
@@ -277,6 +285,11 @@ fn apply_snapshot(
             &[&snapshot.cache_key, &company_name],
         );
         for (contact_index, contact) in company.contacts.iter().enumerate() {
+            let source = EvidenceSource {
+                contact,
+                collected_at: &snapshot.collected_at,
+                now,
+            };
             let observation_key = format!(
                 "snapshot-observation:{}:{company_index}:{contact_index}",
                 snapshot.snapshot_id
@@ -315,13 +328,13 @@ fn apply_snapshot(
                     .map_err(AppError::internal)?;
                     evidence(
                         tx,
-                        "entity",
-                        &id,
-                        "properties.name",
-                        &company.company_name,
-                        contact,
-                        &snapshot.collected_at,
-                        now,
+                        EvidenceField {
+                            subject_kind: "entity",
+                            subject_id: &id,
+                            path: "properties.name",
+                            value: &company.company_name,
+                        },
+                        &source,
                     )?;
                     (id, kg_id)
                 };
@@ -336,13 +349,13 @@ fn apply_snapshot(
                 )?;
                 evidence(
                     tx,
-                    "entity",
-                    &id,
-                    "properties.name",
-                    &contact.name,
-                    contact,
-                    &snapshot.collected_at,
-                    now,
+                    EvidenceField {
+                        subject_kind: "entity",
+                        subject_id: &id,
+                        path: "properties.name",
+                        value: &contact.name,
+                    },
+                    &source,
                 )?;
                 let relation =
                     new_relation(store, tx, person_kg, organization_kg, &contact.title, now)?;
@@ -356,24 +369,24 @@ fn apply_snapshot(
             if !archived {
                 evidence(
                     tx,
-                    "entity",
-                    &person_id,
-                    "properties.jobTitle",
-                    &contact.title,
-                    contact,
-                    &snapshot.collected_at,
-                    now,
+                    EvidenceField {
+                        subject_kind: "entity",
+                        subject_id: &person_id,
+                        path: "properties.jobTitle",
+                        value: &contact.title,
+                    },
+                    &source,
                 )?;
                 if let Some(relation) = &relation_id {
                     evidence(
                         tx,
-                        "relation",
-                        relation,
-                        "properties.role.roleName",
-                        &contact.title,
-                        contact,
-                        &snapshot.collected_at,
-                        now,
+                        EvidenceField {
+                            subject_kind: "relation",
+                            subject_id: relation,
+                            path: "properties.role.roleName",
+                            value: &contact.title,
+                        },
+                        &source,
                     )?;
                 }
             }
