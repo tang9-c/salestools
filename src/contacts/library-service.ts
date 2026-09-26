@@ -13,7 +13,8 @@ export class ContactLibraryService {
       const detail = await this.get(entityId);
       const entity = detail?.entity as { label?: string } | undefined;
       const version = detail?.index_content_version;
-      if (entity?.label === 'Person' && typeof version === 'number' && version > 0) {
+      if (entity?.label === 'Person' && detail?.index_status === 'unindexed'
+        && typeof version === 'number' && version > 0) {
         this.onChanged(entityId, version);
       }
     } catch { /* Indexing is independent of the committed graph write. */ }

@@ -168,6 +168,17 @@ export function createApplication(
       maxBatches: config.contactExtractMaxBatches,
       maxModelCalls: config.contactExtractMaxModelCalls,
     }).extract(blocks, signal),
+    onCommitted: async entityIds => {
+      if (!vectorIndexer) return;
+      await Promise.all(entityIds.map(async entityId => {
+        const detail = await graphClient.request<{ entity?: { label?: string };
+          index_content_version?: number; index_status?: string } | null>('get_contact', { entity_id: entityId });
+        if (detail?.entity?.label === 'Person' && detail.index_status === 'unindexed'
+          && detail.index_content_version) {
+          vectorIndexer.index(entityId, detail.index_content_version);
+        }
+      }));
+    },
   });
   const snapshotSync = graphClient === undefined ? undefined : new SnapshotSync(contactSnapshots, graphClient);
   void snapshotSync?.schedule().catch(() => undefined);
