@@ -247,6 +247,43 @@ fn import_job_rejects_raw_document_material() {
 }
 
 #[test]
+fn import_job_cannot_leave_committed_state_or_claim_commit_directly() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("contacts.sqlite")).unwrap();
+    let started = request(
+        &store,
+        "put_import_job",
+        json!({"operation_id":"job-start","actor":"user-a",
+        "file_id":"file-committed","status":"queued","data":{"candidates":[]}}),
+    );
+    let import_id = started["result"]["import_id"].as_str().unwrap();
+    let fake_commit = request(
+        &store,
+        "put_import_job",
+        json!({"operation_id":"job-fake-commit","actor":"user-a",
+        "file_id":"file-committed","import_id":import_id,"expected_version":1,
+        "status":"committed","data":{"candidates":[]}}),
+    );
+    assert_eq!(fake_commit["error"]["code"], "VALIDATION_ERROR");
+    store
+        .graph
+        .connection()
+        .execute(
+            "UPDATE import_jobs SET status='committed' WHERE import_id=?1",
+            [import_id],
+        )
+        .unwrap();
+    let reopen = request(
+        &store,
+        "put_import_job",
+        json!({"operation_id":"job-reopen","actor":"user-a",
+        "file_id":"file-committed","import_id":import_id,"expected_version":1,
+        "status":"ready_for_review","data":{"candidates":[]}}),
+    );
+    assert_eq!(reopen["error"]["code"], "VALIDATION_ERROR");
+}
+
+#[test]
 fn saved_contact_has_an_audit_row_with_the_actual_actor() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path().join("contacts.sqlite")).unwrap();

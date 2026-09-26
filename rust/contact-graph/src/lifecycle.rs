@@ -382,7 +382,9 @@ impl Store {
                 .prepare(
                     "SELECT ids.relation_id,r.id,r.source_id,r.target_id,r.rel_type
                 FROM relation_ids ids JOIN kg_relations r ON r.id=ids.kg_id
-                WHERE r.source_id=?1 OR r.target_id=?1",
+                JOIN relation_meta m USING(relation_id)
+                WHERE (r.source_id=?1 OR r.target_id=?1)
+                AND json_extract(m.metadata_json,'$.archived_at') IS NULL",
                 )
                 .map_err(internal)?;
             let rows = statement
@@ -429,15 +431,17 @@ impl Store {
                     std::mem::swap(&mut edge_source, &mut edge_target);
                 }
             }
-            if kind != "worksFor" && !retire {
-                let duplicate:Option<i64> = tx.query_row(
-                    "SELECT r.id FROM kg_relations r JOIN relation_ids ids ON ids.kg_id=r.id JOIN relation_meta m USING(relation_id)
+            let duplicate: Option<String> = if kind != "worksFor" && !retire {
+                tx.query_row(
+                    "SELECT ids.relation_id FROM kg_relations r JOIN relation_ids ids ON ids.kg_id=r.id JOIN relation_meta m USING(relation_id)
                      WHERE r.id<>?1 AND r.rel_type=?2 AND r.source_id=?3 AND r.target_id=?4
                      AND json_extract(m.metadata_json,'$.archived_at') IS NULL LIMIT 1",
                     params![kg_id,kind,edge_source,edge_target],|row|row.get(0),
-                ).optional().map_err(internal)?;
-                retire = duplicate.is_some();
-            }
+                ).optional().map_err(internal)?
+            } else {
+                None
+            };
+            retire |= duplicate.is_some();
             if retire {
                 let meta_json: String = tx
                     .query_row(
@@ -455,6 +459,59 @@ impl Store {
                     params![meta.to_string(), relation_id],
                 )
                 .map_err(internal)?;
+                if let Some(active_id) = duplicate {
+                    let source_app: String = tx
+                        .query_row(
+                            "SELECT entity_id FROM entity_ids WHERE kg_id=?1",
+                            [edge_source],
+                            |row| row.get(0),
+                        )
+                        .map_err(internal)?;
+                    let target_app: String = tx
+                        .query_row(
+                            "SELECT entity_id FROM entity_ids WHERE kg_id=?1",
+                            [edge_target],
+                            |row| row.get(0),
+                        )
+                        .map_err(internal)?;
+                    let selected =
+                        json!({"relation_type":kind,"source_id":source_app,"target_id":target_app});
+                    let mut statement = tx.prepare("SELECT record_json FROM evidence WHERE subject_kind='relation' AND subject_id=?1")
+                        .map_err(internal)?;
+                    let rows = statement
+                        .query_map([&relation_id], |row| row.get::<_, String>(0))
+                        .map_err(internal)?;
+                    for row in rows {
+                        let mut record: Value =
+                            serde_json::from_str(&row.map_err(internal)?).map_err(internal)?;
+                        record["evidence_id"] = json!(format!("ev_{}", Uuid::new_v4().as_simple()));
+                        record["subject_id"] = json!(active_id);
+                        if record["field_path"] == "$relation" {
+                            record["value"] = selected.clone();
+                        }
+                        record["confirmed_by"] = json!(input.actor);
+                        record["confirmed_at"] = json!(changed_at);
+                        tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'relation',?2,?3,?4,?5)",
+                            params![record["evidence_id"].as_str(),active_id,record["field_path"].as_str(),record["value"].to_string(),record.to_string()]).map_err(internal)?;
+                    }
+                    let active_meta_json: String = tx
+                        .query_row(
+                            "SELECT metadata_json FROM relation_meta WHERE relation_id=?1",
+                            [&active_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(internal)?;
+                    let mut active_meta: Value =
+                        serde_json::from_str(&active_meta_json).map_err(internal)?;
+                    active_meta["updated_at"] = json!(changed_at);
+                    active_meta["version"] =
+                        json!(active_meta["version"].as_u64().unwrap_or(0) + 1);
+                    tx.execute(
+                        "UPDATE relation_meta SET metadata_json=?1 WHERE relation_id=?2",
+                        params![active_meta.to_string(), active_id],
+                    )
+                    .map_err(internal)?;
+                }
             } else {
                 tx.execute(
                     "UPDATE kg_relations SET source_id=?1,target_id=?2 WHERE id=?3",
@@ -484,6 +541,21 @@ impl Store {
                     "confirmed_by":input.actor,"confirmed_at":changed_at});
                 tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'relation',?2,'$relation',?3,?4)",
                     params![evidence_id,relation_id,relation_value.to_string(),record.to_string()]).map_err(internal)?;
+                let meta_json: String = tx
+                    .query_row(
+                        "SELECT metadata_json FROM relation_meta WHERE relation_id=?1",
+                        [&relation_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(internal)?;
+                let mut meta: Value = serde_json::from_str(&meta_json).map_err(internal)?;
+                meta["updated_at"] = json!(changed_at);
+                meta["version"] = json!(meta["version"].as_u64().unwrap_or(0) + 1);
+                tx.execute(
+                    "UPDATE relation_meta SET metadata_json=?1 WHERE relation_id=?2",
+                    params![meta.to_string(), relation_id],
+                )
+                .map_err(internal)?;
             }
         }
         let result = json!({"source_id":input.source_id,"target_id":input.target_id,

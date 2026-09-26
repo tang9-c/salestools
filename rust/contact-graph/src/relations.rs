@@ -1,5 +1,5 @@
 use chrono::{SecondsFormat, Utc};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -227,21 +227,48 @@ pub(crate) fn collect_relation_evidence(
         let value = fields
             .get("value")
             .ok_or_else(|| invalid("Missing evidence value"))?;
-        let selected = if path == "$relation" {
+        let stored_value = if path == "$relation" {
             has_relation = true;
-            &expected
+            let provided = object(value, "$relation.value")?;
+            if provided.len() != 3 {
+                return Err(invalid("Invalid relation evidence value"));
+            }
+            let original_type = provided
+                .get("relation_type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("Missing relation evidence type"))?;
+            let original_source = provided
+                .get("source_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("Missing relation evidence source"))?;
+            let original_target = provided
+                .get("target_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("Missing relation evidence target"))?;
+            let (normalized_type, normalized_source, normalized_target) =
+                normalize_endpoints(original_type, original_source, original_target)?;
+            json!({"relation_type":normalized_type,"source_id":normalized_source,"target_id":normalized_target})
         } else if let Some(key) = path.strip_prefix("properties.role.") {
-            properties["role"]
-                .get(key)
-                .ok_or_else(|| invalid("Unknown role evidence path"))?
+            if properties["role"].get(key).is_none() {
+                return Err(invalid("Unknown role evidence path"));
+            }
+            value.clone()
         } else if let Some(key) = path.strip_prefix("metadata.") {
-            metadata
-                .get(key)
-                .ok_or_else(|| invalid("Unknown relation metadata evidence path"))?
+            if metadata.get(key).is_none() {
+                return Err(invalid("Unknown relation metadata evidence path"));
+            }
+            value.clone()
         } else {
             return Err(invalid("Unknown relation evidence path"));
         };
-        if value != selected {
+        let selected = if path == "$relation" {
+            &expected
+        } else if let Some(key) = path.strip_prefix("properties.role.") {
+            &properties["role"][key]
+        } else {
+            &metadata[path.strip_prefix("metadata.").unwrap()]
+        };
+        if &stored_value != selected {
             return Err(invalid(
                 "Evidence value differs from selected relation value",
             ));
@@ -298,6 +325,7 @@ pub(crate) fn collect_relation_evidence(
             return Err(invalid("Invalid evidence collected_at"));
         }
         let mut record = fields.clone();
+        record.insert("value".into(), stored_value);
         record.insert(
             "evidence_id".into(),
             json!(format!("ev_{}", Uuid::new_v4().as_simple())),
@@ -338,6 +366,125 @@ pub(crate) fn collect_relation_evidence(
     Ok(result)
 }
 
+pub(crate) struct RelationWrite<'a> {
+    pub relation_type: &'a str,
+    pub source_id: &'a str,
+    pub target_id: &'a str,
+    pub properties: &'a Value,
+    pub metadata: &'a Value,
+    pub evidence: &'a [Value],
+    pub actor: &'a str,
+    pub now: &'a str,
+}
+
+pub(crate) fn persist_relation(
+    store: &Store,
+    tx: &Transaction<'_>,
+    input: RelationWrite<'_>,
+) -> Result<Value, AppError> {
+    let (kind, source, target) =
+        normalize_endpoints(input.relation_type, input.source_id, input.target_id)?;
+    let properties = relation_properties(&kind, input.properties)?;
+    let selected_meta = relation_metadata(&kind, input.metadata, &properties)?;
+    let endpoint = |id: &str| -> Result<(i64, String), AppError> {
+        let row: Option<(i64, String, String)> = tx.query_row(
+            "SELECT i.kg_id,e.entity_type,m.metadata_json FROM entity_ids i JOIN kg_entities e ON e.id=i.kg_id JOIN entity_meta m USING(entity_id) WHERE i.entity_id=?1",
+            [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional().map_err(internal)?;
+        let (kg_id, label, metadata) =
+            row.ok_or_else(|| invalid("Relation endpoint does not exist"))?;
+        let metadata: Value = serde_json::from_str(&metadata).map_err(internal)?;
+        if metadata.get("archived_at").is_some() || metadata.get("merged_into").is_some() {
+            return Err(invalid("Relation endpoint is archived or merged"));
+        }
+        Ok((kg_id, label))
+    };
+    let (source_kg, source_label) = endpoint(&source)?;
+    let (target_kg, target_label) = endpoint(&target)?;
+    let target_expected =
+        if ["worksFor", "alumniOf", "affiliation", "memberOf"].contains(&kind.as_str()) {
+            "Organization"
+        } else {
+            "Person"
+        };
+    if source_label != "Person" || target_label != target_expected {
+        return Err(invalid("Invalid relation endpoint labels"));
+    }
+    let existing: Option<String> = if kind == "worksFor" {
+        None
+    } else {
+        tx.query_row("SELECT ids.relation_id FROM relation_ids ids JOIN kg_relations r ON r.id=ids.kg_id JOIN relation_meta m USING(relation_id) WHERE r.rel_type=?1 AND r.source_id=?2 AND r.target_id=?3 AND json_extract(m.metadata_json,'$.archived_at') IS NULL LIMIT 1",
+            params![kind,source_kg,target_kg], |row| row.get(0)).optional().map_err(internal)?
+    };
+    let relation_id = existing
+        .clone()
+        .unwrap_or_else(|| format!("r_{}", Uuid::new_v4().as_simple()));
+    let records = collect_relation_evidence(
+        input.evidence,
+        &relation_id,
+        input.actor,
+        input.now,
+        &kind,
+        &source,
+        &target,
+        &properties,
+        &selected_meta,
+    )?;
+    let version = if let Some(existing_id) = existing {
+        let meta_json: String = tx
+            .query_row(
+                "SELECT metadata_json FROM relation_meta WHERE relation_id=?1",
+                [&existing_id],
+                |row| row.get(0),
+            )
+            .map_err(internal)?;
+        let mut meta: Value = serde_json::from_str(&meta_json).map_err(internal)?;
+        let next = meta["version"]
+            .as_u64()
+            .ok_or_else(|| invalid("Invalid relation version"))?
+            + 1;
+        meta["version"] = json!(next);
+        meta["updated_at"] = json!(input.now);
+        tx.execute(
+            "UPDATE relation_meta SET metadata_json=?1 WHERE relation_id=?2",
+            params![meta.to_string(), existing_id],
+        )
+        .map_err(internal)?;
+        next
+    } else {
+        let mut relation = Relation::new(source_kg, target_kg, &kind, 1.0).map_err(internal)?;
+        if kind == "worksFor" {
+            relation.set_property("role", properties["role"].clone());
+        }
+        let kg_id = store.graph.insert_relation(&relation).map_err(internal)?;
+        let mut meta = json!({"version":1,"created_at":input.now,"updated_at":input.now});
+        if kind == "worksFor" {
+            meta["employment_status"] = selected_meta["employment_status"].clone();
+            if let Some(as_of) = selected_meta.get("status_as_of") {
+                meta["status_as_of"] = as_of.clone();
+            }
+        }
+        tx.execute(
+            "INSERT INTO relation_ids(relation_id,kg_id) VALUES(?1,?2)",
+            params![relation_id, kg_id],
+        )
+        .map_err(internal)?;
+        tx.execute(
+            "INSERT INTO relation_meta(relation_id,metadata_json) VALUES(?1,?2)",
+            params![relation_id, meta.to_string()],
+        )
+        .map_err(internal)?;
+        1
+    };
+    for record in records {
+        tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'relation',?2,?3,?4,?5)",
+            params![record["evidence_id"].as_str(),relation_id,record["field_path"].as_str(),record["value"].to_string(),record.to_string()]).map_err(internal)?;
+    }
+    Ok(
+        json!({"relation_id":relation_id,"source_id":source,"target_id":target,"relation_type":kind,"version":version}),
+    )
+}
+
 impl Store {
     pub fn save_relation(&self, raw: &Value) -> Result<Value, AppError> {
         let input: SaveRelationInput =
@@ -364,105 +511,24 @@ impl Store {
             result["replayed"] = json!(true);
             return Ok(result);
         }
-        let (kind, source, target) =
-            normalize_endpoints(&input.relation_type, &input.source_id, &input.target_id)?;
-        let properties = relation_properties(&kind, &input.properties)?;
-        let selected_meta = relation_metadata(&kind, &input.metadata, &properties)?;
-        let conn = self.graph.connection();
-        let endpoint = |id: &str| -> Result<(i64, String), AppError> {
-            let row: Option<(i64, String, String)> = conn.query_row(
-                "SELECT i.kg_id,e.entity_type,m.metadata_json FROM entity_ids i JOIN kg_entities e ON e.id=i.kg_id JOIN entity_meta m USING(entity_id) WHERE i.entity_id=?1",
-                [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            ).optional().map_err(internal)?;
-            let (kg_id, label, metadata) =
-                row.ok_or_else(|| invalid("Relation endpoint does not exist"))?;
-            let metadata: Value = serde_json::from_str(&metadata).map_err(internal)?;
-            if metadata.get("archived_at").is_some() || metadata.get("merged_into").is_some() {
-                return Err(invalid("Relation endpoint is archived or merged"));
-            }
-            Ok((kg_id, label))
-        };
-        let (source_kg_id, source_label) = endpoint(&source)?;
-        let (target_kg_id, target_label) = endpoint(&target)?;
-        let target_expected =
-            if ["worksFor", "alumniOf", "affiliation", "memberOf"].contains(&kind.as_str()) {
-                "Organization"
-            } else {
-                "Person"
-            };
-        if source_label != "Person" || target_label != target_expected {
-            return Err(invalid("Invalid relation endpoint labels"));
-        }
-        let existing: Option<String> = if kind == "worksFor" {
-            None
-        } else {
-            conn.query_row("SELECT ids.relation_id FROM relation_ids ids JOIN kg_relations r ON r.id=ids.kg_id JOIN relation_meta m USING(relation_id) WHERE r.rel_type=?1 AND r.source_id=?2 AND r.target_id=?3 AND json_extract(m.metadata_json,'$.archived_at') IS NULL LIMIT 1",
-                params![kind,source_kg_id,target_kg_id], |row| row.get(0)).optional().map_err(internal)?
-        };
-        let relation_id = existing
-            .clone()
-            .unwrap_or_else(|| format!("r_{}", Uuid::new_v4().as_simple()));
         let now = timestamp();
-        let evidence = collect_relation_evidence(
-            &input.evidence,
-            &relation_id,
-            &input.actor,
-            &now,
-            &kind,
-            &source,
-            &target,
-            &properties,
-            &selected_meta,
-        )?;
         let tx = self.graph.transaction().map_err(internal)?;
-        let version = if let Some(ref relation_id) = existing {
-            let meta_json: String = tx
-                .query_row(
-                    "SELECT metadata_json FROM relation_meta WHERE relation_id=?1",
-                    [relation_id],
-                    |row| row.get(0),
-                )
-                .map_err(internal)?;
-            let mut meta: Value = serde_json::from_str(&meta_json).map_err(internal)?;
-            let version = meta["version"].as_u64().unwrap_or(0) + 1;
-            meta["version"] = json!(version);
-            meta["updated_at"] = json!(now);
-            tx.execute(
-                "UPDATE relation_meta SET metadata_json=?1 WHERE relation_id=?2",
-                params![meta.to_string(), relation_id],
-            )
-            .map_err(internal)?;
-            version
-        } else {
-            let mut relation =
-                Relation::new(source_kg_id, target_kg_id, &kind, 1.0).map_err(internal)?;
-            if kind == "worksFor" {
-                relation.set_property("role", properties["role"].clone());
-            }
-            let kg_id = self.graph.insert_relation(&relation).map_err(internal)?;
-            let mut meta = json!({"version":1,"created_at":now,"updated_at":now});
-            if kind == "worksFor" {
-                meta["employment_status"] = selected_meta["employment_status"].clone();
-                if let Some(as_of) = selected_meta.get("status_as_of") {
-                    meta["status_as_of"] = as_of.clone();
-                }
-            }
-            tx.execute(
-                "INSERT INTO relation_ids(relation_id,kg_id) VALUES(?1,?2)",
-                params![relation_id, kg_id],
-            )
-            .map_err(internal)?;
-            tx.execute(
-                "INSERT INTO relation_meta(relation_id,metadata_json) VALUES(?1,?2)",
-                params![relation_id, meta.to_string()],
-            )
-            .map_err(internal)?;
-            1
-        };
-        for record in evidence {
-            tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'relation',?2,?3,?4,?5)",
-                params![record["evidence_id"].as_str(),relation_id,record["field_path"].as_str(),record["value"].to_string(),record.to_string()]).map_err(internal)?;
-        }
+        let fact = persist_relation(
+            self,
+            &tx,
+            RelationWrite {
+                relation_type: &input.relation_type,
+                source_id: &input.source_id,
+                target_id: &input.target_id,
+                properties: &input.properties,
+                metadata: &input.metadata,
+                evidence: &input.evidence,
+                actor: &input.actor,
+                now: &now,
+            },
+        )?;
+        let relation_id = fact["relation_id"].as_str().unwrap();
+        let version = &fact["version"];
         let result = json!({"relation_id":relation_id,"version":version,"replayed":false});
         tx.execute("INSERT INTO audit_log(operation_id,actor,op,subject_id,changed_at,change_json) VALUES(?1,?2,'save_relation',?3,?4,?5)",
             params![input.operation_id,input.actor,relation_id,now,raw.to_string()]).map_err(internal)?;

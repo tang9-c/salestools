@@ -222,3 +222,28 @@ fn unlocated_file_claim_cannot_confirm_current_employment() {
         "VALIDATION_ERROR"
     );
 }
+
+#[test]
+fn original_children_and_reversed_spouse_proofs_are_normalized_with_the_edge() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let a = entity(&store, "Person", "甲", "a");
+    let b = entity(&store, "Person", "乙", "b");
+    let children = request(
+        &store,
+        "save_relation",
+        json!({"operation_id":"children-original","actor":"tester",
+        "source_id":a,"target_id":b,"relation_type":"children","properties":{},"metadata":{},
+        "evidence":[evidence("$relation",json!({"relation_type":"children","source_id":a,"target_id":b}))]}),
+    );
+    assert_eq!(children["ok"], true, "{children}");
+    let (higher, lower) = if a > b { (&a, &b) } else { (&b, &a) };
+    let spouse = request(
+        &store,
+        "save_relation",
+        json!({"operation_id":"spouse-original","actor":"tester",
+        "source_id":higher,"target_id":lower,"relation_type":"spouse","properties":{},"metadata":{},
+        "evidence":[evidence("$relation",json!({"relation_type":"spouse","source_id":higher,"target_id":lower}))]}),
+    );
+    assert_eq!(spouse["ok"], true, "{spouse}");
+}

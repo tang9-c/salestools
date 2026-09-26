@@ -2,12 +2,11 @@ use chrono::DateTime;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use sqlite_knowledge_graph::Relation;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::relations::{
-    collect_relation_evidence, normalize_endpoints, relation_metadata, relation_properties,
+    normalize_endpoints, persist_relation, relation_metadata, relation_properties, RelationWrite,
 };
 use crate::store::{canonical_hash, collect_evidence, now_utc, AppError, Store};
 use crate::validation::{ensure_value_evidence, normalize_extensions, normalize_properties};
@@ -308,39 +307,6 @@ fn commit_relations(
             normalize_endpoints(&choice.relation_type, source_id, target_id)?;
         let properties = relation_properties(&kind, &choice.properties)?;
         let selected_meta = relation_metadata(&kind, &choice.metadata, &properties)?;
-        let endpoint = |id: &str| -> Result<(i64, String), AppError> {
-            let found: Option<(i64, String, String)> = tx.query_row(
-                "SELECT i.kg_id,e.entity_type,m.metadata_json FROM entity_ids i JOIN kg_entities e ON e.id=i.kg_id JOIN entity_meta m USING(entity_id) WHERE i.entity_id=?1",
-                [id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
-            ).optional().map_err(AppError::internal)?;
-            let (id, label, meta_json) =
-                found.ok_or_else(|| validation("Relation endpoint does not exist"))?;
-            let meta: Value = serde_json::from_str(&meta_json).map_err(AppError::internal)?;
-            if meta.get("archived_at").is_some() || meta.get("merged_into").is_some() {
-                return Err(validation("Relation endpoint is archived or merged"));
-            }
-            Ok((id, label))
-        };
-        let (source_kg, source_label) = endpoint(&source)?;
-        let (target_kg, target_label) = endpoint(&target)?;
-        let target_expected =
-            if ["worksFor", "alumniOf", "affiliation", "memberOf"].contains(&kind.as_str()) {
-                "Organization"
-            } else {
-                "Person"
-            };
-        if source_label != "Person" || target_label != target_expected {
-            return Err(validation("Invalid relation endpoint labels"));
-        }
-        let existing: Option<String> = if kind == "worksFor" {
-            None
-        } else {
-            tx.query_row("SELECT ids.relation_id FROM relation_ids ids JOIN kg_relations r ON r.id=ids.kg_id JOIN relation_meta m USING(relation_id) WHERE r.rel_type=?1 AND r.source_id=?2 AND r.target_id=?3 AND json_extract(m.metadata_json,'$.archived_at') IS NULL LIMIT 1",
-                params![kind,source_kg,target_kg], |row| row.get(0)).optional().map_err(AppError::internal)?
-        };
-        let relation_id = existing
-            .clone()
-            .unwrap_or_else(|| format!("r_{}", Uuid::new_v4().as_simple()));
         let mut proof = vec![json!({"field_path":"$relation",
             "value":{"relation_type":kind,"source_id":source,"target_id":target},
             "source_type":"manual","collected_at":now,"locator_status":"not_applicable"})];
@@ -386,75 +352,21 @@ fn commit_relations(
                 }
             }
         }
-        let records = collect_relation_evidence(
-            &proof,
-            &relation_id,
-            actor,
-            now,
-            &kind,
-            &source,
-            &target,
-            &properties,
-            &selected_meta,
+        let saved = persist_relation(
+            store,
+            tx,
+            RelationWrite {
+                relation_type: &choice.relation_type,
+                source_id,
+                target_id,
+                properties: &choice.properties,
+                metadata: &choice.metadata,
+                evidence: &proof,
+                actor,
+                now,
+            },
         )?;
-        let version = if let Some(existing_id) = existing {
-            let meta_json: String = tx
-                .query_row(
-                    "SELECT metadata_json FROM relation_meta WHERE relation_id=?1",
-                    [&existing_id],
-                    |row| row.get(0),
-                )
-                .map_err(AppError::internal)?;
-            let mut meta: Value = serde_json::from_str(&meta_json).map_err(AppError::internal)?;
-            let next = meta["version"]
-                .as_u64()
-                .ok_or_else(|| validation("Invalid relation version"))?
-                + 1;
-            meta["version"] = json!(next);
-            meta["updated_at"] = json!(now);
-            tx.execute(
-                "UPDATE relation_meta SET metadata_json=?1 WHERE relation_id=?2",
-                params![meta.to_string(), existing_id],
-            )
-            .map_err(AppError::internal)?;
-            next
-        } else {
-            let mut relation =
-                Relation::new(source_kg, target_kg, &kind, 1.0).map_err(AppError::internal)?;
-            if kind == "worksFor" {
-                relation.set_property("role", properties["role"].clone());
-            }
-            let kg_id = store
-                .graph
-                .insert_relation(&relation)
-                .map_err(AppError::internal)?;
-            let mut meta = json!({"version":1,"created_at":now,"updated_at":now});
-            if kind == "worksFor" {
-                meta["employment_status"] = selected_meta["employment_status"].clone();
-                if let Some(as_of) = selected_meta.get("status_as_of") {
-                    meta["status_as_of"] = as_of.clone();
-                }
-            }
-            tx.execute(
-                "INSERT INTO relation_ids(relation_id,kg_id) VALUES(?1,?2)",
-                params![relation_id, kg_id],
-            )
-            .map_err(AppError::internal)?;
-            tx.execute(
-                "INSERT INTO relation_meta(relation_id,metadata_json) VALUES(?1,?2)",
-                params![relation_id, meta.to_string()],
-            )
-            .map_err(AppError::internal)?;
-            1
-        };
-        for record in records {
-            tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'relation',?2,?3,?4,?5)",
-                params![record["evidence_id"].as_str(),relation_id,record["field_path"].as_str(),record["value"].to_string(),record.to_string()]).map_err(AppError::internal)?;
-        }
-        results.push(
-            json!({"relation_id":relation_id,"source_id":source,"target_id":target,
-            "relation_type":kind,"version":version}),
-        );
+        results.push(saved);
     }
     Ok(results)
 }

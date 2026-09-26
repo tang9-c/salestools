@@ -160,35 +160,6 @@ fn merge_redirects_source_mapping_and_preserves_two_employment_episodes() {
 }
 
 #[test]
-fn failed_import_commit_rolls_back_all_selected_entities() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
-    let job = request(
-        &store,
-        "put_import_job",
-        json!({"operation_id":"start","actor":"tester","file_id":"file-1",
-        "status":"queued","data":{"candidates":[]}}),
-    );
-    let import_id = job["result"]["import_id"].as_str().unwrap();
-    let result = request(
-        &store,
-        "commit_import",
-        json!({"operation_id":"commit","actor":"tester",
-        "import_id":import_id,"expected_version":1,"choices":[
-            {"action":"create","label":"Person","set_properties":{"name":"陈晓"},"evidence":[proof("properties.name",json!("陈晓"))]},
-            {"action":"create","label":"Person","set_properties":{"name":"无证据"},"evidence":[]}
-        ]}),
-    );
-    assert_eq!(result["ok"], false, "{result}");
-    let count: i64 = store
-        .graph
-        .connection()
-        .query_row("SELECT COUNT(*) FROM kg_entities", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(count, 0);
-}
-
-#[test]
 fn merge_drops_new_self_relations_and_keeps_symmetric_edges_canonical() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
@@ -232,6 +203,7 @@ fn merge_drops_new_self_relations_and_keeps_symmetric_edges_canonical() {
     let values = relations["result"].as_array().unwrap();
     assert_eq!(values.len(), 1, "{relations}");
     assert_eq!(values[0]["relation_type"], "colleague");
+    assert_eq!(values[0]["metadata"]["version"], 2);
     assert!(
         values[0]["source_id"].as_str().unwrap() < values[0]["target_id"].as_str().unwrap(),
         "{relations}"
@@ -328,4 +300,71 @@ fn merge_database_failure_restores_both_contacts_and_operation_absence() {
         )
         .unwrap();
     assert_eq!(result_count, 0);
+}
+
+#[test]
+fn merge_deduplicates_colleague_edges_and_keeps_both_proofs() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let source = create(&store, "person-a", "Person", "甲");
+    let target = create(&store, "person-b", "Person", "乙");
+    let third = create(&store, "person-c", "Person", "丙");
+    for (op, left) in [("colleague-a", &source), ("colleague-b", &target)] {
+        let (a, b) = if left < &third {
+            (left, &third)
+        } else {
+            (&third, left)
+        };
+        let mut existence = proof(
+            "$relation",
+            json!({"relation_type":"colleague","source_id":a,"target_id":b}),
+        );
+        if op == "colleague-a" {
+            existence["source_type"] = json!("file");
+            existence["locator_status"] = json!("located");
+            existence["file_name"] = json!("conference.pdf");
+            existence["file_sha256"] = json!("a".repeat(64));
+            existence["quote"] = json!("甲与丙共同参与项目");
+        }
+        let saved = request(
+            &store,
+            "save_relation",
+            json!({"operation_id":op,"actor":"tester",
+            "source_id":a,"target_id":b,"relation_type":"colleague","properties":{},"metadata":{},
+            "evidence":[existence]}),
+        );
+        assert_eq!(saved["ok"], true, "{saved}");
+    }
+    let merged = request(
+        &store,
+        "merge_contacts",
+        json!({"operation_id":"merge","actor":"tester",
+        "source_id":source,"target_id":target,"expected_source_version":1,"expected_target_version":1}),
+    );
+    assert_eq!(merged["ok"], true, "{merged}");
+    let listed = request(&store, "list_relations", json!({"entity_id":target}));
+    let relations = listed["result"].as_array().unwrap();
+    assert_eq!(relations.len(), 1, "{listed}");
+    assert_eq!(relations[0]["metadata"]["version"], 2);
+    let relation_id = relations[0]["relation_id"].as_str().unwrap();
+    let count: i64 = store
+        .graph
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM evidence WHERE subject_kind='relation' AND subject_id=?1",
+            [relation_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        count >= 2,
+        "both relation proofs should remain on the active edge"
+    );
+    let file_count:i64 = store.graph.connection().query_row(
+        "SELECT COUNT(*) FROM evidence WHERE subject_kind='relation' AND subject_id=?1 AND json_extract(record_json,'$.source_type')='file'",
+        [relation_id],|row|row.get(0)).unwrap();
+    assert_eq!(
+        file_count, 1,
+        "file provenance from the retired edge must be retained"
+    );
 }

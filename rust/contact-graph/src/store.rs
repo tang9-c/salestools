@@ -650,15 +650,15 @@ impl Store {
         }
         let tx = self.graph.transaction().map_err(AppError::internal)?;
         let (import_id, version) = if let Some(import_id) = input.import_id {
-            let found: Option<(String, u64)> = tx
+            let found: Option<(String, u64, String)> = tx
                 .query_row(
-                    "SELECT file_id,version FROM import_jobs WHERE import_id=?1",
+                    "SELECT file_id,version,status FROM import_jobs WHERE import_id=?1",
                     [&import_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()
                 .map_err(AppError::internal)?;
-            let (file_id, old_version) = found.ok_or(AppError {
+            let (file_id, old_version, old_status) = found.ok_or(AppError {
                 code: "NOT_FOUND",
                 message: "Import job not found".into(),
             })?;
@@ -667,6 +667,19 @@ impl Store {
                     code: "VERSION_CONFLICT",
                     message: "Import job version or file changed".into(),
                 });
+            }
+            let next_allowed = match old_status.as_str() {
+                "queued" => ["processing", "ready_for_review", "failed", "cancelled"]
+                    .contains(&input.status.as_str()),
+                "processing" => ["processing", "ready_for_review", "failed", "cancelled"]
+                    .contains(&input.status.as_str()),
+                "ready_for_review" => {
+                    ["ready_for_review", "failed", "cancelled"].contains(&input.status.as_str())
+                }
+                _ => false,
+            };
+            if !next_allowed {
+                return Err(AppError::validation("Invalid import status transition"));
             }
             let version = old_version + 1;
             tx.execute(
