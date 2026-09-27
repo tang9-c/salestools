@@ -69,6 +69,8 @@ function supportedRelationEvidence(
   evidence: readonly ContactEvidence[], relation: ContactRelation,
   subject: ContactEntity, other: ContactEntity,
 ): ContactEvidence | null {
+  const otherName = other.properties.name;
+  if (!otherName) return null;
   const relevant = evidence.filter(item => item.subject_kind === 'relation'
     && item.subject_id === relation.relation_id && shortLocatedEvidence(item));
   const selected = relevant.find(item => {
@@ -76,7 +78,7 @@ function supportedRelationEvidence(
     if (relation.relation_type === 'worksFor') {
       const role = relation.properties.role;
       return (item.field_path === '$relation' || item.field_path === 'properties.role.roleName')
-        && quote.includes(other.properties.name)
+        && quote.includes(otherName)
         && (!role.roleName || quote.includes(role.roleName));
     }
     if (item.field_path !== '$relation') return false;
@@ -92,12 +94,12 @@ function supportedRelationEvidence(
     if (relationWords[relation.relation_type] && !relationWords[relation.relation_type].test(quote)) return false;
     if (typeof item.value === 'object' && item.value !== null && 'relation_type' in item.value
       && item.value.relation_type !== relation.relation_type) return false;
-    return quote.includes(subject.properties.name) && quote.includes(other.properties.name);
+    return (!subject.properties.name || quote.includes(subject.properties.name)) && quote.includes(otherName);
   });
   return selected ?? null;
 }
 function objectFor(relation: ContactRelation, other: ContactEntity, quote: string): string {
-  if (relation.relation_type !== 'worksFor') return other.properties.name;
+  if (relation.relation_type !== 'worksFor') return other.properties.name ?? '';
   const role = relation.properties.role;
   return [other.properties.name, role.roleName,
     role.startDate && quote.includes(role.startDate) && `自 ${role.startDate}`,
@@ -203,12 +205,14 @@ export class ContactAnswerService {
       const root = await this.get(entityId);
       if (!root || root.entity.label !== 'Person') return { status: 'insufficient', answer: '未找到可核实的联系人。', citations: [], facts: [] };
       const askedName = questionName(question);
-      if (askedName && normalize(askedName) !== normalize(root.entity.properties.name)) {
+      if (askedName && (!root.entity.properties.name || normalize(askedName) !== normalize(root.entity.properties.name))) {
         return { status: 'clarify', answer: '问题中的姓名与指定联系人不一致，请确认要查询的档案。',
-          citations: [], candidates: [{ entity_id: root.entity.entity_id, name: root.entity.properties.name }] };
+          citations: [], candidates: root.entity.properties.name
+            ? [{ entity_id: root.entity.entity_id, name: root.entity.properties.name }] : [] };
       }
       const kind = intent(question);
       if (kind === 'name') {
+        if (!root.entity.properties.name) return { status: 'insufficient', answer: '该档案的姓名尚未确认。', citations: [], facts: [] };
         const evidence = root.evidence.find(item => item.subject_kind === 'entity'
           && item.field_path === 'properties.name' && item.value === root.entity.properties.name
           && shortLocatedEvidence(item) && item.quote!.includes(root.entity.properties.name));
@@ -232,21 +236,22 @@ export class ContactAnswerService {
       if (kind === 'spouse' && new Set(selected.map(item => item.other.entity_id)).size > 1) {
         return { status: 'clarify', answer: '存在多个配偶关系记录，无法判断所问对象或当前状态。',
           citations, facts, candidates: selected.map(item => ({ entity_id: item.other.entity_id,
-            name: item.other.properties.name })) };
+            name: item.other.properties.name! })) };
       }
       if (kind !== 'complex') {
         const names = selected.map(item => item.other.properties.name).join('、');
+        const subject = root.entity.properties.name ?? '该未具名档案';
         let answer: string;
-        if (kind === 'spouse') answer = `${root.entity.properties.name}的配偶关系记录指向${names}；记录本身不能证明当前婚姻状态。`;
+        if (kind === 'spouse') answer = `${subject}的配偶关系记录指向${names}；记录本身不能证明当前婚姻状态。`;
         else if (kind === 'parent') {
           const required = /父亲/u.test(question) ? /父亲|爸爸/u : /母亲/u.test(question) ? /母亲|妈妈/u : null;
           if (required && !selected.some(item => required.test(item.citation.quote))) {
             return { status: 'insufficient', answer: '证据只能证明亲子关系，不能确认所问的父亲或母亲身份。', citations: [], facts: [] };
           }
-          answer = `${root.entity.properties.name}的父母关系记录指向${names}。`;
-        } else if (kind === 'children') answer = `${root.entity.properties.name}的子女关系记录指向${names}。`;
-        else if (kind === 'alumniOf') answer = `${root.entity.properties.name}有与${names}相关的就读或校友记录；这不能单独证明毕业。`;
-        else if (kind === 'graduation') answer = `${root.entity.properties.name}有毕业于${names}的来源记录。`;
+          answer = `${subject}的父母关系记录指向${names}。`;
+        } else if (kind === 'children') answer = `${subject}的子女关系记录指向${names}。`;
+        else if (kind === 'alumniOf') answer = `${subject}有与${names}相关的就读或校友记录；这不能单独证明毕业。`;
+        else if (kind === 'graduation') answer = `${subject}有毕业于${names}的来源记录。`;
         else answer = selected.map(item => {
           const role = item.relation.relation_type === 'worksFor' ? item.relation.properties.role : null;
           const meta = item.relation.relation_type === 'worksFor' ? item.relation.metadata : null;

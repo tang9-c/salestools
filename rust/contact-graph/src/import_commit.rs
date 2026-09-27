@@ -9,7 +9,9 @@ use crate::relations::{
     normalize_endpoints, persist_relation, relation_metadata, relation_properties, RelationWrite,
 };
 use crate::store::{canonical_hash, collect_evidence, now_utc, AppError, Store};
-use crate::validation::{ensure_value_evidence, normalize_extensions, normalize_properties};
+use crate::validation::{
+    ensure_value_evidence, has_substantive_person_data, normalize_extensions, normalize_properties,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -269,6 +271,49 @@ fn unbind_preview_evidence(item: &Value) -> Value {
         fields.remove("subject_id");
     }
     proof
+}
+
+fn has_selected_located_institution_relation(
+    candidate_id: &str,
+    candidates: &[Value],
+    choices: &[Choice],
+    relations: &[RelationChoice],
+) -> bool {
+    relations.iter().any(|relation| {
+        relation.source_candidate_id == candidate_id
+            && ["worksFor", "alumniOf"].contains(&relation.relation_type.as_str())
+            && choices.iter().any(|choice| {
+                choice.candidate_id == relation.target_candidate_id && choice.action != "skip"
+            })
+            && candidates
+                .iter()
+                .flat_map(|candidate| {
+                    candidate["relation_suggestions"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                })
+                .any(|suggestion| {
+                    suggestion["source_candidate_id"] == relation.source_candidate_id
+                        && suggestion["target_candidate_id"] == relation.target_candidate_id
+                        && suggestion["relation_type"] == relation.relation_type
+                        && suggestion["properties"] == relation.properties
+                        && suggestion["evidence"].as_array().is_some_and(|evidence| {
+                            evidence.iter().any(|proof| {
+                                proof["field_path"] == "$relation"
+                                    && proof["value"]
+                                        == json!({"relation_type":relation.relation_type,
+                                "source_id":relation.source_candidate_id,
+                                "target_id":relation.target_candidate_id})
+                                    && proof["source_type"] == "file"
+                                    && proof["locator_status"] == "located"
+                                    && proof["quote"]
+                                        .as_str()
+                                        .is_some_and(|quote| !quote.trim().is_empty())
+                            })
+                        })
+                })
+    })
 }
 
 fn commit_relations(
@@ -584,7 +629,7 @@ impl Store {
                             merge_candidate_field(&mut properties, key, value);
                         }
                     }
-                    renamed_old_name = Some(old_name);
+                    renamed_old_name = old_name.as_str().map(|_| old_name.clone());
                     extensions = extensions_json
                         .map(|value| serde_json::from_str(&value).map_err(AppError::internal))
                         .transpose()?;
@@ -646,9 +691,19 @@ impl Store {
                 .collect();
             ensure_value_evidence(&properties, extensions.as_ref(), &all_evidence)
                 .map_err(validation)?;
-            let name = properties["name"]
-                .as_str()
-                .ok_or_else(|| validation("Name is required"))?;
+            if label == "Person"
+                && properties.get("name").is_none()
+                && !has_substantive_person_data(&properties, extensions.as_ref())
+                && !has_selected_located_institution_relation(
+                    &choice.candidate_id,
+                    &candidates,
+                    &input.choices,
+                    &input.relation_choices,
+                )
+            {
+                return Err(validation("Unnamed Person needs supported information"));
+            }
+            let name = properties["name"].as_str().unwrap_or(&entity_id);
             if let Some(id) = kg_id {
                 let mut entity = self.graph.get_entity(id).map_err(AppError::internal)?;
                 entity.name = name.to_owned();

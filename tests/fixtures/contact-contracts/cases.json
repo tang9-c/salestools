@@ -6,6 +6,12 @@
     "expected_valid": true
   },
   {
+    "id": "unnamed_person_with_skill",
+    "entrypoint": "person_properties",
+    "input": {"skills": ["Python"]},
+    "expected_valid": true
+  },
+  {
     "id": "all_added_person_fields",
     "entrypoint": "person_properties",
     "input": {

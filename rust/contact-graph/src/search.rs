@@ -159,14 +159,14 @@ const FROM_VISIBLE: &str = r#"
       AND e.entity_type IN ('Person','Organization')
 "#;
 
-const ACTIVE_RELATION: &str = r#"
+const ACTIVE_INSTITUTION_RELATION: &str = r#"
     SELECT 1 FROM kg_relations r
     JOIN relation_ids rid ON rid.kg_id=r.id
     JOIN relation_meta rm ON rm.relation_id=rid.relation_id
     JOIN entity_ids oid ON oid.kg_id=r.target_id
     JOIN entity_meta om ON om.entity_id=oid.entity_id
     JOIN kg_entities oe ON oe.id=r.target_id
-    WHERE r.source_id=e.id AND r.rel_type='worksFor'
+    WHERE r.source_id=e.id AND r.rel_type IN ('worksFor','alumniOf')
       AND json_extract(rm.metadata_json,'$.archived_at') IS NULL
       AND json_extract(om.metadata_json,'$.archived_at') IS NULL
       AND json_extract(om.metadata_json,'$.merged_into') IS NULL
@@ -181,13 +181,14 @@ fn where_sql() -> String {
       AND (:skill IS NULL OR EXISTS (
         SELECT 1 FROM json_each(e.properties,'$.skills') skill
         WHERE lower(skill.value)=lower(:skill)))
-      AND (:organization_id IS NULL OR EXISTS ({ACTIVE_RELATION}
+      AND (:organization_id IS NULL OR EXISTS ({ACTIVE_INSTITUTION_RELATION}
         AND oid.entity_id=:organization_id
-        AND (:job_title IS NULL OR instr(lower(json_extract(r.properties,'$.role.roleName')),
-          lower(:job_title))>0)))
+        AND (:job_title IS NULL OR (r.rel_type='worksFor' AND instr(lower(json_extract(r.properties,'$.role.roleName')),
+          lower(:job_title))>0))))
       AND (:job_title IS NULL OR :organization_id IS NOT NULL
         OR instr(lower(json_extract(e.properties,'$.jobTitle')),lower(:job_title))>0
-        OR EXISTS ({ACTIVE_RELATION}
+        OR EXISTS ({ACTIVE_INSTITUTION_RELATION}
+          AND r.rel_type='worksFor'
           AND instr(lower(json_extract(r.properties,'$.role.roleName')),lower(:job_title))>0))
       AND (:query IS NULL
         OR instr(lower(json_extract(e.properties,'$.name')),lower(:query))>0
@@ -196,8 +197,8 @@ fn where_sql() -> String {
         OR instr(lower(json_extract(e.properties,'$.jobTitle')),lower(:query))>0
         OR EXISTS (SELECT 1 FROM json_each(e.properties,'$.skills') skill
           WHERE instr(lower(skill.value),lower(:query))>0)
-        OR EXISTS ({ACTIVE_RELATION}
-          AND (instr(lower(json_extract(r.properties,'$.role.roleName')),lower(:query))>0
+        OR EXISTS ({ACTIVE_INSTITUTION_RELATION}
+          AND ((r.rel_type='worksFor' AND instr(lower(json_extract(r.properties,'$.role.roleName')),lower(:query))>0)
             OR instr(lower(json_extract(oe.properties,'$.name')),lower(:query))>0)))
     "#
     )

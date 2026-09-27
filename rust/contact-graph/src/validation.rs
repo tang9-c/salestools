@@ -31,6 +31,23 @@ const PERSON_SCALARS: &[&str] = &[
     "disambiguatingDescription",
 ];
 
+pub fn has_substantive_person_data(properties: &Value, extensions: Option<&Value>) -> bool {
+    let present = |value: &Value| match value {
+        Value::Null => false,
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(fields) => !fields.is_empty(),
+        Value::String(text) => !text.trim().is_empty(),
+        _ => true,
+    };
+    properties.as_object().is_some_and(|fields| {
+        fields
+            .iter()
+            .any(|(key, value)| key != "name" && present(value))
+    }) || extensions
+        .and_then(Value::as_object)
+        .is_some_and(|fields| fields.values().any(present))
+}
+
 pub fn allowed_entity_evidence_path(label: &str, path: &str) -> bool {
     if let Some(key) = path.strip_prefix("properties.") {
         COMMON_ARRAYS.contains(&key)
@@ -273,7 +290,7 @@ pub fn normalize_properties(label: &str, raw: &Value, create: bool) -> Result<Va
         output.insert(key.clone(), normalized);
     }
     if create {
-        if !output.get("name").is_some_and(Value::is_string) {
+        if label == "Organization" && !output.get("name").is_some_and(Value::is_string) {
             return Err("name is required".into());
         }
         for key in COMMON_ARRAYS.iter().chain(if label == "Person" {

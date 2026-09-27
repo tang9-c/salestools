@@ -82,7 +82,7 @@ export function suggestMatches(
     for (const account of accounts(entity)) {
       if (candidateAccounts.has(account)) reasons.push({ kind: 'instant_messaging', value: account.replace('\0', ':') });
     }
-    if (candidate.properties.name && candidate.properties.name.normalize('NFKC').trim().toLowerCase()
+    if (candidate.properties.name && entity.properties.name && candidate.properties.name.normalize('NFKC').trim().toLowerCase()
       === entity.properties.name.normalize('NFKC').trim().toLowerCase()) {
       const candidateOrgs = new Set((context.candidateOrganizations ?? []).map(value => value.normalize('NFKC').trim().toLowerCase()));
       for (const org of context.existingOrganizationsById?.[entity.entity_id] ?? []) {
@@ -94,7 +94,7 @@ export function suggestMatches(
     if (reasons.length === 0) continue;
     const dates = candidate.evidence.map(item => item.collected_at).sort();
     results.push({ entityId: entity.entity_id, candidateId: candidate.candidate_id,
-      candidateName: candidate.properties.name ?? '', existingName: entity.properties.name,
+      candidateName: candidate.properties.name ?? '', existingName: entity.properties.name ?? '',
       reasons, ...(dates[0] ? { candidateSourceDate: dates[0] } : {}),
       existingUpdatedAt: entity.metadata.updated_at,
       candidateSources: sources(candidate.evidence),

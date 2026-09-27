@@ -33,6 +33,23 @@ function service(records: Record<string, unknown>, matches: Record<string, { ent
 }
 
 describe('evidenced contact answers', () => {
+  it('does not invent a name for an anonymous resume and can cite its employer', async () => {
+    const employment = relation('work-anon', 'p_anon', 'o_1', 'worksFor',
+      { role: { '@type': 'OrganizationRole', roleName: '工程师' } }, { employment_status: 'unknown' });
+    const anonymous = { entity: { entity_id: 'p_anon', label: 'Person', properties: { skills: ['Python'] },
+      extensions: { hobbies: [], instantMessaging: [] }, metadata },
+      relations: [employment], evidence: [proof('work-anon', 'ev-work', '任职星辰科技工程师',
+        '$relation', { relation_type: 'worksFor' })], version: 1 };
+    const { ask } = service({ p_anon: anonymous, o_1: organization('o_1', '星辰科技') });
+    const name = await ask.ask({ question: '姓名是什么？', entity_id: 'p_anon' });
+    expect(name.status).toBe('insufficient');
+    expect(name.answer).toContain('姓名尚未确认');
+    expect(name.facts).toEqual([]);
+    const work = await ask.ask({ question: '在哪里工作？', entity_id: 'p_anon' });
+    expect(work.status).toBe('answered');
+    expect(work.answer).toContain('星辰科技');
+    expect(work.answer).not.toContain('undefined');
+  });
   it('answers an explicit spouse relation with a real citation and no model call', async () => {
     const r = relation('r1', 'p1', 'p2', 'spouse');
     const generate = vi.fn(async () => ({}));

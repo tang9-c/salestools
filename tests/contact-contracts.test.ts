@@ -101,14 +101,23 @@ describe('shared contact graph contract', () => {
     }).success).toBe(false);
   });
 
-  it('keeps a nameless extraction candidate but marks it not committable', () => {
+  it('keeps a nameless extraction candidate when its source is not verified', () => {
     const candidate = ImportCandidateSchema.parse({
       candidate_id: 'c_1', label: 'Person', properties: { jobTitle: '经理' },
       extensions: { hobbies: [], instantMessaging: [] }, evidence: [],
       relation_suggestions: [], warnings: ['name_missing'], can_commit: false,
     });
     expect(candidate.properties).not.toHaveProperty('name');
-    expect(ImportCandidateSchema.safeParse({ ...candidate, can_commit: true }).success).toBe(false);
+    expect(candidate.can_commit).toBe(false);
+  });
+
+  it('allows a nameless Person record with substantive skills while Organization still needs a name', () => {
+    const person = fixture('person-valid') as { label: string; properties: Record<string, unknown> };
+    const { name: _ignored, ...properties } = person.properties;
+    expect(ContactEntitySchema.safeParse({ ...person, properties: { ...properties, skills: ['Python'] } }).success).toBe(true);
+    const organization = fixture('organization-valid') as { properties: Record<string, unknown> };
+    const { name: _organizationName, ...organizationProperties } = organization.properties;
+    expect(ContactEntitySchema.safeParse({ ...organization, properties: organizationProperties }).success).toBe(false);
   });
 });
 

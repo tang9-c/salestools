@@ -34,6 +34,64 @@ fn person_create(operation_id: &str) -> Value {
 }
 
 #[test]
+fn unnamed_person_keeps_real_name_absent_and_can_be_named_later() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("contacts.sqlite")).unwrap();
+    let created = request(
+        &store,
+        "save_contact",
+        json!({
+            "operation_id":"anonymous-create","actor":"reviewer","label":"Person",
+            "set_properties":{"skills":["Python"]},
+            "evidence":[manual("properties.skills",json!("Python"))]
+        }),
+    );
+    assert_eq!(created["ok"], true, "{created}");
+    let id = created["result"]["entity_id"].as_str().unwrap();
+    let first = request(&store, "get_contact", json!({"entity_id":id}));
+    assert_eq!(first["result"]["entity"]["properties"]["name"], Value::Null);
+    let rejected = request(
+        &store,
+        "save_contact",
+        json!({
+            "operation_id":"name-without-proof","actor":"reviewer","entity_id":id,
+            "label":"Person","expected_version":1,
+            "set_properties":{"name":"陈晓"},"evidence":[]
+        }),
+    );
+    assert_eq!(rejected["error"]["code"], "VALIDATION_ERROR");
+    let named = request(
+        &store,
+        "save_contact",
+        json!({
+            "operation_id":"confirmed-name","actor":"reviewer","entity_id":id,
+            "label":"Person","expected_version":1,
+            "set_properties":{"name":"陈晓"},
+            "evidence":[manual("properties.name",json!("陈晓"))]
+        }),
+    );
+    assert_eq!(named["ok"], true, "{named}");
+    assert_eq!(named["result"]["entity_id"], id);
+}
+
+#[test]
+fn empty_unnamed_person_and_unnamed_organization_are_rejected() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("contacts.sqlite")).unwrap();
+    for (label, operation) in [("Person", "empty-person"), ("Organization", "empty-org")] {
+        let result = request(
+            &store,
+            "save_contact",
+            json!({
+                "operation_id":operation,"actor":"reviewer","label":label,
+                "set_properties":{},"evidence":[]
+            }),
+        );
+        assert_eq!(result["error"]["code"], "VALIDATION_ERROR", "{result}");
+    }
+}
+
+#[test]
 fn save_contact_replays_original_result_before_version_check() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path().join("contacts.sqlite")).unwrap();

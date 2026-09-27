@@ -5,7 +5,7 @@
 ## 业务数据
 
 - 正式节点仅有 `Person` 与 `Organization`。`entity_id` 是应用生成的稳定字符串，不能用姓名推导。`properties` 使用方案列出的完整字段白名单；Person 另外有同级 `extensions`。`metadata` 存版本、UTC 时间和归档／合并状态，不混入 Schema.org 属性。
-- 正式 `name` 非空。输入允许省略可选单值；完整输出包含全部适用数组，未知值为 `[]`。数组按规范化完整值去重，电话保留原文，不猜测区号。待确认候选可以没有名称，但 `can_commit` 必须是 `false`，用户补名后才能提交。
+- `Organization.name` 非空；`Person.name` 仅在真实姓名已确认时填写。无姓名简历可经人工审核保存为匿名 `Person`，前提是至少一项有来源证据的非姓名业务属性，或一条已选择、具备可定位文件证据的 `worksFor`／`alumniOf` 关系。空匿名档案被拒绝。输入允许省略可选单值；完整输出包含全部适用数组，未知值为 `[]`。数组按规范化完整值去重，电话保留原文，不猜测区号。匿名档案的显示文字由稳定 ID 派生，不写入 `name` 或向量内容；日后确认姓名时在原 ID 上补录姓名及证据。
 - 关系类型仅有 `worksFor`、`alumniOf`、`affiliation`、`memberOf`、`colleague`、`spouse`、`parent`、`children`。`children` 输入归一化为子女指向父母的 `parent`；`spouse` 和 `colleague` 以稳定 ID 排序后存一条、双向读取。`worksFor` 一段任职一条关系，不按两端实体去重。Rust 负责验证端点实际存在、类型、状态证据和版本。
 - 证据独立于业务属性；`field_path` 指向允许字段，数组值逐项绑定，嵌入对象使用完整对象值，必要时以 `value_path` 定位叶子字段。关系存在使用 `$relation`。文件证据保存文件名及 SHA-256，网页证据保存 URL，人工证据以确认人和时间为依据，不伪造页码或引文。
 

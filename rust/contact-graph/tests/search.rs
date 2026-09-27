@@ -156,6 +156,58 @@ fn search_finds_old_name_and_skill_without_merging_same_name_people() {
 }
 
 #[test]
+fn institution_name_finds_unnamed_person_only_through_confirmed_relations() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let anonymous = request(
+        &store,
+        "save_contact",
+        json!({
+            "operation_id":"anonymous","actor":"tester","label":"Person",
+            "set_properties":{"skills":["Python"]},
+            "evidence":[proof("properties.skills",json!("Python"))]
+        }),
+    );
+    assert_eq!(anonymous["ok"], true, "{anonymous}");
+    let person = anonymous["result"]["entity_id"].as_str().unwrap();
+    let company = entity(&store, "company", "Organization", "甲公司", &[], &[], None);
+    let school = entity(&store, "school", "Organization", "乙校", &[], &[], None);
+    assert!(!ids(&search(&store, json!({"query":"甲公司"}))).contains(&person.to_owned()));
+    works_for(&store, "employment", person, &company, "工程师");
+    let alumni = request(
+        &store,
+        "save_relation",
+        json!({
+            "operation_id":"education","actor":"tester","source_id":person,"target_id":school,
+            "relation_type":"alumniOf","properties":{},"evidence":[proof("$relation",json!({
+                "relation_type":"alumniOf","source_id":person,"target_id":school
+            }))]
+        }),
+    );
+    assert_eq!(alumni["ok"], true, "{alumni}");
+    for (query, organization) in [("甲公司", &company), ("乙校", &school)] {
+        let by_name = search(&store, json!({"query":query}));
+        assert!(ids(&by_name).contains(&person.to_owned()), "{by_name}");
+        assert_eq!(
+            by_name["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["entity_id"] == person)
+                .unwrap()["name"],
+            Value::Null
+        );
+        let by_id = search(&store, json!({"organization_id":organization}));
+        assert!(ids(&by_id).contains(&person.to_owned()), "{by_id}");
+    }
+    assert!(!ids(&search(
+        &store,
+        json!({"organization_id":school,"job_title":"工程师"})
+    ))
+    .contains(&person.to_owned()));
+}
+
+#[test]
 fn search_filters_one_employment_episode_by_organization_and_role() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path().join("graph.sqlite")).unwrap();

@@ -8,7 +8,8 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::validation::{
-    allowed_entity_evidence_path, ensure_value_evidence, normalize_extensions, normalize_properties,
+    allowed_entity_evidence_path, ensure_value_evidence, has_substantive_person_data,
+    normalize_extensions, normalize_properties,
 };
 
 #[derive(Debug)]
@@ -524,7 +525,15 @@ impl Store {
             .collect();
         ensure_value_evidence(&properties, extensions.as_ref(), &all_evidence)
             .map_err(AppError::validation)?;
-        let name = properties["name"].as_str().unwrap();
+        if input.label == "Person"
+            && properties.get("name").is_none()
+            && !has_substantive_person_data(&properties, extensions.as_ref())
+        {
+            return Err(AppError::validation(
+                "Unnamed Person needs supported information",
+            ));
+        }
+        let name = properties["name"].as_str().unwrap_or(&entity_id);
         if let Some(kg_id) = kg_id {
             let mut entity = self.graph.get_entity(kg_id).map_err(AppError::internal)?;
             entity.name = name.to_owned();

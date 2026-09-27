@@ -91,6 +91,63 @@ async function waitForStatus(service: ContactImportService, importId: string, st
   throw new Error(`Import did not reach ${status}`);
 }
 
+it('imports a nameless resume, finds it by school, then confirms a name on the same id', async () => {
+  const anonymous = ImportCandidateSchema.parse({
+    candidate_id: 'anonymous', label: 'Person', properties: { skills: ['Python'] },
+    extensions: { hobbies: [], instantMessaging: [] },
+    evidence: [{ evidence_id: 'ev-skill', subject_kind: 'entity', subject_id: 'anonymous',
+      field_path: 'properties.skills', value: 'Python', source_type: 'file',
+      file_name: 'invented.pdf', file_sha256: sha, quote: 'Python', page: 1,
+      locator_status: 'located', collected_at: collectedAt }],
+    relation_suggestions: [{ source_candidate_id: 'anonymous', target_candidate_id: 'school',
+      relation_type: 'alumniOf', properties: {}, uncertain: false,
+      evidence: [{ evidence_id: 'ev-school', subject_kind: 'relation', subject_id: 'anonymous:school',
+        field_path: '$relation', value: { relation_type: 'alumniOf', source_id: 'anonymous', target_id: 'school' },
+        source_type: 'file', file_name: 'invented.pdf', file_sha256: sha,
+        quote: '曾就读星辰大学', page: 1, locator_status: 'located', collected_at: collectedAt }] }],
+    warnings: [], can_commit: true,
+  });
+  const school = ImportCandidateSchema.parse({
+    candidate_id: 'school', label: 'Organization', properties: { name: '星辰大学' },
+    evidence: [{ evidence_id: 'ev-org', subject_kind: 'entity', subject_id: 'school',
+      field_path: 'properties.name', value: '星辰大学', source_type: 'file',
+      file_name: 'invented.pdf', file_sha256: sha, quote: '星辰大学', page: 1,
+      locator_status: 'located', collected_at: collectedAt }],
+    relation_suggestions: [], warnings: [], can_commit: true,
+  });
+  const h = await harness('file-anonymous', [anonymous, school]);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start-anonymous' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  expect(preview).toMatchObject({ total_candidates: 2, candidates: [{ can_commit: true }, { can_commit: true }] });
+  expect(preview.match_suggestions).toEqual([]);
+  const committed = await h.service.commit({ import_id: started.import_id,
+    preview_version: preview.version as number, operation_id: `contact-import:${started.import_id}`,
+    choices: [{ candidate_id: 'anonymous', action: 'create' }, { candidate_id: 'school', action: 'create' }],
+    relation_choices: [{ source_candidate_id: 'anonymous', target_candidate_id: 'school',
+      relation_type: 'alumniOf', properties: {} }] }, 'reviewer') as {
+      results: Array<{ candidate_id: string; entity_id: string }> };
+  const personId = committed.results.find(item => item.candidate_id === 'anonymous')!.entity_id;
+  const saved = await h.graph.request<{ entity: { properties: { name?: string; skills: string[] } };
+    evidence: Array<{ field_path: string }>; relations: Array<{ relation_type: string }> }>(
+    'get_contact', { entity_id: personId });
+  expect(saved.entity.properties).not.toHaveProperty('name');
+  expect(saved.entity.properties.skills).toEqual(['Python']);
+  expect(saved.evidence).toContainEqual(expect.objectContaining({ field_path: 'properties.skills' }));
+  expect(saved.relations).toContainEqual(expect.objectContaining({ relation_type: 'alumniOf' }));
+  const page = await new ContactSearch(h.graph).search({ query: '星辰大学' });
+  expect(page.items).toContainEqual(expect.objectContaining({ entity_id: personId, name: null,
+    display_name: expect.stringContaining('未具名候选') }));
+  const named = await h.graph.request<{ entity_id: string }>('save_contact', {
+    operation_id: 'name-anonymous', actor: 'reviewer', entity_id: personId, expected_version: 1,
+    label: 'Person', set_properties: { name: '陈晓' },
+    evidence: [{ field_path: 'properties.name', value: '陈晓', source_type: 'manual',
+      locator_status: 'not_applicable', collected_at: collectedAt }],
+  });
+  expect(named.entity_id).toBe(personId);
+  expect((await new ContactSearch(h.graph).search({ name: '陈晓' })).items)
+    .toContainEqual(expect.objectContaining({ entity_id: personId, name: '陈晓', display_name: '陈晓' }));
+});
+
 it('uses the real graph for preview, correction, merge, skip and durable replay', async () => {
   const people = [candidate('c_create', 'Robin Vale'), candidate('c_merge', 'Mira Chen'),
     candidate('c_skip', 'Alex Sample')];

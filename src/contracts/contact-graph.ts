@@ -102,8 +102,8 @@ function validateLifeDates(value: { birthDate?: string; deathDate?: string }, co
   }
 }
 
-export const PersonPropertiesSchema = PersonPropertiesBaseSchema.superRefine(validateLifeDates);
-export const PersonCandidatePropertiesSchema = PersonPropertiesBaseSchema.partial({ name: true }).superRefine(validateLifeDates);
+export const PersonPropertiesSchema = PersonPropertiesBaseSchema.partial({ name: true }).superRefine(validateLifeDates);
+export const PersonCandidatePropertiesSchema = PersonPropertiesSchema;
 
 export const OrganizationPropertiesSchema = z.object({
   ...commonProperties,

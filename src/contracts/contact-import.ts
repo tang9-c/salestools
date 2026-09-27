@@ -25,6 +25,16 @@ const candidateBase = {
   can_commit: z.boolean(),
 };
 
+function hasAnonymousContent(value: { properties: Record<string, unknown>; extensions?: Record<string, unknown>;
+  relation_suggestions: z.infer<typeof CandidateRelationSchema>[] }): boolean {
+  const present = (item: unknown) => item !== undefined && item !== null
+    && (Array.isArray(item) ? item.length > 0 : typeof item === 'string' ? item.trim().length > 0 : true);
+  return Object.entries(value.properties).some(([key, item]) => key !== 'name' && present(item))
+    || Object.values(value.extensions ?? {}).some(present)
+    || value.relation_suggestions.some(relation => ['worksFor', 'alumniOf'].includes(relation.relation_type)
+      && relation.evidence.some(proof => proof.field_path === '$relation' && proof.locator_status === 'located'));
+}
+
 export const ImportCandidateSchema = z.discriminatedUnion('label', [
   z.object({
     ...candidateBase,
@@ -32,8 +42,8 @@ export const ImportCandidateSchema = z.discriminatedUnion('label', [
     properties: PersonCandidatePropertiesSchema,
     extensions: PersonExtensionsSchema.default({ hobbies: [], instantMessaging: [] }),
   }).strict().superRefine((value, context) => {
-    if (!value.properties.name && value.can_commit) {
-      context.addIssue({ code: 'custom', path: ['can_commit'], message: 'Candidate without name is not committable' });
+    if (!value.properties.name && value.can_commit && !hasAnonymousContent(value)) {
+      context.addIssue({ code: 'custom', path: ['can_commit'], message: 'Unnamed Person needs supported information' });
     }
   }),
   z.object({

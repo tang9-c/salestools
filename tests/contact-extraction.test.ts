@@ -19,6 +19,50 @@ function extractor(fetchFn: typeof fetch, overrides = {}) {
 }
 
 describe('document extraction', () => {
+  it('offers a nameless resume with a cited skill for review and commit', async () => {
+    const input = [{ block_id: 'resume', text: '技能 Python；无姓名和电话', page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'person', label: 'Person',
+      properties: { skills: ['Python'] },
+      evidence: [{ field_path: 'properties.skills', value: 'Python', block_id: 'resume', quote: 'Python' }],
+      relation_suggestions: [] }]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0]).toMatchObject({ can_commit: true, properties: { skills: ['Python'] } });
+    expect(result.candidates[0].properties).not.toHaveProperty('name');
+  });
+
+  it('offers a nameless school relation only when the statement is located', async () => {
+    const input = [{ block_id: 'school', text: '曾就读星辰大学', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      { candidate_id: 'person', label: 'Person', properties: {}, evidence: [], relation_suggestions: [{
+        source_candidate_id: 'person', target_candidate_id: 'school', relation_type: 'alumniOf',
+        properties: {}, evidence: [{ block_id: 'school', quote: '曾就读星辰大学' }], uncertain: false,
+      }] },
+      { candidate_id: 'school', label: 'Organization', properties: { name: '星辰大学' },
+        evidence: [{ field_path: 'properties.name', value: '星辰大学', block_id: 'school', quote: '星辰大学' }],
+        relation_suggestions: [] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0]).toMatchObject({ can_commit: true });
+    expect(result.candidates[0].relation_suggestions).toHaveLength(1);
+  });
+
+  it('does not assign an institution to one of several unnamed people in the same batch', async () => {
+    const input = [{ block_id: 'mixed', text: '候选甲 Python；候选乙 Java；曾就读星辰大学', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      { candidate_id: 'a', label: 'Person', properties: { skills: ['Python'] },
+        evidence: [{ field_path: 'properties.skills', value: 'Python', block_id: 'mixed', quote: 'Python' }],
+        relation_suggestions: [{ source_candidate_id: 'a', target_candidate_id: 'school',
+          relation_type: 'alumniOf', properties: {}, evidence: [{ block_id: 'mixed', quote: '曾就读星辰大学' }] }] },
+      { candidate_id: 'b', label: 'Person', properties: { skills: ['Java'] },
+        evidence: [{ field_path: 'properties.skills', value: 'Java', block_id: 'mixed', quote: 'Java' }],
+        relation_suggestions: [] },
+      { candidate_id: 'school', label: 'Organization', properties: { name: '星辰大学' },
+        evidence: [{ field_path: 'properties.name', value: '星辰大学', block_id: 'mixed', quote: '星辰大学' }],
+        relation_suggestions: [] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0].relation_suggestions).toEqual([]);
+  });
   it('keeps two people on one page as separate candidates with candidate-local ids and page evidence', async () => {
     const fetchFn = vi.fn(async () => response([person('a', '陈晓', 'b1'), person('b', '王明', 'b2')]));
     const result = await extractor(fetchFn).extract(blocks, new AbortController().signal);

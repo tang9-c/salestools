@@ -365,7 +365,10 @@ impl Store {
                 .map_err(invalid)?;
             target_entity.properties =
                 serde_json::from_value(target_props.clone()).map_err(internal)?;
-            target_entity.name = target_props["name"].as_str().unwrap().to_owned();
+            target_entity.name = target_props["name"]
+                .as_str()
+                .unwrap_or(&input.target_id)
+                .to_owned();
             self.graph.update_entity(&target_entity).map_err(internal)?;
             for record in copied_evidence {
                 tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'entity',?2,?3,?4,?5)",

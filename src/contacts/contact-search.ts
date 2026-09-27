@@ -6,8 +6,13 @@ export interface ContactSearchInput {
   mode?: 'keyword' | 'semantic' | 'hybrid'; offset?: number; limit?: number;
 }
 
-interface SearchItem { entity_id: string; label?: string; name?: string; reasons?: string[]; score?: number }
+interface SearchItem { entity_id: string; label?: string; name?: string | null; display_name?: string; reasons?: string[]; score?: number }
 interface SearchPage { items: SearchItem[]; total: number; next_offset?: number }
+
+function displayItems(items: SearchItem[]): SearchItem[] {
+  return items.map(item => ({ ...item, name: item.name ?? null,
+    display_name: item.name ?? `未具名候选 · ${item.entity_id.slice(-8)}` }));
+}
 
 export function reciprocalRank(rank: number): number { return 1 / (60 + rank); }
 export function fusedScore(keywordRank?: number, vectorRank?: number): number {
@@ -38,7 +43,8 @@ export class ContactSearch {
       'search_keyword', { ...filters, offset: pageOffset, limit: pageLimit });
     const fallback = async (warning?: string) => {
       const page = await keyword(offset, limit);
-      return { ...page, mode_used: 'keyword' as const, warnings: warning ? [warning] : [] };
+      return { ...page, items: displayItems(page.items), mode_used: 'keyword' as const,
+        warnings: warning ? [warning] : [] };
     };
     if (mode === 'keyword') return fallback();
     if (input.name || input.organization_id || input.job_title || input.skill) {
@@ -66,7 +72,7 @@ export class ContactSearch {
         items.push({ ...hit, label: entity?.label, name: entity?.properties?.name,
           reasons: ['semantic'] });
       }
-      return { items, total: vectorResult.total, next_offset: vectorResult.next_offset,
+      return { items: displayItems(items), total: vectorResult.total, next_offset: vectorResult.next_offset,
         mode_used: 'semantic', warnings: [] };
     }
 
@@ -101,7 +107,7 @@ export class ContactSearch {
     const warnings = lexical.total > lexical.items.length || semantic.total > semantic.items.length
       ? ['search_window_limited'] : [];
     const items = merged.slice(offset, offset + limit);
-    return { items, total: merged.length,
+    return { items: displayItems(items), total: merged.length,
       ...(offset + items.length < merged.length ? { next_offset: offset + items.length } : {}),
       mode_used: 'hybrid', warnings };
   }

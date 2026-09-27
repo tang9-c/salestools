@@ -23,6 +23,18 @@ function graph(lexical: string[], semantic: string[], vectorFails = false): Grap
 }
 
 describe('shared contact search', () => {
+  it('shows a stable anonymous label without claiming it is a real name', async () => {
+    const anonymousGraph: GraphClient = {
+      request: async <T>(op: GraphOp) => {
+        if (op !== 'search_keyword') throw new Error(`Unexpected ${op}`);
+        return { items: [{ entity_id: 'p_12345678', label: 'Person', name: null,
+          reasons: ['relation_match'] }], total: 1 } as T;
+      }, close: async () => undefined,
+    };
+    const result = await new ContactSearch(anonymousGraph).search({ query: '星辰大学' });
+    expect(result.items[0]).toMatchObject({ entity_id: 'p_12345678', name: null,
+      display_name: '未具名候选 · 12345678' });
+  });
   it('keeps deterministic keyword paging and can find separate same-name IDs', async () => {
     const search = new ContactSearch(graph(['p_1', 'p_2', 'p_3'], []));
     const page = await search.search({ name: '同名', mode: 'keyword', offset: 1, limit: 1 });

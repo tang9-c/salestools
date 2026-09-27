@@ -37,6 +37,102 @@ fn count(store: &Store, table: &str) -> i64 {
 }
 
 #[test]
+fn unnamed_skill_candidate_commits_without_a_placeholder_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let preview = json!({"candidate_id":"anonymous","label":"Person",
+        "properties":{"skills":["Python"]},
+        "extensions":{"hobbies":[],"instantMessaging":[]},
+        "evidence":[proof("properties.skills",json!("Python"))],
+        "relation_suggestions":[],"warnings":[],"can_commit":true});
+    let import_id = ready(&store, vec![preview]);
+    let committed = store
+        .commit_import(&json!({
+            "operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+            "import_id":import_id,"expected_version":2,
+            "choices":[{"candidate_id":"anonymous","action":"create"}]
+        }))
+        .unwrap();
+    let id = committed["results"][0]["entity_id"].as_str().unwrap();
+    let saved = store.get_contact(&json!({"entity_id":id})).unwrap();
+    assert!(saved["entity"]["properties"].get("name").is_none());
+    assert_eq!(saved["entity"]["properties"]["skills"], json!(["Python"]));
+}
+
+#[test]
+fn unnamed_relation_only_candidate_requires_a_selected_located_relation() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let person = json!({"candidate_id":"person","label":"Person","properties":{},
+        "extensions":{"hobbies":[],"instantMessaging":[]},"evidence":[],
+        "relation_suggestions":[{"source_candidate_id":"person","target_candidate_id":"school",
+            "relation_type":"alumniOf","properties":{},"uncertain":false,
+            "evidence":[{"field_path":"$relation","value":{"relation_type":"alumniOf","source_id":"person","target_id":"school"},
+                "source_type":"file","file_name":"resume.pdf","file_sha256":"abc",
+                "quote":"曾就读星辰大学","page":1,"locator_status":"located",
+                "collected_at":"2026-09-26T00:00:00.000Z"}]}],"warnings":[],"can_commit":true});
+    let school = json!({"candidate_id":"school","label":"Organization",
+        "properties":{"name":"星辰大学"},
+        "evidence":[proof("properties.name",json!("星辰大学"))],
+        "relation_suggestions":[],"warnings":[],"can_commit":true});
+    let bad_dir = tempfile::tempdir().unwrap();
+    let bad_store = Store::open(bad_dir.path().join("graph.sqlite")).unwrap();
+    let mut bad_person = person.clone();
+    bad_person["relation_suggestions"][0]["evidence"][0]["value"]["target_id"] =
+        json!("someone-else");
+    let bad_import = ready(&bad_store, vec![bad_person, school.clone()]);
+    let bad_result = bad_store.commit_import(&json!({
+        "operation_id":format!("contact-import:{bad_import}"),"actor":"reviewer",
+        "import_id":bad_import,"expected_version":2,
+        "choices":[{"candidate_id":"person","action":"create"},{"candidate_id":"school","action":"create"}],
+        "relation_choices":[{"source_candidate_id":"person","target_candidate_id":"school",
+            "relation_type":"alumniOf","properties":{}}]
+    }));
+    assert_eq!(bad_result.unwrap_err().code, "VALIDATION_ERROR");
+    let import_id = ready(&store, vec![person, school]);
+    let mut payload = json!({"operation_id":format!("contact-import:{import_id}"),
+        "actor":"reviewer","import_id":import_id,"expected_version":2,
+        "choices":[{"candidate_id":"person","action":"create"},{"candidate_id":"school","action":"create"}],
+        "relation_choices":[{"source_candidate_id":"person","target_candidate_id":"school",
+            "relation_type":"alumniOf","properties":{}}]});
+    let selected = payload["relation_choices"].clone();
+    payload["relation_choices"] = json!([]);
+    assert_eq!(
+        store.commit_import(&payload).unwrap_err().code,
+        "VALIDATION_ERROR"
+    );
+    assert_eq!(count(&store, "kg_entities"), 0);
+    payload["relation_choices"] = selected;
+    let committed = store.commit_import(&payload).unwrap();
+    assert_eq!(committed["relations"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn named_candidate_can_merge_into_an_unnamed_person_without_a_null_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let anonymous = store
+        .save_contact(&json!({"operation_id":"anonymous-target",
+        "actor":"reviewer","label":"Person","set_properties":{"skills":["Python"]},
+        "evidence":[proof("properties.skills",json!("Python"))]}))
+        .unwrap();
+    let id = anonymous["entity_id"].as_str().unwrap();
+    let import_id = ready(&store, vec![candidate("named", "陈晓")]);
+    let committed = store
+        .commit_import(&json!({
+            "operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+            "import_id":import_id,"expected_version":2,
+            "choices":[{"candidate_id":"named","action":"merge","target_id":id,
+                "expected_target_version":1,"keep_name":false}]
+        }))
+        .unwrap();
+    assert_eq!(committed["results"][0]["entity_id"], id);
+    let saved = store.get_contact(&json!({"entity_id":id})).unwrap();
+    assert_eq!(saved["entity"]["properties"]["name"], "陈晓");
+    assert_eq!(saved["entity"]["properties"]["alternateName"], json!([]));
+}
+
+#[test]
 fn unlocated_file_evidence_cannot_commit_without_manual_confirmation() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
