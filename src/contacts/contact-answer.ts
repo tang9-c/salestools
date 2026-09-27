@@ -205,12 +205,13 @@ export class ContactAnswerService {
       const root = await this.get(entityId);
       if (!root || root.entity.label !== 'Person') return { status: 'insufficient', answer: '未找到可核实的联系人。', citations: [], facts: [] };
       const askedName = questionName(question);
-      if (askedName && (!root.entity.properties.name || normalize(askedName) !== normalize(root.entity.properties.name))) {
+      const kind = intent(question);
+      if (askedName && !(kind === 'name' && /^(?:该|此|这位|这个)?联系人$/u.test(askedName))
+        && (!root.entity.properties.name || normalize(askedName) !== normalize(root.entity.properties.name))) {
         return { status: 'clarify', answer: '问题中的姓名与指定联系人不一致，请确认要查询的档案。',
           citations: [], candidates: root.entity.properties.name
             ? [{ entity_id: root.entity.entity_id, name: root.entity.properties.name }] : [] };
       }
-      const kind = intent(question);
       if (kind === 'name') {
         if (!root.entity.properties.name) return { status: 'insufficient', answer: '该档案的姓名尚未确认。', citations: [], facts: [] };
         const evidence = root.evidence.find(item => item.subject_kind === 'entity'

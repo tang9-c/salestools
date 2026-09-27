@@ -57,6 +57,14 @@ telephone、email、alternateName、skills、sameAs、contactPoint 等复数属�
 // An organization printed next to a person on a card is not proof of employment.
 const RELATION_PROMPT = `仅原文明确说 works for/任职 等才输出 worksFor；名片上姓名、公司、职位并列不算关系。worksFor 必须有 properties:{"role":{"@type":"OrganizationRole"}}，明确职位/日期时在 role 填原文可见的 roleName/startDate/endDate；每个 role 字段另给 evidence:{field_path:"properties.role.字段",value:原值,block_id,quote}，关系本身另给不含 field_path 的引文。勿推断 current 或缺失日期。`;
 
+function directInstitutionStatement(type: string, quote: string, targetName: unknown): boolean {
+  if (typeof targetName !== 'string' || !quote.includes(targetName)
+    || /(?:不是|并非|未曾|未在|未于|未就读|未任职|未毕业|未学习|没有|\b(?:not|never)\b)/iu.test(quote)) return false;
+  return type === 'worksFor'
+    ? /\b(?:works?\s+for|worked\s+for|employed\s+by|works?\s+at)\b|任职|就职|受雇于/iu.test(quote)
+    : /\b(?:alumni|studied|graduated|attended)\b|校友|就读|毕业|学习/iu.test(quote);
+}
+
 function request(model: string, batch: readonly ParsedBlock[]): string {
   return JSON.stringify({ model, messages: [
     { role: 'system', content: `${SYSTEM_PROMPT}\n${SHAPE_PROMPT}\n${RELATION_PROMPT}` },
@@ -197,9 +205,17 @@ export class DocumentExtractor {
         if (Buffer.byteLength(text, 'utf8') > 1_000_000) throw new Error('oversized model output');
         const fenced = text.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/iu);
         const output = ModelOutput.parse(JSON.parse((fenced?.[1] ?? text).trim()));
-        const unnamedPeople = output.candidates.filter(item => item.label === 'Person' && !item.properties.name).length;
-        const localIds = new Set<string>();
+        const unnamedPeople = output.candidates.filter(item => item.label === 'Person' && !item.properties.name);
         const blockMap = new Map(batch.map(block => [block.block_id, block]));
+        const unnamedAnchors = new Map(unnamedPeople.map(person => [person.candidate_id, new Set([
+          ...person.evidence.filter(proof => {
+            const block = blockMap.get(proof.block_id);
+            return block && quoteLocated(block, proof.quote)
+              && matchesValue(fieldValue(person, proof.field_path), proof.value)
+              && quoteSupportsValue(proof.value, proof.quote);
+          }).map(proof => proof.block_id),
+        ])]));
+        const localIds = new Set<string>();
         const prefix = `batch${index + 1}`;
         for (const modelCandidate of output.candidates) {
           if (localIds.has(modelCandidate.candidate_id)) { warnings.push('候选编号重复'); continue; }
@@ -231,12 +247,21 @@ export class DocumentExtractor {
           if (evidence.some(proof => proof.locator_status !== 'located')) candidateWarnings.push('部分字段引文无法定位');
           const relation_suggestions = modelCandidate.relation_suggestions.flatMap(relation => {
             const source = output.candidates.find(other => other.candidate_id === relation.source_candidate_id);
-            if (unnamedPeople > 1 && source?.label === 'Person' && !source.properties.name) {
-              warnings.push('多个无名人物的机构归属无法确认'); return [];
-            }
             if (!output.candidates.some(other => other.candidate_id === relation.source_candidate_id)
               || !output.candidates.some(other => other.candidate_id === relation.target_candidate_id)) {
               warnings.push('关系引用无效'); return [];
+            }
+            if (unnamedPeople.length > 1 && source?.label === 'Person' && !source.properties.name
+              && !(unnamedPeople.every(person => (unnamedAnchors.get(person.candidate_id)?.size ?? 0) > 0)
+                && relation.evidence.some(proof => unnamedAnchors.get(source.candidate_id)?.has(proof.block_id)
+                  && unnamedPeople.every(other => other.candidate_id === source.candidate_id
+                    || !unnamedAnchors.get(other.candidate_id)?.has(proof.block_id))))) {
+              warnings.push('多个无名人物的机构归属无法确认'); return [];
+            }
+            if (relation.relation_type === 'worksFor' && Object.keys(relation.properties).length > 0
+              && (typeof relation.properties.role !== 'object' || relation.properties.role === null
+                || Array.isArray(relation.properties.role))) {
+              warnings.push('任职关系缺少有效的 OrganizationRole'); return [];
             }
             // An empty OrganizationRole carries no inferred job facts, but it is
             // required by the graph write contract for every worksFor edge.
@@ -298,15 +323,22 @@ export class DocumentExtractor {
                   locator_status: 'located', collected_at: this.options.collectedAt ?? new Date().toISOString() });
               }
             }
-            const hasDirectStatement = relation.relation_type !== 'worksFor'
-              || relationEvidence.some(proof => typeof proof.quote === 'string'
-                && /\b(?:works?\s+for|worked\s+for|employed\s+by|works?\s+at)\b|任职|就职|受雇于/iu.test(proof.quote));
+            const target = output.candidates.find(other => other.candidate_id === relation.target_candidate_id);
+            const hasDirectStatement = !['worksFor', 'alumniOf'].includes(relation.relation_type)
+              || relationEvidence.some(proof => proof.field_path === '$relation'
+                && typeof proof.quote === 'string'
+                && directInstitutionStatement(relation.relation_type, proof.quote, target?.properties.name));
             if (relationEvidence.length === 0 || !hasDirectStatement) {
               warnings.push('关系缺少可定位的直接陈述');
               return [];
             }
+            const supportedProperties = relation.relation_type === 'worksFor'
+              ? { ...relationProperties, role: Object.fromEntries(Object.entries(
+                relationProperties.role as Record<string, unknown>).filter(([field]) =>
+                field === '@type' || relationEvidence.some(proof => proof.field_path === `properties.role.${field}`))) }
+              : relationProperties;
             return [{ source_candidate_id: `${prefix}:${relation.source_candidate_id}`, target_candidate_id: `${prefix}:${relation.target_candidate_id}`,
-              relation_type: relation.relation_type, properties: relationProperties, evidence: relationEvidence, uncertain: relation.uncertain }];
+              relation_type: relation.relation_type, properties: supportedProperties, evidence: relationEvidence, uncertain: relation.uncertain }];
           });
           const candidate = ImportCandidateSchema.safeParse({ candidate_id: id, label: modelCandidate.label,
             properties, ...(modelCandidate.label === 'Person' ? { extensions: modelCandidate.extensions ?? {} } : {}),

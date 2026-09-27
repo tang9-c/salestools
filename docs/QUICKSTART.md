@@ -26,7 +26,7 @@ CLI 逐个上传并输出 JSON：`accepted` 列出已接收的本地路径和 `f
 
 上传成功后，在启用了 `CONTACT_GRAPH_ENABLED=true` 的服务中，使用返回的 `file_id` 调用 `import_contacts`，并自定一个以后重试仍保持不变的 `operation_id`。再用 `get_contact_import` 查看状态、候选和短证据。核对姓名、单位、任职时间、联系方式及可能重复的人之后，使用 `commit_contact_import` 的 `choices` 为每个候选选择 `create`、`merge` 或 `skip`；合并还需目标 `entity_id` 和当前版本。关系同样要核对，必要时填写 `relation_choices`。提交时使用预览返回的 `preview_version`，且 `operation_id` 固定为 `contact-import:<import_id>`。不准备提交时可用 `cancel_contact_import`；系统不会因号码相同而自动合并，也不会把 OCR 推测直接写成正式档案。
 
-无真实姓名和手机号的简历也可审核入库：候选须有已定位的技能等业务字段证据，或有明确归属、已选择的任职／就读关系及其短引文。审核后用同一 `commit_contact_import` 创建匿名 `Person`，不要填写“未知姓名”等占位 `name`。通过 `search_contacts({query:"公司名"})` 或 `search_contacts({query:"学校名"})` 查找已确认 `worksFor`／`alumniOf` 关系中的匿名人物；结果的 `name` 为 `null`，`display_name` 是由稳定 ID 派生的界面文字。使用返回的 `entity_id` 调用 `get_contact` 查看资料和证据。确认真实姓名后，用 `save_contact` 在同一 `entity_id` 上补录 `name` 与证据。只看到机构名、没有明确人物归属时，不选择机构关系；不同简历不会自动合并，原件及完整 OCR 文本不会持久化到图谱。
+无真实姓名和手机号的简历也可审核入库：候选须有已定位的技能等业务字段证据，或有明确归属、已选择的任职／就读关系及其短引文。审核后用同一 `commit_contact_import` 创建匿名 `Person`，不要填写“未知姓名”等占位 `name`。通过 `search_contacts({query:"公司名"})` 或 `search_contacts({query:"学校名"})` 查找已确认 `worksFor`／`alumniOf` 关系中的匿名人物；结果的 `name` 为 `null`，`display_name` 是由稳定 ID 派生的界面文字。使用返回的 `entity_id` 调用 `get_contact` 查看资料和证据。确认真实姓名后，用 `save_contact` 在同一 `entity_id` 上补录 `name` 与证据。只看到机构名、没有明确人物归属时，不选择机构关系；同一批次出现多名无名人物且没有各自独立的字段证据时，系统也不会分配机构关系。不同简历不会自动合并，原件及完整 OCR 文本不会持久化到图谱。
 
 图谱中查人使用 `search_contacts`（姓名、关键词、组织、职位、技能，可分页）；查看完整档案和证据使用 `get_contact`；问配偶、亲子或任职等问题使用 `ask_contacts`，同名或证据不足会要求澄清或拒答。`get_contacts` 保持原有公开网页搜索与快照语义，不是共享图谱查询。语义/混合检索只有在服务端另配 `ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL` 后可用；未配置时选 `mode=keyword`。失败索引可用 `retry_contact_index` 指定 `entity_id` 和稳定的 `operation_id` 重试。
 

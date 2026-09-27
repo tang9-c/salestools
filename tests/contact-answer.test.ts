@@ -45,6 +45,9 @@ describe('evidenced contact answers', () => {
     expect(name.status).toBe('insufficient');
     expect(name.answer).toContain('姓名尚未确认');
     expect(name.facts).toEqual([]);
+    const phrasedName = await ask.ask({ question: '该联系人的姓名是什么？', entity_id: 'p_anon' });
+    expect(phrasedName.status).toBe('insufficient');
+    expect(phrasedName.answer).toContain('姓名尚未确认');
     const work = await ask.ask({ question: '在哪里工作？', entity_id: 'p_anon' });
     expect(work.status).toBe('answered');
     expect(work.answer).toContain('星辰科技');

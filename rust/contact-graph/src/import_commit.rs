@@ -273,6 +273,60 @@ fn unbind_preview_evidence(item: &Value) -> Value {
     proof
 }
 
+fn direct_institution_statement(relation_type: &str, quote: &str, target_name: &str) -> bool {
+    if target_name.is_empty() || !quote.contains(target_name) {
+        return false;
+    }
+    let lower = quote.to_lowercase();
+    if lower.starts_with("not ") || lower.starts_with("never ") {
+        return false;
+    }
+    if [
+        "不是",
+        "并非",
+        "未曾",
+        "未在",
+        "未于",
+        "未就读",
+        "未任职",
+        "未毕业",
+        "未学习",
+        "没有",
+        " not ",
+        " never ",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+    {
+        return false;
+    }
+    let words: &[&str] = match relation_type {
+        "worksFor" => &[
+            "任职",
+            "就职",
+            "受雇于",
+            "works for",
+            "work for",
+            "worked for",
+            "employed by",
+            "works at",
+            "work at",
+        ],
+        "alumniOf" => &[
+            "校友",
+            "就读",
+            "毕业",
+            "学习",
+            "alumni",
+            "studied",
+            "graduated",
+            "attended",
+        ],
+        _ => return false,
+    };
+    words.iter().any(|word| lower.contains(word))
+}
+
 fn has_selected_located_institution_relation(
     candidate_id: &str,
     candidates: &[Value],
@@ -280,6 +334,10 @@ fn has_selected_located_institution_relation(
     relations: &[RelationChoice],
 ) -> bool {
     relations.iter().any(|relation| {
+        let target_name = candidates
+            .iter()
+            .find(|candidate| candidate["candidate_id"] == relation.target_candidate_id)
+            .and_then(|candidate| candidate["properties"]["name"].as_str());
         relation.source_candidate_id == candidate_id
             && ["worksFor", "alumniOf"].contains(&relation.relation_type.as_str())
             && choices.iter().any(|choice| {
@@ -307,9 +365,15 @@ fn has_selected_located_institution_relation(
                                 "target_id":relation.target_candidate_id})
                                     && proof["source_type"] == "file"
                                     && proof["locator_status"] == "located"
-                                    && proof["quote"]
-                                        .as_str()
-                                        .is_some_and(|quote| !quote.trim().is_empty())
+                                    && proof["quote"].as_str().is_some_and(|quote| {
+                                        target_name.is_some_and(|name| {
+                                            direct_institution_statement(
+                                                &relation.relation_type,
+                                                quote,
+                                                name,
+                                            )
+                                        })
+                                    })
                             })
                         })
                 })
@@ -322,6 +386,7 @@ fn commit_relations(
     choices: &[RelationChoice],
     candidates: &[Value],
     landed: &HashMap<String, String>,
+    unnamed_landed: &HashSet<String>,
     actor: &str,
     now: &str,
 ) -> Result<Vec<Value>, AppError> {
@@ -368,6 +433,55 @@ fn commit_relations(
                     && suggestion.get("properties") == Some(&choice.properties)
             })
             .ok_or_else(|| validation("Relation choice is not in the reviewed suggestions"))?;
+        let source_is_unnamed = unnamed_landed.contains(&choice.source_candidate_id);
+        if source_is_unnamed && ["worksFor", "alumniOf"].contains(&choice.relation_type.as_str()) {
+            let target_name = candidates
+                .iter()
+                .find(|candidate| candidate["candidate_id"] == choice.target_candidate_id)
+                .and_then(|candidate| candidate["properties"]["name"].as_str())
+                .ok_or_else(|| validation("Institution name is required"))?;
+            let direct = suggestion["evidence"].as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    item["field_path"] == "$relation"
+                        && item["source_type"] == "file"
+                        && item["locator_status"] == "located"
+                        && item["quote"].as_str().is_some_and(|quote| {
+                            direct_institution_statement(&choice.relation_type, quote, target_name)
+                        })
+                })
+            });
+            if !direct {
+                return Err(validation(
+                    "Unnamed institution relation needs a direct file statement",
+                ));
+            }
+            if choice.relation_type == "worksFor" {
+                let role = choice.properties["role"]
+                    .as_object()
+                    .ok_or_else(|| validation("OrganizationRole is required"))?;
+                for (field, value) in role {
+                    if field == "@type" {
+                        continue;
+                    }
+                    let supported = suggestion["evidence"].as_array().is_some_and(|items| {
+                        items.iter().any(|item| {
+                            item["field_path"] == format!("properties.role.{field}")
+                                && item["value"] == *value
+                                && item["source_type"] == "file"
+                                && item["locator_status"] == "located"
+                                && item["quote"].as_str().is_some_and(|quote| {
+                                    value.as_str().is_some_and(|text| quote.contains(text))
+                                })
+                        })
+                    });
+                    if !supported {
+                        return Err(validation(
+                            "Unnamed employment role needs located file evidence",
+                        ));
+                    }
+                }
+            }
+        }
         let (kind, source, target) =
             normalize_endpoints(&choice.relation_type, source_id, target_id)?;
         let properties = relation_properties(&kind, &choice.properties)?;
@@ -543,6 +657,7 @@ impl Store {
         DateTime::parse_from_rfc3339(&now).map_err(AppError::internal)?;
         let mut results = Vec::new();
         let mut landed = HashMap::new();
+        let mut unnamed_landed = HashSet::new();
         for choice in &input.choices {
             if choice.action == "skip" {
                 if choice.target_id.is_some()
@@ -703,6 +818,9 @@ impl Store {
             {
                 return Err(validation("Unnamed Person needs supported information"));
             }
+            if label == "Person" && properties.get("name").is_none() {
+                unnamed_landed.insert(choice.candidate_id.clone());
+            }
             let name = properties["name"].as_str().unwrap_or(&entity_id);
             if let Some(id) = kg_id {
                 let mut entity = self.graph.get_entity(id).map_err(AppError::internal)?;
@@ -761,6 +879,7 @@ impl Store {
             &input.relation_choices,
             candidates,
             &landed,
+            &unnamed_landed,
             &input.actor,
             &now,
         )?;

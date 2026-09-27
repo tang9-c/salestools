@@ -75,6 +75,30 @@ fn unnamed_relation_only_candidate_requires_a_selected_located_relation() {
         "properties":{"name":"星辰大学"},
         "evidence":[proof("properties.name",json!("星辰大学"))],
         "relation_suggestions":[],"warnings":[],"can_commit":true});
+    let bare_dir = tempfile::tempdir().unwrap();
+    let bare_store = Store::open(bare_dir.path().join("graph.sqlite")).unwrap();
+    let mut bare_person = person.clone();
+    bare_person["relation_suggestions"][0]["evidence"][0]["quote"] = json!("星辰大学");
+    let bare_import = ready(&bare_store, vec![bare_person, school.clone()]);
+    assert_eq!(bare_store.commit_import(&json!({
+        "operation_id":format!("contact-import:{bare_import}"),"actor":"reviewer",
+        "import_id":bare_import,"expected_version":2,
+        "choices":[{"candidate_id":"person","action":"create"},{"candidate_id":"school","action":"create"}],
+        "relation_choices":[{"source_candidate_id":"person","target_candidate_id":"school",
+            "relation_type":"alumniOf","properties":{}}]
+    })).unwrap_err().code, "VALIDATION_ERROR");
+    let negated_dir = tempfile::tempdir().unwrap();
+    let negated_store = Store::open(negated_dir.path().join("graph.sqlite")).unwrap();
+    let mut negated_person = person.clone();
+    negated_person["relation_suggestions"][0]["evidence"][0]["quote"] = json!("未在星辰大学就读");
+    let negated_import = ready(&negated_store, vec![negated_person, school.clone()]);
+    assert_eq!(negated_store.commit_import(&json!({
+        "operation_id":format!("contact-import:{negated_import}"),"actor":"reviewer",
+        "import_id":negated_import,"expected_version":2,
+        "choices":[{"candidate_id":"person","action":"create"},{"candidate_id":"school","action":"create"}],
+        "relation_choices":[{"source_candidate_id":"person","target_candidate_id":"school",
+            "relation_type":"alumniOf","properties":{}}]
+    })).unwrap_err().code, "VALIDATION_ERROR");
     let bad_dir = tempfile::tempdir().unwrap();
     let bad_store = Store::open(bad_dir.path().join("graph.sqlite")).unwrap();
     let mut bad_person = person.clone();
@@ -105,6 +129,74 @@ fn unnamed_relation_only_candidate_requires_a_selected_located_relation() {
     payload["relation_choices"] = selected;
     let committed = store.commit_import(&payload).unwrap();
     assert_eq!(committed["relations"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn unnamed_employment_does_not_accept_a_role_without_located_file_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let person = json!({"candidate_id":"person","label":"Person","properties":{},
+        "extensions":{"hobbies":[],"instantMessaging":[]},"evidence":[],
+        "relation_suggestions":[{"source_candidate_id":"person","target_candidate_id":"company",
+            "relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole","roleName":"CEO"}},
+            "uncertain":false,"evidence":[{"field_path":"$relation",
+                "value":{"relation_type":"worksFor","source_id":"person","target_id":"company"},
+                "source_type":"file","file_name":"resume.pdf","file_sha256":"abc",
+                "quote":"任职甲公司","page":1,"locator_status":"located",
+                "collected_at":"2026-09-26T00:00:00.000Z"}]}],"warnings":[],"can_commit":true});
+    let company = json!({"candidate_id":"company","label":"Organization",
+        "properties":{"name":"甲公司"},"evidence":[proof("properties.name",json!("甲公司"))],
+        "relation_suggestions":[],"warnings":[],"can_commit":true});
+    let import_id = ready(&store, vec![person, company]);
+    let result = store.commit_import(&json!({
+        "operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+        "import_id":import_id,"expected_version":2,
+        "choices":[{"candidate_id":"person","action":"create"},{"candidate_id":"company","action":"create"}],
+        "relation_choices":[{"source_candidate_id":"person","target_candidate_id":"company",
+            "relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole","roleName":"CEO"}}}]
+    }));
+    assert_eq!(result.unwrap_err().code, "VALIDATION_ERROR");
+    assert_eq!(count(&store, "kg_entities"), 0);
+}
+
+#[test]
+fn merge_into_unnamed_target_still_checks_anonymous_relation_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let anonymous = store
+        .save_contact(&json!({
+            "operation_id":"anonymous-target","actor":"reviewer","label":"Person",
+            "set_properties":{"skills":["Python"]},
+            "evidence":[proof("properties.skills",json!("Python"))]
+        }))
+        .unwrap();
+    let target_id = anonymous["entity_id"].as_str().unwrap();
+    let mut named = candidate("named", "陈晓");
+    named["relation_suggestions"] = json!([{
+        "source_candidate_id":"named","target_candidate_id":"company","relation_type":"worksFor",
+        "properties":{"role":{"@type":"OrganizationRole","roleName":"CEO"}},"uncertain":false,
+        "evidence":[{"field_path":"$relation","value":{"relation_type":"worksFor",
+            "source_id":"named","target_id":"company"},"source_type":"file",
+            "file_name":"resume.pdf","file_sha256":"abc","quote":"陈晓任职甲公司",
+            "page":1,"locator_status":"located","collected_at":"2026-09-26T00:00:00.000Z"}]
+    }]);
+    let company = json!({"candidate_id":"company","label":"Organization",
+        "properties":{"name":"甲公司"},"evidence":[proof("properties.name",json!("甲公司"))],
+        "relation_suggestions":[],"warnings":[],"can_commit":true});
+    let import_id = ready(&store, vec![named, company]);
+    let result = store.commit_import(&json!({
+        "operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+        "import_id":import_id,"expected_version":2,
+        "choices":[{"candidate_id":"named","action":"merge","target_id":target_id,
+            "expected_target_version":1},{"candidate_id":"company","action":"create"}],
+        "relation_choices":[{"source_candidate_id":"named","target_candidate_id":"company",
+            "relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole","roleName":"CEO"}}}]
+    }));
+    assert_eq!(result.unwrap_err().code, "VALIDATION_ERROR");
+    assert_eq!(
+        store.get_contact(&json!({"entity_id":target_id})).unwrap()["version"],
+        1
+    );
 }
 
 #[test]

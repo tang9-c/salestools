@@ -46,6 +46,40 @@ describe('document extraction', () => {
     expect(result.candidates[0].relation_suggestions).toHaveLength(1);
   });
 
+  it('does not create a school relation from a bare institution name', async () => {
+    const input = [{ block_id: 'school', text: '星辰大学', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      { candidate_id: 'person', label: 'Person', properties: {}, evidence: [], relation_suggestions: [{
+        source_candidate_id: 'person', target_candidate_id: 'school', relation_type: 'alumniOf',
+        properties: {}, evidence: [{ block_id: 'school', quote: '星辰大学' }], uncertain: false,
+      }] },
+      { candidate_id: 'school', label: 'Organization', properties: { name: '星辰大学' },
+        evidence: [{ field_path: 'properties.name', value: '星辰大学', block_id: 'school', quote: '星辰大学' }],
+        relation_suggestions: [] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0]).toMatchObject({ can_commit: false, relation_suggestions: [] });
+  });
+
+  it('does not turn a negated institution statement into an anonymous relation', async () => {
+    for (const [type, claim] of [
+      ['worksFor', '未在甲公司任职'], ['alumniOf', '未在甲公司就读'],
+    ] as const) {
+      const input = [{ block_id: 'negated', text: claim, page: 1 }];
+      const fetchFn = vi.fn(async () => response([
+        { candidate_id: 'p', label: 'Person', properties: {}, evidence: [], relation_suggestions: [{
+          source_candidate_id: 'p', target_candidate_id: 'o', relation_type: type,
+          properties: type === 'worksFor' ? { role: { '@type': 'OrganizationRole' } } : {},
+          evidence: [{ block_id: 'negated', quote: claim }], uncertain: false,
+        }] },
+        { candidate_id: 'o', label: 'Organization', properties: { name: '甲公司' },
+          evidence: [{ field_path: 'properties.name', value: '甲公司', block_id: 'negated', quote: '甲公司' }] },
+      ]));
+      const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+      expect(result.candidates[0]).toMatchObject({ can_commit: false, relation_suggestions: [] });
+    }
+  });
+
   it('does not assign an institution to one of several unnamed people in the same batch', async () => {
     const input = [{ block_id: 'mixed', text: '候选甲 Python；候选乙 Java；曾就读星辰大学', page: 1 }];
     const fetchFn = vi.fn(async () => response([
@@ -61,6 +95,92 @@ describe('document extraction', () => {
         relation_suggestions: [] },
     ]));
     const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0].relation_suggestions).toEqual([]);
+  });
+  it('retains an explicit institution relation in a block unique to one unnamed person', async () => {
+    const input = [
+      { block_id: 'first', text: '候选甲：Python，曾就读星辰大学', page: 1 },
+      { block_id: 'second', text: '候选乙：Java', page: 2 },
+    ];
+    const fetchFn = vi.fn(async () => response([
+      { candidate_id: 'a', label: 'Person', properties: { skills: ['Python'] },
+        evidence: [{ field_path: 'properties.skills', value: 'Python', block_id: 'first', quote: 'Python' }],
+        relation_suggestions: [{ source_candidate_id: 'a', target_candidate_id: 'school',
+          relation_type: 'alumniOf', properties: {}, evidence: [{ block_id: 'first', quote: '曾就读星辰大学' }] }] },
+      { candidate_id: 'b', label: 'Person', properties: { skills: ['Java'] },
+        evidence: [{ field_path: 'properties.skills', value: 'Java', block_id: 'second', quote: 'Java' }],
+        relation_suggestions: [] },
+      { candidate_id: 'school', label: 'Organization', properties: { name: '星辰大学' },
+        evidence: [{ field_path: 'properties.name', value: '星辰大学', block_id: 'first', quote: '星辰大学' }],
+        relation_suggestions: [] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0].relation_suggestions).toHaveLength(1);
+    expect(result.candidates[1].relation_suggestions).toEqual([]);
+  });
+  it('rejects a shared-block relation when another unnamed person has no independent anchor', async () => {
+    const input = [{ block_id: 'mixed', text: '候选甲 Python；候选乙曾就读星辰大学', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      { candidate_id: 'a', label: 'Person', properties: { skills: ['Python'] },
+        evidence: [{ field_path: 'properties.skills', value: 'Python', block_id: 'mixed', quote: 'Python' }],
+        relation_suggestions: [{ source_candidate_id: 'a', target_candidate_id: 'school',
+          relation_type: 'alumniOf', properties: {}, evidence: [{ block_id: 'mixed', quote: '候选乙曾就读星辰大学' }] }] },
+      { candidate_id: 'b', label: 'Person', properties: {}, evidence: [], relation_suggestions: [] },
+      { candidate_id: 'school', label: 'Organization', properties: { name: '星辰大学' },
+        evidence: [{ field_path: 'properties.name', value: '星辰大学', block_id: 'mixed', quote: '星辰大学' }] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0].relation_suggestions).toEqual([]);
+  });
+
+  it('leaves multiple relation-only unnamed people unlinked without independent identity anchors', async () => {
+    const input = [
+      { block_id: 'first', text: '曾就读星辰大学', page: 1 },
+      { block_id: 'second', text: '曾就读明月大学', page: 2 },
+    ];
+    const fetchFn = vi.fn(async () => response([
+      ...(['first', 'second'] as const).map((block, index) => ({
+        candidate_id: `p${index}`, label: 'Person', properties: {}, evidence: [],
+        relation_suggestions: [{ source_candidate_id: `p${index}`, target_candidate_id: `o${index}`,
+          relation_type: 'alumniOf', properties: {}, evidence: [{ block_id: block, quote: input[index].text }] }],
+      })),
+      ...(['星辰大学', '明月大学'] as const).map((name, index) => ({
+        candidate_id: `o${index}`, label: 'Organization', properties: { name },
+        evidence: [{ field_path: 'properties.name', value: name, block_id: input[index].block_id, quote: name }],
+      })),
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0]).toMatchObject({ can_commit: false, relation_suggestions: [] });
+    expect(result.candidates[1]).toMatchObject({ can_commit: false, relation_suggestions: [] });
+  });
+
+  it('drops an unsupported role title while preserving an anonymous employment relation', async () => {
+    const input = [{ block_id: 'work', text: '任职甲公司', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      { candidate_id: 'p', label: 'Person', properties: {}, evidence: [], relation_suggestions: [{
+        source_candidate_id: 'p', target_candidate_id: 'o', relation_type: 'worksFor',
+        properties: { role: { '@type': 'OrganizationRole', roleName: 'CEO' } },
+        evidence: [{ block_id: 'work', quote: '任职甲公司' }], uncertain: false,
+      }] },
+      { candidate_id: 'o', label: 'Organization', properties: { name: '甲公司' },
+        evidence: [{ field_path: 'properties.name', value: '甲公司', block_id: 'work', quote: '甲公司' }],
+        relation_suggestions: [] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0].relation_suggestions[0].properties)
+      .toEqual({ role: { '@type': 'OrganizationRole' } });
+  });
+  it('keeps other candidates when a malformed employment suggestion omits its role', async () => {
+    const input = [{ block_id: 'work', text: '陈晓任职甲公司', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      { ...person('p', '陈晓', 'work'), relation_suggestions: [{ source_candidate_id: 'p',
+        target_candidate_id: 'o', relation_type: 'worksFor', properties: { employment_status: 'current' },
+        evidence: [{ block_id: 'work', quote: '陈晓任职甲公司' }] }] },
+      { candidate_id: 'o', label: 'Organization', properties: { name: '甲公司' },
+        evidence: [{ field_path: 'properties.name', value: '甲公司', block_id: 'work', quote: '甲公司' }] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates).toHaveLength(2);
     expect(result.candidates[0].relation_suggestions).toEqual([]);
   });
   it('keeps two people on one page as separate candidates with candidate-local ids and page evidence', async () => {
