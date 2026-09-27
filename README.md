@@ -2,7 +2,7 @@
 
 这是一个单进程、单实例的远程 MCP 服务。它先返回企业基础画像，再按需异步生成带可追溯来源的中文销售机会报告。只有真实 HTTP(S) 直接 URL 才渲染为链接；QCC 上游未提供直接 URL 时报告明确显示“来源链接不可用”。v0.1 使用 Node.js 24、TypeScript、SQLite、企查查 MCP、豆包搜索 HTTP API和火山方舟。
 
-首次使用请阅读 [MCP 快速入门](docs/QUICKSTART.md)，其中包含 Codex 注册、Token 配置、原有五个工具及共享联系人图谱的使用路径。
+当前功能与产品边界见 [PRD](docs/PRD.md)；首次使用请阅读 [MCP 快速入门](docs/QUICKSTART.md)，其中包含 Codex 注册、Token 配置、原有五个工具及共享联系人图谱的使用路径。
 
 ## 本地运行
 
