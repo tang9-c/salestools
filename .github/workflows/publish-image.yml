@@ -10,8 +10,16 @@ env:
   IMAGE_NAME: tang9-c/salestools
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -28,24 +36,23 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           df -h /
 
-      - name: Set up QEMU for arm64 smoke
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Build and smoke both architectures before publishing
+      - name: Build and smoke native architecture
         run: |
           set -euo pipefail
-          for arch in amd64 arm64; do
-            docker buildx build --platform "linux/$arch" --load \
-              --tag "salestools-smoke:$arch" --cache-from type=gha .
-            timeout 30m docker run --rm --network none --platform "linux/$arch" \
-              --read-only --tmpfs /tmp:rw,uid=1000,gid=1000,size=1g \
-              --tmpfs /data:rw,uid=1000,gid=1000,size=64m \
-              "salestools-smoke:$arch" \
-              /opt/contact-worker/.venv/bin/python /usr/local/bin/contact-runtime-smoke.py
-          done
+          image="$REGISTRY/$IMAGE_NAME:${GITHUB_REF_NAME}-${{ matrix.arch }}"
+          docker buildx build --platform "linux/${{ matrix.arch }}" --load \
+            --tag "$image" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --cache-from "type=gha,scope=salestools-${{ matrix.arch }}" \
+            --cache-to "type=gha,mode=max,scope=salestools-${{ matrix.arch }}" .
+          timeout 30m docker run --rm --network none --platform "linux/${{ matrix.arch }}" \
+            --read-only --tmpfs /tmp:rw,uid=1000,gid=1000,size=1g \
+            --tmpfs /data:rw,uid=1000,gid=1000,size=64m \
+            "$image" /opt/contact-worker/.venv/bin/python /usr/local/bin/contact-runtime-smoke.py
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -54,26 +61,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate image metadata
-        id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          flavor: latest=false
-          tags: |
-            type=ref,event=tag
-            type=raw,value=latest
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Push tested architecture
+        run: docker push "$REGISTRY/$IMAGE_NAME:${GITHUB_REF_NAME}-${{ matrix.arch }}"
 
-      - name: Build and push image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+  publish:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish version and latest manifests
+        run: |
+          set -euo pipefail
+          image="$REGISTRY/$IMAGE_NAME"
+          docker buildx imagetools create \
+            -t "$image:$GITHUB_REF_NAME" -t "$image:latest" \
+            "$image:${GITHUB_REF_NAME}-amd64" "$image:${GITHUB_REF_NAME}-arm64"
+          manifest="$(docker buildx imagetools inspect "$image:$GITHUB_REF_NAME")"
+          printf '%s\n' "$manifest"
+          grep -q 'linux/amd64' <<< "$manifest"
+          grep -q 'linux/arm64' <<< "$manifest"
