@@ -309,10 +309,19 @@ function coalescePeople(candidates: ImportCandidate[], blocks: ParsedBlock[], wa
     || people.some(person => person.relation_suggestions.some(relation =>
       ['colleague', 'spouse', 'parent', 'children'].includes(relation.relation_type)));
   if (hasOtherPeople) return candidates;
+  const compatible = (a: ImportCandidate, b: ImportCandidate): boolean => {
+    for (const field of ['telephone', 'email'] as const) {
+      const av = a.properties[field] ?? [];
+      const bv = b.properties[field] ?? [];
+      if (av.length && bv.length && !av.some(value => bv.includes(value))) return false;
+    }
+    return true;
+  };
   const singleResume = /个人简历|简历|curriculum vitae|\bresume\b/iu.test(documentText)
     && names.size === 1 && labeledNames.length === 1 && names.has(labeledNames[0])
+    && people.every(person => people.every(other => compatible(person, other)))
     && !sharedContact.test(documentText)
-    && !/推荐人|证明人|紧急联系人|家庭成员|references?\s*[:：]|emergency contact/iu.test(documentText)
+    && !/推荐人|证明人|紧急联系人|家庭成员|配偶|亲属|同事|父亲|母亲|丈夫|妻子|子女|兄弟|姐妹|\b(?:spouse|parent|father|mother|husband|wife|children|sibling|colleague|coworker|relative)\b|references?\s*[:：]|emergency contact/iu.test(documentText)
     && !people.some(person => person.review_items.some(item => item.kind === 'field'
       && item.field_path === 'properties.name' && !names.has(String(item.value))));
   const identifiers = (person: ImportCandidate, field: 'telephone' | 'email'): string[] =>
@@ -326,14 +335,6 @@ function coalescePeople(candidates: ImportCandidate[], blocks: ParsedBlock[], wa
         && (field === 'telephone' ? /手机|移动电话|mobile|cell/iu.test(line)
           : /个人邮箱|电子邮箱|邮箱|e-?mail/iu.test(line))));
     }));
-  const compatible = (a: ImportCandidate, b: ImportCandidate): boolean => {
-    for (const field of ['telephone', 'email'] as const) {
-      const av = a.properties[field] ?? [];
-      const bv = b.properties[field] ?? [];
-      if (av.length && bv.length && !av.some(value => bv.includes(value))) return false;
-    }
-    return true;
-  };
   const strongMatch = (a: ImportCandidate, b: ImportCandidate) =>
     (['telephone', 'email'] as const).some(field => identifiers(a, field).some(value => identifiers(b, field).includes(value)));
   const groups: ImportCandidate[][] = [];
@@ -390,7 +391,7 @@ function coalescePeople(candidates: ImportCandidate[], blocks: ParsedBlock[], wa
     group.forEach(person => remap.set(person.candidate_id, first.candidate_id));
   }
   const mapped = (id: string) => remap.get(id) ?? id;
-  return candidates.filter(candidate => !remap.has(candidate.candidate_id) || mapped(candidate.candidate_id) === candidate.candidate_id)
+  const mergedCandidates = candidates.filter(candidate => !remap.has(candidate.candidate_id) || mapped(candidate.candidate_id) === candidate.candidate_id)
     .map(candidate => {
       const result = replacements.get(candidate.candidate_id) ?? candidate;
       return { ...result,
@@ -404,6 +405,13 @@ function coalescePeople(candidates: ImportCandidate[], blocks: ParsedBlock[], wa
           ? { ...item, source_candidate_id: mapped(item.source_candidate_id), target_candidate_id: mapped(item.target_candidate_id) } : item),
       };
     });
+  // Remapping can enlarge review items on unmerged organizations too. Publish
+  // the file-level result only after every candidate still satisfies the contract.
+  if (mergedCandidates.some(candidate => !ImportCandidateSchema.safeParse(candidate).success)) {
+    warnings.push('人物片段端点重映射超出预览契约限制，已保留原候选');
+    return candidates;
+  }
+  return mergedCandidates;
 }
 
 export class DocumentExtractor {

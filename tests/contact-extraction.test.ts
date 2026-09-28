@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ImportCandidateSchema } from '../src/contracts/index.js';
 import { DocumentExtractor } from '../src/contacts/document-extractor.js';
 
 const source = { fileName: 'resume.pdf', fileSha256: 'a'.repeat(64), collectedAt: '2026-09-26T00:00:00.000Z' };
@@ -103,6 +104,60 @@ describe('document extraction', () => {
           { field_path: 'properties.telephone', value: '+15550000111', block_id: 'o', quote: '+15550000111' }] },
     ]))).extract(input, new AbortController().signal);
     expect(result.candidates.filter(item => item.label === 'Person')).toHaveLength(2);
+  });
+
+  it.each(['spouse', 'parent', 'colleague', '\u914d\u5076', '\u4eb2\u5c5e', '\u540c\u4e8b'])('does not absorb another person mentioned only in raw %s text', async kind => {
+    const input = [{ block_id: 'p', page: 1, text: 'resume\nname: Riley Moss' },
+      { block_id: 'q', page: 2, text: `${kind}: Dana Reed\nskills: Java` }];
+    const result = await extractor(vi.fn(async () => response([person('p', 'Riley Moss', 'p'),
+      { candidate_id: 'q', label: 'Person', properties: { skills: ['Java'] }, evidence: [
+        { field_path: 'properties.skills', value: 'Java', block_id: 'q', quote: 'skills: Java' },
+      ] },
+    ]))).extract(input, new AbortController().signal);
+    expect(result.candidates).toHaveLength(2);
+    expect(result.candidates[0].properties).toMatchObject({ skills: [] });
+  });
+
+  it.each([false, true])('does not choose an identity for an unanchored fragment by candidate order: reverse=%s', async reverse => {
+    const input = [{ block_id: 'p', page: 1, text: 'resume\nname: Riley Moss\nskills: Java' },
+      { block_id: 'q', page: 2, text: 'Riley Moss\nMobile: +15550000001' },
+      { block_id: 'r', page: 3, text: 'Riley Moss\nMobile: +15550000002' }];
+    const contacts = ['q', 'r'].map((id, index) => ({ ...person(id, 'Riley Moss', id),
+      properties: { name: 'Riley Moss', telephone: [`+1555000000${index + 1}`] }, evidence: [
+        ...person(id, 'Riley Moss', id).evidence,
+        { field_path: 'properties.telephone', value: `+1555000000${index + 1}`, block_id: id, quote: `Mobile: +1555000000${index + 1}` },
+      ] }));
+    const result = await extractor(vi.fn(async () => response([
+      { ...person('p', 'Riley Moss', 'p'), properties: { name: 'Riley Moss', skills: ['Java'] }, evidence: [
+        ...person('p', 'Riley Moss', 'p').evidence,
+        { field_path: 'properties.skills', value: 'Java', block_id: 'p', quote: 'skills: Java' },
+      ] }, ...(reverse ? contacts.reverse() : contacts),
+    ]))).extract(input, new AbortController().signal);
+    expect(result.candidates).toHaveLength(3);
+    expect(result.candidates[0].properties).toMatchObject({ name: 'Riley Moss', skills: ['Java'], telephone: [] });
+  });
+
+  it.each(['person', 'organization'])('rolls back a merge when remapped review items on %s exceed the contract', async holder => {
+    const input = [{ block_id: 'n', page: 2, text: 'resume\nname: Riley Moss' },
+      { block_id: 's', page: 2, text: 'skills Python' }, { block_id: 'h', page: 2, text: 'work experience' },
+      { block_id: 'o', page: 2, text: 'Cedar Labs' }];
+    const relations = [{ source_candidate_id: 'part', target_candidate_id: 'o', relation_type: 'worksFor',
+      properties: {}, evidence: [{ block_id: 'o', quote: 'Cedar Labs' }] }];
+    const result = await extractor(vi.fn(async () => response([
+      person('a'.repeat(2000), 'Riley Moss', 'n'),
+      { candidate_id: 'part', label: 'Person', properties: { skills: ['Python'] }, evidence: [
+        { field_path: 'properties.skills', value: 'Python', block_id: 's', quote: 'skills Python' },
+      ], relation_suggestions: holder === 'person' ? relations : [] },
+      { candidate_id: 'o', label: 'Organization', properties: { name: 'Cedar Labs' }, evidence: [
+        { field_path: 'properties.name', value: 'Cedar Labs', block_id: 'o', quote: 'Cedar Labs' },
+      ], relation_suggestions: holder === 'organization' ? relations : [] },
+    ]))).extract(input, new AbortController().signal);
+    expect(result.candidates.every(candidate => ImportCandidateSchema.safeParse(candidate).success)).toBe(true);
+    expect(result.candidates).toHaveLength(3);
+    expect(result.warnings.length).toBeGreaterThan(0);
+    const review = result.candidates.find(candidate => candidate.candidate_id === (holder === 'person' ? 'batch1:part' : 'batch1:o'))!.review_items;
+    expect(review).toEqual([expect.objectContaining({ kind: 'relation', source_candidate_id: 'batch1:part',
+      target_candidate_id: 'batch1:o', reason: 'ambiguous_owner' })]);
   });
 
   it.each(['single', 'ambiguous', 'project', 'other-person', 'other-page', 'negated'] as const)(
