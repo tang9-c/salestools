@@ -40,6 +40,13 @@ fn entity_index_inputs(
             }
         }
     }
+    // Each occurrence must survive: an earlier deletion can form a value that a
+    // later repeated scrub input removes (e.g. Secret, X, Secret on SecXret).
+    fn add_private(out: &mut Vec<String>, value: &Value) {
+        if let Some(text) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            out.push(text.to_owned());
+        }
+    }
     fn items(value: &Value) -> &[Value] {
         value.as_array().map(Vec::as_slice).unwrap_or(&[])
     }
@@ -63,21 +70,21 @@ fn entity_index_inputs(
     let mut private = Vec::new();
     for key in ["email", "telephone", "faxNumber"] {
         for value in items(&properties[key]) {
-            add(&mut private, value);
+            add_private(&mut private, value);
         }
     }
-    add(&mut private, &properties["address"]);
+    add_private(&mut private, &properties["address"]);
     for point in items(&properties["contactPoint"]) {
         for key in ["email", "telephone"] {
             for value in items(&point[key]) {
-                add(&mut private, value);
+                add_private(&mut private, value);
             }
         }
-        add(&mut private, &point["url"]);
+        add_private(&mut private, &point["url"]);
     }
     if let Some(extensions) = extensions {
         for account in items(&extensions["instantMessaging"]) {
-            add(&mut private, &account["accountId"]);
+            add_private(&mut private, &account["accountId"]);
         }
     }
     (selected, private)

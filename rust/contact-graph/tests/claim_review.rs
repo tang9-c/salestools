@@ -467,3 +467,37 @@ fn changes_to_index_fields_or_privacy_inputs_invalidate_ready_vector() {
         );
     }
 }
+
+#[test]
+fn repeated_privacy_value_after_another_scrub_input_invalidates_ready_vector() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path().join("g.db")).unwrap();
+    let person = entity(&s, "Person", "Synthetic Person");
+    s.save_contact(&json!({"operation_id":"private-inputs","actor":"tester","label":"Person","entity_id":person,"expected_version":1,
+        "set_properties":{"description":"SecXret","address":"Secret"},
+        "set_extensions":{"instantMessaging":[{"platform":"synthetic","accountId":"X"}]},
+        "evidence":[proof("properties.description",json!("SecXret")),proof("properties.address",json!("Secret")),proof("extensions.instantMessaging",json!({"platform":"synthetic","accountId":"X"}))]})).unwrap();
+    let before = ready_vector(&s, &person);
+    claim(
+        &s,
+        "private-duplicate",
+        &person,
+        "extensions.instantMessaging",
+        json!({"platform":"synthetic","accountId":"Secret"}),
+    );
+    let input = review("private-duplicate", "confirm", 2);
+    let out = call(&s, "review_contact_claim", input.clone());
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!(out["result"]["indexed_entity_id"], person);
+    let doc = detail(&s, &person);
+    assert_eq!(doc["index_status"], "unindexed");
+    assert!(doc["index_content_version"].as_u64().unwrap() > before.as_u64().unwrap());
+    assert_eq!(vector_total(&s), 0);
+    let replay = call(&s, "review_contact_claim", input);
+    assert_eq!(replay["result"]["replayed"], true);
+    assert_eq!(replay["result"]["indexed_entity_id"], person);
+    assert_eq!(
+        detail(&s, &person)["index_content_version"],
+        doc["index_content_version"]
+    );
+}

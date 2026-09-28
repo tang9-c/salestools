@@ -25,6 +25,7 @@ async function setup() {
     { candidate_id: 'person', label: 'Person', properties: { name: 'Synthetic Person' }, evidence: [proof('properties.name', 'Synthetic Person')], can_commit: true,
       review_items: [ { kind: 'field', field_path: 'properties.skills', value: 'Rust', reason: 'missing_evidence' },
         { kind: 'field', field_path: 'properties.birthDate', value: '1990-01-01', reason: 'missing_evidence' },
+        { kind: 'field', field_path: 'extensions.instantMessaging', value: { platform: 'synthetic', accountId: 'Secret' }, reason: 'missing_evidence' },
         { kind: 'field', field_path: 'properties.skills', value: 'RejectNeedle', reason: 'missing_evidence' },
         { kind: 'relation', relation_type: 'worksFor', source_candidate_id: 'person', target_candidate_id: 'org', properties: { role: { '@type': 'OrganizationRole', roleName: 'Engineer', startDate: '2020' } }, reason: 'missing_evidence' },
         { kind: 'relation', relation_type: 'alumniOf', source_candidate_id: 'person', target_candidate_id: 'org', properties: {}, reason: 'missing_evidence' } ] },
@@ -122,5 +123,27 @@ it('keeps ready vectors and skips scheduling for unchanged skills and nonindexed
   expect(await h.library.get(h.person)).toMatchObject({ index_status: 'unindexed' });
   expect(await h.graph.request('search_vector', { model: 'synthetic', dimension: 2, vector: [1, 0] })).toMatchObject({ total: 0 });
   expect(await h.library.reviewClaim(changed, 'reviewer')).toMatchObject({ replayed: true });
+  await expect.poll(() => h.indexed).toEqual([h.person]);
+});
+
+it('invalidates and schedules when repeated privacy values change the real scrubbed text', async () => {
+  const h = await setup();
+  await h.graph.request('save_contact', { operation_id: 'private-inputs', actor: 'tester', label: 'Person', entity_id: h.person, expected_version: 1,
+    set_properties: { description: 'SecXret', address: 'Secret' }, set_extensions: { instantMessaging: [{ platform: 'synthetic', accountId: 'X' }] },
+    evidence: [proof('properties.description', 'SecXret'), proof('properties.address', 'Secret'), proof('extensions.instantMessaging', { platform: 'synthetic', accountId: 'X' })] });
+  const initial = await h.library.get(h.person);
+  expect(buildEmbeddingText(initial)).toBe('Synthetic Person\nSecret');
+  const version = initial!.index_content_version;
+  await h.graph.request('set_vector_state', { operation_id: 'private-pending', actor: 'system', action: 'set', entity_id: h.person, content_version: version, state: 'pending' });
+  await h.graph.request('put_vector', { operation_id: 'private-ready', actor: 'system', entity_id: h.person, content_version: version, model: 'synthetic', dimension: 2, vector: [1, 0] });
+  const claim = h.claims.find(c => typeof c.value === 'object' && c.value !== null && 'accountId' in c.value)!;
+  const input = { claim_id: claim.claim_id, action: 'confirm', operation_id: 'private-confirm', expected_entity_version: 2, confirmation_note: 'Confirmed synthetic account' };
+  const result = await h.library.reviewClaim(input, 'reviewer');
+  const after = await h.library.get(h.person);
+  expect(buildEmbeddingText(after)).toBe('Synthetic Person');
+  expect(result).toHaveProperty('indexed_entity_id', h.person);
+  expect(after).toMatchObject({ index_status: 'unindexed' });
+  expect(after!.index_content_version).not.toBe(version);
+  expect(await h.graph.request('search_vector', { model: 'synthetic', dimension: 2, vector: [1, 0] })).toMatchObject({ total: 0 });
   await expect.poll(() => h.indexed).toEqual([h.person]);
 });
