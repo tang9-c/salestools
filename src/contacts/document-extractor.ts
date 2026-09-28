@@ -68,6 +68,21 @@ function reviewField(items: ReviewItem[], warnings: string[], field_path: string
     item = { ...base, value: truncateBytes(serialized, 1000),
       ...(quote ? { quote: truncateBytes(quote, 400) } : {}) };
     if (!warnings.includes('待核实线索超过2KB，已截断')) warnings.push('待核实线索超过2KB，已截断');
+    if (!ReviewItemSchema.safeParse(item).success) {
+      const characters = [...String(item.value)];
+      let lower = 0;
+      let upper = characters.length;
+      let bounded: typeof item | undefined;
+      while (lower <= upper) {
+        const length = Math.floor((lower + upper) / 2);
+        const candidate = { ...item, value: `${characters.slice(0, length).join('')}…` };
+        if (ReviewItemSchema.safeParse(candidate).success) {
+          bounded = candidate;
+          lower = length + 1;
+        } else upper = length - 1;
+      }
+      if (bounded) item = bounded;
+    }
   }
   if (ReviewItemSchema.safeParse(item).success) items.push(item);
   else warnings.push('待核实线索无法保存，已截断');

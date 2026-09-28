@@ -109,6 +109,23 @@ describe('document extraction', () => {
     expect(candidate.warnings).toEqual(expect.arrayContaining(['待核实线索超过2KB，已截断']));
   });
 
+  it('keeps an escaped-control-character clue within the serialized review limit', async () => {
+    const input = [{ block_id: 'b', text: '陈晓', page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',
+      properties: { name: '陈晓', skills: ['\n'.repeat(3000)] }, evidence: [
+        { field_path: 'properties.name', value: '陈晓', block_id: 'b', quote: '陈晓' },
+      ] }]));
+    const candidate = (await extractor(fetchFn).extract(input, new AbortController().signal)).candidates[0];
+    expect(candidate.properties.name).toBe('陈晓');
+    expect(candidate.review_items).toHaveLength(1);
+    const clue = candidate.review_items[0];
+    expect(clue.kind).toBe('field');
+    if (clue.kind !== 'field') throw new Error('expected field review item');
+    expect(String(clue.value).startsWith('\n')).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(clue), 'utf8')).toBeLessThanOrEqual(2048);
+    expect(candidate.warnings).toContain('待核实线索超过2KB，已截断');
+  });
+
   it.each([
     ['公司项目名称：ERP 系统', 'ERP'], ['Company project name: MOM platform', 'MOM'],
   ])('does not infer an organization from a company project label: %s', async (text, name) => {
