@@ -49,7 +49,7 @@ function contactPageState(value: unknown): { evidence: ContactPageState; relatio
 export async function readCompleteContact(graph: GraphClient, entityId: string, options: {
   evidence?: boolean; relations?: boolean;
 } = {}): Promise<Record<string, unknown> | null> {
-  const first = await graph.request<Record<string, unknown> | null>('get_contact', { entity_id: entityId });
+  const first = await graph.request<Record<string, unknown> | null>('get_contact', { entity_id: entityId, claim_limit: 0 });
   if (!first) return null;
   const initial = contactPageState(first);
   if (!initial) return first;
@@ -66,7 +66,7 @@ export async function readCompleteContact(graph: GraphClient, entityId: string, 
     const relationOffset = includeRelations ? state.relations.next_offset ?? state.relations.total : state.relations.total;
     const next = await graph.request<Record<string, unknown> | null>('get_contact', {
       entity_id: entityId, evidence_offset: evidenceOffset, relation_offset: relationOffset,
-      evidence_limit: 50, relation_limit: 50,
+      evidence_limit: 50, relation_limit: 50, claim_limit: 0,
     });
     if (!next || next.version !== first.version || next.index_content_version !== first.index_content_version
       || !Array.isArray(next.evidence) || !Array.isArray(next.relations)) {

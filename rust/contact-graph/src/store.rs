@@ -88,7 +88,7 @@ fn contact_page(raw: &Value, prefix: &str) -> Result<(usize, usize), AppError> {
         .get(&limit_key)
         .map_or(Some(if prefix == "claim" { 10 } else { 50 }), Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
-        .filter(|value| (1..=50).contains(value))
+        .filter(|value| (1..=50).contains(value) || (prefix == "claim" && *value == 0))
         .ok_or_else(|| AppError::validation(format!("Invalid {limit_key}")))?;
     Ok((offset, limit))
 }
@@ -753,7 +753,8 @@ impl Store {
             }
             claims.push(claim);
         }
-        let claim_next = (claim_offset.saturating_add(claims.len()) < claim_total)
+        let claim_next = (claim_limit > 0
+            && claim_offset.saturating_add(claims.len()) < claim_total)
             .then_some(claim_offset.saturating_add(claims.len()));
         Ok(
             json!({"entity":entity_json,"evidence":evidence,"relations":relation_page,"conflicts":conflicts,

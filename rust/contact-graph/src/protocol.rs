@@ -34,6 +34,63 @@ fn bounded_response(response: Value, request_id: Value) -> Value {
     }
 }
 
+// Budget the complete envelope, including conflicts (which repeat evidence), IDs,
+// metadata and the newline. Counts alone cannot bound UTF-8 response frames.
+fn trim_contact_response(response: &mut Value) {
+    while serde_json::to_vec(response).is_ok_and(|frame| frame.len() >= MAX_FRAME_BYTES) {
+        let result = &mut response["result"];
+        let pages = ["evidence", "relations", "unverified_claims"];
+        let removable = |minimum: usize| {
+            pages
+                .iter()
+                .filter_map(|key| {
+                    let items = result[key].as_array()?;
+                    if items.len() <= minimum {
+                        return None;
+                    }
+                    let last = items.last()?;
+                    let mut bytes = last.to_string().len();
+                    if *key == "evidence" {
+                        bytes += result["conflicts"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter(|item| item["evidence_id"] == last["evidence_id"])
+                            .map(|item| item.to_string().len())
+                            .sum::<usize>();
+                    }
+                    Some((*key, bytes))
+                })
+                .max_by_key(|(_, bytes)| *bytes)
+        };
+        // Trim optional claims first, retaining one when it can coexist with the
+        // formal pages. Every nonempty formal page must advance its own cursor.
+        let claim_count = result["unverified_claims"].as_array().map_or(0, Vec::len);
+        let candidate = if claim_count > 1 {
+            Some(("unverified_claims", 0))
+        } else {
+            removable(1).or_else(|| (claim_count > 0).then_some(("unverified_claims", 0)))
+        };
+        let Some((key, _)) = candidate else {
+            break;
+        };
+        let removed = result[key].as_array_mut().unwrap().pop().unwrap();
+        if key == "evidence" {
+            if let Some(conflicts) = result["conflicts"].as_array_mut() {
+                conflicts.retain(|item| item["evidence_id"] != removed["evidence_id"]);
+            }
+        }
+        let count = result[key].as_array().unwrap().len() as u64;
+        let page = &mut result["pagination"][key];
+        let next = page["offset"].as_u64().unwrap().saturating_add(count);
+        page["next_offset"] = if next < page["total"].as_u64().unwrap() {
+            json!(next)
+        } else {
+            Value::Null
+        };
+    }
+}
+
 pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
     let request: Request = match serde_json::from_slice(line) {
         Ok(request) => request,
@@ -45,7 +102,7 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
         return error(request_id, "BAD_REQUEST", "Invalid request envelope");
     }
     let response_id = request_id.clone();
-    let response = match request.op.as_str() {
+    let mut response = match request.op.as_str() {
         "health" => json!({
             "version": 1, "request_id": request_id, "ok": true,
             "result": { "nonce": request.payload.get("nonce").cloned().unwrap_or(Value::Null) }
@@ -132,6 +189,9 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
         },
         _ => error(request_id, "UNKNOWN_OPERATION", "Unknown graph operation"),
     };
+    if request.op == "get_contact" && response["ok"] == true {
+        trim_contact_response(&mut response);
+    }
     bounded_response(response, response_id)
 }
 
@@ -146,6 +206,86 @@ pub fn frame_too_large() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contact_budget_shrinks_all_streams_and_keeps_offsets_and_conflicts_consistent() {
+        let evidence: Vec<Value> = (0..50)
+            .map(|id| json!({"evidence_id":id,"quote":"例".repeat(500)}))
+            .collect();
+        let relations: Vec<Value> = (0..50)
+            .map(|id| json!({"relation_id":id,"data":"r".repeat(3000)}))
+            .collect();
+        let claims: Vec<Value> = (0..50)
+            .map(|id| json!({"claim_id":id,"value":"例".repeat(500),"quote":"例".repeat(500)}))
+            .collect();
+        let mut response = json!({"version":1,"request_id":"request".repeat(1000),"ok":true,
+            "result":{"entity":{},"evidence":evidence,"conflicts":evidence,"relations":relations,
+                "unverified_claims":claims,"pagination":{
+                    "evidence":{"offset":7,"limit":50,"total":100,"next_offset":57},
+                    "relations":{"offset":3,"limit":50,"total":100,"next_offset":53},
+                    "unverified_claims":{"offset":2,"limit":50,"total":100,"next_offset":52}}}});
+        trim_contact_response(&mut response);
+        assert!(serde_json::to_vec(&response).unwrap().len() < MAX_FRAME_BYTES);
+        for (key, offset) in [("evidence", 7), ("relations", 3), ("unverified_claims", 2)] {
+            let len = response["result"][key].as_array().unwrap().len();
+            assert!(len > 0);
+            assert_eq!(response["result"]["pagination"][key]["total"], 100);
+            assert_eq!(
+                response["result"]["pagination"][key]["next_offset"],
+                offset + len
+            );
+        }
+        assert_eq!(
+            response["result"]["evidence"],
+            response["result"]["conflicts"]
+        );
+        assert!(response["result"]["evidence"].as_array().unwrap().len() < 50);
+        let mut relation_heavy = response.clone();
+        relation_heavy["result"]["relations"] =
+            json!((0..50).map(|id|
+            json!({"relation_id":id,"properties":{"role":{"roleName":"r".repeat(10_000)}}}))
+            .collect::<Vec<_>>());
+        trim_contact_response(&mut relation_heavy);
+        let relation_count = relation_heavy["result"]["relations"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert!(relation_count > 0 && relation_count < 50);
+        assert!(serde_json::to_vec(&relation_heavy).unwrap().len() < MAX_FRAME_BYTES);
+        assert_eq!(
+            relation_heavy["result"]["pagination"]["relations"]["next_offset"],
+            3 + relation_count
+        );
+        assert_eq!(
+            response["result"]["unverified_claims"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn contact_budget_preserves_errors_for_an_indivisible_formal_page_or_base() {
+        let mut response = json!({"version":1,"request_id":"req","ok":true,"result":{
+            "entity":{},"conflicts":[],"evidence":[{"evidence_id":"a","data":"x".repeat(150_000)}],
+            "relations":[{"relation_id":"b","data":"x".repeat(140_000)}],"unverified_claims":[],
+            "pagination":{"evidence":{"offset":0,"total":1,"next_offset":null},
+                "relations":{"offset":0,"total":1,"next_offset":null}}}});
+        trim_contact_response(&mut response);
+        assert_eq!(
+            bounded_response(response.clone(), json!("req"))["error"]["code"],
+            "RESPONSE_TOO_LARGE"
+        );
+        assert_eq!(response["result"]["evidence"].as_array().unwrap().len(), 1);
+        assert_eq!(response["result"]["relations"].as_array().unwrap().len(), 1);
+        response["result"]["entity"] = json!({"data":"x".repeat(MAX_FRAME_BYTES)});
+        trim_contact_response(&mut response);
+        assert_eq!(
+            bounded_response(response, json!("req"))["error"]["code"],
+            "RESPONSE_TOO_LARGE"
+        );
+    }
 
     #[test]
     fn oversized_result_is_a_short_error_with_the_same_request_id() {
