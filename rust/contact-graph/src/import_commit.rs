@@ -114,6 +114,7 @@ fn candidate<'a>(value: &'a Value, id: &str) -> Result<CandidateView<'a>, AppErr
         "extensions",
         "evidence",
         "relation_suggestions",
+        "review_items",
         "warnings",
         "can_commit",
     ];

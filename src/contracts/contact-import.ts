@@ -17,10 +17,39 @@ const CandidateRelationSchema = z.object({
   uncertain: z.boolean().default(false),
 }).strict();
 
+const ReviewReasonSchema = z.enum([
+  'missing_evidence', 'quote_mismatch', 'ambiguous_context', 'invalid_shape', 'ambiguous_owner',
+]);
+const reviewItemBase = {
+  reason: ReviewReasonSchema,
+  page: z.number().int().positive().optional(),
+  quote: z.string().refine(value => [...value].length <= 500, 'review_item_quote_too_long').optional(),
+};
+export const ReviewItemSchema = z.discriminatedUnion('kind', [
+  z.object({
+    ...reviewItemBase,
+    kind: z.literal('field'),
+    field_path: candidateText,
+    value: z.unknown(),
+  }).strict(),
+  z.object({
+    ...reviewItemBase,
+    kind: z.literal('relation'),
+    source_candidate_id: candidateText,
+    target_candidate_id: candidateText,
+    relation_type: ContactRelationTypeSchema,
+    properties: z.record(z.string(), z.unknown()),
+  }).strict(),
+]).refine(item => new TextEncoder().encode(JSON.stringify(item)).length <= 2048,
+  'review_item_size_exceeded');
+
+export type ReviewItem = z.infer<typeof ReviewItemSchema>;
+
 const candidateBase = {
   candidate_id: candidateText,
   evidence: z.array(ContactEvidenceSchema).default([]),
   relation_suggestions: z.array(CandidateRelationSchema).default([]),
+  review_items: z.array(ReviewItemSchema).max(100, 'review_items_limit_exceeded').default([]),
   warnings: z.array(candidateText).default([]),
   can_commit: z.boolean(),
 };

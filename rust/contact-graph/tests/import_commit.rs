@@ -37,6 +37,40 @@ fn count(store: &Store, table: &str) -> i64 {
 }
 
 #[test]
+fn review_item_survives_preview_but_requires_explicit_manual_confirmation_to_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let mut preview = candidate("person", "陈晓");
+    preview["review_items"] = json!([{"kind":"field","field_path":"properties.skills",
+        "value":"Java","reason":"missing_evidence","page":1,"quote":"Java"}]);
+    let import_id = ready(&store, vec![preview.clone()]);
+    let committed = store.commit_import(&json!({
+        "operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+        "import_id":import_id,"expected_version":2,
+        "choices":[{"candidate_id":"person","action":"create"}]
+    })).unwrap();
+    let id = committed["results"][0]["entity_id"].as_str().unwrap();
+    let saved = store.get_contact(&json!({"entity_id":id})).unwrap();
+    assert_eq!(saved["entity"]["properties"]["skills"], json!([]));
+    assert_eq!(store.get_import_job(&json!({"import_id":import_id})).unwrap()
+        ["data"]["candidates"][0]["review_items"], preview["review_items"]);
+
+    let second_dir = tempfile::tempdir().unwrap();
+    let second_store = Store::open(second_dir.path().join("graph.sqlite")).unwrap();
+    let second_import_id = ready(&second_store, vec![preview]);
+    let confirmed = second_store.commit_import(&json!({
+        "operation_id":format!("contact-import:{second_import_id}"),"actor":"reviewer",
+        "import_id":second_import_id,"expected_version":2,
+        "choices":[{"candidate_id":"person","action":"create",
+            "set_properties":{"skills":["Java"]},
+            "evidence":[proof("properties.skills",json!("Java"))]}]
+    })).unwrap();
+    let confirmed_id = confirmed["results"][0]["entity_id"].as_str().unwrap();
+    let saved = second_store.get_contact(&json!({"entity_id":confirmed_id})).unwrap();
+    assert_eq!(saved["entity"]["properties"]["skills"], json!(["Java"]));
+}
+
+#[test]
 fn unnamed_skill_candidate_commits_without_a_placeholder_name() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("graph.sqlite")).unwrap();

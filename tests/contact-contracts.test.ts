@@ -111,6 +111,37 @@ describe('shared contact graph contract', () => {
     expect(candidate.can_commit).toBe(false);
   });
 
+  it('accepts bounded field and relation review items without promoting them to properties', () => {
+    const base = {
+      candidate_id: 'c_1', label: 'Person', properties: { name: '陈晓' },
+      evidence: [], relation_suggestions: [], warnings: [], can_commit: true,
+    };
+    const field = { kind: 'field', field_path: 'properties.skills', value: 'Java',
+      reason: 'missing_evidence', page: 1, quote: 'Java' };
+    const relation = { kind: 'relation', source_candidate_id: 'c_1', target_candidate_id: 'c_2',
+      relation_type: 'worksFor', properties: {}, reason: 'ambiguous_owner' };
+    const candidate = ImportCandidateSchema.parse({ ...base, review_items: [field, relation] });
+    expect(candidate.review_items).toEqual([field, relation]);
+    expect(candidate.properties.skills).toEqual([]);
+    expect(ImportCandidateSchema.parse(base).review_items).toEqual([]);
+    expect(ImportCandidateSchema.safeParse({ ...base,
+      review_items: [{ ...field, quote: 'x'.repeat(501) }],
+    }).success).toBe(false);
+    expect(ImportCandidateSchema.safeParse({ ...base,
+      review_items: [{ ...field, reason: 'invented' }],
+    }).success).toBe(false);
+    expect(ImportCandidateSchema.safeParse({ ...base,
+      review_items: Array.from({ length: 101 }, () => field),
+    }).success).toBe(false);
+    expect(ImportCandidateSchema.safeParse({ ...base,
+      review_items: [{ ...field, value: '中'.repeat(700) }],
+    }).success).toBe(false);
+    const { value: _missingValue, ...incompleteField } = field;
+    expect(ImportCandidateSchema.safeParse({ ...base,
+      review_items: [incompleteField],
+    }).success).toBe(false);
+  });
+
   it('allows a nameless Person record with substantive skills while Organization still needs a name', () => {
     const person = fixture('person-valid') as { label: string; properties: Record<string, unknown> };
     const { name: _ignored, ...properties } = person.properties;
