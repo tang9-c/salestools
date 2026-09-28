@@ -27,6 +27,62 @@ fn manual(path: &str, value: &Value, note: &str, now: &str) -> Value {
         "locator_status":"not_applicable","collected_at":now,"quote":note})
 }
 
+// Keep this projection aligned with buildEmbeddingText in vector-indexer.ts.
+// Privacy values influence scrubbing even though they are never embedded themselves.
+fn entity_index_inputs(
+    properties: &Value,
+    extensions: Option<&Value>,
+) -> (Vec<String>, Vec<String>) {
+    fn add(out: &mut Vec<String>, value: &Value) {
+        if let Some(text) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            if !out.iter().any(|item| item == text) {
+                out.push(text.to_owned());
+            }
+        }
+    }
+    fn items(value: &Value) -> &[Value] {
+        value.as_array().map(Vec::as_slice).unwrap_or(&[])
+    }
+    let mut selected = Vec::new();
+    for key in ["name", "description", "jobTitle"] {
+        add(&mut selected, &properties[key]);
+    }
+    for skill in items(&properties["skills"]) {
+        add(&mut selected, skill);
+    }
+    for occupation in items(&properties["hasOccupation"]) {
+        for key in ["name", "description"] {
+            add(&mut selected, &occupation[key]);
+        }
+    }
+    for credential in items(&properties["hasCredential"]) {
+        for key in ["name", "credentialCategory"] {
+            add(&mut selected, &credential[key]);
+        }
+    }
+    let mut private = Vec::new();
+    for key in ["email", "telephone", "faxNumber"] {
+        for value in items(&properties[key]) {
+            add(&mut private, value);
+        }
+    }
+    add(&mut private, &properties["address"]);
+    for point in items(&properties["contactPoint"]) {
+        for key in ["email", "telephone"] {
+            for value in items(&point[key]) {
+                add(&mut private, value);
+            }
+        }
+        add(&mut private, &point["url"]);
+    }
+    if let Some(extensions) = extensions {
+        for account in items(&extensions["instantMessaging"]) {
+            add(&mut private, &account["accountId"]);
+        }
+    }
+    (selected, private)
+}
+
 impl Store {
     pub fn review_contact_claim(&self, raw: &Value) -> Result<Value, AppError> {
         let input: ReviewInput =
@@ -114,6 +170,7 @@ impl Store {
                 let mut extensions: Option<Value> = extensions
                     .map(|v| serde_json::from_str(&v).map_err(AppError::internal))
                     .transpose()?;
+                let index_before = entity_index_inputs(&properties, extensions.as_ref());
                 let (scope, key) = path
                     .split_once('.')
                     .ok_or_else(|| AppError::validation("Invalid field path"))?;
@@ -185,6 +242,8 @@ impl Store {
                         "Unnamed Person needs supported information",
                     ));
                 }
+                let index_changed =
+                    index_before != entity_index_inputs(&properties, extensions.as_ref());
                 entity.name = properties["name"].as_str().unwrap_or(&subject).to_owned();
                 entity.properties =
                     serde_json::from_value(properties).map_err(AppError::internal)?;
@@ -200,7 +259,7 @@ impl Store {
                     tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'entity',?2,?3,?4,?5)",
                         params![record["evidence_id"].as_str(),subject,path,record["value"].to_string(),record.to_string()]).map_err(AppError::internal)?;
                 }
-                if entity.entity_type == "Person" {
+                if entity.entity_type == "Person" && index_changed {
                     crate::vectors::invalidate_vector(&tx, &subject)?;
                     result["indexed_entity_id"] = json!(subject);
                 }

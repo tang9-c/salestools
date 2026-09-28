@@ -364,3 +364,106 @@ fn explicit_corrections_obey_scalar_nested_extension_and_relation_validation() {
     assert_eq!(status(&s, "bad-path"), "unverified");
     assert_eq!(status(&s, "null"), "unverified");
 }
+
+fn ready_vector(s: &Store, person: &str) -> Value {
+    let version = detail(s, person)["index_content_version"].clone();
+    s.set_vector_state(
+        &json!({"operation_id":"pending", "actor":"system", "action":"set",
+        "entity_id":person,"content_version":version,"state":"pending"}),
+    )
+    .unwrap();
+    s.put_vector(
+        &json!({"operation_id":"vector", "actor":"system", "entity_id":person,
+        "content_version":version,"model":"synthetic","dimension":2,"vector":[1.0,0.0]}),
+    )
+    .unwrap();
+    version
+}
+fn vector_total(s: &Store) -> Value {
+    s.search_vector(&json!({"model":"synthetic","dimension":2,"vector":[1.0,0.0]}))
+        .unwrap()["total"]
+        .clone()
+}
+
+#[test]
+fn duplicate_skill_and_nonindexed_birth_date_preserve_ready_vector() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path().join("g.db")).unwrap();
+    let person = entity(&s, "Person", "Synthetic Person");
+    s.save_contact(&json!({"operation_id":"skill","actor":"tester","label":"Person","entity_id":person,"expected_version":1,
+        "set_properties":{"skills":["Rust"]},"evidence":[proof("properties.skills",json!("Rust"))]})).unwrap();
+    let content_version = ready_vector(&s, &person);
+    for (id, path, value, version) in [
+        ("duplicate", "properties.skills", json!("Rust"), 2),
+        ("birth", "properties.birthDate", json!("1990-01-01"), 3),
+    ] {
+        claim(&s, id, &person, path, value.clone());
+        let out = call(&s, "review_contact_claim", review(id, "confirm", version));
+        assert_eq!(out["ok"], true, "{out}");
+        assert!(out["result"].get("indexed_entity_id").is_none());
+        let doc = detail(&s, &person);
+        assert_eq!(doc["index_status"], "ready");
+        assert_eq!(doc["index_content_version"], content_version);
+        assert_eq!(vector_total(&s), 1);
+        assert_eq!(status(&s, id), "confirmed");
+        assert_eq!(doc["version"], version + 1);
+        assert!(doc["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|ev| ev["field_path"] == path
+                && ev["value"] == value
+                && ev["quote"] == "Checked with subject"));
+    }
+    assert_eq!(audit_count(&s), 2);
+}
+
+#[test]
+fn changes_to_index_fields_or_privacy_inputs_invalidate_ready_vector() {
+    for (path, value) in [
+        ("properties.name", json!("New Name")),
+        ("properties.description", json!("New Description")),
+        ("properties.jobTitle", json!("Engineer")),
+        ("properties.skills", json!("Rust")),
+        (
+            "properties.hasOccupation",
+            json!({"@type":"Occupation","name":"Engineer","description":"Builds systems"}),
+        ),
+        (
+            "properties.hasCredential",
+            json!({"@type":"EducationalOccupationalCredential","name":"Synthetic Credential","credentialCategory":"Diploma"}),
+        ),
+        ("properties.email", json!("synthetic@example.test")),
+        ("properties.telephone", json!("+15550000000")),
+        ("properties.address", json!("Synthetic Address")),
+        (
+            "properties.contactPoint",
+            json!({"@type":"ContactPoint","contactType":"work","url":"https://example.test"}),
+        ),
+        (
+            "extensions.instantMessaging",
+            json!({"platform":"synthetic","accountId":"synthetic-account"}),
+        ),
+    ] {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(d.path().join("g.db")).unwrap();
+        let person = entity(&s, "Person", "Synthetic Person");
+        let before = ready_vector(&s, &person);
+        claim(&s, "change", &person, path, value);
+        let input = review("change", "confirm", 1);
+        let out = call(&s, "review_contact_claim", input.clone());
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["result"]["indexed_entity_id"], person);
+        let doc = detail(&s, &person);
+        assert_eq!(doc["index_status"], "unindexed");
+        assert!(doc["index_content_version"].as_u64().unwrap() > before.as_u64().unwrap());
+        assert_eq!(vector_total(&s), 0);
+        let replay = call(&s, "review_contact_claim", input);
+        assert_eq!(replay["result"]["replayed"], true);
+        assert_eq!(replay["result"]["indexed_entity_id"], person);
+        assert_eq!(
+            detail(&s, &person)["index_content_version"],
+            doc["index_content_version"]
+        );
+    }
+}
