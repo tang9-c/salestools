@@ -15,6 +15,7 @@ const CandidateRelationSchema = z.object({
   properties: z.record(z.string(), z.unknown()),
   evidence: z.array(ContactEvidenceSchema).default([]),
   uncertain: z.boolean().default(false),
+  review_reason: z.enum(['structured_heading', 'missing_direct_statement', 'ambiguous_owner']).optional(),
 }).strict();
 
 const ReviewReasonSchema = z.enum([
@@ -60,7 +61,8 @@ function hasAnonymousContent(value: { properties: Record<string, unknown>; exten
     && (Array.isArray(item) ? item.length > 0 : typeof item === 'string' ? item.trim().length > 0 : true);
   return Object.entries(value.properties).some(([key, item]) => key !== 'name' && present(item))
     || Object.values(value.extensions ?? {}).some(present)
-    || value.relation_suggestions.some(relation => ['worksFor', 'alumniOf'].includes(relation.relation_type)
+    || value.relation_suggestions.some(relation => relation.review_reason !== 'structured_heading'
+      && ['worksFor', 'alumniOf'].includes(relation.relation_type)
       && relation.evidence.some(proof => proof.field_path === '$relation' && proof.locator_status === 'located'));
 }
 

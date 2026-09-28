@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
 import { ContactGraphClient, GraphClientError, type GraphClient, type GraphOp } from '../src/contacts/graph-client.js';
 import { ContactImportService } from '../src/contacts/import-service.js';
+import { DocumentExtractor } from '../src/contacts/document-extractor.js';
 import { ContactSearch } from '../src/contacts/contact-search.js';
 import { ImportJobs } from '../src/contacts/import-jobs.js';
 import { ImportCandidateSchema, type ImportCandidate } from '../src/contracts/index.js';
@@ -327,4 +328,48 @@ it('preserves preview candidates when identity lookup fails', async () => {
   expect(preview).toMatchObject({ candidates: [{ candidate_id: 'c_error' }],
     match_suggestions: [], match_suggestions_truncated: false });
   expect(preview.warnings).toContain('身份匹配查询失败，请人工核对已有联系人');
+});
+
+it.each([[false, false], [true, false], [true, true]])('gates structured school suggestions: selected=%s anonymous=%s', async (selected, anonymous) => {
+  const extraction = await new DocumentExtractor({ url: 'https://ark.example/chat', model: 'test', credential: 'test',
+    fileName: 'invented.pdf', fileSha256: sha, collectedAt,
+    fetchFn: async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ candidates: [
+      { candidate_id: 'p', label: 'Person', properties: { name: '陈晓' },
+        evidence: [{ field_path: 'properties.name', value: '陈晓', block_id: 'p', quote: '陈晓' }],
+        relation_suggestions: [{ source_candidate_id: 'p', target_candidate_id: 's', relation_type: 'alumniOf',
+          properties: {}, uncertain: false, evidence: [{ block_id: 's', quote: '星辰大学' }] }] },
+      { candidate_id: 's', label: 'Organization', properties: { name: '星辰大学' },
+        evidence: [{ field_path: 'properties.name', value: '星辰大学', block_id: 's', quote: '星辰大学' }] },
+    ] }) } }] })) }).extract([
+      { block_id: 'p', text: '陈晓', page: 1 }, { block_id: 'h', text: '教育经历', page: 1 },
+      { block_id: 's', text: '星辰大学', page: 1 },
+    ], new AbortController().signal);
+  if (anonymous) {
+    extraction.candidates[0] = ImportCandidateSchema.parse({ ...extraction.candidates[0],
+      properties: { skills: ['Python'] }, evidence: [{ ...extraction.candidates[0].evidence[0],
+        field_path: 'properties.skills', value: 'Python', quote: 'Python' }] });
+  }
+  const h = await harness(`structured-${selected}-${anonymous}`, extraction.candidates);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  expect(preview.candidates).toEqual(expect.arrayContaining([expect.objectContaining({
+    candidate_id: 'batch1:p', relation_suggestions: [expect.objectContaining({ uncertain: true, review_reason: 'structured_heading' })],
+  })]));
+  const committing = h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`,
+    choices: extraction.candidates.map(item => ({ candidate_id: item.candidate_id, action: 'create' })),
+    relation_choices: selected ? [{ source_candidate_id: 'batch1:p', target_candidate_id: 'batch1:s',
+      relation_type: 'alumniOf', properties: {} }] : [],
+  }, 'reviewer');
+  if (anonymous) {
+    await expect(committing).rejects.toThrow('VALIDATION_ERROR');
+    return;
+  }
+  const committed = await committing as { results: Array<{ candidate_id: string; entity_id: string }> };
+  const personId = committed.results.find(item => item.candidate_id === 'batch1:p')!.entity_id;
+  const saved = await h.graph.request<{ relations: unknown[]; evidence: Array<{ quote?: string }> }>('get_contact', { entity_id: personId });
+  expect(saved.relations).toHaveLength(selected ? 1 : 0);
+  expect(saved.evidence.some(proof => /就读|毕业/.test(proof.quote ?? ''))).toBe(false);
+  const search = await new ContactSearch(h.graph).search({ query: '星辰大学' });
+  expect(search.items.some(item => item.entity_id === personId)).toBe(selected);
 });

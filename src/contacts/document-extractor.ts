@@ -22,6 +22,7 @@ const ModelRelation = z.object({
   properties: z.record(z.string(), z.unknown()),
   evidence: z.array(ModelRelationEvidence).default([]),
   uncertain: z.boolean().default(true),
+  review_reason: z.enum(['structured_heading', 'missing_direct_statement', 'ambiguous_owner']).optional(),
 }).strict();
 const ModelCandidate = z.discriminatedUnion('label', [
   z.object({ candidate_id: z.string().min(1), label: z.literal('Person'), properties: z.record(z.string(), z.unknown()),
@@ -165,9 +166,9 @@ label 只能 Person 或 Organization。Person.properties 使用 Schema.org Perso
 // evidence inside each property and emit numeric candidate IDs.
 const SHAPE_PROMPT = `严格输出结构：candidates 是数组；每个候选必须有 candidate_id（字符串）、label、properties（只放原始字段值）、evidence（独立数组）、relation_suggestions（数组）。
 例如字段 name 必须写成 properties:{"name":"原文姓名"}，对应证据放在 evidence:[{"field_path":"properties.name","value":"原文姓名","block_id":"真实块ID","quote":"原文姓名"}]。不能写 properties:{"name":{"evidence":...}}；candidate_id 不能是数字。
-telephone、email、alternateName、skills、sameAs、contactPoint 等复数属性必须是数组，即使只有一项；name、jobTitle 等为字符串。relation_suggestions 只能是 []，或元素形如 {"source_candidate_id":"c1","target_candidate_id":"c2","relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole"}},"evidence":[{"block_id":"真实块ID","quote":"支持关系的原文"}],"uncertain":false}。关系不确定或无直接引文就输出 []，不能使用 predicate/subject_id/object_id。示例文字不可当作真实联系人输出。`;
+telephone、email、alternateName、skills、sameAs、contactPoint 等复数属性必须是数组，即使只有一项；name、jobTitle 等为字符串。relation_suggestions 只能是 []，或元素形如 {"source_candidate_id":"c1","target_candidate_id":"c2","relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole"}},"evidence":[{"block_id":"真实块ID","quote":"支持关系的原文"}],"uncertain":false}。结构化栏目关系 uncertain:true；其他无直接引文关系输出 []，不能使用 predicate/subject_id/object_id。示例文字不可当作真实联系人输出。`;
 // An organization printed next to a person on a card is not proof of employment.
-const RELATION_PROMPT = `仅原文明确说 works for/任职 等才输出 worksFor；名片上姓名、公司、职位并列不算关系。worksFor 必须有 properties:{"role":{"@type":"OrganizationRole"}}，明确职位/日期时在 role 填原文可见的 roleName/startDate/endDate；每个 role 字段另给 evidence:{field_path:"properties.role.字段",value:原值,block_id,quote}，关系本身另给不含 field_path 的引文。勿推断 current 或缺失日期。`;
+const RELATION_PROMPT = `任职等直接陈述可输出关系；工作经历/教育经历与同页相邻机构行可输出 worksFor/alumniOf，uncertain:true，分别引用栏目和机构；人物、项目、客户边界终止栏目。名片上姓名、公司、职位并列不算关系。worksFor 必须有 properties:{"role":{"@type":"OrganizationRole"}}，明确职位/日期时在 role 填原文可见的 roleName/startDate/endDate；每个 role 字段另给 evidence:{field_path:"properties.role.字段",value:原值,block_id,quote}，关系本身另给不含 field_path 的引文。勿推断 current 或缺失日期。`;
 
 function directInstitutionStatement(type: string, quote: string, targetName: unknown): boolean {
   if (typeof targetName !== 'string' || !quote.includes(targetName)
@@ -175,6 +176,45 @@ function directInstitutionStatement(type: string, quote: string, targetName: unk
   return type === 'worksFor'
     ? /\b(?:works?\s+for|worked\s+for|employed\s+by|works?\s+at)\b|任职|就职|受雇于/iu.test(quote)
     : /\b(?:alumni|studied|graduated|attended)\b|校友|就读|毕业|学习/iu.test(quote);
+}
+
+// Only adjacent lines qualify; ambiguous ownership is retained separately for review.
+function structuredInstitution(relation: z.infer<typeof ModelRelation>, source: z.infer<typeof ModelCandidate>,
+  target: z.infer<typeof ModelCandidate>, people: z.infer<typeof ModelCandidate>[], batch: ParsedBlock[]) {
+  if (!['worksFor', 'alumniOf'].includes(relation.relation_type)
+    || source.label !== 'Person' || target.label !== 'Organization' || typeof target.properties.name !== 'string') return;
+  const name = target.properties.name;
+  const lines = batch.flatMap(block => block.text.split(/\r?\n/u).filter(text => text.trim())
+    .map(text => ({ block, text })));
+  const heading = relation.relation_type === 'worksFor'
+    ? /^(?:工作经历|工作经验|职业经历|work experience|employment history)[:：]?$/iu
+    : /^(?:教育经历|教育背景|education|education history)[:：]?$/iu;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.text.includes(name) || line.block.page === undefined
+      || /客户|项目|client|project|不是|并非|未|没有|\b(?:not|never)\b/iu.test(line.text)) continue;
+    // Organization name must itself survive the same evidence/semantic checks as official fields.
+    if (!target.evidence.some(proof => proof.field_path === 'properties.name' && proof.value === name
+      && proof.block_id === line.block.block_id && quoteLocated(line.block, proof.quote)
+      && [...proof.quote].length <= 500 && proof.quote.includes(name)
+      && semanticReason('Organization', 'name', name, proof.quote, line.block) === null)) continue;
+    const pagePeople = people.filter(person => person.evidence.some(proof => {
+      const block = batch.find(item => item.block_id === proof.block_id);
+      return block !== undefined && block.page === line.block.page && quoteLocated(block, proof.quote)
+        && [...proof.quote].length <= 500
+        && shapeValid('Person', proof.field_path.startsWith('extensions.') ? 'extensions' : 'properties',
+          proof.field_path.split('.')[1] ?? '', proof.value)
+        && matchesValue(fieldValue(person, proof.field_path), proof.value) && quoteSupportsValue(proof.value, proof.quote);
+    }));
+    const previous = lines[index - 1];
+    const priorHeading = lines.slice(0, index).reverse().find(item => item.block.page === line.block.page && heading.test(item.text.trim()));
+    if (priorHeading && (pagePeople.length > 1 || (pagePeople.length === 1 && pagePeople[0] !== source))) {
+      return { ambiguous: true as const, line, heading: priorHeading };
+    }
+    if (!previous || previous.block.page !== line.block.page || !heading.test(previous.text.trim())) continue;
+    if (pagePeople.length === 0 && people.length !== 1) return { ambiguous: true as const, line, heading: previous };
+    return { ambiguous: false as const, line, heading: previous };
+  }
 }
 
 function request(model: string, batch: readonly ParsedBlock[]): string {
@@ -414,6 +454,29 @@ export class DocumentExtractor {
           }
           const relation_suggestions = modelCandidate.relation_suggestions.flatMap(relation => {
             const source = output.candidates.find(other => other.candidate_id === relation.source_candidate_id);
+            const target = output.candidates.find(other => other.candidate_id === relation.target_candidate_id);
+            const hasRawDirect = relation.evidence.some(proof => !proof.field_path
+              && blockMap.has(proof.block_id) && quoteLocated(blockMap.get(proof.block_id)!, proof.quote)
+              && directInstitutionStatement(relation.relation_type, proof.quote, target?.properties.name));
+            const structured = source && target && !hasRawDirect ? structuredInstitution(relation, source, target,
+              output.candidates.filter(item => item.label === 'Person'), batch) : undefined;
+            const retainAmbiguous = () => {
+              if (review_items.length >= 100) { candidateWarnings.push('待核实线索超过100项，已截断'); return; }
+              const proof = relation.evidence.find(item => {
+                const block = blockMap.get(item.block_id);
+                return block && quoteLocated(block, item.quote);
+              });
+              const block = proof ? blockMap.get(proof.block_id) : undefined;
+              const item = { kind: 'relation' as const, reason: 'ambiguous_owner' as const,
+                source_candidate_id: `${prefix}:${relation.source_candidate_id}`,
+                target_candidate_id: `${prefix}:${relation.target_candidate_id}`,
+                relation_type: relation.relation_type, properties: {},
+                ...(block?.page === undefined ? {} : { page: block.page }),
+                ...(proof ? { quote: [...proof.quote].slice(0, 150).join('') } : {}) };
+              if (ReviewItemSchema.safeParse(item).success) review_items.push(item);
+              else candidateWarnings.push('待核实线索无法保存，已截断');
+            };
+            if (structured?.ambiguous) { retainAmbiguous(); return []; }
             if (!output.candidates.some(other => other.candidate_id === relation.source_candidate_id)
               || !output.candidates.some(other => other.candidate_id === relation.target_candidate_id)) {
               warnings.push('关系引用无效'); return [];
@@ -424,7 +487,7 @@ export class DocumentExtractor {
                 && relation.evidence.some(proof => unnamedAnchors.get(source.candidate_id)?.has(proof.block_id)
                   && unnamedPeople.every(other => other.candidate_id === source.candidate_id
                     || !unnamedAnchors.get(other.candidate_id)?.has(proof.block_id))))) {
-              warnings.push('多个无名人物的机构归属无法确认'); return [];
+              retainAmbiguous(); warnings.push('多个无名人物的机构归属无法确认'); return [];
             }
             if (relation.relation_type === 'worksFor' && Object.keys(relation.properties).length > 0
               && (typeof relation.properties.role !== 'object' || relation.properties.role === null
@@ -436,7 +499,16 @@ export class DocumentExtractor {
             const relationProperties = relation.relation_type === 'worksFor'
               && Object.keys(relation.properties).length === 0
               ? { role: { '@type': 'OrganizationRole' } } : relation.properties;
-            const relationEvidence: ContactEvidence[] = relation.evidence.flatMap(proof => {
+            const structuredProofs: z.infer<typeof ModelRelationEvidence>[] = structured ? [
+              { block_id: structured.heading.block.block_id, quote: structured.heading.text.trim() },
+              { block_id: structured.line.block.block_id, quote: String(target!.properties.name) },
+              ...Object.entries((relationProperties.role ?? {}) as Record<string, unknown>).flatMap(([field, value]) =>
+                ['roleName', 'startDate', 'endDate'].includes(field) && typeof value === 'string'
+                  && structured.line.text.includes(value) ? [{ block_id: structured.line.block.block_id, quote: value,
+                    field_path: `properties.role.${field}` as 'properties.role.roleName', value }] : []),
+            ] : [];
+            const isStructured = !!structured && !hasRawDirect;
+            const relationEvidence: ContactEvidence[] = (isStructured ? structuredProofs : relation.evidence).flatMap(proof => {
               const block = blockMap.get(proof.block_id);
               if (!block || !quoteLocated(block, proof.quote) || [...proof.quote].length > 500) return [];
               const role = relationProperties.role as Record<string, unknown> | undefined;
@@ -458,7 +530,7 @@ export class DocumentExtractor {
                 quote: proof.quote, ...(block.page === undefined ? {} : { page: block.page }),
                 locator_status: 'located' as const, collected_at: this.options.collectedAt ?? new Date().toISOString() }];
             });
-            if (relation.relation_type === 'worksFor' && relationEvidence.some(proof => proof.field_path === '$relation')) {
+            if (!isStructured && relation.relation_type === 'worksFor' && relationEvidence.some(proof => proof.field_path === '$relation')) {
               const role = relationProperties.role as Record<string, unknown> | undefined;
               const sourceName = output.candidates.find(other => other.candidate_id === relation.source_candidate_id)?.properties.name;
               const targetName = output.candidates.find(other => other.candidate_id === relation.target_candidate_id)?.properties.name;
@@ -491,12 +563,11 @@ export class DocumentExtractor {
                   locator_status: 'located', collected_at: this.options.collectedAt ?? new Date().toISOString() });
               }
             }
-            const target = output.candidates.find(other => other.candidate_id === relation.target_candidate_id);
             const hasDirectStatement = !['worksFor', 'alumniOf'].includes(relation.relation_type)
               || relationEvidence.some(proof => proof.field_path === '$relation'
                 && typeof proof.quote === 'string'
                 && directInstitutionStatement(relation.relation_type, proof.quote, target?.properties.name));
-            if (relationEvidence.length === 0 || !hasDirectStatement) {
+            if (relationEvidence.length === 0 || (!hasDirectStatement && !isStructured)) {
               warnings.push('关系缺少可定位的直接陈述');
               return [];
             }
@@ -506,7 +577,8 @@ export class DocumentExtractor {
                 field === '@type' || relationEvidence.some(proof => proof.field_path === `properties.role.${field}`))) }
               : relationProperties;
             return [{ source_candidate_id: `${prefix}:${relation.source_candidate_id}`, target_candidate_id: `${prefix}:${relation.target_candidate_id}`,
-              relation_type: relation.relation_type, properties: supportedProperties, evidence: relationEvidence, uncertain: relation.uncertain }];
+              relation_type: relation.relation_type, properties: supportedProperties, evidence: relationEvidence, uncertain: isStructured || relation.uncertain,
+              ...(isStructured ? { review_reason: 'structured_heading' as const } : {}) }];
           });
           const hasLocatedName = evidence.some(proof => proof.field_path === 'properties.name');
           const candidate = ImportCandidateSchema.safeParse({ candidate_id: id, label: modelCandidate.label,
@@ -515,7 +587,8 @@ export class DocumentExtractor {
             can_commit: (hasLocatedName
               || (modelCandidate.label === 'Person' && (evidence.some(proof => proof.field_path !== 'properties.name'
                 && proof.locator_status === 'located')
-                || relation_suggestions.some(relation => ['worksFor', 'alumniOf'].includes(relation.relation_type)
+                || relation_suggestions.some(relation => relation.review_reason !== 'structured_heading'
+                  && ['worksFor', 'alumniOf'].includes(relation.relation_type)
                   && relation.evidence.some(proof => proof.field_path === '$relation' && proof.locator_status === 'located'))))) });
           if (candidate.success) candidates.push(candidate.data);
           else warnings.push('候选字段不符合联系人契约');

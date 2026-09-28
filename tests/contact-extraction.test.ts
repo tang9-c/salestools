@@ -19,6 +19,68 @@ function extractor(fetchFn: typeof fetch, overrides = {}) {
 }
 
 describe('document extraction', () => {
+  it.each(['single', 'ambiguous', 'project', 'other-person', 'other-page', 'negated'] as const)(
+    'checks structured resume ownership and section boundaries: %s', async mode => {
+      const input = [
+        { block_id: 'name', text: mode === 'ambiguous' ? '陈晓 王明' : '陈晓', page: 1 },
+        { block_id: 'heading', text: '工作经历', page: 1 },
+        ...(mode === 'project' ? [{ block_id: 'project', text: '项目经历', page: 1 }] : []),
+        ...(mode === 'other-person' ? [{ block_id: 'other', text: '王明', page: 1 }] : []),
+        { block_id: 'work', text: mode === 'negated' ? '未任职甲公司' : '甲公司 2020-06 工程师', page: mode === 'other-page' ? 2 : 1 },
+        { block_id: 'education', text: '教育经历', page: 1 },
+        { block_id: 'school', text: '星辰大学', page: 1 },
+        { block_id: 'projects', text: '项目经历', page: 1 },
+        { block_id: 'client', text: '客户：乙公司', page: 1 },
+      ];
+      const organizations = [['o', '甲公司', 'work'], ['s', '星辰大学', 'school'], ['c', '乙公司', 'client']];
+      const relations = organizations.map(([id, name, block]) => ({
+        source_candidate_id: 'p', target_candidate_id: id, relation_type: id === 's' ? 'alumniOf' : 'worksFor',
+        properties: id === 's' ? {} : { role: { '@type': 'OrganizationRole', roleName: '工程师', startDate: '2020-06', endDate: '2025-01' } },
+        evidence: [{ block_id: block, quote: input.find(item => item.block_id === block)!.text }], uncertain: false,
+      }));
+      const fetchFn = vi.fn(async () => response([
+        { ...person('p', '陈晓', 'name'), relation_suggestions: relations },
+        ...(mode === 'ambiguous' || mode === 'other-person' ? [person('p2', '王明', mode === 'ambiguous' ? 'name' : 'other')] : []),
+        ...organizations.map(([candidate_id, name, block_id]) => ({ candidate_id, label: 'Organization',
+          properties: { name }, evidence: [{ field_path: 'properties.name', value: name, block_id, quote: name }] })),
+      ]));
+      const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+      const p = result.candidates[0];
+      if (mode === 'single') {
+        expect(p.relation_suggestions.map(item => item.relation_type)).toEqual(['worksFor', 'alumniOf']);
+        expect(p.relation_suggestions[0]).toMatchObject({ uncertain: true, review_reason: 'structured_heading',
+          source_candidate_id: p.candidate_id, target_candidate_id: 'batch1:o',
+          properties: { role: { '@type': 'OrganizationRole', roleName: '工程师', startDate: '2020-06' } } });
+        expect(p.relation_suggestions[0].properties.role).not.toHaveProperty('endDate');
+        expect(p.relation_suggestions[0].evidence).toEqual(expect.arrayContaining([
+          expect.objectContaining({ quote: '工作经历', page: 1, locator_status: 'located' }),
+          expect.objectContaining({ quote: '甲公司', page: 1, locator_status: 'located' }),
+        ]));
+      } else {
+        expect(p.relation_suggestions.some(item => item.target_candidate_id === 'batch1:o')).toBe(false);
+        if (mode === 'ambiguous' || mode === 'other-person') {
+          expect(p.review_items).toContainEqual(expect.objectContaining({ kind: 'relation', reason: 'ambiguous_owner',
+            source_candidate_id: p.candidate_id, target_candidate_id: 'batch1:o' }));
+        }
+      }
+      expect(p.relation_suggestions.some(item => item.target_candidate_id === 'batch1:c')).toBe(false);
+    });
+
+  it('does not make a bare anonymous structured heading sufficient for commit', async () => {
+    const input = [{ block_id: 'h', text: '教育经历', page: 1 }, { block_id: 's', text: '星辰大学', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      { candidate_id: 'p', label: 'Person', properties: {}, evidence: [], relation_suggestions: [{
+        source_candidate_id: 'p', target_candidate_id: 's', relation_type: 'alumniOf', properties: {},
+        evidence: [{ block_id: 's', quote: '星辰大学' }],
+      }] },
+      { candidate_id: 's', label: 'Organization', properties: { name: '星辰大学' },
+        evidence: [{ field_path: 'properties.name', value: '星辰大学', block_id: 's', quote: '星辰大学' }] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0]).toMatchObject({ can_commit: false,
+      relation_suggestions: [{ uncertain: true, review_reason: 'structured_heading' }] });
+  });
+
   it('retains supported values and sends uncited skills to review without blocking commit', async () => {
     const input = [{ block_id: 'resume', text: '陈晓 13800138000 技能 Python', page: 1 }];
     const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',
