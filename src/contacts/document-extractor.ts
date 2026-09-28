@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
-  ImportCandidateSchema, ParsedBlockSchema,
-  type ContactEvidence, type ImportCandidate, type ParsedBlock,
+  ImportCandidateSchema, OrganizationPropertiesSchema, ParsedBlockSchema,
+  PersonCandidatePropertiesSchema, PersonExtensionsSchema, ReviewItemSchema,
+  type ContactEvidence, type ImportCandidate, type ParsedBlock, type ReviewItem,
 } from '../contracts/index.js';
 import { ArkTransportError, requestArkJsonContent } from '../upstream/ark/json-request.js';
 
@@ -29,7 +30,66 @@ const ModelCandidate = z.discriminatedUnion('label', [
   z.object({ candidate_id: z.string().min(1), label: z.literal('Organization'), properties: z.record(z.string(), z.unknown()),
     evidence: z.array(ModelEvidence), relation_suggestions: z.array(ModelRelation).default([]) }).strict(),
 ]);
-const ModelOutput = z.object({ candidates: z.array(ModelCandidate).max(100) }).strict();
+const ModelCandidateShell = z.discriminatedUnion('label', [
+  z.object({ candidate_id: z.string().min(1), label: z.literal('Person'),
+    properties: z.record(z.string(), z.unknown()), extensions: z.record(z.string(), z.unknown()).optional(),
+    evidence: z.array(z.unknown()).optional(), relation_suggestions: z.array(z.unknown()).optional() }).strict(),
+  z.object({ candidate_id: z.string().min(1), label: z.literal('Organization'),
+    properties: z.record(z.string(), z.unknown()), evidence: z.array(z.unknown()).optional(),
+    relation_suggestions: z.array(z.unknown()).optional() }).strict(),
+]);
+const ModelOutputShell = z.object({ candidates: z.array(z.unknown()).max(100) }).strict();
+const arrayFields = new Set(['telephone', 'email', 'alternateName', 'skills', 'sameAs',
+  'knowsAbout', 'knowsLanguage', 'award', 'faxNumber', 'nationality', 'workLocation',
+  'hasOccupation', 'hasCredential', 'contactPoint', 'identifier', 'hobbies', 'instantMessaging']);
+
+function reviewField(items: ReviewItem[], warnings: string[], field_path: string, value: unknown,
+  reason: ReviewItem['reason'], proof?: z.infer<typeof ModelEvidence>, block?: ParsedBlock): void {
+  if (items.length >= 100) { if (!warnings.includes('待核实线索超过100项，已截断')) warnings.push('待核实线索超过100项，已截断'); return; }
+  const rawQuote = proof?.quote;
+  const quote = rawQuote === undefined ? undefined : [...rawQuote].slice(0, 500).join('');
+  if (rawQuote !== undefined && rawQuote !== quote) warnings.push('待核实引文超过500字，已截断');
+  const base = { kind: 'field' as const, field_path: field_path.slice(0, 200), value, reason,
+    ...(block?.page === undefined ? {} : { page: block.page }), ...(quote ? { quote } : {}) };
+  let item: typeof base = base;
+  if (!ReviewItemSchema.safeParse(item).success) {
+    let serialized = JSON.stringify(value) ?? String(value);
+    serialized = [...serialized].slice(0, 800).join('');
+    item = { ...base, value: `${serialized}…` };
+    warnings.push('待核实线索超过2KB，已截断');
+  }
+  if (ReviewItemSchema.safeParse(item).success) items.push(item);
+  else warnings.push('待核实线索无法保存，已截断');
+}
+
+function shapeValid(label: 'Person' | 'Organization', root: 'properties' | 'extensions',
+  field: string, value: unknown): boolean {
+  const input = { [field]: arrayFields.has(field) ? [value] : value };
+  const schema = root === 'extensions' ? PersonExtensionsSchema
+    : label === 'Person' ? PersonCandidatePropertiesSchema : OrganizationPropertiesSchema.partial({ name: true });
+  return schema.safeParse(input).success;
+}
+
+function semanticReason(label: 'Person' | 'Organization', field: string, value: unknown,
+  quote: string, block: ParsedBlock): ReviewItem['reason'] | null {
+  const context = block.text;
+  if (label === 'Person' && field === 'jobTitle'
+    && /求职意向|期望岗位|意向职位|desired\s+(?:role|position)|expected\s+(?:role|position)|seeking\s+(?:role|position)/iu.test(context)) return 'ambiguous_context';
+  if (label === 'Organization' && field === 'name' && typeof value === 'string'
+    && (/^(?:ERP|PO|MOM)$/iu.test(value.trim())
+      || /项目名称|项目名|project\s+name|named\s+project/iu.test(context))
+    && !/公司|企业|机构|大学|学校|organization|company|university|school/iu.test(quote)) return 'ambiguous_context';
+  if (label === 'Person' && field === 'skills' && /项目名称|project\s+name/iu.test(quote)
+    && !/技能|熟悉|掌握|经验|skills?|proficient|experienced/iu.test(quote)) return 'ambiguous_context';
+  if (label === 'Person' && field === 'skills' && typeof value === 'string') {
+    const at = context.indexOf(value);
+    const nearby = at < 0 ? quote : context.slice(Math.max(0, at - 35), at + value.length + 35);
+    if (!/技能|熟悉|掌握|使用|经验|开发|编程|skills?|proficient|experienced|experience|worked\s+with|using/iu.test(nearby)) {
+      return 'ambiguous_context';
+    }
+  }
+  return null;
+}
 
 export interface DocumentExtractorOptions {
   url: string; model: string; credential: string; fileName: string; fileSha256: string;
@@ -204,7 +264,22 @@ export class DocumentExtractor {
         const text = content.trim();
         if (Buffer.byteLength(text, 'utf8') > 1_000_000) throw new Error('oversized model output');
         const fenced = text.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/iu);
-        const output = ModelOutput.parse(JSON.parse((fenced?.[1] ?? text).trim()));
+        const shell = ModelOutputShell.parse(JSON.parse((fenced?.[1] ?? text).trim()));
+        const output = { candidates: shell.candidates.flatMap(raw => {
+          const parsed = ModelCandidateShell.safeParse(raw);
+          if (!parsed.success) { warnings.push('候选字段不符合模型结构'); return []; }
+          const proofs = (parsed.data.evidence ?? []).flatMap(rawProof => {
+            const proof = ModelEvidence.safeParse(rawProof);
+            if (!proof.success) { warnings.push('候选证据形状无效'); return []; }
+            return [proof.data];
+          });
+          const relations = (parsed.data.relation_suggestions ?? []).flatMap(rawRelation => {
+            const relation = ModelRelation.safeParse(rawRelation);
+            if (!relation.success) { warnings.push('关系形状无效'); return []; }
+            return [relation.data];
+          });
+          return [{ ...parsed.data, evidence: proofs, relation_suggestions: relations } as z.infer<typeof ModelCandidate>];
+        }) };
         const unnamedPeople = output.candidates.filter(item => item.label === 'Person' && !item.properties.name);
         const blockMap = new Map(batch.map(block => [block.block_id, block]));
         const unnamedAnchors = new Map(unnamedPeople.map(person => [person.candidate_id, new Set([
@@ -212,7 +287,12 @@ export class DocumentExtractor {
             const block = blockMap.get(proof.block_id);
             return block && quoteLocated(block, proof.quote)
               && matchesValue(fieldValue(person, proof.field_path), proof.value)
-              && quoteSupportsValue(proof.value, proof.quote);
+              && quoteSupportsValue(proof.value, proof.quote)
+              && (() => {
+                const [root, field] = proof.field_path.split('.') as ['properties' | 'extensions', string];
+                return field !== undefined && shapeValid('Person', root, field, proof.value)
+                  && semanticReason('Person', field, proof.value, proof.quote, block) === null;
+              })();
           }).map(proof => proof.block_id),
         ])]));
         const localIds = new Set<string>();
@@ -221,30 +301,49 @@ export class DocumentExtractor {
           if (localIds.has(modelCandidate.candidate_id)) { warnings.push('候选编号重复'); continue; }
           localIds.add(modelCandidate.candidate_id);
           const id = `${prefix}:${modelCandidate.candidate_id}`;
-          const properties = { ...modelCandidate.properties };
-          for (const field of ['telephone', 'email', 'alternateName', 'skills', 'sameAs',
-            'knowsAbout', 'knowsLanguage', 'award', 'faxNumber']) {
-            if (typeof properties[field] === 'string') properties[field] = [properties[field]];
-          }
-          const selectedCandidate = { ...modelCandidate, properties };
-          const evidence = modelCandidate.evidence.flatMap(proof => {
-            const item = evidenceFor(proof, selectedCandidate, id, blockMap, this.options);
-            if (!item) warnings.push('候选证据引用或字段值无效');
-            return item ? [item] : [];
-          });
           const candidateWarnings: string[] = [];
+          const review_items: ReviewItem[] = [];
+          const properties: Record<string, unknown> = {};
+          const extensions: Record<string, unknown> = {};
+          const evidence: ContactEvidence[] = [];
           const sourceFields = [
-            ...Object.entries(properties).map(([key, value]) => [`properties.${key}`, value] as const),
+            ...Object.entries(modelCandidate.properties).map(([key, value]) => [`properties.${key}`, value] as const),
             ...(modelCandidate.label === 'Person' ? Object.entries(modelCandidate.extensions ?? {}).map(([key, value]) => [`extensions.${key}`, value] as const) : []),
           ];
-          for (const [fieldPath, fieldValue] of sourceFields) {
-            const values = Array.isArray(fieldValue) ? fieldValue : [fieldValue];
+          for (const [fieldPath, rawValue] of sourceFields) {
+            const [root, field] = fieldPath.split('.') as ['properties' | 'extensions', string];
+            const values = Array.isArray(rawValue) && arrayFields.has(field) ? rawValue : [rawValue];
             for (const value of values) {
-              const supported = evidence.some(proof => proof.field_path === fieldPath && matchesValue(proof.value, value));
-              if (!supported) candidateWarnings.push(`字段缺少来源：${fieldPath}`);
+              const matching = modelCandidate.evidence.filter(proof => proof.field_path === fieldPath
+                && matchesValue(proof.value, value));
+              const proof = matching.find(item => {
+                const block = blockMap.get(item.block_id);
+                return block && quoteLocated(block, item.quote) && [...item.quote].length <= 500
+                  && quoteSupportsValue(value, item.quote);
+              });
+              const block = proof ? blockMap.get(proof.block_id) : undefined;
+              const invalid = !shapeValid(modelCandidate.label, root, field, value);
+              const semantic = proof && block ? semanticReason(modelCandidate.label, field, value, proof.quote, block) : null;
+              const reason = invalid ? 'invalid_shape' : semantic
+                ?? (proof ? null : matching.length === 0 ? 'missing_evidence' : 'quote_mismatch');
+              if (reason) {
+                reviewField(review_items, candidateWarnings, fieldPath, value, reason,
+                  proof ?? matching[0], block ?? blockMap.get(matching[0]?.block_id ?? ''));
+                candidateWarnings.push(`字段待核实：${fieldPath}`);
+                continue;
+              }
+              const destination = root === 'extensions' ? extensions : properties;
+              if (arrayFields.has(field)) {
+                const existing = (destination[field] as unknown[] | undefined) ?? [];
+                destination[field] = [...existing, value];
+              } else destination[field] = value;
+              const located = evidenceFor(proof!, { ...modelCandidate, properties: root === 'properties'
+                ? { [field]: arrayFields.has(field) ? [value] : value } : {},
+              ...(modelCandidate.label === 'Person' ? { extensions: root === 'extensions'
+                ? { [field]: arrayFields.has(field) ? [value] : value } : {} } : {}) }, id, blockMap, this.options);
+              if (located) evidence.push(located);
             }
           }
-          if (evidence.some(proof => proof.locator_status !== 'located')) candidateWarnings.push('部分字段引文无法定位');
           const relation_suggestions = modelCandidate.relation_suggestions.flatMap(relation => {
             const source = output.candidates.find(other => other.candidate_id === relation.source_candidate_id);
             if (!output.candidates.some(other => other.candidate_id === relation.source_candidate_id)
@@ -340,10 +439,11 @@ export class DocumentExtractor {
             return [{ source_candidate_id: `${prefix}:${relation.source_candidate_id}`, target_candidate_id: `${prefix}:${relation.target_candidate_id}`,
               relation_type: relation.relation_type, properties: supportedProperties, evidence: relationEvidence, uncertain: relation.uncertain }];
           });
+          const hasLocatedName = evidence.some(proof => proof.field_path === 'properties.name');
           const candidate = ImportCandidateSchema.safeParse({ candidate_id: id, label: modelCandidate.label,
-            properties, ...(modelCandidate.label === 'Person' ? { extensions: modelCandidate.extensions ?? {} } : {}),
-            evidence, relation_suggestions, warnings: candidateWarnings,
-            can_commit: candidateWarnings.length === 0 && (Boolean(properties.name)
+            properties, ...(modelCandidate.label === 'Person' ? { extensions } : {}),
+            evidence, relation_suggestions, review_items, warnings: candidateWarnings,
+            can_commit: (hasLocatedName
               || (modelCandidate.label === 'Person' && (evidence.some(proof => proof.field_path !== 'properties.name'
                 && proof.locator_status === 'located')
                 || relation_suggestions.some(relation => ['worksFor', 'alumniOf'].includes(relation.relation_type)

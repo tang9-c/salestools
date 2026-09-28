@@ -19,6 +19,135 @@ function extractor(fetchFn: typeof fetch, overrides = {}) {
 }
 
 describe('document extraction', () => {
+  it('retains supported values and sends uncited skills to review without blocking commit', async () => {
+    const input = [{ block_id: 'resume', text: '陈晓 13800138000 技能 Python', page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',
+      properties: { name: '陈晓', telephone: ['13800138000'], skills: ['Python', 'Java', 'Go'] },
+      evidence: [
+        { field_path: 'properties.name', value: '陈晓', block_id: 'resume', quote: '陈晓' },
+        { field_path: 'properties.telephone', value: '13800138000', block_id: 'resume', quote: '13800138000' },
+        { field_path: 'properties.skills', value: 'Python', block_id: 'resume', quote: '技能 Python' },
+      ] }]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0]).toMatchObject({ can_commit: true, properties: {
+      name: '陈晓', telephone: ['13800138000'], skills: ['Python'],
+    } });
+    expect(result.candidates[0].review_items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'field', field_path: 'properties.skills', value: 'Java', reason: 'missing_evidence' }),
+      expect.objectContaining({ kind: 'field', field_path: 'properties.skills', value: 'Go', reason: 'missing_evidence' }),
+    ]));
+  });
+
+  it('isolates malformed candidates and fields within one response', async () => {
+    const input = [{ block_id: 'resume', text: '陈晓 13800138000', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      { candidate_id: 'p', label: 'Person', properties: { name: '陈晓', telephone: ['13800138000'],
+        birthDate: 'not-a-date' }, evidence: [
+        { field_path: 'properties.name', value: '陈晓', block_id: 'resume', quote: '陈晓' },
+        { field_path: 'properties.telephone', value: '13800138000', block_id: 'resume', quote: '13800138000' },
+      ] },
+      { candidate_id: 2, label: 'Person', properties: { name: '错误' }, evidence: [] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({ can_commit: true, properties: { name: '陈晓', telephone: ['13800138000'] } });
+    expect(result.candidates[0].review_items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field_path: 'properties.birthDate', value: 'not-a-date', reason: 'invalid_shape' }),
+    ]));
+  });
+
+  it('does not turn an array-shaped scalar into a verified name', async () => {
+    const input = [{ block_id: 'b', text: '陈晓 13800138000', page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',
+      properties: { name: ['陈晓'], telephone: ['13800138000'] }, evidence: [
+        { field_path: 'properties.name', value: '陈晓', block_id: 'b', quote: '陈晓' },
+        { field_path: 'properties.telephone', value: '13800138000', block_id: 'b', quote: '13800138000' },
+      ] }]));
+    const candidate = (await extractor(fetchFn).extract(input, new AbortController().signal)).candidates[0];
+    expect(candidate.properties.name).toBeUndefined();
+    expect(candidate.properties.telephone).toEqual(['13800138000']);
+    expect(candidate.review_items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field_path: 'properties.name', value: ['陈晓'], reason: 'invalid_shape' }),
+    ]));
+  });
+
+  it.each([
+    ['求职意向：产品经理', '产品经理'], ['Desired position: Product Manager', 'Product Manager'],
+  ])('keeps desired jobs in review: %s', async (text, title) => {
+    const input = [{ block_id: 'b', text: `陈晓 ${text}`, page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',
+      properties: { name: '陈晓', jobTitle: title }, evidence: [
+        { field_path: 'properties.name', value: '陈晓', block_id: 'b', quote: '陈晓' },
+        { field_path: 'properties.jobTitle', value: title, block_id: 'b', quote: text },
+      ] }]));
+    const candidate = (await extractor(fetchFn).extract(input, new AbortController().signal)).candidates[0];
+    expect(candidate.label).toBe('Person');
+    if (candidate.label !== 'Person') throw new Error('expected Person');
+    expect(candidate.properties.jobTitle).toBeUndefined();
+    expect(candidate.review_items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: title, reason: 'ambiguous_context' }),
+    ]));
+  });
+
+  it.each([
+    ['项目名称：ERP 系统', 'ERP'], ['Project name: MOM platform', 'MOM'],
+  ])('does not create an organization from a project or term: %s', async (text, name) => {
+    const input = [{ block_id: 'b', text, page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'o', label: 'Organization',
+      properties: { name }, evidence: [{ field_path: 'properties.name', value: name, block_id: 'b', quote: text }] }]));
+    const candidate = (await extractor(fetchFn).extract(input, new AbortController().signal)).candidates[0];
+    expect(candidate.properties.name).toBeUndefined();
+    expect(candidate.can_commit).toBe(false);
+    expect(candidate.review_items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: name, reason: 'ambiguous_context' }),
+    ]));
+  });
+
+  it.each([
+    ['技能：Python', 'Python'], ['Experienced with Python', 'Python'],
+  ])('keeps an explicitly stated skill: %s', async (text, skill) => {
+    const input = [{ block_id: 'b', text, page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',
+      properties: { skills: [skill] }, evidence: [
+        { field_path: 'properties.skills', value: skill, block_id: 'b', quote: text },
+      ] }]));
+    const candidate = (await extractor(fetchFn).extract(input, new AbortController().signal)).candidates[0];
+    expect(candidate.label).toBe('Person');
+    if (candidate.label !== 'Person') throw new Error('expected Person');
+    expect(candidate.properties.skills).toEqual([skill]);
+    expect(candidate.can_commit).toBe(true);
+  });
+
+  it('does not turn a bare project technology into an asserted skill', async () => {
+    const input = [{ block_id: 'b', text: 'Project name: ERP migration with Python module', page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',
+      properties: { skills: ['Python'] }, evidence: [
+        { field_path: 'properties.skills', value: 'Python', block_id: 'b', quote: 'Python' },
+      ] }]));
+    const candidate = (await extractor(fetchFn).extract(input, new AbortController().signal)).candidates[0];
+    expect(candidate.label).toBe('Person');
+    if (candidate.label !== 'Person') throw new Error('expected Person');
+    expect(candidate.properties.skills).toEqual([]);
+    expect(candidate.review_items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: 'Python', reason: 'ambiguous_context' }),
+    ]));
+  });
+
+  it('truncates oversized review clues without dropping supported values', async () => {
+    const input = [{ block_id: 'b', text: '陈晓', page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',
+      properties: { name: '陈晓', skills: Array.from({ length: 102 }, (_, i) => `missing-${i}-${'x'.repeat(2500)}`) },
+      evidence: [{ field_path: 'properties.name', value: '陈晓', block_id: 'b', quote: '陈晓' }] }]));
+    const candidate = (await extractor(fetchFn).extract(input, new AbortController().signal)).candidates[0];
+    expect(candidate.properties.name).toBe('陈晓');
+    expect(candidate.review_items).toHaveLength(100);
+    expect(candidate.review_items[0].kind).toBe('field');
+    if (candidate.review_items[0].kind !== 'field') throw new Error('expected field review item');
+    expect(candidate.review_items[0].value).toContain('…');
+    expect(candidate.warnings).toEqual(expect.arrayContaining([
+      '待核实线索超过2KB，已截断', '待核实线索超过100项，已截断',
+    ]));
+  });
   it('offers a nameless resume with a cited skill for review and commit', async () => {
     const input = [{ block_id: 'resume', text: '技能 Python；无姓名和电话', page: 1 }];
     const fetchFn = vi.fn(async () => response([{ candidate_id: 'person', label: 'Person',
@@ -99,8 +228,8 @@ describe('document extraction', () => {
   });
   it('retains an explicit institution relation in a block unique to one unnamed person', async () => {
     const input = [
-      { block_id: 'first', text: '候选甲：Python，曾就读星辰大学', page: 1 },
-      { block_id: 'second', text: '候选乙：Java', page: 2 },
+      { block_id: 'first', text: '候选甲：技能 Python，曾就读星辰大学', page: 1 },
+      { block_id: 'second', text: '候选乙：技能 Java', page: 2 },
     ];
     const fetchFn = vi.fn(async () => response([
       { candidate_id: 'a', label: 'Person', properties: { skills: ['Python'] },
@@ -230,15 +359,17 @@ describe('document extraction', () => {
     expect(result.candidates[1].evidence[0]).toMatchObject({ page: 2, locator_status: 'located' });
   });
 
-  it('marks a field unlocated when quote is not in its exact block', async () => {
+  it('keeps an unlocated quote in review only', async () => {
     const fetchFn = vi.fn(async () => response([{ ...person('a', '陈晓', 'b1'), properties: { name: '陈晓', email: ['chen@example.com'] }, evidence: [
       { field_path: 'properties.name', value: '陈晓', block_id: 'b1', quote: '陈晓' },
       { field_path: 'properties.email', value: 'chen@example.com', block_id: 'b1', quote: 'chen@example.com' },
     ] }]));
     const result = await extractor(fetchFn).extract(blocks.slice(0, 1), new AbortController().signal);
-    expect(result.candidates[0].evidence.find(e => e.value === 'chen@example.com')?.locator_status).toBe('unavailable');
-    expect(result.candidates[0].evidence.find(e => e.value === 'chen@example.com')?.page).toBeUndefined();
-    expect(result.candidates[0].can_commit).toBe(false);
+    expect(result.candidates[0].properties.email).toEqual([]);
+    expect(result.candidates[0].review_items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: 'chen@example.com', reason: 'quote_mismatch' }),
+    ]));
+    expect(result.candidates[0].can_commit).toBe(true);
   });
 
   it('does not accept a missing block id as located evidence', async () => {
@@ -246,7 +377,9 @@ describe('document extraction', () => {
     const result = await extractor(fetchFn).extract(blocks.slice(0, 1), new AbortController().signal);
     expect(result.candidates[0].evidence).toEqual([]);
     expect(result.candidates[0].can_commit).toBe(false);
-    expect(result.warnings).not.toEqual([]);
+    expect(result.candidates[0].review_items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: '陈晓', reason: 'quote_mismatch' }),
+    ]));
   });
 
   it('does not count an unrelated located quote as support for an invented value', async () => {
@@ -257,8 +390,11 @@ describe('document extraction', () => {
         { field_path: 'properties.email', value: 'invented@example.com', block_id: 'b1', quote: '陈晓' },
       ] }]));
     const result = await extractor(fetchFn).extract(blocks.slice(0, 1), new AbortController().signal);
-    expect(result.candidates[0].evidence.find(e => e.value === 'invented@example.com')?.locator_status).toBe('unavailable');
-    expect(result.candidates[0].can_commit).toBe(false);
+    expect(result.candidates[0].properties.email).toEqual([]);
+    expect(result.candidates[0].review_items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: 'invented@example.com', reason: 'quote_mismatch' }),
+    ]));
+    expect(result.candidates[0].can_commit).toBe(true);
   });
 
   it('keeps a located family relation as a review suggestion, without assigning permanent ids', async () => {
