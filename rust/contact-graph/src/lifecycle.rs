@@ -375,6 +375,16 @@ impl Store {
                     params![record["evidence_id"].as_str(),input.target_id,record["field_path"].as_str(),record["value"].to_string(),record.to_string()]).map_err(internal)?;
             }
         }
+        tx.execute(
+            "UPDATE contact_claims SET subject_id=?1,updated_at=?3 WHERE subject_id=?2",
+            params![input.target_id, input.source_id, changed_at],
+        )
+        .map_err(internal)?;
+        tx.execute(
+            "UPDATE contact_claims SET target_id=?1,updated_at=?3 WHERE target_id=?2",
+            params![input.target_id, input.source_id, changed_at],
+        )
+        .map_err(internal)?;
         source_meta["archived_at"] = json!(changed_at);
         source_meta["merged_into"] = json!(input.target_id);
         source_meta["updated_at"] = json!(changed_at);

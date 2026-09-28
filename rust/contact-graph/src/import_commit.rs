@@ -569,6 +569,178 @@ fn commit_relations(
     Ok(results)
 }
 
+// Claims are a separate, bounded review queue. Never feed them into formal evidence
+// or property/edge validation; only an explicit later review may promote them.
+fn persist_claims(
+    tx: &rusqlite::Transaction<'_>,
+    candidates: &[Value],
+    landed: &HashMap<String, String>,
+    input: &CommitInput,
+    now: &str,
+) -> Result<(), AppError> {
+    for candidate in candidates {
+        let owner = candidate["candidate_id"].as_str().unwrap();
+        for (key, suggestion) in [("review_items", false), ("relation_suggestions", true)] {
+            let items = match candidate.get(key) {
+                None => continue,
+                Some(value) => value
+                    .as_array()
+                    .ok_or_else(|| validation("Invalid claim list"))?,
+            };
+            if items.len() > 100 {
+                return Err(validation("Claim list exceeds 100 items"));
+            }
+            for item in items {
+                let kind = if suggestion {
+                    "relation"
+                } else {
+                    item["kind"]
+                        .as_str()
+                        .ok_or_else(|| validation("Claim kind is required"))?
+                };
+                let source_candidate = if kind == "relation" {
+                    item["source_candidate_id"]
+                        .as_str()
+                        .ok_or_else(|| validation("Claim source is required"))?
+                } else {
+                    owner
+                };
+                let Some(subject_id) = landed.get(source_candidate) else {
+                    continue;
+                };
+                if !suggestion && item.to_string().len() > 2048 {
+                    return Err(validation("Review item exceeds 2048 bytes"));
+                }
+                let reason = if suggestion {
+                    item["review_reason"]
+                        .as_str()
+                        .unwrap_or("missing_direct_statement")
+                } else {
+                    item["reason"].as_str().unwrap_or("")
+                };
+                let reasons: &[&str] = if suggestion {
+                    &[
+                        "structured_heading",
+                        "missing_direct_statement",
+                        "ambiguous_owner",
+                    ]
+                } else {
+                    &[
+                        "missing_evidence",
+                        "quote_mismatch",
+                        "ambiguous_context",
+                        "invalid_shape",
+                        "ambiguous_owner",
+                    ]
+                };
+                if !reasons.contains(&reason) {
+                    return Err(validation("Invalid claim reason"));
+                }
+                let mut source = json!({});
+                let proof = if suggestion {
+                    item["evidence"]
+                        .as_array()
+                        .and_then(|items| {
+                            items
+                                .iter()
+                                .find(|proof| proof["field_path"] == "$relation")
+                                .or_else(|| items.first())
+                        })
+                        .unwrap_or(item)
+                } else {
+                    item
+                };
+                for key in ["page", "quote", "file_sha256", "file_name"] {
+                    if let Some(value) = proof.get(key) {
+                        source[key] = value.clone();
+                    }
+                }
+                reject_raw_content(&source)?;
+                if source.to_string().len() > 2048 {
+                    return Err(validation("Claim source exceeds 2048 bytes"));
+                }
+                let (field_path, relation_type, target_id, value) = match kind {
+                    "field" => {
+                        let path = item["field_path"]
+                            .as_str()
+                            .filter(|s| !s.trim().is_empty())
+                            .ok_or_else(|| validation("Claim field_path is required"))?;
+                        let value = item
+                            .get("value")
+                            .ok_or_else(|| validation("Claim value is required"))?;
+                        (Some(path), None, None, value.clone())
+                    }
+                    "relation" => {
+                        let target_candidate = item["target_candidate_id"]
+                            .as_str()
+                            .ok_or_else(|| validation("Claim target is required"))?;
+                        let relation_type = item["relation_type"]
+                            .as_str()
+                            .ok_or_else(|| validation("Claim relation_type is required"))?;
+                        if ![
+                            "worksFor",
+                            "alumniOf",
+                            "affiliation",
+                            "memberOf",
+                            "colleague",
+                            "spouse",
+                            "parent",
+                            "children",
+                        ]
+                        .contains(&relation_type)
+                        {
+                            return Err(validation("Invalid claim relation_type"));
+                        }
+                        if !item["properties"].is_object() {
+                            return Err(validation("Claim properties must be an object"));
+                        }
+                        if suggestion
+                            && input.relation_choices.iter().any(|choice| {
+                                choice.source_candidate_id == source_candidate
+                                    && choice.target_candidate_id == target_candidate
+                                    && choice.relation_type == relation_type
+                                    && choice.properties == item["properties"]
+                            })
+                        {
+                            continue;
+                        }
+                        let target = candidates
+                            .iter()
+                            .find(|c| c["candidate_id"] == target_candidate);
+                        // Candidate IDs are provenance, never graph IDs. A skipped target stays absent.
+                        let target_id = target
+                            .filter(|c| c["label"] == "Organization")
+                            .and_then(|_| landed.get(target_candidate));
+                        let mut value = json!({"target_candidate_id":target_candidate,"properties":item["properties"]});
+                        if let Some(name) = target.and_then(|c| c["properties"]["name"].as_str()) {
+                            value["target_name"] =
+                                json!(name.chars().take(500).collect::<String>());
+                        }
+                        (None, Some(relation_type), target_id, value)
+                    }
+                    _ => return Err(validation("Invalid claim kind")),
+                };
+                if value.to_string().len() > 2048 {
+                    return Err(validation("Claim value exceeds 2048 bytes"));
+                }
+                let claim_id = format!(
+                    "claim_{}",
+                    canonical_hash(&json!({"import_id":input.import_id,
+                    "candidate_id":source_candidate,"kind":kind,"field_path":field_path,
+                    "relation_type":relation_type,"value":value}))?
+                );
+                tx.execute("INSERT INTO contact_claims(claim_id,subject_id,kind,field_path,relation_type,
+                    target_id,value_json,source_json,status,reason,import_id,candidate_id,created_at,updated_at)
+                    VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'unverified',?9,?10,?11,?12,?12)
+                    ON CONFLICT(claim_id) DO NOTHING",
+                    params![claim_id,subject_id,kind,field_path,relation_type,target_id,value.to_string(),
+                        source.to_string(),reason,input.import_id,source_candidate,now]).map_err(AppError::internal)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Store {
     pub fn commit_import(&self, raw: &Value) -> Result<Value, AppError> {
         reject_raw_content(raw)?;
@@ -884,6 +1056,7 @@ impl Store {
             &input.actor,
             &now,
         )?;
+        persist_claims(&tx, candidates, &landed, &input, &now)?;
         let new_version = version + 1;
         tx.execute(
             "UPDATE import_jobs SET status='committed',version=?1 WHERE import_id=?2",

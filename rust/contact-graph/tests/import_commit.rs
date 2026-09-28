@@ -163,6 +163,7 @@ fn unnamed_relation_only_candidate_requires_a_selected_located_relation() {
     payload["relation_choices"] = selected;
     let committed = store.commit_import(&payload).unwrap();
     assert_eq!(committed["relations"].as_array().unwrap().len(), 1);
+    assert_eq!(count(&store, "contact_claims"), 0);
 }
 
 #[test]
@@ -691,4 +692,244 @@ fn selected_relation_cannot_use_a_skipped_candidate() {
     assert_eq!(result.unwrap_err().code, "VALIDATION_ERROR");
     assert_eq!(count(&store, "kg_entities"), 0);
     assert_eq!(count(&store, "kg_relations"), 0);
+}
+
+fn claim_preview() -> Vec<Value> {
+    let mut person = candidate("person", "示例甲");
+    person["review_items"] = json!([{"kind":"field","field_path":"properties.skills",
+        "value":"Rust","reason":"missing_evidence","page":1,"quote":"Rust"}]);
+    let org = json!({"candidate_id":"company","label":"Organization",
+        "properties":{"name":"示例公司"},"evidence":[proof("properties.name",json!("示例公司"))],
+        "relation_suggestions":[{"source_candidate_id":"person","target_candidate_id":"company",
+            "relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole"}},
+            "uncertain":true,"review_reason":"structured_heading",
+            "evidence":[{"field_path":"$relation","value":{},"source_type":"file",
+                "file_sha256":"example-hash","page":1,"quote":"工作经历：示例公司"}]}],
+        "review_items":[],"can_commit":true});
+    vec![person, org]
+}
+
+fn claim_commit(import_id: &str, person_action: &str, company_action: &str) -> Value {
+    json!({"operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+        "import_id":import_id,"expected_version":2,
+        "choices":[{"candidate_id":"person","action":person_action},
+            {"candidate_id":"company","action":company_action}]})
+}
+
+#[test]
+fn claims_preserve_unselected_suggestions_on_the_source_without_promoting_or_replaying() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let import_id = ready(&store, claim_preview());
+    let input = claim_commit(&import_id, "create", "skip");
+    let result = store.commit_import(&input).unwrap();
+    let id = &result["results"][0]["entity_id"];
+    let loaded = store.get_contact(&json!({"entity_id":id})).unwrap();
+    let claims = loaded["unverified_claims"].as_array().expect("claims page");
+    assert_eq!(claims.len(), 2);
+    assert_eq!(count(&store, "entity_ids"), 1);
+    assert_eq!(count(&store, "kg_relations"), 0);
+    assert_eq!(loaded["entity"]["properties"]["skills"], json!([]));
+    for claim in claims {
+        assert_eq!(&claim["subject_id"], id);
+        assert_eq!(claim["status"], "unverified");
+    }
+    let relation = claims.iter().find(|c| c["kind"] == "relation").unwrap();
+    assert!(relation["target_id"].is_null());
+    assert_eq!(relation["value"]["target_name"], "示例公司");
+    assert_eq!(relation["reason"], "structured_heading");
+    assert_eq!(relation["source"]["quote"], "工作经历：示例公司");
+    assert_eq!(store.commit_import(&input).unwrap()["replayed"], true);
+    assert_eq!(count(&store, "contact_claims"), 2);
+    let page = store
+        .get_contact(&json!({"entity_id":id,"claim_limit":1}))
+        .unwrap();
+    assert_eq!(page["unverified_claims"].as_array().unwrap().len(), 1);
+    assert_eq!(page["pagination"]["unverified_claims"]["total"], 2);
+    assert_eq!(page["pagination"]["unverified_claims"]["next_offset"], 1);
+    let next = store
+        .get_contact(&json!({"entity_id":id,"claim_limit":1,"claim_offset":1}))
+        .unwrap();
+    assert_ne!(
+        page["unverified_claims"][0]["claim_id"],
+        next["unverified_claims"][0]["claim_id"]
+    );
+    assert_eq!(page["evidence"], next["evidence"]);
+    assert!(store
+        .get_contact(&json!({"entity_id":id,"claim_limit":51}))
+        .is_err());
+}
+
+#[test]
+fn relation_review_items_never_create_edges_and_skipped_sources_get_no_claims() {
+    for skip_person in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let mut preview = claim_preview();
+        preview[1]["review_items"] = json!([{"kind":"relation","source_candidate_id":"person",
+            "target_candidate_id":"company","relation_type":"alumniOf","properties":{},
+            "reason":"ambiguous_owner","quote":"示例公司"}]);
+        let import_id = ready(&store, preview);
+        let result = store
+            .commit_import(&claim_commit(
+                &import_id,
+                if skip_person { "skip" } else { "create" },
+                "create",
+            ))
+            .unwrap();
+        assert_eq!(count(&store, "kg_relations"), 0);
+        assert_eq!(
+            count(&store, "contact_claims"),
+            if skip_person { 0 } else { 3 }
+        );
+        if !skip_person {
+            let loaded = store
+                .get_contact(&json!({"entity_id":result["results"][0]["entity_id"]}))
+                .unwrap();
+            assert_eq!(loaded["unverified_claims"].as_array().unwrap().len(), 3);
+        }
+    }
+}
+
+#[test]
+fn claim_insert_failure_rolls_back_entities_mapping_and_preview_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let import_id = ready(&store, claim_preview());
+    store.graph.connection().execute_batch("CREATE TRIGGER fail_claim BEFORE INSERT ON contact_claims BEGIN SELECT RAISE(ABORT, 'test rollback'); END;").unwrap();
+    assert!(store
+        .commit_import(&claim_commit(&import_id, "create", "skip"))
+        .is_err());
+    for table in [
+        "entity_ids",
+        "kg_entities",
+        "source_mapping",
+        "contact_claims",
+    ] {
+        assert_eq!(count(&store, table), 0);
+    }
+    assert_eq!(
+        store
+            .get_import_job(&json!({"import_id":import_id}))
+            .unwrap()["status"],
+        "ready_for_review"
+    );
+}
+
+#[test]
+fn claims_follow_manual_subject_and_organization_merges() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let import_id = ready(&store, claim_preview());
+    let result = store
+        .commit_import(&claim_commit(&import_id, "create", "create"))
+        .unwrap();
+    let person = &result["results"][0]["entity_id"];
+    let org = &result["results"][1]["entity_id"];
+    let mut survivors = vec![];
+    for (label, source) in [("Person", person), ("Organization", org)] {
+        let survivor = store.save_contact(&json!({"operation_id":format!("create-{label}"),"actor":"reviewer",
+            "label":label,"set_properties":{"name":"目标样例"},"evidence":[proof("properties.name",json!("目标样例"))]})).unwrap()["entity_id"].clone();
+        store.merge_contacts(&json!({"operation_id":format!("merge-{label}"),"actor":"reviewer",
+            "source_id":source,"target_id":survivor,"expected_source_version":1,"expected_target_version":1})).unwrap();
+        assert!(store
+            .get_contact(&json!({"entity_id":source}))
+            .unwrap()
+            .is_null());
+        survivors.push(survivor);
+    }
+    let loaded = store
+        .get_contact(&json!({"entity_id":survivors[0]}))
+        .unwrap();
+    let claims = loaded["unverified_claims"].as_array().expect("claims page");
+    assert_eq!(claims.len(), 2);
+    assert!(claims.iter().all(|c| c["subject_id"] == survivors[0]));
+    assert_eq!(
+        claims.iter().find(|c| c["kind"] == "relation").unwrap()["target_id"],
+        survivors[1]
+    );
+}
+
+#[test]
+fn claims_do_not_make_an_empty_anonymous_candidate_committable() {
+    for action in ["skip", "create"] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let mut person = candidate("person", "示例甲");
+        person["properties"] = json!({});
+        person["evidence"] = json!([]);
+        person["can_commit"] = json!(false);
+        person["review_items"] = json!([{"kind":"field","field_path":"properties.skills",
+            "value":"Rust","reason":"missing_evidence"}]);
+        let import_id = ready(&store, vec![person]);
+        let result = store.commit_import(
+            &json!({"operation_id":format!("contact-import:{import_id}"),
+            "actor":"reviewer","import_id":import_id,"expected_version":2,
+            "choices":[{"candidate_id":"person","action":action}]}),
+        );
+        assert_eq!(result.is_ok(), action == "skip");
+        assert_eq!(count(&store, "entity_ids"), 0);
+        assert_eq!(count(&store, "contact_claims"), 0);
+    }
+}
+
+#[test]
+fn claims_are_deduplicated_bounded_and_persist_on_import_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let target = store
+        .save_contact(
+            &json!({"operation_id":"target","actor":"reviewer","label":"Person",
+        "set_properties":{"name":"示例甲"},"evidence":[proof("properties.name",json!("示例甲"))]}),
+        )
+        .unwrap();
+    let mut previews = claim_preview();
+    let duplicate = previews[1]["relation_suggestions"][0].clone();
+    previews[0]["relation_suggestions"] = json!([duplicate]);
+    previews[0]["review_items"] = json!((0..100).map(|index| json!({"kind":"field",
+        "field_path":"properties.skills","value":format!("skill-{index}"),"reason":"missing_evidence",
+        "quote":"例".repeat(500)})).collect::<Vec<_>>());
+    let import_id = ready(&store, previews);
+    let mut input = claim_commit(&import_id, "merge", "skip");
+    input["choices"][0]["target_id"] = target["entity_id"].clone();
+    input["choices"][0]["expected_target_version"] = json!(1);
+    store.commit_import(&input).unwrap();
+    assert_eq!(count(&store, "contact_claims"), 101);
+    let loaded = store
+        .get_contact(&json!({"entity_id":target["entity_id"]}))
+        .unwrap();
+    assert_eq!(loaded["unverified_claims"].as_array().unwrap().len(), 10);
+    assert!(loaded.to_string().len() < 256 * 1024);
+    assert_eq!(loaded["pagination"]["unverified_claims"]["total"], 101);
+}
+
+#[test]
+fn oversized_review_items_fail_without_partial_graph_writes() {
+    for oversized in [json!([{"kind":"field","field_path":"properties.skills","value":"x".repeat(2048),"reason":"missing_evidence"}]),
+        json!((0..101).map(|_| json!({"kind":"field","field_path":"properties.skills","value":"Rust","reason":"missing_evidence"})).collect::<Vec<_>>())] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let mut previews = claim_preview();
+        previews[0]["review_items"] = oversized;
+        let import_id = ready(&store, previews);
+        assert!(store.commit_import(&claim_commit(&import_id,"create","skip")).is_err());
+        assert_eq!(count(&store,"contact_claims"),0);
+        assert_eq!(count(&store,"entity_ids"),0);
+    }
+}
+
+
+#[test]
+fn invalid_relation_endpoint_clue_does_not_block_a_supported_person() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let mut person = candidate("person", "示例甲");
+    person["review_items"] = json!([{"kind":"relation","source_candidate_id":"person",
+        "target_candidate_id":"person","relation_type":"worksFor","properties":{},"reason":"invalid_shape"}]);
+    let import_id = ready(&store,vec![person]);
+    store.commit_import(&json!({"operation_id":format!("contact-import:{import_id}"),
+        "actor":"reviewer","import_id":import_id,"expected_version":2,
+        "choices":[{"candidate_id":"person","action":"create"}]})).unwrap();
+    assert_eq!(count(&store,"contact_claims"),1);
+    assert_eq!(count(&store,"kg_relations"),0);
 }

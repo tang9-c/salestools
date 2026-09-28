@@ -86,7 +86,7 @@ fn contact_page(raw: &Value, prefix: &str) -> Result<(usize, usize), AppError> {
         .ok_or_else(|| AppError::validation(format!("Invalid {offset_key}")))?;
     let limit = raw
         .get(&limit_key)
-        .map_or(Some(50), Value::as_u64)
+        .map_or(Some(if prefix == "claim" { 10 } else { 50 }), Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
         .filter(|value| (1..=50).contains(value))
         .ok_or_else(|| AppError::validation(format!("Invalid {limit_key}")))?;
@@ -305,6 +305,24 @@ impl Store {
                 source_json TEXT
             );
             CREATE INDEX IF NOT EXISTS source_mapping_entity ON source_mapping(entity_id);
+            CREATE TABLE IF NOT EXISTS contact_claims (
+                claim_id TEXT PRIMARY KEY,
+                subject_id TEXT NOT NULL REFERENCES entity_ids(entity_id),
+                kind TEXT NOT NULL CHECK(kind IN ('field','relation')),
+                field_path TEXT,
+                relation_type TEXT,
+                target_id TEXT REFERENCES entity_ids(entity_id),
+                value_json TEXT NOT NULL CHECK(length(CAST(value_json AS BLOB)) <= 2048),
+                source_json TEXT NOT NULL CHECK(length(CAST(source_json AS BLOB)) <= 2048),
+                status TEXT NOT NULL CHECK(status IN ('unverified','confirmed','rejected')),
+                reason TEXT NOT NULL,
+                import_id TEXT NOT NULL REFERENCES import_jobs(import_id),
+                candidate_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS contact_claims_subject_status
+                ON contact_claims(subject_id,status,claim_id);
             CREATE TABLE IF NOT EXISTS operation_results (
                 operation_id TEXT PRIMARY KEY,
                 actor TEXT NOT NULL,
@@ -610,6 +628,7 @@ impl Store {
     pub fn get_contact(&self, raw: &Value) -> Result<Value, AppError> {
         let (evidence_offset, evidence_limit) = contact_page(raw, "evidence")?;
         let (relation_offset, relation_limit) = contact_page(raw, "relation")?;
+        let (claim_offset, claim_limit) = contact_page(raw, "claim")?;
         let entity_id = raw
             .get("entity_id")
             .and_then(Value::as_str)
@@ -700,9 +719,46 @@ impl Store {
             .then_some(evidence_offset.saturating_add(evidence.len()));
         let relation_next = (relation_offset.saturating_add(relation_page.len()) < relation_total)
             .then_some(relation_offset.saturating_add(relation_page.len()));
+        let claim_total: usize = self
+            .graph
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM contact_claims WHERE subject_id=?1 AND status='unverified'",
+                [entity_id],
+                |row| row.get(0),
+            )
+            .map_err(AppError::internal)?;
+        let mut statement = self.graph.connection().prepare(
+            "SELECT claim_id,subject_id,kind,field_path,relation_type,target_id,value_json,source_json,
+                status,reason,import_id,candidate_id,created_at,updated_at
+             FROM contact_claims WHERE subject_id=?1 AND status='unverified'
+             ORDER BY claim_id LIMIT ?2 OFFSET ?3",
+        ).map_err(AppError::internal)?;
+        let rows = statement.query_map(params![entity_id, claim_limit as i64,
+            claim_offset.min(i64::MAX as usize) as i64], |row| {
+            Ok(json!({"claim_id":row.get::<_,String>(0)?,"subject_id":row.get::<_,String>(1)?,
+                "kind":row.get::<_,String>(2)?,"field_path":row.get::<_,Option<String>>(3)?,
+                "relation_type":row.get::<_,Option<String>>(4)?,"target_id":row.get::<_,Option<String>>(5)?,
+                "value":row.get::<_,String>(6)?,"source":row.get::<_,String>(7)?,
+                "status":row.get::<_,String>(8)?,"reason":row.get::<_,String>(9)?,
+                "import_id":row.get::<_,String>(10)?,"candidate_id":row.get::<_,String>(11)?,
+                "created_at":row.get::<_,String>(12)?,"updated_at":row.get::<_,String>(13)?}))
+        }).map_err(AppError::internal)?;
+        let mut claims = Vec::new();
+        for row in rows {
+            let mut claim = row.map_err(AppError::internal)?;
+            for key in ["value", "source"] {
+                claim[key] = serde_json::from_str(claim[key].as_str().unwrap())
+                    .map_err(AppError::internal)?;
+            }
+            claims.push(claim);
+        }
+        let claim_next = (claim_offset.saturating_add(claims.len()) < claim_total)
+            .then_some(claim_offset.saturating_add(claims.len()));
         Ok(
             json!({"entity":entity_json,"evidence":evidence,"relations":relation_page,"conflicts":conflicts,
-            "pagination":{"evidence":{"offset":evidence_offset,"limit":evidence_limit,
+            "unverified_claims":claims,"pagination":{"unverified_claims":{"offset":claim_offset,
+                "limit":claim_limit,"total":claim_total,"next_offset":claim_next},"evidence":{"offset":evidence_offset,"limit":evidence_limit,
                 "total":evidence_total,"next_offset":evidence_next},
                 "relations":{"offset":relation_offset,"limit":relation_limit,
                 "total":relation_total,"next_offset":relation_next}},
