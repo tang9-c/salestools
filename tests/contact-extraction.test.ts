@@ -93,6 +93,27 @@ describe('document extraction', () => {
     }
   });
 
+  it('preserves direct school ownership for anonymous people with exclusive block anchors on one page', async () => {
+    const input = [{ block_id: 'a', text: '技能 Python；曾就读星辰大学', page: 1 },
+      { block_id: 'b', text: '技能 Java', page: 1 }];
+    const result = await extractor(vi.fn(async () => response([
+      { candidate_id: 'a', label: 'Person', properties: { skills: ['Python'] }, evidence: [
+        { field_path: 'properties.skills', value: 'Python', block_id: 'a', quote: '技能 Python' },
+      ], relation_suggestions: [{ source_candidate_id: 'a', target_candidate_id: 's', relation_type: 'alumniOf',
+        properties: {}, evidence: [{ block_id: 'a', quote: '曾就读星辰大学' }], uncertain: false }] },
+      { candidate_id: 'b', label: 'Person', properties: { skills: ['Java'] }, evidence: [
+        { field_path: 'properties.skills', value: 'Java', block_id: 'b', quote: '技能 Java' },
+      ] },
+      { candidate_id: 's', label: 'Organization', properties: { name: '星辰大学' }, evidence: [
+        { field_path: 'properties.name', value: '星辰大学', block_id: 'a', quote: '星辰大学' },
+      ] },
+    ]))).extract(input, new AbortController().signal);
+    expect(result.candidates[0].relation_suggestions).toEqual([expect.objectContaining({
+      source_candidate_id: 'batch1:a', target_candidate_id: 'batch1:s', relation_type: 'alumniOf', uncertain: false,
+    })]);
+    expect(result.candidates[0].review_items).toEqual([]);
+  });
+
   it('does not make a bare anonymous structured heading sufficient for commit', async () => {
     const input = [{ block_id: 'h', text: '教育经历', page: 1 }, { block_id: 's', text: '星辰大学', page: 1 }];
     const fetchFn = vi.fn(async () => response([

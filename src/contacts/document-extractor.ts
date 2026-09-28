@@ -497,6 +497,9 @@ export class DocumentExtractor {
                         && shapeValid('Person', 'properties', 'name', anchor.value)));
                   }));
                 if (pagePeople.length < 2) return false;
+                // Anonymous-only pages already have the stricter exclusive-block anchor
+                // check below; do not replace that ownership rule with a name requirement.
+                if (unnamedPeople.includes(source) && pagePeople.every(person => unnamedPeople.includes(person))) return false;
                 const sourceName = source.properties.name;
                 return typeof sourceName !== 'string' || unnamedPeople.includes(source)
                   || !proof.quote.includes(sourceName)
