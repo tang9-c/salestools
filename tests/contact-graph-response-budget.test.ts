@@ -126,3 +126,51 @@ it.each([160, 500])('budgets claims together with evidence and conflicts (source
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+it('errors instead of returning an enabled claim page with a nonadvancing cursor', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'contact-claim-progress-'));
+  const graph = new ContactGraphClient({ command: binary, dbPath: join(directory, 'graph.sqlite') });
+  const proof = (value: string) => ({ field_path: 'properties.name', value, source_type: 'manual',
+    locator_status: 'not_applicable', collected_at: '2026-09-26T00:00:00Z' });
+  try {
+    const saved = await graph.request<{ entity_id: string }>('save_contact', {
+      operation_id: 'old', actor: 'tester', label: 'Person', set_properties: { name: 'old' },
+      evidence: [{ ...proof('old'), file_name: 'f'.repeat(129700) }],
+    });
+    const entityId = saved.entity_id;
+    await graph.request('save_contact', { operation_id: 'new', actor: 'tester', label: 'Person',
+      entity_id: entityId, expected_version: 1, set_properties: { name: 'new' }, evidence: [proof('new')] });
+    const started = await graph.request<{ import_id: string }>('put_import_job', {
+      operation_id: 'start', actor: 'tester', file_id: 'synthetic', status: 'queued', data: { candidates: [] },
+    });
+    await graph.request('put_import_job', { operation_id: 'ready', actor: 'system',
+      file_id: 'synthetic', import_id: started.import_id, expected_version: 1, status: 'ready_for_review',
+      data: { candidates: [{ candidate_id: 'person', label: 'Person', properties: { name: 'new' },
+        evidence: [proof('new')], can_commit: true, review_items: [{ kind: 'field', field_path: 'properties.skills',
+          value: 'skill', reason: 'missing_evidence', quote: '例'.repeat(500) }],
+      }] },
+    });
+    await graph.request('commit_import', { operation_id: `contact-import:${started.import_id}`, actor: 'tester',
+      import_id: started.import_id, expected_version: 2,
+      choices: [{ candidate_id: 'person', action: 'merge', target_id: entityId, expected_target_version: 2 }],
+    });
+    // Keep failure output compact; never print the intentionally oversized synthetic field.
+    let outcome = 'SUCCESS';
+    try { await graph.request('get_contact', { entity_id: entityId }); }
+    catch (error) { outcome = (error as Error).message; }
+    expect(outcome).toBe('RESPONSE_TOO_LARGE');
+    const complete = await readCompleteContact(graph, entityId);
+    expect((complete?.evidence as unknown[]).length).toBe(3);
+    expect(complete?.unverified_claims).toEqual([]);
+    const claimPage = await graph.request<{ unverified_claims: unknown[]; pagination: {
+      unverified_claims: { total: number; next_offset: number | null } } }>('get_contact', {
+      entity_id: entityId, evidence_offset: 3,
+    });
+    expect(claimPage.unverified_claims.length).toBe(1);
+    expect(claimPage.pagination.unverified_claims).toMatchObject({ total: 1, next_offset: null });
+  } finally {
+    await graph.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

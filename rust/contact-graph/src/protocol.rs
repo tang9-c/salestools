@@ -63,13 +63,13 @@ fn trim_contact_response(response: &mut Value) {
                 })
                 .max_by_key(|(_, bytes)| *bytes)
         };
-        // Trim optional claims first, retaining one when it can coexist with the
-        // formal pages. Every nonempty formal page must advance its own cursor.
+        // Trim claims first, but keep at least one item in every enabled nonempty
+        // stream. An irreducible joint page must error, never stall a cursor.
         let claim_count = result["unverified_claims"].as_array().map_or(0, Vec::len);
         let candidate = if claim_count > 1 {
             Some(("unverified_claims", 0))
         } else {
-            removable(1).or_else(|| (claim_count > 0).then_some(("unverified_claims", 0)))
+            removable(1)
         };
         let Some((key, _)) = candidate else {
             break;
