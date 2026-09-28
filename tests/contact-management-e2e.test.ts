@@ -413,3 +413,45 @@ it('creates one same-file person while preserving two employment episodes after 
   expect(committed.results).toHaveLength(2);
   expect(saved.relations).toHaveLength(2);
 });
+
+it.each([false, true])('commits legal long Unicode relation evidence with selected=%s', async selected => {
+  const prefix = 'Morgan Example works for Cedar Labs ';
+  const quote = prefix + '😀'.repeat(491 - [...prefix].length);
+  const fileName = 'f'.repeat(100) + '.pdf';
+  expect([...quote]).toHaveLength(491);
+  expect(Buffer.byteLength(fileName)).toBe(104);
+  const candidates = [
+    { candidate_id: 'p', label: 'Person', properties: { name: 'Morgan Example' },
+      evidence: [{ field_path: 'properties.name', value: 'Morgan Example', block_id: 'b1', quote: 'Morgan Example' }],
+      relation_suggestions: [{ source_candidate_id: 'p', target_candidate_id: 'o', relation_type: 'worksFor',
+        properties: { role: { '@type': 'OrganizationRole' } }, evidence: [{ block_id: 'b1', quote }], uncertain: false }] },
+    { candidate_id: 'o', label: 'Organization', properties: { name: 'Cedar Labs' },
+      evidence: [{ field_path: 'properties.name', value: 'Cedar Labs', block_id: 'b1', quote: 'Cedar Labs' }] },
+  ];
+  const extraction = await new DocumentExtractor({ url: 'https://ark.example/chat', model: 'test', credential: 'test',
+    fileName, fileSha256: sha, collectedAt,
+    fetchFn: async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ candidates }) } }] })),
+  }).extract([{ block_id: 'b1', text: quote, page: 1 }], new AbortController().signal);
+  expect(extraction.candidates[0].relation_suggestions).toHaveLength(1);
+  const h = await harness('long-source', extraction.candidates);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const relation = extraction.candidates[0].relation_suggestions[0];
+  const committed = await h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`,
+    choices: extraction.candidates.map(item => ({ candidate_id: item.candidate_id, action: 'create' })),
+    relation_choices: selected ? [{ source_candidate_id: relation.source_candidate_id,
+      target_candidate_id: relation.target_candidate_id, relation_type: relation.relation_type, properties: relation.properties }] : [],
+  }, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
+  const id = committed.results.find(item => item.candidate_id === 'batch1:p')!.entity_id;
+  const saved = await h.graph.request<{ relations: unknown[]; unverified_claims: Array<{ source: { file_name: string; file_sha256: string; quote: string } }> }>('get_contact', { entity_id: id });
+  expect(saved.relations).toHaveLength(selected ? 1 : 0);
+  expect(saved.unverified_claims).toHaveLength(selected ? 0 : 1);
+  if (!selected) {
+    const source = saved.unverified_claims[0].source;
+    expect(source).toMatchObject({ file_name: fileName, file_sha256: sha, page: 1 });
+    expect(Buffer.byteLength(JSON.stringify(source))).toBeLessThanOrEqual(2048);
+    expect(quote.startsWith(source.quote)).toBe(true);
+    expect(source.quote).not.toBe('');
+  }
+});

@@ -578,11 +578,19 @@ export class DocumentExtractor {
                 continue;
               }
               const destination = root === 'extensions' ? extensions : properties;
-              if (arrayFields.has(field)) {
-                const existing = (destination[field] as unknown[] | undefined) ?? [];
-                destination[field] = existing.some(item => JSON.stringify(item) === JSON.stringify(value))
-                  ? existing : [...existing, value];
-              } else destination[field] = value;
+              const existing = arrayFields.has(field) ? (destination[field] as unknown[] | undefined) ?? [] : [];
+              const nextValue = arrayFields.has(field)
+                ? existing.some(item => JSON.stringify(item) === JSON.stringify(value)) ? existing : [...existing, value]
+                : value;
+              // Member validation cannot detect cross-field dates or duplicate account identities.
+              const schema = root === 'extensions' ? PersonExtensionsSchema
+                : modelCandidate.label === 'Person' ? PersonCandidatePropertiesSchema : OrganizationPropertiesSchema.partial({ name: true });
+              if (!schema.safeParse({ ...destination, [field]: nextValue }).success) {
+                reviewField(review_items, candidateWarnings, fieldPath, value, 'invalid_shape', proof, block);
+                if (!candidateWarnings.includes(`字段待核实：${fieldPath}`)) candidateWarnings.push(`字段待核实：${fieldPath}`);
+                continue;
+              }
+              destination[field] = nextValue;
               // A model may cite several array values together; persist proof for the
               // selected member, matching the graph's per-value evidence contract.
               const located = evidenceFor({ ...proof!, value }, { ...modelCandidate, properties: root === 'properties'

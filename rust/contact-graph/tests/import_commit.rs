@@ -933,3 +933,32 @@ fn invalid_relation_endpoint_clue_does_not_block_a_supported_person() {
     assert_eq!(count(&store,"contact_claims"),1);
     assert_eq!(count(&store,"kg_relations"),0);
 }
+
+#[test]
+fn claim_sources_bound_serialized_unicode_and_escaping_without_losing_file_identity() {
+    for quote in ["😀".repeat(491), "\u{0001}".repeat(491)] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let mut previews = claim_preview();
+        let file_name = format!("{}.pdf", "f".repeat(100));
+        let hash = "a".repeat(64);
+        let source = &mut previews[1]["relation_suggestions"][0]["evidence"][0];
+        source["quote"] = json!(quote);
+        source["file_name"] = json!(file_name);
+        source["file_sha256"] = json!(hash);
+        let import_id = ready(&store, previews);
+        let result = store.commit_import(&claim_commit(&import_id, "create", "skip")).unwrap();
+        let loaded = store.get_contact(&json!({"entity_id":result["results"][0]["entity_id"]})).unwrap();
+        let claim = loaded["unverified_claims"].as_array().unwrap().iter()
+            .find(|claim| claim["kind"] == "relation").unwrap();
+        let source = &claim["source"];
+        assert_eq!(source["file_name"], file_name);
+        assert_eq!(source["file_sha256"], hash);
+        assert_eq!(source["page"], 1);
+        assert!(source.to_string().len() <= 2048);
+        let saved_quote = source["quote"].as_str().unwrap();
+        assert!(!saved_quote.is_empty());
+        assert!(quote.starts_with(saved_quote));
+        assert_eq!(count(&store, "kg_relations"), 0);
+    }
+}

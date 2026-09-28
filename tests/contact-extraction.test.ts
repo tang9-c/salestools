@@ -987,3 +987,32 @@ describe('document extraction', () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 });
+
+it.each(['dates', 'accounts'])('preserves a person when combined %s violate the contract', async mode => {
+  const accounts = [
+    { platform: 'matrix', accountId: 'demo', label: 'work' },
+    { platform: 'matrix', accountId: 'demo', label: 'home' },
+  ];
+  const fields = mode === 'dates'
+    ? [['properties.birthDate', '2000'], ['properties.deathDate', '1990']] as const
+    : accounts.map(value => ['extensions.instantMessaging', value] as const);
+  const quote = 'Morgan Example 2000 1990 matrix demo work home';
+  const raw = { ...person('p', 'Morgan Example', 'b1'),
+    properties: { name: 'Morgan Example', ...(mode === 'dates' ? { birthDate: '2000', deathDate: '1990' } : {}) },
+    ...(mode === 'accounts' ? { extensions: { instantMessaging: accounts } } : {}),
+    evidence: [{ field_path: 'properties.name', value: 'Morgan Example', block_id: 'b1', quote },
+      ...fields.map(([field_path, value]) => ({ field_path, value, block_id: 'b1', quote }))],
+  };
+  const result = await extractor(async () => response([raw])).extract([{ block_id: 'b1', text: quote, page: 1 }], new AbortController().signal);
+  expect(result.candidates).toHaveLength(1);
+  const saved = result.candidates[0];
+  expect(saved).toMatchObject({ properties: { name: 'Morgan Example' }, can_commit: true });
+  expect(saved.review_items).toContainEqual(expect.objectContaining({
+    field_path: fields[1][0], value: fields[1][1], reason: 'invalid_shape', quote, page: 1,
+  }));
+  expect(saved.evidence.some(proof => proof.field_path === fields[1][0]
+    && JSON.stringify(proof.value) === JSON.stringify(fields[1][1]))).toBe(false);
+  expect(saved.review_items.every(item => Buffer.byteLength(JSON.stringify(item)) <= 2048)).toBe(true);
+  if (mode === 'dates') expect(saved.properties).toMatchObject({ birthDate: '2000' });
+  else expect(saved.label === 'Person' && saved.extensions.instantMessaging).toEqual([accounts[0]]);
+});

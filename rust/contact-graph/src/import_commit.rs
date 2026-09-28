@@ -636,6 +636,17 @@ fn persist_claims(
                 if !reasons.contains(&reason) {
                     return Err(validation("Invalid claim reason"));
                 }
+                // Selected suggestions are formal relations, not unverified claims.
+                if suggestion
+                    && input.relation_choices.iter().any(|choice| {
+                        choice.source_candidate_id == source_candidate
+                            && choice.target_candidate_id == item["target_candidate_id"]
+                            && choice.relation_type == item["relation_type"]
+                            && choice.properties == item["properties"]
+                    })
+                {
+                    continue;
+                }
                 let mut source = json!({});
                 let proof = if suggestion {
                     item["evidence"]
@@ -656,8 +667,20 @@ fn persist_claims(
                     }
                 }
                 reject_raw_content(&source)?;
+                // Bound the serialized source, including UTF-8 and JSON escapes.
+                // Only this claim's display excerpt is shortened; formal evidence and
+                // the file hash remain intact. Very long filenames yield to the hash.
+                for key in ["quote", "file_name"] {
+                    if let Some(text) = source[key].as_str() {
+                        let mut bounded = text.to_owned();
+                        while source.to_string().len() > 2048 && !bounded.is_empty() {
+                            bounded.pop();
+                            source[key] = json!(bounded);
+                        }
+                    }
+                }
                 if source.to_string().len() > 2048 {
-                    return Err(validation("Claim source exceeds 2048 bytes"));
+                    return Err(validation("Claim source identity exceeds 2048 bytes"));
                 }
                 let (field_path, relation_type, target_id, value) = match kind {
                     "field" => {
@@ -693,16 +716,6 @@ fn persist_claims(
                         }
                         if !item["properties"].is_object() {
                             return Err(validation("Claim properties must be an object"));
-                        }
-                        if suggestion
-                            && input.relation_choices.iter().any(|choice| {
-                                choice.source_candidate_id == source_candidate
-                                    && choice.target_candidate_id == target_candidate
-                                    && choice.relation_type == relation_type
-                                    && choice.properties == item["properties"]
-                            })
-                        {
-                            continue;
                         }
                         let target = candidates
                             .iter()
