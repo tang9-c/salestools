@@ -122,6 +122,7 @@ describe('shared contact graph contract', () => {
       relation_type: 'worksFor', properties: {}, reason: 'ambiguous_owner' };
     const candidate = ImportCandidateSchema.parse({ ...base, review_items: [field, relation] });
     expect(candidate.review_items).toEqual([field, relation]);
+    if (candidate.label !== 'Person') throw new Error('expected Person');
     expect(candidate.properties.skills).toEqual([]);
     expect(ImportCandidateSchema.parse(base).review_items).toEqual([]);
     expect(ImportCandidateSchema.safeParse({ ...base,
