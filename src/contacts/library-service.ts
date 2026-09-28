@@ -28,6 +28,8 @@ export class ContactLibraryService {
       void this.schedule(op === 'merge_contacts' ? output.target_id : output.entity_id);
     } else if (op === 'save_relation' && output.relation_type === 'worksFor') {
       void this.schedule(output.source_id);
+    } else if (op === 'review_contact_claim' && output.status === 'confirmed') {
+      void this.schedule(output.indexed_entity_id);
     } else if (op === 'archive_relation') {
       void this.schedule(output.indexed_source_id);
     }
@@ -60,6 +62,10 @@ export class ContactLibraryService {
 
   delete(input: Payload, actor: string): Promise<Payload> {
     return this.write('archive_contact', input, actor);
+  }
+
+  reviewClaim(input: Payload, actor: string): Promise<Payload> {
+    return this.write('review_contact_claim', input, actor);
   }
 
   saveRelation(input: Payload, actor: string): Promise<Payload> {

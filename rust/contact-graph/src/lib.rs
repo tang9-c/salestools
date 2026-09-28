@@ -1,3 +1,4 @@
+pub mod claims;
 pub mod import_commit;
 pub mod import_recovery;
 pub mod lifecycle;

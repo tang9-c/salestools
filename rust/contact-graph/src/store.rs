@@ -611,7 +611,7 @@ impl Store {
         Ok(result)
     }
 
-    fn read_evidence(&self, entity_id: &str) -> Result<Vec<Value>, AppError> {
+    pub(crate) fn read_evidence(&self, entity_id: &str) -> Result<Vec<Value>, AppError> {
         let mut statement = self.graph.connection().prepare(
             "SELECT record_json FROM evidence WHERE subject_kind='entity' AND subject_id=?1 ORDER BY rowid",
         ).map_err(AppError::internal)?;

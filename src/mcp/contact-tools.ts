@@ -57,6 +57,16 @@ const saveRelationInput = z.object({
   relation_type: ContactRelationTypeSchema,
   properties: fields.optional(), metadata: fields.optional(), evidence: proof.optional(),
 }).strict();
+const reviewClaimInput = z.object({
+  claim_id: id, action: z.enum(['confirm', 'reject']), operation_id: operationId,
+  expected_entity_version: version, target_id: id.optional(), corrected_value: z.unknown().optional(),
+  confirmation_note: z.string().trim().min(1).refine(value => [...value].length <= 500,
+    '审核说明最多 500 字符').optional(),
+}).strict().superRefine((value, context) => {
+  if (value.action === 'confirm' && !value.confirmation_note) {
+    context.addIssue({ code: 'custom', message: 'Confirm requires confirmation_note' });
+  }
+});
 const archiveRelationInput = z.object({
   operation_id: operationId, relation_id: id, expected_version: version,
 }).strict();
@@ -109,6 +119,11 @@ export function registerContactTools(server: McpServer, library: ContactLibraryS
     description: '记录经过确认的人物关系或独立任职段；每段 worksFor 关系都可保留单独角色和日期。',
     inputSchema: saveRelationInput,
   }, async (input, context) => result(await library.saveRelation(input, actor(context))));
+
+  server.registerTool('review_contact_claim', {
+    description: '明确确认或拒绝待核实断言，须提供当前实体版本与可重试 operation_id。confirm 必须附 1–500 字符人工审核说明；关系须有已创建且类型正确的 target_id。corrected_value 对字段是更正值（数组追加去重），对关系是 {properties, metadata?}；逐段确认 worksFor。未确认线索不会成为问答事实。',
+    inputSchema: reviewClaimInput,
+  }, async (input, context) => result(await library.reviewClaim(input, actor(context))));
 
   server.registerTool('delete_contact_relation', {
     description: '按版本归档一条关系，保留原始证据和审计记录。',

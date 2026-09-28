@@ -107,6 +107,10 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
             "version": 1, "request_id": request_id, "ok": true,
             "result": { "nonce": request.payload.get("nonce").cloned().unwrap_or(Value::Null) }
         }),
+        "review_contact_claim" => match store.review_contact_claim(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
         "save_contact" => match store.save_contact(&request.payload) {
             Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
             Err(err) => error(request_id, err.code, &err.message),
