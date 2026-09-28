@@ -28,6 +28,12 @@ CLI 逐个上传并输出 JSON：`accepted` 列出已接收的本地路径和 `f
 
 无真实姓名和手机号的简历也可审核入库：候选须有已定位的技能等业务字段证据，或有明确归属、已选择的任职／就读关系及其短引文。审核后用同一 `commit_contact_import` 创建匿名 `Person`，不要填写“未知姓名”等占位 `name`。通过 `search_contacts({query:"公司名"})` 或 `search_contacts({query:"学校名"})` 查找已确认 `worksFor`／`alumniOf` 关系中的匿名人物；结果的 `name` 为 `null`，`display_name` 是由稳定 ID 派生的界面文字。使用返回的 `entity_id` 调用 `get_contact` 查看资料和证据。确认真实姓名后，用 `save_contact` 在同一 `entity_id` 上补录 `name` 与证据。只看到机构名、没有明确人物归属时，不选择机构关系；同一批次出现多名无名人物且没有各自独立的字段证据时，系统也不会分配机构关系。不同简历不会自动合并，原件及完整 OCR 文本不会持久化到图谱。
 
+预览将已定位字段放在 `properties`，缺证据、求职意向或归属不明的线索放在 `review_items`；栏目支持的关系会带 `uncertain=true` 和原因。一个字段待核实不会阻断其他有证据字段。提交创建／合并的人物后，这些线索及未选择的关系保存为该人物的 `unverified_claims`；跳过的候选仍可从 `get_contact_import` 找回。只有 `relation_choices` 明确选择的关系进入正式图谱，项目客户不应当作雇主。
+
+默认搜索与 `ask_contacts` 只使用正式图谱事实。需要寻找尚未核实的线索时，显式调用 `search_contacts({query:"学校或技能关键词",mode:"keyword",include_unverified:true})`，检查每条结果的 `match_status` 和 `claim_id`；`confirmed` 表示正式图谱命中，不一定经过人工审核。待核实查询不支持 semantic／hybrid，也不会进入语义向量。用 `get_contact({entity_id:"…",claim_offset:0,claim_limit:20})` 独立分页查看 `unverified_claims` 的值、原因和短来源。
+
+核对后调用 `review_contact_claim`，提供 `claim_id`、`action:"confirm"` 或 `"reject"`、稳定的 `operation_id`、当前人物的 `expected_entity_version`。确认必须附 1–500 字符的 `confirmation_note`；必要时提供 `corrected_value`，未关联机构的关系还须提供已创建机构的 `target_id`。确认会生成手工审核证据，不冒充原文件引文；拒绝仅改变线索状态。每次审核后重新读取版本，重试同一次操作时保留原参数与 `operation_id`。两段任职须分别审核并保留独立关系。同一文件仍出现多个可提交人物片段时，先核对身份再用 `merge_contacts` 明确选择保留字段；待核实线索会随人物合并转到保留的档案，随后仍需逐条审核。
+
 图谱中查人使用 `search_contacts`（姓名、关键词、组织、职位、技能，可分页）；查看完整档案和证据使用 `get_contact`；问配偶、亲子或任职等问题使用 `ask_contacts`，同名或证据不足会要求澄清或拒答。`get_contacts` 保持原有公开网页搜索与快照语义，不是共享图谱查询。语义/混合检索只有在服务端另配 `ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL` 后可用；未配置时选 `mode=keyword`。失败索引可用 `retry_contact_index` 指定 `entity_id` 和稳定的 `operation_id` 重试。
 
 发布前的质量评测会上传 12 份虚构样本并创建联系人，因此只在使用**一次性数据库**的隔离测试服务上运行。给评测进程设置 `CONTACT_EVAL_MCP_URL`（以 `/mcp` 结尾）、`CONTACT_EVAL_UPLOAD_URL`（同源、以 `/contact-files` 结尾）和 `CONTACT_EVAL_TOKEN`，并提供 `CONTACT_EVAL_DEPLOY_REVISION`、`CONTACT_EVAL_DOCLING_VERSION`、`CONTACT_EVAL_OCR_VERSION` 以记录版本；模型元数据读取 `ARK_API_URL`、`ARK_MODEL`、`ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`，也可使用对应的 `CONTACT_EVAL_*` 覆盖项。运行 `npm run contacts:evaluate`，查看 `docs/validation/contact-management-quality.md`；退出码 0 表示全部门槛通过，1 表示已验证失败，2 表示配置不完整。评测端无需读取或打印模型凭据；服务端的模型凭据请只保存在其本地环境中。

@@ -1,0 +1,47 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 701 >>
+stream
+BT /F2 18 Tf 50 780 Td (Resume) Tj ET
+BT /F1 12 Tf 50 730 Td (Riley Example) Tj ET
+BT /F1 12 Tf 50 680 Td (Mobile: +15550100999) Tj ET
+BT /F1 12 Tf 50 630 Td (Skills: Python) Tj ET
+BT /F1 12 Tf 50 580 Td (Desired position: Solutions Architect) Tj ET
+BT /F2 18 Tf 50 530 Td (Work Experience) Tj ET
+BT /F1 12 Tf 50 480 Td (Cedar Example Labs) Tj ET
+BT /F1 12 Tf 50 430 Td (Riley Example works for Cedar Example Labs 2020) Tj ET
+BT /F1 12 Tf 50 380 Td (Riley Example works for Cedar Example Labs 2022) Tj ET
+BT /F2 18 Tf 50 330 Td (Education) Tj ET
+BT /F1 12 Tf 50 280 Td (Willow Example Academy) Tj ET
+BT /F2 18 Tf 50 230 Td (Projects) Tj ET
+BT /F1 12 Tf 50 180 Td (Customer: Maple Example Client) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000251 00000 n 
+0000000321 00000 n 
+0000001073 00000 n 
+trailer << /Size 7 /Root 1 0 R >>
+startxref
+1148
+%%EOF

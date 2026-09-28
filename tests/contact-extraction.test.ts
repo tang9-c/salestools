@@ -20,6 +20,79 @@ function extractor(fetchFn: typeof fetch, overrides = {}) {
 }
 
 describe('document extraction', () => {
+  it('uses short unique model block aliases and preserves original processing provenance', async () => {
+    const longId = 'd1d3a7b8-12ab-45cd-89ef-123456789abc:0:0';
+    const input = [{ block_id: longId, text: 'Riley Example', page: 2 },
+      { block_id: 'b1', text: 'Cedar Labs', page: 2 }];
+    let aliases: string[] = [];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const sent = JSON.parse(JSON.parse(String(init?.body)).messages[1].content).blocks;
+      aliases = sent.map((block: { block_id: string }) => block.block_id);
+      return response([person('p', 'Riley Example', sent[0].block_id)]);
+    });
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0].properties.name).toBe('Riley Example');
+    expect(result.candidates[0].evidence[0]).toMatchObject({ quote: 'Riley Example', page: 2, locator_status: 'located' });
+    expect(result.processedBlockIds).toEqual([longId, 'b1']);
+    expect(aliases.every(id => id.length <= 20)).toBe(true);
+    expect(new Set(aliases).size).toBe(2);
+  });
+
+  it.each(['original-id', 'other-alias', 'invented-alias'])('does not repair a %s evidence reference by searching other blocks', async mode => {
+    const longId = 'd1d3a7b8-12ab-45cd-89ef-123456789abc:0:0';
+    const input = [{ block_id: longId, text: 'Riley Example', page: 2 },
+      { block_id: 'other', text: 'Unrelated text', page: 2 }];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const sent = JSON.parse(JSON.parse(String(init?.body)).messages[1].content).blocks;
+      return response([person('p', 'Riley Example', mode === 'original-id' ? longId
+        : mode === 'other-alias' ? sent[1].block_id : 'missing-alias')]);
+    });
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates[0].properties).not.toHaveProperty('name');
+    expect(result.candidates[0].review_items).toContainEqual(expect.objectContaining({ reason: 'quote_mismatch' }));
+  });
+
+  it.each([
+    ['Person', 'properties.alternateName', 'Riley'],
+    ['Person', 'properties.telephone', '+15550100999'],
+    ['Person', 'properties.email', 'riley@example.test'],
+    ['Person', 'properties.sameAs', 'https://example.test/riley'],
+    ['Person', 'properties.skills', 'Python'],
+    ['Person', 'properties.knowsAbout', 'Engineering'],
+    ['Person', 'properties.knowsLanguage', 'English'],
+    ['Person', 'properties.award', 'Example Award'],
+    ['Person', 'properties.faxNumber', '+15550100998'],
+    ['Person', 'properties.nationality', { '@type': 'Country', name: 'Exampleland' }],
+    ['Person', 'properties.workLocation', { '@type': 'Place', name: 'Example City' }],
+    ['Person', 'properties.hasOccupation', { '@type': 'Occupation', name: 'Engineer' }],
+    ['Person', 'properties.hasCredential', { '@type': 'EducationalOccupationalCredential', name: 'Example Certificate' }],
+    ['Person', 'properties.contactPoint', { '@type': 'ContactPoint', contactType: 'personal', telephone: ['+15550100999'], email: [] }],
+    ['Person', 'extensions.hobbies', 'Cycling'],
+    ['Person', 'extensions.instantMessaging', { platform: 'example', accountId: 'riley' }],
+    ['Organization', 'properties.identifier', { '@type': 'PropertyValue', propertyID: 'example', value: '123' }],
+  ] as const)('persists selected members of grouped %s %s evidence and handles duplicate/empty arrays', async (label, fieldPath, value) => {
+    const [root, field] = fieldPath.split('.');
+    const quote = `Skills mobile ${JSON.stringify(value)}`;
+    for (const values of [[value], [value, value], []]) {
+      const candidate = { ...person('p', 'Riley', 'b1'), label,
+        properties: { name: 'Riley', ...(root === 'properties' ? { [field]: values } : {}) },
+        ...(root === 'extensions' ? { extensions: { [field]: values } } : {}),
+        evidence: [{ field_path: 'properties.name', value: 'Riley', block_id: 'b1', quote: 'Riley' },
+          { field_path: fieldPath, value: values, block_id: 'b1', quote }],
+      };
+      const result = await extractor(async () => response([candidate]))
+        .extract([{ block_id: 'b1', text: `Riley ${quote}`, page: 1 }], new AbortController().signal);
+      expect(result.candidates).toHaveLength(1);
+      const saved = result.candidates[0];
+      const fields = root === 'properties' ? saved.properties : saved.label === 'Person' ? saved.extensions : {};
+      expect((fields as Record<string, unknown>)[field]).toEqual(values.length ? [value] : []);
+      const proofs = saved.evidence.filter(proof => proof.field_path === fieldPath);
+      expect(proofs.length > 0).toBe(values.length > 0);
+      expect(proofs.every(proof => JSON.stringify(proof.value) === JSON.stringify(value)
+        && proof.quote === quote && proof.locator_status === 'located')).toBe(true);
+    }
+  });
+
   it.each(['telephone', 'email'] as const)('coalesces same-file fragments by personal %s and keeps conflicting scalars for review', async field => {
     const value = field === 'telephone' ? '+15550000111' : 'riley@example.test';
     const input = [1, 2].map(page => ({ block_id: `m${page}`, page,

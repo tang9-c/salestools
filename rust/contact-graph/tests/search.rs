@@ -460,3 +460,42 @@ fn unverified_keyword_hides_archived_merged_and_reviewed_claims() {
         0
     );
 }
+
+#[test]
+fn matching_claim_id_is_stable_and_belongs_to_the_matching_claims() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph.sqlite");
+    let store = Store::open(&path).unwrap();
+    let person = claimed_person(&store, "stable", "Stable Person");
+    let detail = store.get_contact(&json!({"entity_id":person})).unwrap();
+    let mut matching: Vec<String> = detail["unverified_claims"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|claim| claim["kind"] == "relation" || claim["field_path"] == "properties.skills")
+        .map(|claim| claim["claim_id"].as_str().unwrap().to_owned())
+        .collect();
+    matching.sort();
+    assert_eq!(matching.len(), 2);
+    let query = json!({"query":"Synthetic","include_unverified":true});
+    for _ in 0..3 {
+        let page = search(&store, query.clone());
+        assert_eq!(page["total"], 1);
+        assert_eq!(page["items"][0]["claim_id"], matching[0]);
+    }
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        search(&store, query.clone())["items"][0]["claim_id"],
+        matching[0]
+    );
+    store
+        .graph
+        .connection()
+        .execute(
+            "UPDATE contact_claims SET status='rejected' WHERE claim_id=?1",
+            [&matching[0]],
+        )
+        .unwrap();
+    assert_eq!(search(&store, query)["items"][0]["claim_id"], matching[1]);
+}
