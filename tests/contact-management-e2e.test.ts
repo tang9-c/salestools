@@ -373,3 +373,43 @@ it.each([[false, false], [true, false], [true, true]])('gates structured school 
   const search = await new ContactSearch(h.graph).search({ query: '星辰大学' });
   expect(search.items.some(item => item.entity_id === personId)).toBe(selected);
 });
+
+
+it('creates one same-file person while preserving two employment episodes after fragment merge', async () => {
+  const blocks = [1, 2].map(page => ({ block_id: `p${page}`, page,
+    text: `Riley Moss Mobile: +15550000111 works for Cedar Labs ${page === 1 ? '2020' : '2022'}` }));
+  const raw = blocks.flatMap((block, index) => [
+    { candidate_id: `p${index}`, label: 'Person', properties: { name: 'Riley Moss', telephone: ['+15550000111'] },
+      evidence: [
+        { field_path: 'properties.name', value: 'Riley Moss', block_id: block.block_id, quote: 'Riley Moss' },
+        { field_path: 'properties.telephone', value: '+15550000111', block_id: block.block_id, quote: 'Mobile: +15550000111' },
+      ], relation_suggestions: [{ source_candidate_id: `p${index}`, target_candidate_id: 'o', relation_type: 'worksFor',
+        properties: { role: { '@type': 'OrganizationRole', startDate: index === 0 ? '2020' : '2022' } },
+        evidence: [{ block_id: block.block_id, quote: block.text }], uncertain: false }] },
+    ...(index === 0 ? [{ candidate_id: 'o', label: 'Organization', properties: { name: 'Cedar Labs' },
+      evidence: [{ field_path: 'properties.name', value: 'Cedar Labs', block_id: block.block_id, quote: 'Cedar Labs' }] }] : []),
+  ]);
+  const extraction = await new DocumentExtractor({ url: 'https://ark.example/chat', model: 'test', credential: 'test',
+    fileName: 'invented.pdf', fileSha256: sha, collectedAt,
+    fetchFn: async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ candidates: raw }) } }] }))
+  }).extract(blocks, new AbortController().signal);
+  expect(extraction.candidates.filter(item => item.label === 'Person')).toHaveLength(1);
+  const person = extraction.candidates.find(item => item.label === 'Person')!;
+  expect(person.relation_suggestions).toHaveLength(2);
+  expect(person.relation_suggestions.every(item => item.source_candidate_id === person.candidate_id)).toBe(true);
+  expect(person.relation_suggestions.every(item => item.evidence.every(proof =>
+    proof.subject_id === `${person.candidate_id}:${item.target_candidate_id}`))).toBe(true);
+  const h = await harness('same-file-merge', extraction.candidates);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const committed = await h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`,
+    choices: extraction.candidates.map(item => ({ candidate_id: item.candidate_id, action: 'create' })),
+    relation_choices: person.relation_suggestions.map(({ source_candidate_id, target_candidate_id, relation_type, properties }) =>
+      ({ source_candidate_id, target_candidate_id, relation_type, properties })),
+  }, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
+  const id = committed.results.find(item => item.candidate_id === person.candidate_id)!.entity_id;
+  const saved = await h.graph.request<{ relations: unknown[] }>('get_contact', { entity_id: id });
+  expect(committed.results).toHaveLength(2);
+  expect(saved.relations).toHaveLength(2);
+});

@@ -296,6 +296,116 @@ function evidenceFor(
   };
 }
 
+// This groups mentions in one extraction only; it never resolves existing graph identities.
+function coalescePeople(candidates: ImportCandidate[], blocks: ParsedBlock[], warnings: string[]): ImportCandidate[] {
+  const people = candidates.filter(candidate => candidate.label === 'Person');
+  if (people.length < 2) return candidates;
+  const names = new Set(people.flatMap(person => person.properties.name ? [person.properties.name] : []));
+  const documentText = blocks.map(block => block.text).join('\n');
+  const labeledNames = [...documentText.matchAll(/(?:^|\n)\s*(?:姓名|name)\s*[:：]\s*([^\n]+)/giu)]
+    .map(match => match[1].trim());
+  const sharedContact = /公司总机|总机|客服电话|公司电话|联系人名单|通讯录|switchboard|company phone|office phone|reception|contact list/iu;
+  const hasOtherPeople = names.size > 1 || new Set(labeledNames).size > 1
+    || people.some(person => person.relation_suggestions.some(relation =>
+      ['colleague', 'spouse', 'parent', 'children'].includes(relation.relation_type)));
+  if (hasOtherPeople) return candidates;
+  const singleResume = /个人简历|简历|curriculum vitae|\bresume\b/iu.test(documentText)
+    && names.size === 1 && labeledNames.length === 1 && names.has(labeledNames[0])
+    && !sharedContact.test(documentText)
+    && !/推荐人|证明人|紧急联系人|家庭成员|references?\s*[:：]|emergency contact/iu.test(documentText)
+    && !people.some(person => person.review_items.some(item => item.kind === 'field'
+      && item.field_path === 'properties.name' && !names.has(String(item.value))));
+  const identifiers = (person: ImportCandidate, field: 'telephone' | 'email'): string[] =>
+    (person.properties[field] ?? []).filter(value => person.evidence.some(proof => {
+      if (proof.field_path !== `properties.${field}` || proof.value !== value || !proof.quote) return false;
+      if (candidates.some(candidate => candidate.label === 'Organization' && candidate.properties[field]?.includes(value))) return false;
+      const sourceBlocks = blocks.filter(block => block.page === proof.page && block.text.includes(proof.quote!));
+      if (!sourceBlocks.length || sourceBlocks.some(block => sharedContact.test(block.text))) return false;
+      if (field === 'email' && /^(?:info|sales|support|admin|contact|hr|office)@/iu.test(value)) return false;
+      return sourceBlocks.some(block => block.text.split(/\r?\n/u).some(line => line.includes(value)
+        && (field === 'telephone' ? /手机|移动电话|mobile|cell/iu.test(line)
+          : /个人邮箱|电子邮箱|邮箱|e-?mail/iu.test(line))));
+    }));
+  const compatible = (a: ImportCandidate, b: ImportCandidate): boolean => {
+    for (const field of ['telephone', 'email'] as const) {
+      const av = a.properties[field] ?? [];
+      const bv = b.properties[field] ?? [];
+      if (av.length && bv.length && !av.some(value => bv.includes(value))) return false;
+    }
+    return true;
+  };
+  const strongMatch = (a: ImportCandidate, b: ImportCandidate) =>
+    (['telephone', 'email'] as const).some(field => identifiers(a, field).some(value => identifiers(b, field).includes(value)));
+  const groups: ImportCandidate[][] = [];
+  for (const person of people) {
+    const group = groups.find(items => items.every(other => compatible(person, other))
+      && (singleResume || items.some(other => strongMatch(person, other))));
+    if (group) group.push(person); else groups.push([person]);
+  }
+  const replacements = new Map<string, ImportCandidate>();
+  const remap = new Map<string, string>();
+  for (const group of groups) {
+    if (group.length < 2) continue;
+    const first = group[0];
+    const review_items = group.flatMap(person => person.review_items);
+    const mergeWarnings = group.flatMap(person => person.warnings);
+    const conflicts = new Set<string>();
+    const mergeFields = (root: 'properties' | 'extensions') => {
+      const merged: Record<string, unknown> = {};
+      const keys = new Set(group.flatMap(person => Object.keys(root === 'properties' ? person.properties
+        : person.label === 'Person' ? person.extensions : {})));
+      for (const key of keys) {
+        const path = `${root}.${key}`;
+        const values = group.flatMap(person => {
+          const fields = root === 'properties' ? person.properties : person.label === 'Person' ? person.extensions : {};
+          const value = (fields as Record<string, unknown>)[key];
+          return value === undefined ? [] : Array.isArray(value) ? value : [value];
+        });
+        const distinct = [...new Map(values.map(value => [JSON.stringify(value), value])).values()];
+        if (arrayFields.has(key)) merged[key] = distinct;
+        else if (distinct.length === 1) merged[key] = distinct[0];
+        else {
+          conflicts.add(path);
+          for (const person of group) {
+            for (const proof of person.evidence.filter(item => item.field_path === path)) {
+              review_items.push({ kind: 'field', field_path: path, value: proof.value, reason: 'ambiguous_context',
+                ...(proof.page === undefined ? {} : { page: proof.page }), ...(proof.quote ? { quote: proof.quote } : {}) });
+            }
+          }
+          mergeWarnings.push(`同文件片段字段冲突，待核实：${path}`);
+        }
+      }
+      return merged;
+    };
+    const properties = mergeFields('properties');
+    const extensions = mergeFields('extensions');
+    const parsed = ImportCandidateSchema.safeParse({ ...first, properties, extensions, review_items,
+      evidence: group.flatMap(person => person.evidence).filter(proof => !conflicts.has(proof.field_path))
+        .map(proof => ({ ...proof, subject_id: first.candidate_id })),
+      relation_suggestions: group.flatMap(person => person.relation_suggestions),
+      warnings: [...new Set(mergeWarnings)], can_commit: group.some(person => person.can_commit) });
+    // Keep all original fragments if merging would exceed the bounded preview contract.
+    if (!parsed.success) { warnings.push('同文件人物片段合并超出契约限制，已保留原候选'); continue; }
+    replacements.set(first.candidate_id, parsed.data);
+    group.forEach(person => remap.set(person.candidate_id, first.candidate_id));
+  }
+  const mapped = (id: string) => remap.get(id) ?? id;
+  return candidates.filter(candidate => !remap.has(candidate.candidate_id) || mapped(candidate.candidate_id) === candidate.candidate_id)
+    .map(candidate => {
+      const result = replacements.get(candidate.candidate_id) ?? candidate;
+      return { ...result,
+        relation_suggestions: result.relation_suggestions.map(relation => {
+          const source_candidate_id = mapped(relation.source_candidate_id);
+          const target_candidate_id = mapped(relation.target_candidate_id);
+          return { ...relation, source_candidate_id, target_candidate_id,
+            evidence: relation.evidence.map(proof => ({ ...proof, subject_id: `${source_candidate_id}:${target_candidate_id}` })) };
+        }),
+        review_items: result.review_items.map(item => item.kind === 'relation'
+          ? { ...item, source_candidate_id: mapped(item.source_candidate_id), target_candidate_id: mapped(item.target_candidate_id) } : item),
+      };
+    });
+}
+
 export class DocumentExtractor {
   private readonly fetchFn: typeof fetch;
   constructor(private readonly options: DocumentExtractorOptions) {
@@ -643,6 +753,6 @@ export class DocumentExtractor {
     }
     if (blocks.length === 0) warnings.push('文件没有可抽取文本');
     else if (candidates.length === 0 && warnings.length === 0) warnings.push('未提取到联系人候选');
-    return { candidates, warnings, processedBlockIds, unprocessedBlockIds };
+    return { candidates: coalescePeople(candidates, pieces, warnings), warnings, processedBlockIds, unprocessedBlockIds };
   }
 }

@@ -19,6 +19,92 @@ function extractor(fetchFn: typeof fetch, overrides = {}) {
 }
 
 describe('document extraction', () => {
+  it.each(['telephone', 'email'] as const)('coalesces same-file fragments by personal %s and keeps conflicting scalars for review', async field => {
+    const value = field === 'telephone' ? '+15550000111' : 'riley@example.test';
+    const input = [1, 2].map(page => ({ block_id: `m${page}`, page,
+      text: `Riley Moss Mobile: ${value} Email: ${value} skills Python ${page === 1 ? 'Engineer' : 'Manager'} ${'x'.repeat(1500)}` }));
+    const fetchFn = vi.fn(async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      const block = JSON.parse(request.messages[1].content).blocks[0];
+      const title = block.page === 1 ? 'Engineer' : 'Manager';
+      return response([{ candidate_id: 'p', label: 'Person', properties: {
+        name: 'Riley Moss', [field]: [value], skills: ['Python', 'Java'], jobTitle: title,
+      }, evidence: [
+        { field_path: 'properties.name', value: 'Riley Moss', block_id: block.block_id, quote: 'Riley Moss' },
+        { field_path: `properties.${field}`, value, block_id: block.block_id, quote: `Mobile: ${value} Email: ${value}` },
+        { field_path: 'properties.skills', value: 'Python', block_id: block.block_id, quote: 'skills Python' },
+        { field_path: 'properties.jobTitle', value: title, block_id: block.block_id, quote: title },
+      ] }]);
+    });
+    const result = await extractor(fetchFn, { requestMaxBytes: 6000 }).extract(input, new AbortController().signal);
+    expect(result.candidates).toHaveLength(1);
+    const merged = result.candidates[0];
+    expect(merged.properties).toMatchObject({ name: 'Riley Moss', [field]: [value], skills: ['Python'] });
+    expect(merged.properties).not.toHaveProperty('jobTitle');
+    expect(merged.review_items.filter(item => item.kind === 'field' && item.field_path === 'properties.jobTitle')
+      .map(item => item.kind === 'field' && item.value)).toEqual(['Engineer', 'Manager']);
+    expect(merged.review_items.filter(item => item.kind === 'field' && item.value === 'Java')).toHaveLength(2);
+    expect(merged.evidence.filter(item => item.field_path === 'properties.skills')).toHaveLength(2);
+    expect(merged.evidence.every(item => item.subject_id === merged.candidate_id)).toBe(true);
+  });
+
+  it.each(['single', 'names', 'phones', 'switchboard', 'unextracted-person'] as const)(
+    'uses an explicit single resume anchor conservatively: %s', async mode => {
+      const first = 'Riley Moss';
+      const second = mode === 'names' ? 'Dana Reed' : first;
+      const telephone = mode === 'phones' ? ['+15550000111', '+15550000222'] : ['+15550000111', '+15550000111'];
+      const input = [{ block_id: 'a', page: 1, text: `个人简历\n姓名: ${first}\nMobile: ${telephone[0]}` },
+        { block_id: 'b', page: 2, text: `${second}\n${mode === 'switchboard' ? '公司总机' : 'Mobile'}: ${telephone[1]}\nskills Python` },
+        ...(mode === 'unextracted-person' ? [{ block_id: 'c', page: 3, text: '姓名: Dana Reed' }] : [])];
+      if (mode === 'switchboard') input[0].text = `个人简历\n姓名: ${first}\n公司总机: ${telephone[0]}`;
+      const raw = [person('a', first, 'a'), person('b', second, 'b')].map((item, index) => ({ ...item,
+        properties: { ...item.properties, ...(mode === 'single' || mode === 'unextracted-person' ? {} : { telephone: [telephone[index]] }) },
+        evidence: [...item.evidence, ...(mode === 'single' || mode === 'unextracted-person' ? [] : [{
+          field_path: 'properties.telephone', value: telephone[index], block_id: index ? 'b' : 'a', quote: telephone[index],
+        }])],
+      }));
+      const result = await extractor(vi.fn(async () => response(raw))).extract(input, new AbortController().signal);
+      expect(result.candidates).toHaveLength(mode === 'single' ? 1 : 2);
+    });
+
+  it('remaps ambiguous relationship review endpoints when a named resume absorbs an anonymous fragment', async () => {
+    const input = [{ block_id: 'n', page: 2, text: '个人简历\n姓名: Riley Moss' },
+      { block_id: 's', page: 2, text: 'skills Python' }, { block_id: 'h', page: 2, text: '工作经历' },
+      { block_id: 'o', page: 2, text: 'Cedar Labs' }];
+    const result = await extractor(vi.fn(async () => response([
+      person('p', 'Riley Moss', 'n'),
+      { candidate_id: 'part', label: 'Person', properties: { skills: ['Python'] }, evidence: [
+        { field_path: 'properties.skills', value: 'Python', block_id: 's', quote: 'skills Python' },
+      ] },
+      { candidate_id: 'o', label: 'Organization', properties: { name: 'Cedar Labs' }, evidence: [
+        { field_path: 'properties.name', value: 'Cedar Labs', block_id: 'o', quote: 'Cedar Labs' },
+      ], relation_suggestions: [{ source_candidate_id: 'part', target_candidate_id: 'o', relation_type: 'worksFor',
+        properties: {}, evidence: [{ block_id: 'o', quote: 'Cedar Labs' }] }] },
+    ]))).extract(input, new AbortController().signal);
+    expect(result.candidates.filter(item => item.label === 'Person')).toHaveLength(1);
+    expect(result.candidates[0].properties).toMatchObject({ name: 'Riley Moss', skills: ['Python'] });
+    expect(result.candidates[0].evidence.every(item => item.subject_id === 'batch1:p')).toBe(true);
+    expect(result.candidates[1].review_items).toEqual([expect.objectContaining({ kind: 'relation',
+      source_candidate_id: 'batch1:p', target_candidate_id: 'batch1:o', reason: 'ambiguous_owner' })]);
+  });
+
+  it('does not use an organization contact number as a personal identifier', async () => {
+    const input = [{ block_id: 'a', page: 1, text: 'Riley Moss Mobile: +15550000111' },
+      { block_id: 'b', page: 2, text: 'Riley Moss Mobile: +15550000111' },
+      { block_id: 'o', page: 2, text: 'Cedar Labs +15550000111' }];
+    const raw = ['a', 'b'].map(id => ({ ...person(id, 'Riley Moss', id),
+      properties: { name: 'Riley Moss', telephone: ['+15550000111'] }, evidence: [
+        { field_path: 'properties.name', value: 'Riley Moss', block_id: id, quote: 'Riley Moss' },
+        { field_path: 'properties.telephone', value: '+15550000111', block_id: id, quote: 'Mobile: +15550000111' },
+      ] }));
+    const result = await extractor(vi.fn(async () => response([...raw,
+      { candidate_id: 'o', label: 'Organization', properties: { name: 'Cedar Labs', telephone: ['+15550000111'] },
+        evidence: [{ field_path: 'properties.name', value: 'Cedar Labs', block_id: 'o', quote: 'Cedar Labs' },
+          { field_path: 'properties.telephone', value: '+15550000111', block_id: 'o', quote: '+15550000111' }] },
+    ]))).extract(input, new AbortController().signal);
+    expect(result.candidates.filter(item => item.label === 'Person')).toHaveLength(2);
+  });
+
   it.each(['single', 'ambiguous', 'project', 'other-person', 'other-page', 'negated'] as const)(
     'checks structured resume ownership and section boundaries: %s', async mode => {
       const input = [
