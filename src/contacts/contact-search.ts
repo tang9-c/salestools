@@ -3,10 +3,11 @@ import type { EmbeddingClient } from './embedding-client.js';
 
 export interface ContactSearchInput {
   query?: string; name?: string; organization_id?: string; job_title?: string; skill?: string;
+  include_unverified?: boolean;
   mode?: 'keyword' | 'semantic' | 'hybrid'; offset?: number; limit?: number;
 }
 
-interface SearchItem { entity_id: string; label?: string; name?: string | null; display_name?: string; reasons?: string[]; score?: number }
+interface SearchItem { entity_id: string; label?: string; name?: string | null; display_name?: string; reasons?: string[]; score?: number; match_status?: 'confirmed' | 'unverified'; claim_id?: string }
 interface SearchPage { items: SearchItem[]; total: number; next_offset?: number }
 
 function displayItems(items: SearchItem[]): SearchItem[] {
@@ -37,8 +38,15 @@ export class ContactSearch {
       throw new Error('Invalid contact search pagination');
     }
     const mode = input.mode ?? 'keyword';
+    if (input.include_unverified && mode !== 'keyword') {
+      throw new Error('include_unverified is only supported in keyword mode');
+    }
+    if (input.include_unverified && !input.query?.trim()) {
+      throw new Error('include_unverified requires a nonempty query');
+    }
     const filters = { query: input.query, name: input.name,
-      organization_id: input.organization_id, job_title: input.job_title, skill: input.skill };
+      organization_id: input.organization_id, job_title: input.job_title, skill: input.skill,
+      ...(input.include_unverified !== undefined ? { include_unverified: input.include_unverified } : {}) };
     const keyword = async (pageOffset: number, pageLimit: number) => this.graph.request<SearchPage>(
       'search_keyword', { ...filters, offset: pageOffset, limit: pageLimit });
     const fallback = async (warning?: string) => {

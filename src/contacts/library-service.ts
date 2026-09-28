@@ -36,6 +36,7 @@ export class ContactLibraryService {
 
   get(entityId: string, page: {
     evidence_offset?: number; evidence_limit?: number;
+    claim_offset?: number; claim_limit?: number;
     relation_offset?: number; relation_limit?: number;
   } = {}): Promise<Record<string, unknown> | null> {
     return this.graph.request('get_contact', { entity_id: entityId, ...page });

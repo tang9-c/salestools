@@ -22,6 +22,7 @@ fn internal(error: impl std::fmt::Display) -> AppError {
 #[serde(deny_unknown_fields)]
 struct KeywordInput {
     query: Option<String>,
+    include_unverified: Option<bool>,
     name: Option<String>,
     organization_id: Option<String>,
     job_title: Option<String>,
@@ -218,8 +219,38 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
     let organization_id = filter(input.organization_id);
     let job_title = filter(input.job_title);
     let skill = filter(input.skill);
+    let include_unverified = input.include_unverified.unwrap_or(false);
+    if include_unverified && query.is_none() {
+        return Err(invalid("include_unverified requires a nonempty query"));
+    }
     let predicates = where_sql();
-    let count_sql = format!("SELECT COUNT(*) {FROM_VISIBLE} {predicates}");
+    // Structured filters retain their factual meaning. Only the free-text query
+    // may match a claim; provenance quotes and JSON keys are not searchable facts.
+    let official = format!("SELECT i.entity_id,e.entity_type,e.properties,NULL AS claim_id,0 AS priority {FROM_VISIBLE} {predicates}");
+    let candidates = if include_unverified {
+        let factual_filters = predicates.replace(":query", "NULL");
+        format!(
+            r#"WITH confirmed AS ({official}), claim_hits AS (
+            SELECT i.entity_id,e.entity_type,e.properties,
+              (SELECT MIN(c.claim_id) FROM contact_claims c
+                WHERE c.subject_id=i.entity_id AND c.status='unverified'
+                  AND EXISTS (SELECT 1 FROM json_tree(CASE WHEN c.kind='relation' THEN
+                      json_object('target_name',json_extract(c.value_json,'$.target_name'),
+                        'properties',json_extract(c.value_json,'$.properties'))
+                      ELSE c.value_json END) leaf
+                    WHERE leaf.type='text' AND leaf.key IS NOT '@type'
+                      AND instr(lower(leaf.atom),lower(:query))>0)) AS claim_id,
+              1 AS priority
+            {FROM_VISIBLE} {factual_filters}
+              AND NOT EXISTS (SELECT 1 FROM confirmed f WHERE f.entity_id=i.entity_id)
+        ), candidates AS (
+            SELECT * FROM confirmed UNION ALL SELECT * FROM claim_hits WHERE claim_id IS NOT NULL
+        )"#
+        )
+    } else {
+        format!("WITH candidates AS ({official})")
+    };
+    let count_sql = format!("{candidates} SELECT COUNT(*) FROM candidates");
     let conn = store.graph.connection();
     let total: i64 = conn
         .query_row(
@@ -233,8 +264,8 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
         )
         .map_err(internal)?;
     let page_sql = format!(
-        "SELECT i.entity_id,e.entity_type,e.properties {FROM_VISIBLE} {predicates}
-         ORDER BY lower(json_extract(e.properties,'$.name')),i.entity_id
+        "{candidates} SELECT entity_id,entity_type,properties,claim_id FROM candidates
+         ORDER BY priority,lower(json_extract(properties,'$.name')),entity_id
          LIMIT :limit OFFSET :offset"
     );
     let mut statement = conn.prepare(&page_sql).map_err(internal)?;
@@ -251,13 +282,14 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             },
         )
         .map_err(internal)?;
     let mut items = Vec::new();
     for row in rows {
-        let (id, label, raw_properties) = row.map_err(internal)?;
+        let (id, label, raw_properties, claim_id) = row.map_err(internal)?;
         let properties: Value = serde_json::from_str(&raw_properties).map_err(internal)?;
         let mut reasons = query
             .as_deref()
@@ -277,10 +309,18 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
         if query.is_some() && reasons.is_empty() {
             reasons.push("relation_match");
         }
-        items.push(
-            json!({"entity_id":id,"label":label,"name":properties["name"],
-            "reasons":reasons}),
-        );
+        let mut item = json!({"entity_id":id,"label":label,"name":properties["name"],
+            "reasons":reasons});
+        if include_unverified {
+            if let Some(claim_id) = claim_id {
+                item["match_status"] = json!("unverified");
+                item["claim_id"] = json!(claim_id);
+                item["reasons"] = json!(["unverified_claim"]);
+            } else {
+                item["match_status"] = json!("confirmed");
+            }
+        }
+        items.push(item);
     }
     let mut output = json!({"items":items,"total":total});
     if offset + (items.len() as i64) < total {

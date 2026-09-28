@@ -80,3 +80,25 @@ describe('shared contact search', () => {
       items: [{ entity_id: 'p_1' }] });
   });
 });
+
+
+describe('unverified keyword isolation', () => {
+  it('forwards opt-in and preserves claim match markers', async () => {
+    const calls: unknown[] = [];
+    const client: GraphClient = { request: async <T>(_op: GraphOp, payload: unknown) => {
+      calls.push(payload);
+      return { items: [{ entity_id: 'p_claim', match_status: 'unverified', claim_id: 'claim-1' }], total: 1 } as T;
+    }, close: async () => undefined };
+    const page = await new ContactSearch(client).search({ query: 'Academy', include_unverified: true });
+    expect(calls).toEqual([expect.objectContaining({ include_unverified: true })]);
+    expect(page.items[0]).toMatchObject({ match_status: 'unverified', claim_id: 'claim-1' });
+  });
+  it.each(['semantic', 'hybrid'] as const)('rejects %s with opt-in even when embedding unavailable', async mode => {
+    await expect(new ContactSearch(graph([], [])).search({ query: 'Academy', mode, include_unverified: true }))
+      .rejects.toThrow('include_unverified');
+  });
+  it.each([undefined, '', '   '])('rejects missing or empty query %s', async query => {
+    await expect(new ContactSearch(graph([], [])).search({ query, include_unverified: true }))
+      .rejects.toThrow('query');
+  });
+});

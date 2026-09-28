@@ -301,3 +301,162 @@ fn search_paginates_after_archived_filter_and_rejects_wildcards_as_data() {
     assert!(search::search_keyword(&store, &json!({"offset":0,"limit":51})).is_err());
     assert!(search::search_keyword(&store, &json!({"offset":-1,"limit":10})).is_err());
 }
+
+fn claimed_person(store: &Store, tag: &str, name: &str) -> String {
+    let candidate = json!({"candidate_id":"person","label":"Person","properties":{"name":name},
+        "evidence":[proof("properties.name",json!(name))],"can_commit":true,
+        "relation_suggestions":[],"review_items":[
+          {"kind":"relation","relation_type":"alumniOf","source_candidate_id":"person",
+           "target_candidate_id":"school","properties":{},"reason":"missing_evidence"},
+          {"kind":"field","field_path":"properties.skills","value":"Synthetic Company",
+           "reason":"missing_evidence","quote":"source-only-needle"},
+          {"kind":"field","field_path":"properties.telephone","value":"+15550000000",
+           "reason":"missing_evidence"}]});
+    let started = store
+        .put_import_job(&json!({"operation_id":format!("start-{tag}"),
+        "actor":"tester","file_id":tag,"status":"queued","data":{"candidates":[]}}))
+        .unwrap();
+    let import_id = &started["import_id"];
+    store.put_import_job(&json!({"operation_id":format!("ready-{tag}"),"actor":"tester",
+        "file_id":tag,"import_id":import_id,"expected_version":1,"status":"ready_for_review",
+        "data":{"candidates":[candidate,{"candidate_id":"school","label":"Organization","properties":{"name":"Synthetic Academy"},"evidence":[proof("properties.name",json!("Synthetic Academy"))],"can_commit":true}]}})).unwrap();
+    let result = store.commit_import(&json!({"operation_id":format!("contact-import:{}",import_id.as_str().unwrap()),
+        "actor":"tester","import_id":import_id,"expected_version":2,
+        "choices":[{"candidate_id":"person","action":"create"},{"candidate_id":"school","action":"skip"}]})).unwrap();
+    result["results"][0]["entity_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn unverified_keyword_is_opt_in_deduplicated_ranked_and_paged() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let claim = claimed_person(&store, "claim", "A Claim");
+    let confirmed = claimed_person(&store, "confirmed", "Z Synthetic Company");
+    for query in ["Synthetic Academy", "Synthetic Company"] {
+        let default = search(&store, json!({"query":query}));
+        assert!(!ids(&default).contains(&claim));
+        let page = search(&store, json!({"query":query,"include_unverified":true}));
+        let hit = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["entity_id"] == claim)
+            .unwrap();
+        assert_eq!(hit["match_status"], "unverified");
+        assert!(hit["claim_id"].as_str().is_some());
+    }
+    let first = search(
+        &store,
+        json!({"query":"Synthetic Company","include_unverified":true,"limit":1}),
+    );
+    assert_eq!(first["total"], 2);
+    assert_eq!(ids(&first), vec![confirmed]);
+    assert_eq!(first["items"][0]["match_status"], "confirmed");
+    assert!(first["items"][0].get("claim_id").is_none());
+    assert_eq!(first["next_offset"], 1);
+    let second = search(
+        &store,
+        json!({"query":"Synthetic Company","include_unverified":true,"limit":1,"offset":1}),
+    );
+    assert_eq!(ids(&second), vec![claim]);
+    assert!(second.get("next_offset").is_none());
+    assert_eq!(
+        search(
+            &store,
+            json!({"query":"source-only-needle","include_unverified":true})
+        )["total"],
+        0
+    );
+    assert_eq!(
+        search(&store, json!({"query":"school","include_unverified":true}))["total"],
+        0
+    );
+    assert_eq!(
+        search(
+            &store,
+            json!({"query":"Synthetic Company","name":"absent","include_unverified":true})
+        )["total"],
+        0
+    );
+    for query in ["", "   "] {
+        assert!(
+            search::search_keyword(&store, &json!({"query":query,"include_unverified":true}))
+                .is_err()
+        );
+    }
+    assert!(search::search_keyword(&store, &json!({"include_unverified":true})).is_err());
+    assert_eq!(
+        search::find_identity_candidates(
+            &store,
+            &json!({"phones":["+15550000000"],"emails":[],"accounts":[]})
+        )
+        .unwrap()["entity_ids"],
+        json!([])
+    );
+}
+
+#[test]
+fn unverified_keyword_hides_archived_merged_and_reviewed_claims() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let archived = claimed_person(&store, "archived", "Archived");
+    let old = claimed_person(&store, "old", "Old");
+    let target = entity(&store, "target", "Person", "Target", &[], &[], None);
+    assert_eq!(
+        request(
+            &store,
+            "archive_contact",
+            json!({"operation_id":"archive","actor":"tester",
+      "entity_id":archived,"expected_version":1})
+        )["ok"],
+        true
+    );
+    assert_eq!(
+        request(
+            &store,
+            "merge_contacts",
+            json!({"operation_id":"merge","actor":"tester",
+      "source_id":old,"target_id":target,"expected_source_version":1,"expected_target_version":1,
+      "field_choices":{"properties.name":"target"}})
+        )["ok"],
+        true
+    );
+    let found = search(
+        &store,
+        json!({"query":"Synthetic Academy","include_unverified":true}),
+    );
+    assert_eq!(ids(&found), vec![target.clone()]);
+    store
+        .graph
+        .connection()
+        .execute(
+            "UPDATE contact_claims SET status='rejected' WHERE subject_id=?1",
+            [&target],
+        )
+        .unwrap();
+    assert_eq!(
+        search(
+            &store,
+            json!({"query":"Synthetic Academy","include_unverified":true})
+        )["total"],
+        0
+    );
+    store
+        .graph
+        .connection()
+        .execute(
+            "UPDATE contact_claims SET status='confirmed' WHERE subject_id=?1",
+            [&target],
+        )
+        .unwrap();
+    assert_eq!(
+        search(
+            &store,
+            json!({"query":"Synthetic Academy","include_unverified":true})
+        )["total"],
+        0
+    );
+}

@@ -5,6 +5,7 @@ import type { VectorIndexer } from '../contacts/vector-indexer.js';
 
 const id = z.string().trim().min(1).max(128);
 const searchInput = z.object({
+  include_unverified: z.boolean().optional(),
   query: z.string().trim().max(500).optional(),
   name: z.string().trim().max(200).optional(),
   organization_id: id.optional(),
@@ -26,7 +27,7 @@ export function registerContactSearchTools(
   server: McpServer, search: ContactSearch, indexer?: VectorIndexer,
 ): void {
   server.registerTool('search_contacts', {
-    description: '搜索共享联系人图谱；支持字段过滤、关键词以及可用时的语义或混合检索。',
+    description: '搜索共享联系人图谱；支持字段过滤、关键词以及可用时的语义或混合检索。include_unverified 仅允许 keyword 模式且须有非空 query；结构化过滤仍基于正式事实，线索命中含 match_status 和 claim_id。',
     inputSchema: searchInput,
   }, async input => result(await search.search(input)));
   if (indexer) server.registerTool('retry_contact_index', {
