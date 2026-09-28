@@ -40,7 +40,7 @@
 
 **Files:** Modify `src/contracts/contact-import.ts`, `rust/contact-graph/src/import_commit.rs`; Test `tests/contact-contracts.test.ts`, `rust/contact-graph/tests/import_commit.rs`.
 
-**Interfaces:** `ImportCandidate.review_items: ReviewItem[]`；`ReviewItem` 为字段或关系两种形状，均含 `reason`，可含 `page` 与短 `quote`。原因码限定为 `missing_evidence | quote_mismatch | ambiguous_context | invalid_shape | ambiguous_owner`。字段项含 `field_path`、`value`；关系项含候选端点、现有关系类型及属性。每候选最多 100 项，单项 JSON 最多 2 KB，引文最多 500 字符；超限产生明确预览警告，不回退到整批失败。
+**Interfaces:** `ImportCandidate.review_items: ReviewItem[]`；`ReviewItem` 为字段或关系两种形状，均含 `reason`，可含 `page` 与短 `quote`。原因码限定为 `missing_evidence | quote_mismatch | ambiguous_context | invalid_shape | ambiguous_owner`。字段项含 `field_path`、`value`；关系项含候选端点、现有关系类型及属性。每候选最多 100 项，单项 JSON 最多 2 KB，引文最多 500 字符；契约拒绝超限项，Task 2 的抽取生产端负责截断并生成明确预览警告，不能让一项超限导致整批失败。
 
 - [ ] **Step 1: 写失败测试。** 构造 `Person` 候选：`properties.name` 有已定位证据，`review_items` 含缺证据的 `skills=Java`；断言 Zod 接受，Rust 默认提交后图谱无 `skills`，但同一 `import_id` 的 `get_import_job` 仍含该项。另一笔独立导入用 `set_properties` 加手工证据显式确认技能后，断言该技能才落图。另断言超长引文、未知原因码被拒。
 - [ ] **Step 2: 跑定向测试确认失败。** `rtk npm test -- --run tests/contact-contracts.test.ts`；`rtk cargo test --locked --manifest-path rust/contact-graph/Cargo.toml --test import_commit`。
@@ -55,7 +55,7 @@
 
 - [ ] **Step 1: 写失败测试。** 一位人物有可定位姓名、手机号和一项技能，另有两项技能缺引文；断言预览保留全部建议，正式 `properties.skills` 只含可定位项，另两项在 `review_items`，`can_commit=true`。同批第二位候选形状错误时，第一位仍出现；一个非法字段不丢同候选的姓名和电话。
 - [ ] **Step 2: 跑 `rtk npm test -- --run tests/contact-extraction.test.ts`，确认上述断言先失败。**
-- [ ] **Step 3: 将整批与整候选校验改为局部处理。** 先校验响应外壳，再逐候选校验；对有效候选按数组元素／标量逐值验证字段形状、`block_id`、短引文和值匹配。成功值及证据写正式候选，其余写 `review_items`；仍保留总输出字节、候选数、调用预算和来源长度上限。对于完全无可核实信息的候选，保留待核实预览但 `can_commit=false`。
+- [ ] **Step 3: 将整批与整候选校验改为局部处理。** 先校验响应外壳，再逐候选校验；对有效候选按数组元素／标量逐值验证字段形状、`block_id`、短引文和值匹配。成功值及证据写正式候选，其余写 `review_items`；超过每项 2 KB、每候选 100 项或引文 500 字符的线索截断并生成明确预览警告，不能使整批失败。仍保留总输出字节、候选数、调用预算和来源长度上限。对于完全无可核实信息的候选，保留待核实预览但 `can_commit=false`。
 - [ ] **Step 4: 修正语义归属。** “求职意向／期望岗位”中的职位只留待核实线索，不写 `Person.jobTitle`；项目名称、ERP／PO／MOM 等术语不建 `Organization`，除非原文明确是机构；技能须有原文中可定位的技能或经历表述。上述分类均增加中英文固定样例。
 - [ ] **Step 5: 重跑定向测试并提交。** 断言不能通过把未经证实值直接写入 `properties` 来满足召回。
 
