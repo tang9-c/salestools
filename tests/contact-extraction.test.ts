@@ -126,6 +126,26 @@ describe('document extraction', () => {
     expect(candidate.warnings).toContain('待核实线索超过2KB，已截断');
   });
 
+  it('keeps a review clue when its escaped quote alone exceeds the serialized limit', async () => {
+    const quote = '\u0001'.repeat(600);
+    const input = [{ block_id: 'b', text: `陈晓 ${quote}`, page: 3 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',
+      properties: { name: '陈晓', skills: ['假的'] }, evidence: [
+        { field_path: 'properties.name', value: '陈晓', block_id: 'b', quote: '陈晓' },
+        { field_path: 'properties.skills', value: '假的', block_id: 'b', quote },
+      ] }]));
+    const candidate = (await extractor(fetchFn).extract(input, new AbortController().signal)).candidates[0];
+    expect(candidate.review_items).toHaveLength(1);
+    const clue = candidate.review_items[0];
+    expect(clue).toMatchObject({ kind: 'field', value: '假的', page: 3, reason: 'quote_mismatch' });
+    expect(clue.quote?.startsWith('\u0001')).toBe(true);
+    expect([...clue.quote!].length).toBeLessThanOrEqual(500);
+    expect(Buffer.byteLength(JSON.stringify(clue), 'utf8')).toBeLessThanOrEqual(2048);
+    expect(candidate.warnings).toEqual(expect.arrayContaining([
+      '待核实引文超过500字，已截断', '待核实线索超过2KB，已截断',
+    ]));
+  });
+
   it.each([
     ['公司项目名称：ERP 系统', 'ERP'], ['Company project name: MOM platform', 'MOM'],
   ])('does not infer an organization from a company project label: %s', async (text, name) => {

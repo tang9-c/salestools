@@ -68,6 +68,24 @@ function reviewField(items: ReviewItem[], warnings: string[], field_path: string
     item = { ...base, value: truncateBytes(serialized, 1000),
       ...(quote ? { quote: truncateBytes(quote, 400) } : {}) };
     if (!warnings.includes('待核实线索超过2KB，已截断')) warnings.push('待核实线索超过2KB，已截断');
+    if (item.quote && !ReviewItemSchema.safeParse({ ...item,
+      value: Buffer.byteLength(JSON.stringify(item.value), 'utf8') <= 200 ? item.value : '…' }).success) {
+      const quoteCharacters = [...item.quote];
+      let lower = 0;
+      let upper = quoteCharacters.length;
+      let boundedQuote = '';
+      while (lower <= upper) {
+        const length = Math.floor((lower + upper) / 2);
+        const candidateQuote = `${quoteCharacters.slice(0, length).join('')}…`;
+        const candidate = { ...item, quote: candidateQuote,
+          value: Buffer.byteLength(JSON.stringify(item.value), 'utf8') <= 200 ? item.value : '…' };
+        if (ReviewItemSchema.safeParse(candidate).success) {
+          boundedQuote = candidateQuote;
+          lower = length + 1;
+        } else upper = length - 1;
+      }
+      item = { ...item, quote: boundedQuote };
+    }
     if (!ReviewItemSchema.safeParse(item).success) {
       const characters = [...String(item.value)];
       let lower = 0;
