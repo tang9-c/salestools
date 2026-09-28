@@ -66,6 +66,33 @@ describe('document extraction', () => {
       expect(p.relation_suggestions.some(item => item.target_candidate_id === 'batch1:c')).toBe(false);
     });
 
+  it.each([
+    [false, true], [true, true], [false, false], [true, false],
+  ])('checks direct statement subject on a shared page: named=%s heading=%s', async (named, heading) => {
+    const quote = named ? '陈晓任职甲公司' : '任职甲公司';
+    const input = [{ block_id: 'people', text: '陈晓 王明', page: 1 },
+      ...(heading ? [{ block_id: 'h', text: '工作经历', page: 1 }] : []),
+      { block_id: 'work', text: quote, page: 1 }];
+    const result = await extractor(vi.fn(async () => response([
+      { ...person('p', '陈晓', 'people'), relation_suggestions: [{ source_candidate_id: 'p',
+        target_candidate_id: 'o', relation_type: 'worksFor', properties: { role: { '@type': 'OrganizationRole' } },
+        evidence: [{ block_id: 'work', quote }], uncertain: false }] },
+      person('p2', '王明', 'people'),
+      { candidate_id: 'o', label: 'Organization', properties: { name: '甲公司' },
+        evidence: [{ field_path: 'properties.name', value: '甲公司', block_id: 'work', quote: '甲公司' }] },
+    ]))).extract(input, new AbortController().signal);
+    if (named) {
+      expect(result.candidates[0].relation_suggestions).toEqual([expect.objectContaining({
+        source_candidate_id: 'batch1:p', target_candidate_id: 'batch1:o', uncertain: false,
+      })]);
+    } else {
+      expect(result.candidates[0].relation_suggestions).toEqual([]);
+      expect(result.candidates[0].review_items).toContainEqual(expect.objectContaining({ kind: 'relation',
+        reason: 'ambiguous_owner', source_candidate_id: 'batch1:p', target_candidate_id: 'batch1:o',
+        quote: '任职甲公司', page: 1 }));
+    }
+  });
+
   it('does not make a bare anonymous structured heading sufficient for commit', async () => {
     const input = [{ block_id: 'h', text: '教育经历', page: 1 }, { block_id: 's', text: '星辰大学', page: 1 }];
     const fetchFn = vi.fn(async () => response([

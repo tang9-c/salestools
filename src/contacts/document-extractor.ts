@@ -476,6 +476,35 @@ export class DocumentExtractor {
               if (ReviewItemSchema.safeParse(item).success) review_items.push(item);
               else candidateWarnings.push('待核实线索无法保存，已截断');
             };
+            // A direct relation verb does not identify its owner on a shared page.
+            if (hasRawDirect && source?.label === 'Person') {
+              const directProofs = relation.evidence.filter(proof => {
+                const block = blockMap.get(proof.block_id);
+                return !proof.field_path && block && quoteLocated(block, proof.quote)
+                  && [...proof.quote].length <= 500
+                  && directInstitutionStatement(relation.relation_type, proof.quote, target?.properties.name);
+              });
+              const ambiguousDirect = directProofs.some(proof => {
+                const page = blockMap.get(proof.block_id)?.page;
+                if (page === undefined) return false;
+                const pagePeople = output.candidates.filter(person => person.label === 'Person'
+                  && person.evidence.some(anchor => {
+                    const block = blockMap.get(anchor.block_id);
+                    return block?.page === page && (unnamedAnchors.get(person.candidate_id)?.has(anchor.block_id)
+                      || (anchor.field_path === 'properties.name' && anchor.value === person.properties.name
+                        && block && quoteLocated(block, anchor.quote) && [...anchor.quote].length <= 500
+                        && quoteSupportsValue(anchor.value, anchor.quote)
+                        && shapeValid('Person', 'properties', 'name', anchor.value)));
+                  }));
+                if (pagePeople.length < 2) return false;
+                const sourceName = source.properties.name;
+                return typeof sourceName !== 'string' || unnamedPeople.includes(source)
+                  || !proof.quote.includes(sourceName)
+                  || pagePeople.some(other => other !== source && typeof other.properties.name === 'string'
+                    && proof.quote.includes(other.properties.name));
+              });
+              if (ambiguousDirect) { retainAmbiguous(); return []; }
+            }
             if (structured?.ambiguous) { retainAmbiguous(); return []; }
             if (!output.candidates.some(other => other.candidate_id === relation.source_candidate_id)
               || !output.candidates.some(other => other.candidate_id === relation.target_candidate_id)) {
