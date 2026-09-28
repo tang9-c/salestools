@@ -56,6 +56,83 @@ describe('document extraction', () => {
     ]));
   });
 
+  it('keeps core evidence when optional candidate sections have invalid shapes', async () => {
+    const input = [{ block_id: 'b', text: '陈晓 13800138000', page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',
+      properties: { name: '陈晓', telephone: ['13800138000'] }, extensions: null,
+      relation_suggestions: {}, evidence: [
+        { field_path: 'properties.name', value: '陈晓', block_id: 'b', quote: '陈晓' },
+        { field_path: 'properties.telephone', value: '13800138000', block_id: 'b', quote: '13800138000' },
+      ] }]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({ can_commit: true, properties: {
+      name: '陈晓', telephone: ['13800138000'],
+    } });
+    expect(result.warnings).toEqual(expect.arrayContaining(['候选可选字段形状无效']));
+  });
+
+  it('counts an unsupported guessed name as anonymous for relation ownership', async () => {
+    const input = [{ block_id: 'b', text: '候选甲：技能 Python；候选乙：技能 Java；曾就读星辰大学', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      { candidate_id: 'a', label: 'Person', properties: { name: '猜测姓名', skills: ['Python'] }, evidence: [
+        { field_path: 'properties.skills', value: 'Python', block_id: 'b', quote: '技能 Python' },
+      ] },
+      { candidate_id: 'b', label: 'Person', properties: { skills: ['Java'] }, evidence: [
+        { field_path: 'properties.skills', value: 'Java', block_id: 'b', quote: '技能 Java' },
+      ], relation_suggestions: [{ source_candidate_id: 'b', target_candidate_id: 'o',
+        relation_type: 'alumniOf', properties: {}, evidence: [{ block_id: 'b', quote: '曾就读星辰大学' }] }] },
+      { candidate_id: 'o', label: 'Organization', properties: { name: '星辰大学' }, evidence: [
+        { field_path: 'properties.name', value: '星辰大学', block_id: 'b', quote: '星辰大学' },
+      ] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates).toHaveLength(3);
+    expect(result.candidates[0].properties.name).toBeUndefined();
+    expect(result.candidates[1].relation_suggestions).toEqual([]);
+  });
+
+  it('preserves a bounded Unicode clue when review values and quotes exceed 2KB', async () => {
+    const quote = '😀'.repeat(600);
+    const input = [{ block_id: 'b', text: `陈晓 ${quote}`, page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',
+      properties: { name: '陈晓', skills: ['汉'.repeat(900), '假的'] }, evidence: [
+        { field_path: 'properties.name', value: '陈晓', block_id: 'b', quote: '陈晓' },
+        { field_path: 'properties.skills', value: '假的', block_id: 'b', quote },
+      ] }]));
+    const candidate = (await extractor(fetchFn).extract(input, new AbortController().signal)).candidates[0];
+    expect(candidate.review_items).toHaveLength(2);
+    for (const item of candidate.review_items) {
+      expect(Buffer.byteLength(JSON.stringify(item), 'utf8')).toBeLessThanOrEqual(2048);
+      if (item.kind === 'field') expect(String(item.value).length).toBeGreaterThan(0);
+    }
+    expect(candidate.warnings).toEqual(expect.arrayContaining(['待核实线索超过2KB，已截断']));
+  });
+
+  it.each([
+    ['公司项目名称：ERP 系统', 'ERP'], ['Company project name: MOM platform', 'MOM'],
+  ])('does not infer an organization from a company project label: %s', async (text, name) => {
+    const input = [{ block_id: 'b', text, page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'o', label: 'Organization',
+      properties: { name }, evidence: [{ field_path: 'properties.name', value: name, block_id: 'b', quote: text }] }]));
+    const candidate = (await extractor(fetchFn).extract(input, new AbortController().signal)).candidates[0];
+    expect(candidate.properties.name).toBeUndefined();
+    expect(candidate.review_items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: name, reason: 'ambiguous_context' }),
+    ]));
+  });
+
+  it.each([
+    ['ERP公司', 'ERP'], ['Company name: MOM', 'MOM'],
+  ])('keeps an acronym explicitly identified as an organization: %s', async (text, name) => {
+    const input = [{ block_id: 'b', text, page: 1 }];
+    const fetchFn = vi.fn(async () => response([{ candidate_id: 'o', label: 'Organization',
+      properties: { name }, evidence: [{ field_path: 'properties.name', value: name, block_id: 'b', quote: text }] }]));
+    const candidate = (await extractor(fetchFn).extract(input, new AbortController().signal)).candidates[0];
+    expect(candidate.properties.name).toBe(name);
+    expect(candidate.can_commit).toBe(true);
+  });
+
   it('does not turn an array-shaped scalar into a verified name', async () => {
     const input = [{ block_id: 'b', text: '陈晓 13800138000', page: 1 }];
     const fetchFn = vi.fn(async () => response([{ candidate_id: 'p', label: 'Person',

@@ -32,11 +32,11 @@ const ModelCandidate = z.discriminatedUnion('label', [
 ]);
 const ModelCandidateShell = z.discriminatedUnion('label', [
   z.object({ candidate_id: z.string().min(1), label: z.literal('Person'),
-    properties: z.record(z.string(), z.unknown()), extensions: z.record(z.string(), z.unknown()).optional(),
-    evidence: z.array(z.unknown()).optional(), relation_suggestions: z.array(z.unknown()).optional() }).strict(),
+    properties: z.record(z.string(), z.unknown()), extensions: z.unknown().optional(),
+    evidence: z.array(z.unknown()).optional(), relation_suggestions: z.unknown().optional() }).strict(),
   z.object({ candidate_id: z.string().min(1), label: z.literal('Organization'),
     properties: z.record(z.string(), z.unknown()), evidence: z.array(z.unknown()).optional(),
-    relation_suggestions: z.array(z.unknown()).optional() }).strict(),
+    relation_suggestions: z.unknown().optional() }).strict(),
 ]);
 const ModelOutputShell = z.object({ candidates: z.array(z.unknown()).max(100) }).strict();
 const arrayFields = new Set(['telephone', 'email', 'alternateName', 'skills', 'sameAs',
@@ -46,17 +46,28 @@ const arrayFields = new Set(['telephone', 'email', 'alternateName', 'skills', 's
 function reviewField(items: ReviewItem[], warnings: string[], field_path: string, value: unknown,
   reason: ReviewItem['reason'], proof?: z.infer<typeof ModelEvidence>, block?: ParsedBlock): void {
   if (items.length >= 100) { if (!warnings.includes('待核实线索超过100项，已截断')) warnings.push('待核实线索超过100项，已截断'); return; }
+  const truncateBytes = (text: string, maxBytes: number): string => {
+    let result = '';
+    let size = 0;
+    for (const character of text) {
+      const next = Buffer.byteLength(character, 'utf8');
+      if (size + next > maxBytes - 3) return `${result}…`;
+      result += character;
+      size += next;
+    }
+    return result;
+  };
   const rawQuote = proof?.quote;
   const quote = rawQuote === undefined ? undefined : [...rawQuote].slice(0, 500).join('');
-  if (rawQuote !== undefined && rawQuote !== quote) warnings.push('待核实引文超过500字，已截断');
-  const base = { kind: 'field' as const, field_path: field_path.slice(0, 200), value, reason,
+  if (rawQuote !== undefined && rawQuote !== quote && !warnings.includes('待核实引文超过500字，已截断')) warnings.push('待核实引文超过500字，已截断');
+  const base = { kind: 'field' as const, field_path: truncateBytes(field_path, 200), value, reason,
     ...(block?.page === undefined ? {} : { page: block.page }), ...(quote ? { quote } : {}) };
   let item: typeof base = base;
   if (!ReviewItemSchema.safeParse(item).success) {
-    let serialized = JSON.stringify(value) ?? String(value);
-    serialized = [...serialized].slice(0, 800).join('');
-    item = { ...base, value: `${serialized}…` };
-    warnings.push('待核实线索超过2KB，已截断');
+    const serialized = typeof value === 'string' ? value : JSON.stringify(value) ?? String(value);
+    item = { ...base, value: truncateBytes(serialized, 1000),
+      ...(quote ? { quote: truncateBytes(quote, 400) } : {}) };
+    if (!warnings.includes('待核实线索超过2KB，已截断')) warnings.push('待核实线索超过2KB，已截断');
   }
   if (ReviewItemSchema.safeParse(item).success) items.push(item);
   else warnings.push('待核实线索无法保存，已截断');
@@ -77,8 +88,16 @@ function semanticReason(label: 'Person' | 'Organization', field: string, value: 
     && /求职意向|期望岗位|意向职位|desired\s+(?:role|position)|expected\s+(?:role|position)|seeking\s+(?:role|position)/iu.test(context)) return 'ambiguous_context';
   if (label === 'Organization' && field === 'name' && typeof value === 'string'
     && (/^(?:ERP|PO|MOM)$/iu.test(value.trim())
-      || /项目名称|项目名|project\s+name|named\s+project/iu.test(context))
-    && !/公司|企业|机构|大学|学校|organization|company|university|school/iu.test(quote)) return 'ambiguous_context';
+      || /项目名称|项目名|project\s+name|named\s+project/iu.test(context))) {
+    const at = quote.indexOf(value);
+    const before = at < 0 ? '' : quote.slice(Math.max(0, at - 32), at);
+    const after = at < 0 ? '' : quote.slice(at + value.length, at + value.length + 20);
+    const explicitOrganization = /(?:公司|企业|机构|大学|学校|company|organization|university|school)\s*(?:名称|name)?\s*[:：]?\s*$/iu.test(before)
+      && !/(?:项目|project)\s*(?:名称|name)?\s*[:：]?\s*$/iu.test(before)
+      || /^\s*(?:公司|企业|机构|大学|学校|Inc\.?|Ltd\.?|company|university)/iu.test(after)
+      || /(?:任职|就职|受雇于|works?\s+for|employed\s+by)\s*$/iu.test(before);
+    if (!explicitOrganization) return 'ambiguous_context';
+  }
   if (label === 'Person' && field === 'skills' && /项目名称|project\s+name/iu.test(quote)
     && !/技能|熟悉|掌握|经验|skills?|proficient|experienced/iu.test(quote)) return 'ambiguous_context';
   if (label === 'Person' && field === 'skills' && typeof value === 'string') {
@@ -273,15 +292,31 @@ export class DocumentExtractor {
             if (!proof.success) { warnings.push('候选证据形状无效'); return []; }
             return [proof.data];
           });
-          const relations = (parsed.data.relation_suggestions ?? []).flatMap(rawRelation => {
+          const rawRelations = Array.isArray(parsed.data.relation_suggestions)
+            ? parsed.data.relation_suggestions : [];
+          if (parsed.data.relation_suggestions !== undefined && !Array.isArray(parsed.data.relation_suggestions)) {
+            warnings.push('候选可选字段形状无效');
+          }
+          const relations = rawRelations.flatMap(rawRelation => {
             const relation = ModelRelation.safeParse(rawRelation);
             if (!relation.success) { warnings.push('关系形状无效'); return []; }
             return [relation.data];
           });
-          return [{ ...parsed.data, evidence: proofs, relation_suggestions: relations } as z.infer<typeof ModelCandidate>];
+          const rawExtensions = parsed.data.label === 'Person' ? parsed.data.extensions : undefined;
+          const extensions = rawExtensions !== null && typeof rawExtensions === 'object'
+            && !Array.isArray(rawExtensions) ? rawExtensions : undefined;
+          if (rawExtensions !== undefined && extensions === undefined) warnings.push('候选可选字段形状无效');
+          return [{ ...parsed.data, ...(parsed.data.label === 'Person' ? { extensions } : {}),
+            evidence: proofs, relation_suggestions: relations } as z.infer<typeof ModelCandidate>];
         }) };
-        const unnamedPeople = output.candidates.filter(item => item.label === 'Person' && !item.properties.name);
         const blockMap = new Map(batch.map(block => [block.block_id, block]));
+        const unnamedPeople = output.candidates.filter(item => item.label === 'Person'
+          && !(typeof item.properties.name === 'string' && item.evidence.some(proof => {
+            if (proof.field_path !== 'properties.name' || proof.value !== item.properties.name) return false;
+            const block = blockMap.get(proof.block_id);
+            return block && quoteLocated(block, proof.quote) && [...proof.quote].length <= 500
+              && quoteSupportsValue(proof.value, proof.quote) && shapeValid('Person', 'properties', 'name', proof.value);
+          })));
         const unnamedAnchors = new Map(unnamedPeople.map(person => [person.candidate_id, new Set([
           ...person.evidence.filter(proof => {
             const block = blockMap.get(proof.block_id);
@@ -329,7 +364,7 @@ export class DocumentExtractor {
               if (reason) {
                 reviewField(review_items, candidateWarnings, fieldPath, value, reason,
                   proof ?? matching[0], block ?? blockMap.get(matching[0]?.block_id ?? ''));
-                candidateWarnings.push(`字段待核实：${fieldPath}`);
+                if (!candidateWarnings.includes(`字段待核实：${fieldPath}`)) candidateWarnings.push(`字段待核实：${fieldPath}`);
                 continue;
               }
               const destination = root === 'extensions' ? extensions : properties;
@@ -350,7 +385,8 @@ export class DocumentExtractor {
               || !output.candidates.some(other => other.candidate_id === relation.target_candidate_id)) {
               warnings.push('关系引用无效'); return [];
             }
-            if (unnamedPeople.length > 1 && source?.label === 'Person' && !source.properties.name
+            if (unnamedPeople.length > 1 && source?.label === 'Person'
+              && unnamedPeople.some(person => person.candidate_id === source.candidate_id)
               && !(unnamedPeople.every(person => (unnamedAnchors.get(person.candidate_id)?.size ?? 0) > 0)
                 && relation.evidence.some(proof => unnamedAnchors.get(source.candidate_id)?.has(proof.block_id)
                   && unnamedPeople.every(other => other.candidate_id === source.candidate_id
