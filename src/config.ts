@@ -60,7 +60,7 @@ const configSchema = z.object({
   ARK_EMBEDDING_API_URL: optionalTrimmed.refine(value => value === undefined || httpsUrl.safeParse(value).success),
   ARK_EMBEDDING_MODEL: optionalTrimmed,
   ARK_EMBEDDING_CREDENTIAL: optionalTrimmed,
-  CONTACT_EXTRACT_REQUEST_MAX_BYTES: positiveInteger.min(6144).max(64000).default(20000),
+  CONTACT_EXTRACT_REQUEST_MAX_BYTES: positiveInteger.min(6144).max(64000).default(32000),
   ARK_REQUEST_MAX_BYTES: positiveInteger.min(minimumArkRequestBytes).default(12_288),
   MAX_QCC_CALLS: positiveInteger.default(8),
   MAX_SEARCH_CALLS: positiveInteger.default(8),

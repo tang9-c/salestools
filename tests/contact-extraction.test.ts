@@ -8,7 +8,7 @@ const fact = (field_path: string, value: unknown, quote = '原文', block_id = '
 const link = (quote = '原文', block_id = 'b1', uncertain = false) => ({ evidence: [ref(quote, block_id)], uncertain });
 const profile = (overrides = {}) => ({ subject_status: 'single', person: [], education: [], employment: [], projects: [], organization_clues: [], ...overrides });
 const response = (data: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(data) } }] }));
-const extractor = (fetchFn: typeof fetch, overrides = {}) => new DocumentExtractor({ url: 'https://ark.example/v3/chat', model: 'test', credential: 'test', fetchFn, requestMaxBytes: 12288, skillSupplement: false, ...source, ...overrides });
+const extractor = (fetchFn: typeof fetch, overrides = {}) => new DocumentExtractor({ url: 'https://ark.example/v3/chat', model: 'test', credential: 'test', fetchFn, requestMaxBytes: 12288, skillSupplement: false, projectSupplement: false, ...source, ...overrides });
 const run = (data: unknown, text = '原文', overrides = {}) => extractor(vi.fn(async () => response(data)), overrides).extract([{ block_id: 'b1', text, page: 7 }], new AbortController().signal);
 const owner = (candidates: ImportCandidate[]) => candidates.find(c => c.label === 'Person')!;
 const org = (name: string, quote = '原文', block_id = 'b1') => [fact('properties.name', name, quote, block_id)];
@@ -538,6 +538,92 @@ it('keeps locator metadata local and packs complete pages when each fits the byt
   expect(sent[1].extracted_context.source_quotes).toContainEqual(expect.objectContaining({ quote: '正文', page: 1, subject_candidate_id: owner(result.candidates).candidate_id }));
   expect(owner(result.candidates).evidence[0].page).toBe(1);
   expect(result.processedBlockIds).toHaveLength(50);
+});
+
+describe('bounded project supplement', () => {
+  const input = [{ block_id: 'b1', text: '本人 项目甲 项目乙 公司甲', page: 2 }];
+  const first = profile({ person: [fact('properties.name', '本人', '本人')],
+    employment: [{ local_id: 'job1', organization: org('公司甲', '公司甲'), employment: link('公司甲'), role: [] }],
+    projects: [{ local_id: 'pr1', project: [fact('properties.name', '项目甲 开发', '项目甲')], participation: link('项目甲'), role: [], clients: [] }] });
+  const focused = { projects: [
+    { local_id: 'pr1', project: [fact('properties.name', '项目甲', '项目甲')], participation: link('项目甲'), role: [], clients: [] },
+    { local_id: 'pr2', project: [fact('properties.name', '项目乙', '项目乙')], participation: link('项目乙'), role: [], clients: [] },
+  ] };
+  it('adds missing projects and corrects a title without duplicating projects or changing employment', async () => {
+    const bodies: any[] = [];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const body = String(init?.body); expect(Buffer.byteLength(body)).toBeLessThanOrEqual(12288);
+      bodies.push(JSON.parse(JSON.parse(body).messages[1].content));
+      return response(bodies.length === 1 ? first : focused);
+    });
+    const result = await extractor(fetchFn, { projectSupplement: true }).extract(input, new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(bodies[1].blocks).toEqual(bodies[0].blocks);
+    expect(result.candidates.filter(c => c.label === 'Project').map(c => c.properties.name)).toEqual(['项目甲', '项目乙']);
+    expect(owner(result.candidates).relation_suggestions.filter(r => r.relation_type === 'memberOf')).toHaveLength(2);
+    expect(owner(result.candidates).relation_suggestions.filter(r => r.relation_type === 'worksFor')).toHaveLength(1);
+    expect(result.processedBlockIds).toEqual(['b1']);
+  });
+  it.each([null, { projects: [] }, { projects: [{ ...focused.projects[0], project: [fact('properties.name', '伪造', '伪造')] }] }])
+  ('keeps the original project when focused extraction fails or has no located titles: %j', async supplement => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(response(first)).mockImplementationOnce(async () => {
+      if (supplement === null) throw new Error('network');
+      return response(supplement);
+    });
+    const result = await extractor(fetchFn, { projectSupplement: true }).extract(input, new AbortController().signal);
+    expect(result.candidates.filter(c => c.label === 'Project').map(c => c.properties.name)).toEqual(['项目甲 开发']);
+    expect(result.warnings.some(w => w.includes('项目补充'))).toBe(true);
+  });
+  it('does not exceed the model call limit', async () => {
+    const fetchFn = vi.fn(async () => response(first));
+    const result = await extractor(fetchFn, { projectSupplement: true, maxModelCalls: 1 }).extract(input, new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(result.warnings).toContain('项目补充未执行：模型调用预算不足');
+  });
+  it('keeps existing client links and separates an unrelated focused project with a reused local ID', async () => {
+    const main = profile({ person: [fact('properties.name', '本人', '本人')],
+      projects: [{ local_id: 'pr1', project: [fact('properties.name', '项目甲 开发', '项目甲')], participation: link('项目甲'), role: [],
+        clients: [{ organization: org('客户甲', '客户甲'), client: link('客户甲') }] }] });
+    const supplement = { projects: [
+      { ...focused.projects[0], local_id: 'pr1' },
+      { ...focused.projects[1], local_id: 'pr1' },
+    ] };
+    const fetchFn = vi.fn().mockResolvedValueOnce(response(main)).mockResolvedValueOnce(response(supplement));
+    const result = await extractor(fetchFn, { projectSupplement: true }).extract([{ block_id: 'b1', text: '本人 项目甲 项目乙 客户甲' }], new AbortController().signal);
+    const projects = result.candidates.filter(c => c.label === 'Project');
+    expect(projects.map(c => c.properties.name)).toEqual(['项目甲', '项目乙']);
+    expect(projects[0].relation_suggestions.some(r => r.relation_type === 'clientOrganization')).toBe(true);
+    expect(owner(result.candidates).relation_suggestions.filter(r => r.relation_type === 'memberOf')).toHaveLength(2);
+  });
+  it('does not warn when both passes find no projects', async () => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(response(profile({ person: [fact('properties.name', '本人', '本人')] })))
+      .mockResolvedValueOnce(response({ projects: [] }));
+    const result = await extractor(fetchFn, { projectSupplement: true }).extract([{ block_id: 'b1', text: '本人' }], new AbortController().signal);
+    expect(result.warnings.some(w => w.includes('项目补充'))).toBe(false);
+    expect(result.candidates.filter(c => c.label === 'Project')).toHaveLength(0);
+  });
+  it('keeps located focused projects when a sibling has a fabricated quote', async () => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(response(first)).mockResolvedValueOnce(response({ projects: [
+      focused.projects[0], focused.projects[1],
+      { ...focused.projects[1], local_id: 'pr3', project: [fact('properties.name', '项目丙', '伪造')] },
+    ] }));
+    const result = await extractor(fetchFn, { projectSupplement: true }).extract(input, new AbortController().signal);
+    expect(result.candidates.filter(c => c.label === 'Project').map(c => c.properties.name)).toEqual(['项目甲', '项目乙']);
+    expect(result.warnings.some(w => w.includes('项目补充'))).toBe(true);
+  });
+  it('keeps both primary and focused project clients when the focused pass adds one', async () => {
+    const main = profile({ person: [fact('properties.name', '本人', '本人')],
+      projects: [{ local_id: 'pr1', project: [fact('properties.name', '项目甲')], participation: link('项目甲'), role: [],
+        clients: [{ organization: org('客户甲', '客户甲'), client: link('客户甲') }] }] });
+    const supplemental = { projects: [{ ...focused.projects[0], clients: [
+      { organization: org('客户乙', '客户乙'), client: link('客户乙') },
+    ] }] };
+    const fetchFn = vi.fn().mockResolvedValueOnce(response(main)).mockResolvedValueOnce(response(supplemental));
+    const result = await extractor(fetchFn, { projectSupplement: true }).extract([{ block_id: 'b1', text: '本人 项目甲 客户甲 客户乙' }], new AbortController().signal);
+    const project = result.candidates.find(c => c.label === 'Project')!;
+    expect(project.relation_suggestions.filter(r => r.relation_type === 'clientOrganization')).toHaveLength(2);
+    expect(result.candidates.filter(c => c.label === 'Organization').map(c => c.properties.name)).toEqual(['客户甲', '客户乙']);
+  });
 });
 
 describe('bounded skills supplement', () => {

@@ -138,7 +138,7 @@ describe('loadConfig', () => {
   });
 
   it('keeps document request bytes independent and bounded', () => {
-    expect(loadConfig(valid as NodeJS.ProcessEnv).contactExtractRequestMaxBytes).toBe(20000);
+    expect(loadConfig(valid as NodeJS.ProcessEnv).contactExtractRequestMaxBytes).toBe(32000);
     const configured = loadConfig({ ...valid, CONTACT_EXTRACT_REQUEST_MAX_BYTES: '24000' } as NodeJS.ProcessEnv);
     expect(configured.contactExtractRequestMaxBytes).toBe(24000);
     expect(configured.arkRequestMaxBytes).toBe(12288);
