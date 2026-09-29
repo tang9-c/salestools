@@ -85,13 +85,32 @@ function reviewField(items: ReviewItem[], warnings: string[], field_path: string
   else warnings.push('待核实线索无法保存，已截断');
 }
 
-function shapeValid(label: 'Person' | 'Organization' | 'Project', root: 'properties' | 'extensions',
-  field: string, value: unknown): boolean {
+function normalizedField(label: 'Person' | 'Organization' | 'Project', root: 'properties' | 'extensions',
+  field: string, value: unknown) {
   const input = { [field]: arrayFields.has(field) ? [value] : value };
   const schema = root === 'extensions' ? PersonExtensionsSchema
     : label === 'Person' ? PersonCandidatePropertiesSchema
       : label === 'Project' ? ProjectCandidatePropertiesSchema : OrganizationPropertiesSchema.partial({ name: true });
-  return schema.safeParse(input).success;
+  const result = schema.safeParse(input);
+  if (!result.success) return { success: false as const };
+  const stored = (result.data as Record<string, unknown>)[field];
+  return { success: true as const, value: arrayFields.has(field) ? (stored as unknown[])[0] : stored };
+}
+const shapeValid = (label: 'Person' | 'Organization' | 'Project', root: 'properties' | 'extensions', field: string, value: unknown) =>
+  normalizedField(label, root, field, value).success;
+
+function normalizeFact(raw: unknown, label: 'Person' | 'Organization' | 'Project', role = false): unknown {
+  const shell = object(raw);
+  if (typeof shell.field_path !== 'string') return raw;
+  const parts = shell.field_path.split('.'), field = parts.at(-1)!;
+  if (role) {
+    if (shell.field_path !== 'properties.role.roleName') return raw;
+    const parsed = z.string().trim().min(1).safeParse(shell.value);
+    return parsed.success ? { ...shell, value: parsed.data } : raw;
+  }
+  if (parts.length !== 2 || !['properties', 'extensions'].includes(parts[0])) return raw;
+  const parsed = normalizedField(label, parts[0] as 'properties' | 'extensions', field, shell.value);
+  return parsed.success ? { ...shell, value: parsed.value } : raw;
 }
 
 export interface DocumentExtractorOptions {
@@ -200,7 +219,7 @@ const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b
 const normalizedName = (name: string) => name.normalize('NFKC').trim();
 function matchingOrganizations(raw: unknown, candidates: ImportCandidate[]): string[] {
   if (!Array.isArray(raw)) return [];
-  const facts = raw.map(f => Fact.safeParse(f));
+  const facts = raw.map(f => Fact.safeParse(normalizeFact(f, 'Organization')));
   if (facts.some(f => !f.success)) return [];
   const valid = facts.flatMap(f => f.success ? [f.data] : []);
   const names = valid.filter(f => f.field_path === 'properties.name');
@@ -323,6 +342,7 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
   };
   const fields = (draft: Draft, rawFacts: unknown[], forced?: ReviewItem['reason'], role = false): Record<string, unknown> => {
     const properties = role ? {} as Record<string, unknown> : draft.properties;
+    rawFacts = rawFacts.map(raw => normalizeFact(raw, draft.label, role));
     const scalarValues = new Map<string, unknown[]>();
     for (const raw of rawFacts) {
       const value = object(raw), path = value.field_path;
@@ -446,7 +466,7 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
     const forced = group.conflict ? 'ambiguous_context' : undefined;
     fields(target, entries.flatMap(e => e[kind === 'projects' ? 'project' : 'organization'] as unknown[]), forced);
     // A changed scalar within a reused local_id is an explicit experience conflict.
-    const scalarFacts = entries.flatMap(e => e[kind === 'projects' ? 'project' : 'organization'] as unknown[]).map(object);
+    const scalarFacts = entries.flatMap(e => e[kind === 'projects' ? 'project' : 'organization'] as unknown[]).map(raw => object(normalizeFact(raw, target.label)));
     const conflicting = group.conflict || scalarFacts.some(fact => typeof fact.field_path === 'string'
       && !arrayFields.has(fact.field_path.split('.').at(-1)!)
       && scalarFacts.some(other => other.field_path === fact.field_path && !equal(other.value, fact.value)));

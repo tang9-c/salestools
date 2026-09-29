@@ -1153,3 +1153,45 @@ fn public_relation_write_cannot_mint_file_evidence() {
             "file_sha256":"abc","quote":"unrelated","collected_at":"2026-09-26T00:00:00Z"}]})).unwrap_err().code, "VALIDATION_ERROR");
     assert_eq!(count(&store, "kg_relations"), 0);
 }
+
+#[test]
+fn long_project_claim_display_is_bounded_without_losing_saved_target_or_replay_warning() {
+    for name in ["项目".repeat(300), "😀".repeat(900)] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let mut previews = claim_preview();
+        let description = "描\"\n😀".repeat(800);
+        previews[0]["review_items"] = json!([]);
+        previews[1]["label"] = json!("Project");
+        previews[1]["properties"] = json!({"name":name,"description":description});
+        previews[1]["evidence"] = json!([
+            proof("properties.name", json!(name)),
+            proof("properties.description", json!(description))
+        ]);
+        previews[1]["relation_suggestions"][0]["relation_type"] = json!("memberOf");
+        let import_id = ready(&store, previews);
+        let input = claim_commit(&import_id, "create", "create");
+        let result = store.commit_import(&input).unwrap();
+        let person = store
+            .get_contact(&json!({"entity_id":result["results"][0]["entity_id"]}))
+            .unwrap();
+        let project = store
+            .get_contact(&json!({"entity_id":result["results"][1]["entity_id"]}))
+            .unwrap();
+        let claim = &person["unverified_claims"][0];
+        assert_eq!(claim["target_id"], project["entity"]["entity_id"]);
+        assert_eq!(claim["value"]["target_candidate_id"], "company");
+        assert!(claim["value"].to_string().len() <= 2048);
+        assert!(name.starts_with(claim["value"]["target_name"].as_str().unwrap()));
+        assert!(description.starts_with(claim["value"]["target_description"].as_str().unwrap()));
+        assert_eq!(project["entity"]["properties"]["description"], description);
+        assert_eq!(project["entity"]["properties"]["name"], name);
+        assert_eq!(result["warnings"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            store.commit_import(&input).unwrap()["warnings"],
+            result["warnings"]
+        );
+        assert_eq!(count(&store, "contact_claims"), 1);
+        assert_eq!(count(&store, "kg_relations"), 0);
+    }
+}

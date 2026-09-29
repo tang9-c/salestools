@@ -42,3 +42,20 @@ it('requires an exact weak card association and still leaves semantics for revie
   expect(verdict.automaticChecksPassed).toBe(true);
   expect(verdict.semanticAcceptance).toBe('manual_review_required');
 });
+
+
+it.each(['none', 'skills', 'weak_skill', 'participation', 'lookup', 'client', 'partial'])('screens real resume requirements: %s', async defect => {
+  const { evaluateRealResume } = await import('./contact-live-verdict.js');
+  const { details } = sample();
+  const person = details[0];
+  person.entity.properties.telephone = ['+15550100999']; person.entity.properties.email = ['riley@example.test'];
+  person.entity.properties.skills = ['Linux', 'Python', 'Shell', 'Docker', 'K8s', 'MySQL', 'Redis', 'Nginx', 'Ansible', 'Jenkins', 'Git', 'Prometheus', 'Grafana', 'CMDB'];
+  details[7].relations = []; details[8].relations = [];
+  if (defect === 'skills' || defect === 'weak_skill') person.entity.properties.skills.pop();
+  if (defect === 'weak_skill') person.unverified_claims.push({ field_path: 'properties.skills', value: 'CMDB' });
+  if (defect === 'participation') person.relations = person.relations.filter(r => r.relation_type !== 'memberOf');
+  if (defect === 'client') details[7].unverified_claims.push({ relation_type: 'clientOrganization' });
+  const verdict = await evaluateRealResume(details, async () => defect === 'lookup' ? [] : [{ entity_id: 'person' }], defect !== 'partial');
+  expect(verdict.automaticChecksPassed).toBe(defect === 'none');
+  expect(verdict.semanticAcceptance).toBe(defect === 'none' ? 'manual_review_required' : 'failed');
+});

@@ -3,7 +3,7 @@ import { config } from 'dotenv';
 import { join } from 'node:path';
 import { acceptanceHarness, acceptanceBudgetOptions, root, type Detail } from './contact-acceptance-support.js';
 import { ContactSearch } from '../src/contacts/contact-search.js';
-import { evaluateInventedSample } from './contact-live-verdict.js';
+import { evaluateInventedSample, evaluateRealResume } from './contact-live-verdict.js';
 config({ path: process.env.ACCEPTANCE_ENV ?? '/Users/tang-codeing/code/salestools/.env', quiet: true });
 const budgetOptions = acceptanceBudgetOptions(process.env.ACCEPTANCE_REQUEST_MAX_BYTES);
 const samples = ['layout-single-column.pdf', 'layout-two-column.pdf', 'synthetic-card.png', process.env.ACCEPTANCE_RESUME ?? '/Users/tang-codeing/Downloads/J运维简历.pdf'];
@@ -77,14 +77,12 @@ for (const [index, file] of samples.entries()) {
       checks.projectParticipation = { formal: person.relations.filter(r => r.relation_type === 'memberOf').length, weak: person.unverified_claims.filter(c => c.relation_type === 'memberOf').length };
       checks.sourceContactCoverage = { telephone: person.entity.properties.telephone.filter((v: string) => h!.parsed.some(b => b.text.includes(v))).length, email: person.entity.properties.email.filter((v: string) => h!.parsed.some(b => b.text.includes(v))).length };
     }
-    const schools = person.relations.filter(r => r.relation_type === 'alumniOf').length;
-    const employment = person.relations.filter(r => r.relation_type === 'worksFor').length;
-    const projectCount = details.filter(d => d.entity.label === 'Project').length;
     const verdict = index < 3 ? await evaluateInventedSample(index === 2 ? 'card' : 'resume', details,
       async (query, includeUnverified) => (await search.search({ query, include_unverified: includeUnverified })).items,
       (h.preview.unprocessed_block_ids as unknown[])?.length === 0 && (h.preview.processed_block_ids as unknown[])?.length === h.parsed.length)
-      : { automaticChecksPassed: people === 1 && person.entity.properties.telephone?.length === 1 && person.entity.properties.email?.length === 1 && schools >= 1 && employment >= 1 && projectCount === 2,
-        semanticAcceptance: 'manual_review_required', checks: {} };
+      : await evaluateRealResume(details,
+        async (query, includeUnverified) => (await search.search({ query, include_unverified: includeUnverified })).items,
+        (h.preview.unprocessed_block_ids as unknown[])?.length === 0 && (h.preview.processed_block_ids as unknown[])?.length === h.parsed.length);
     if (!verdict.automaticChecksPassed) process.exitCode = 1;
     else if (process.exitCode !== 1) process.exitCode = 2; // Manual review is never a successful semantic verdict.
     console.log(JSON.stringify({ ...base, automaticChecksPassed: verdict.automaticChecksPassed, semanticAcceptance: verdict.semanticAcceptance, requiredChecks: verdict.checks, committed: committed.results.filter(r => r.entity_id).length, skipped: committed.results.filter(r => !r.entity_id).length, people, telephone: person.entity.properties.telephone?.length, email: person.entity.properties.email?.length, skills: person.entity.properties.skills?.length, schools: person.relations.filter(r => r.relation_type === 'alumniOf').length, employment: person.relations.filter(r => r.relation_type === 'worksFor').length, projects: details.filter(d => d.entity.label === 'Project').length, claims: details.reduce((n, d) => n + d.unverified_claims.length, 0), checks }));

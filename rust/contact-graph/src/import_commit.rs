@@ -577,6 +577,38 @@ fn commit_relations(
     Ok(results)
 }
 
+// Budget serialized JSON, including escaping and fixed provenance/properties. Only
+// display copies are shortened; target IDs and the saved target remain intact.
+fn bound_claim_display(value: &mut Value) -> bool {
+    let mut truncated = false;
+    for field in ["target_description", "target_name"] {
+        if value.to_string().len() <= 2048 {
+            break;
+        }
+        let Some(text) = value[field].as_str().map(str::to_owned) else {
+            continue;
+        };
+        let boundaries: Vec<usize> = text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(text.len()))
+            .collect();
+        let (mut low, mut high) = (0, boundaries.len() - 1);
+        while low < high {
+            let mid = (low + high + 1) / 2;
+            value[field] = json!(&text[..boundaries[mid]]);
+            if value.to_string().len() <= 2048 {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        value[field] = json!(&text[..boundaries[low]]);
+        truncated |= boundaries[low] < text.len();
+    }
+    truncated
+}
+
 // Claims are a separate, bounded review queue. Never feed them into formal evidence
 // or property/edge validation; only an explicit later review may promote them.
 fn persist_claims(
@@ -586,7 +618,8 @@ fn persist_claims(
     input: &CommitInput,
     file_source: &Value,
     now: &str,
-) -> Result<(), AppError> {
+) -> Result<Vec<String>, AppError> {
+    let mut warnings = Vec::new();
     for candidate in candidates {
         let owner = candidate["candidate_id"].as_str().unwrap();
         for (key, suggestion) in [("review_items", false), ("relation_suggestions", true)] {
@@ -765,13 +798,18 @@ fn persist_claims(
                         };
                         let mut value = json!({"target_candidate_id":target_candidate,"properties":item["properties"]});
                         if let Some(name) = target.and_then(|c| c["properties"]["name"].as_str()) {
-                            value["target_name"] =
-                                json!(name.chars().take(500).collect::<String>());
+                            value["target_name"] = json!(name);
                         }
                         if let Some(description) =
                             target.and_then(|c| c["properties"]["description"].as_str())
                         {
                             value["target_description"] = json!(description);
+                        }
+                        if bound_claim_display(&mut value) && warnings.is_empty() {
+                            warnings.push(
+                                "待核实关系的目标展示文本已截断；完整已保存字段可通过目标档案查看"
+                                    .to_owned(),
+                            );
                         }
                         (None, Some(relation_type), target_id, value)
                     }
@@ -795,7 +833,7 @@ fn persist_claims(
             }
         }
     }
-    Ok(())
+    Ok(warnings)
 }
 
 impl Store {
@@ -1124,7 +1162,7 @@ impl Store {
             &input.actor,
             &now,
         )?;
-        persist_claims(&tx, candidates, &landed, &input, &data["source"], &now)?;
+        let warnings = persist_claims(&tx, candidates, &landed, &input, &data["source"], &now)?;
         let new_version = version + 1;
         tx.execute(
             "UPDATE import_jobs SET status='committed',version=?1 WHERE import_id=?2",
@@ -1132,7 +1170,7 @@ impl Store {
         )
         .map_err(AppError::internal)?;
         let result = json!({"import_id":input.import_id,"status":"committed","version":new_version,
-            "results":results,"relations":relations,"replayed":false});
+            "results":results,"relations":relations,"warnings":warnings,"replayed":false});
         tx.execute("INSERT INTO operation_results(operation_id,actor,op,request_hash,result_json) VALUES(?1,?2,'commit_import',?3,?4)",
             params![input.operation_id,input.actor,hash,result.to_string()]).map_err(AppError::internal)?;
         tx.execute("INSERT INTO audit_log(operation_id,actor,op,subject_id,changed_at,change_json) VALUES(?1,?2,'commit_import',?3,?4,?5)",

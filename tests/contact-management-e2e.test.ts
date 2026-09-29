@@ -776,3 +776,52 @@ it('retains an uncertain organization name for marked search without creating a 
   expect(saved.relations).toEqual([]);
   expect(saved.unverified_claims).toContainEqual(expect.objectContaining({ field_path: '$organization', status: 'unverified' }));
 });
+
+
+it('binds normalized scalar, array and nested default values to real graph evidence', async () => {
+  const extraction = await extractProfile({ subject_status: 'single', person: [
+    fact('properties.name', ' Robin ', 'b', 'Robin'), fact('properties.name', 'Robin', 'b', 'Robin'),
+    fact('properties.skills', ' Linux ', 'b', 'Linux'), fact('properties.skills', 'Linux', 'b', 'Linux'),
+    fact('properties.contactPoint', { '@type': 'ContactPoint', contactType: ' work ', telephone: [' +15550100000 '] }, 'b', '+15550100000'),
+  ], education: [], employment: [], projects: [], organization_clues: [] }, [{ block_id: 'b', text: 'Robin Linux +15550100000', page: 1 }]);
+  const h = await harness('normalized', extraction.candidates);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const committed = await h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`, auto_create: true }, 'reviewer') as any;
+  const saved = await h.graph.request<any>('get_contact', { entity_id: committed.results[0].entity_id });
+  expect(saved.entity.properties).toMatchObject({ name: 'Robin', skills: ['Linux'], contactPoint: [{ '@type': 'ContactPoint', contactType: 'work', telephone: ['+15550100000'], email: [] }] });
+  for (const field of ['name', 'skills', 'contactPoint']) {
+    const value = saved.entity.properties[field];
+    expect(saved.evidence).toContainEqual(expect.objectContaining({ field_path: `properties.${field}`, value: Array.isArray(value) ? value[0] : value }));
+  }
+});
+
+it.each([false, true])('keeps long project descriptions through real commit with weak participation=%s', async weak => {
+  const description = '描\"\n😀'.repeat(800);
+  const name = '项目'.repeat(300);
+  const extraction = await extractProfile({ subject_status: 'single', person: [fact('properties.name', 'Robin', 'b', 'Robin')],
+    education: [], employment: [], organization_clues: [], projects: [{ local_id: 'long',
+      project: [fact('properties.name', name, 'b', 'project'), fact('properties.description', description, 'b', 'project')],
+      participation: link('b', 'project', weak), role: [], clients: [] }] }, [{ block_id: 'b', text: 'Robin project', page: 1 }]);
+  const h = await harness('long-project', extraction.candidates);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const committed = await h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`, auto_create: true }, 'reviewer') as any;
+  const personId = committed.results.find((r: any) => r.candidate_id === 'document:person').entity_id;
+  const projectId = committed.results.find((r: any) => r.candidate_id !== 'document:person').entity_id;
+  const person = await h.graph.request<any>('get_contact', { entity_id: personId });
+  const project = await h.graph.request<any>('get_contact', { entity_id: projectId });
+  expect(project.entity.properties).toMatchObject({ name, description });
+  expect(person.relations.filter((r: any) => r.relation_type === 'memberOf')).toHaveLength(weak ? 0 : 1);
+  expect(person.unverified_claims).toHaveLength(weak ? 1 : 0);
+  if (weak) {
+    const claim = person.unverified_claims[0];
+    expect(claim.target_id).toBe(projectId);
+    expect(claim.value.target_candidate_id).toBe(extraction.candidates.find(c => c.label === 'Project')!.candidate_id);
+    expect(Buffer.byteLength(JSON.stringify(claim.value))).toBeLessThanOrEqual(2048);
+    expect(description.startsWith(claim.value.target_description)).toBe(true);
+    expect(committed.warnings).toContain('待核实关系的目标展示文本已截断；完整已保存字段可通过目标档案查看');
+  }
+});

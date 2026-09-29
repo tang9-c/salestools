@@ -64,3 +64,30 @@ export async function evaluateInventedSample(kind: 'resume' | 'card', details: D
   // Source attribution, skills paraphrases and omitted optional facts still need human semantic review.
   return { checks, automaticChecksPassed, semanticAcceptance: automaticChecksPassed ? 'manual_review_required' as const : 'failed' as const };
 }
+
+
+/** Fixed requirements for the opt-in resume fixture; never a general semantic judge. */
+export async function evaluateRealResume(details: Detail[], lookup: Lookup, fullyProcessed: boolean) {
+  const people = details.filter(d => d.entity.label === 'Person');
+  const person = people[0];
+  const checks: Record<string, boolean> = { fullyProcessed, singlePerson: people.length === 1 };
+  if (!person) return { checks, automaticChecksPassed: false, semanticAcceptance: 'failed' as const };
+  const p = person.entity.properties, id = person.entity.entity_id;
+  checks.contacts = p.telephone?.length === 1 && p.email?.length === 1;
+  checks.school = person.relations.some(r => r.relation_type === 'alumniOf' && r.source_id === id);
+  checks.employment = person.relations.some(r => r.relation_type === 'worksFor' && r.source_id === id);
+  const skillText = (p.skills ?? []).join(' ').toLowerCase();
+  // K8s and Kubernetes are the same required technology, not two skills.
+  const required = [['Linux'], ['Python'], ['Shell'], ['Docker'], ['Kubernetes', 'K8s'], ['MySQL'], ['Redis'], ['Nginx'], ['Ansible'], ['Jenkins'], ['Git'], ['Prometheus'], ['Grafana'], ['CMDB']];
+  checks.formalTechnicalCoverage = required.every(aliases => aliases.some(token =>
+    new RegExp(`(^|[^a-z0-9])${token.toLowerCase()}(?=$|[^a-z0-9])`, 'u').test(skillText)));
+  const projects = details.filter(d => d.entity.label === 'Project');
+  checks.projects = projects.length === 2;
+  const memberships = person.relations.filter(r => r.relation_type === 'memberOf' && r.source_id === id);
+  checks.formalProjectParticipation = projects.length === 2 && projects.every(d => memberships.some(r => r.target_id === d.entity.entity_id));
+  checks.formalProjectLookup = projects.length === 2 && (await Promise.all(projects.map(async d =>
+    typeof d.entity.properties.name === 'string' && (await lookup(d.entity.properties.name, false)).some(hit => hit.entity_id === id)))).every(Boolean);
+  checks.noInventedClients = details.every(d => ![...d.relations, ...d.unverified_claims].some(r => r.relation_type === 'clientOrganization'));
+  const automaticChecksPassed = Object.values(checks).every(Boolean);
+  return { checks, automaticChecksPassed, semanticAcceptance: automaticChecksPassed ? 'manual_review_required' as const : 'failed' as const };
+}
