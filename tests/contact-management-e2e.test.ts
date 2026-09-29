@@ -92,6 +92,228 @@ async function waitForStatus(service: ContactImportService, importId: string, st
   throw new Error(`Import did not reach ${status}`);
 }
 
+it('auto-creates one resume owner and saves institution relations as searchable unverified claims', async () => {
+  const owner = candidate('owner', 'Lin Vale');
+  owner.relation_suggestions.push({
+    source_candidate_id: 'owner', target_candidate_id: 'employer', relation_type: 'worksFor',
+    properties: { role: { '@type': 'OrganizationRole' } }, uncertain: true, review_reason: 'structured_heading',
+    evidence: [{ evidence_id: 'ev-work', subject_kind: 'relation', subject_id: 'owner:employer',
+      field_path: '$relation', value: { relation_type: 'worksFor', source_id: 'owner', target_id: 'employer' },
+      source_type: 'file', file_name: 'invented.pdf', file_sha256: sha, quote: '工作经历',
+      page: 2, locator_status: 'located', collected_at: collectedAt }],
+  });
+  const employer = ImportCandidateSchema.parse({
+    candidate_id: 'employer', label: 'Organization', properties: { name: 'Cedar Labs' },
+    evidence: [{ evidence_id: 'ev-employer', subject_kind: 'entity', subject_id: 'employer',
+      field_path: 'properties.name', value: 'Cedar Labs', source_type: 'file',
+      file_name: 'invented.pdf', file_sha256: sha, quote: 'Cedar Labs', page: 2,
+      locator_status: 'located', collected_at: collectedAt }],
+    relation_suggestions: [], warnings: [], can_commit: true,
+  });
+  const h = await harness('file-auto', [owner, employer]);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start-auto' }, 'reviewer');
+  const ready = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const input = { import_id: started.import_id, preview_version: ready.version as number,
+    operation_id: 'contact-import:' + started.import_id, auto_create: true };
+  await expect(h.service.commit({ ...input, choices: [] }, 'reviewer'))
+    .rejects.toThrow('AUTO_CREATE_CONFLICT');
+  await expect(h.service.commit({ ...input, relation_choices: [{}] }, 'reviewer'))
+    .rejects.toThrow('AUTO_CREATE_CONFLICT');
+  await expect(h.service.commit({ ...input, preview_version: 2 }, 'reviewer'))
+    .rejects.toThrow('VERSION_CONFLICT');
+  const committed = await h.service.commit(input, 'reviewer') as {
+    results: Array<{ candidate_id: string; action: string; entity_id: string }> };
+  expect(committed.results.map(item => item.action)).toEqual(['create', 'create']);
+  const personId = committed.results[0].entity_id;
+  const employerId = committed.results[1].entity_id;
+  const saved = await h.graph.request<{ relations: unknown[];
+    unverified_claims: Array<{ kind: string; relation_type: string; status: string; target_id: string; claim_id: string }> }>(
+    'get_contact', { entity_id: personId });
+  expect(saved.relations).toEqual([]);
+  expect(saved.unverified_claims).toContainEqual(expect.objectContaining({
+    kind: 'relation', relation_type: 'worksFor', status: 'unverified', target_id: employerId,
+  }));
+  expect((await new ContactSearch(h.graph).search({ query: 'Cedar Labs' })).items
+    .some(item => item.entity_id === personId)).toBe(false);
+  expect((await new ContactSearch(h.graph).search({ query: 'Cedar Labs', include_unverified: true })).items)
+    .toContainEqual(expect.objectContaining({ entity_id: personId, match_status: 'unverified',
+      claim_id: saved.unverified_claims[0].claim_id }));
+  const replay = await h.service.commit(input, 'reviewer') as { replayed: boolean; results: typeof committed.results };
+  expect(replay.replayed).toBe(true);
+  expect(replay.results[0].entity_id).toBe(personId);
+});
+
+it('auto-commits a directly stated employer with file evidence and never equates its client to an employer', async () => {
+  const owner = candidate('owner', 'Lin Vale');
+  owner.relation_suggestions.push({
+    source_candidate_id: 'owner', target_candidate_id: 'employer', relation_type: 'worksFor',
+    properties: { role: { '@type': 'OrganizationRole', roleName: '顾问' } }, uncertain: false,
+    evidence: [{ evidence_id: 'ev-work', subject_kind: 'relation', subject_id: 'owner:employer',
+      field_path: '$relation', value: { relation_type: 'worksFor', source_id: 'owner', target_id: 'employer' },
+      source_type: 'file', file_name: 'invented.pdf', file_sha256: sha, quote: 'Lin Vale 任职甲公司，负责乙公司项目',
+      page: 2, locator_status: 'located', collected_at: collectedAt },
+    { evidence_id: 'ev-role', subject_kind: 'relation', subject_id: 'owner:employer',
+      field_path: 'properties.role.roleName', value: '顾问',
+      source_type: 'file', file_name: 'invented.pdf', file_sha256: sha, quote: '顾问',
+      page: 2, locator_status: 'located', collected_at: collectedAt }],
+  });
+  const organization = (id: string, name: string) => ImportCandidateSchema.parse({
+    candidate_id: id, label: 'Organization', properties: { name },
+    evidence: [{ evidence_id: `ev_${id}`, subject_kind: 'entity', subject_id: id,
+      field_path: 'properties.name', value: name, source_type: 'file', file_name: 'invented.pdf',
+      file_sha256: sha, quote: name, page: 2, locator_status: 'located', collected_at: collectedAt }],
+    relation_suggestions: [], warnings: [], can_commit: true,
+  });
+  const h = await harness('file-direct-employer', [owner, organization('employer', '甲公司'), organization('client', '乙公司')]);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start-direct-employer' }, 'reviewer');
+  const ready = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const committed = await h.service.commit({ import_id: started.import_id,
+    preview_version: ready.version as number, operation_id: `contact-import:${started.import_id}`,
+    auto_create: true }, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
+  const personId = committed.results.find(item => item.candidate_id === 'owner')!.entity_id;
+  const employerId = committed.results.find(item => item.candidate_id === 'employer')!.entity_id;
+  const clientId = committed.results.find(item => item.candidate_id === 'client')!.entity_id;
+  const saved = await h.graph.request<{ relations: Array<{ relation_id: string; relation_type: string; target_id: string }>;
+    evidence: Array<{ subject_kind: string; subject_id: string; source_type: string }> }>(
+    'get_contact', { entity_id: personId });
+  expect(saved.relations).toContainEqual(expect.objectContaining({ relation_type: 'worksFor', target_id: employerId }));
+  expect(saved.relations.some(relation => relation.target_id === clientId)).toBe(false);
+  const relationId = saved.relations.find(relation => relation.target_id === employerId)?.relation_id;
+  const relationProof = saved.evidence.filter(proof => proof.subject_kind === 'relation' && proof.subject_id === relationId);
+  expect(relationProof.length).toBeGreaterThan(0);
+  expect(relationProof.every(proof => proof.source_type === 'file')).toBe(true);
+});
+
+it('auto-imports one resume owner through a project to its client, without inventing client employment', async () => {
+  const owner = candidate('owner', 'Lin Vale');
+  const projectQuote = '项目经历：PLM 升级，项目角色顾问，客户乙公司';
+  const relationProof = (id: string, source: string, target: string, kind: 'memberOf' | 'clientOrganization') => ({
+    evidence_id: id, subject_kind: 'relation' as const, subject_id: `${source}:${target}`,
+    field_path: '$relation', value: { relation_type: kind, source_id: source, target_id: target },
+    source_type: 'file' as const, file_name: 'invented.pdf', file_sha256: sha,
+    quote: projectQuote, page: 2, locator_status: 'located' as const, collected_at: collectedAt,
+  });
+  owner.relation_suggestions.push({
+    source_candidate_id: 'owner', target_candidate_id: 'project', relation_type: 'memberOf',
+    properties: { role: { '@type': 'OrganizationRole', roleName: '顾问' } }, uncertain: false,
+    evidence: [relationProof('ev-member', 'owner', 'project', 'memberOf'),
+      { evidence_id: 'ev-project-role', subject_kind: 'relation', subject_id: 'owner:project',
+        field_path: 'properties.role.roleName', value: '顾问', source_type: 'file',
+        file_name: 'invented.pdf', file_sha256: sha, quote: projectQuote, page: 2,
+        locator_status: 'located', collected_at: collectedAt }],
+  });
+  const project = ImportCandidateSchema.parse({
+    candidate_id: 'project', label: 'Project', properties: { name: 'PLM 升级' },
+    evidence: [{ evidence_id: 'ev-project-name', subject_kind: 'entity', subject_id: 'project',
+      field_path: 'properties.name', value: 'PLM 升级', source_type: 'file', file_name: 'invented.pdf',
+      file_sha256: sha, quote: projectQuote, page: 2, locator_status: 'located', collected_at: collectedAt }],
+    relation_suggestions: [{ source_candidate_id: 'project', target_candidate_id: 'client',
+      relation_type: 'clientOrganization', properties: {}, uncertain: false,
+      evidence: [relationProof('ev-client-rel', 'project', 'client', 'clientOrganization')] }],
+    warnings: [], can_commit: true,
+  });
+  const client = ImportCandidateSchema.parse({
+    candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+    evidence: [{ evidence_id: 'ev-client-name', subject_kind: 'entity', subject_id: 'client',
+      field_path: 'properties.name', value: '乙公司', source_type: 'file', file_name: 'invented.pdf',
+      file_sha256: sha, quote: projectQuote, page: 2, locator_status: 'located', collected_at: collectedAt }],
+    relation_suggestions: [], warnings: [], can_commit: true,
+  });
+  const h = await harness('file-project', [owner, project, client]);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start-project' }, 'reviewer');
+  const ready = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const input = { import_id: started.import_id, preview_version: ready.version as number,
+    operation_id: `contact-import:${started.import_id}`, auto_create: true };
+  const committed = await h.service.commit(input, 'reviewer') as { results: Array<{ candidate_id: string; entity_id?: string }> };
+  const personId = committed.results.find(item => item.candidate_id === 'owner')!.entity_id!;
+  const projectId = committed.results.find(item => item.candidate_id === 'project')!.entity_id!;
+  const clientId = committed.results.find(item => item.candidate_id === 'client')!.entity_id!;
+  expect(projectId).toMatch(/^j_/u);
+  const person = await h.graph.request<{ relations: Array<{ relation_type: string; target_id: string }> }>(
+    'get_contact', { entity_id: personId });
+  const projectSaved = await h.graph.request<{ relations: Array<{ relation_type: string; target_id: string }> }>(
+    'get_contact', { entity_id: projectId });
+  expect(person.relations).toContainEqual(expect.objectContaining({ relation_type: 'memberOf', target_id: projectId }));
+  expect(person.relations.some(relation => relation.relation_type === 'worksFor' && relation.target_id === clientId)).toBe(false);
+  expect(projectSaved.relations).toContainEqual(expect.objectContaining({ relation_type: 'clientOrganization', target_id: clientId }));
+  expect((await new ContactSearch(h.graph).search({ query: '乙公司' })).items)
+    .toContainEqual(expect.objectContaining({ entity_id: personId, matched_project_id: projectId }));
+  expect((await h.service.commit(input, 'reviewer') as { replayed: boolean }).replayed).toBe(true);
+
+  const weakProject = ImportCandidateSchema.parse({ ...project,
+    relation_suggestions: project.relation_suggestions.map(relation => ({ ...relation,
+      uncertain: true, review_reason: 'ambiguous_owner' })) });
+  const weak = await harness('file-project-weak', [owner, weakProject, client]);
+  const weakStarted = await weak.service.start({ file_id: weak.file.fileId,
+    operation_id: 'start-project-weak' }, 'reviewer');
+  const weakReady = await waitForStatus(weak.service, weakStarted.import_id, 'ready_for_review');
+  const weakCommit = await weak.service.commit({ import_id: weakStarted.import_id,
+    preview_version: weakReady.version as number,
+    operation_id: `contact-import:${weakStarted.import_id}`, auto_create: true }, 'reviewer') as {
+    results: Array<{ candidate_id: string; entity_id?: string }> };
+  const weakPersonId = weakCommit.results.find(item => item.candidate_id === 'owner')!.entity_id!;
+  const weakProjectId = weakCommit.results.find(item => item.candidate_id === 'project')!.entity_id!;
+  const weakSaved = await weak.graph.request<{ relations: Array<{ relation_type: string }>;
+    unverified_claims: Array<{ relation_type: string; target_id: string; claim_id: string }> }>(
+    'get_contact', { entity_id: weakProjectId });
+  expect(weakSaved.relations.some(relation => relation.relation_type === 'clientOrganization')).toBe(false);
+  expect(weakSaved.unverified_claims).toContainEqual(expect.objectContaining({
+    relation_type: 'clientOrganization', target_id: weakCommit.results.find(item => item.candidate_id === 'client')!.entity_id,
+  }));
+  expect((await new ContactSearch(weak.graph).search({ query: '乙公司' })).items
+    .some(item => item.entity_id === weakPersonId)).toBe(false);
+  expect((await new ContactSearch(weak.graph).search({ query: '乙公司', include_unverified: true })).items)
+    .toContainEqual(expect.objectContaining({ entity_id: weakPersonId, matched_project_id: weakProjectId,
+      match_status: 'unverified', claim_ids: [weakSaved.unverified_claims[0].claim_id] }));
+});
+
+it('auto-creates only the owner when the preview also contains an explicit reference person', async () => {
+  const reference = candidate('reference', 'Mira Reference', '+15550000111');
+  reference.can_commit = false;
+  reference.warnings.push('非主体人物线索');
+  const h = await harness('file-reference', [candidate('owner', 'Lin Vale'), reference]);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start-reference' }, 'reviewer');
+  const ready = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const committed = await h.service.commit({ import_id: started.import_id,
+    preview_version: ready.version as number,
+    operation_id: 'contact-import:' + started.import_id, auto_create: true }, 'reviewer') as {
+      results: Array<{ candidate_id: string; action: string; entity_id?: string }> };
+  expect(committed.results.map(item => [item.candidate_id, item.action]))
+    .toEqual([['owner', 'create'], ['reference', 'skip']]);
+  expect((await new ContactSearch(h.graph).search({ name: 'Mira Reference' })).items).toEqual([]);
+  expect((await new ContactSearch(h.graph).search({ name: 'Lin Vale' })).items).toHaveLength(1);
+});
+
+it('rejects a manual import that would create two Person nodes from one file', async () => {
+  const h = await harness('file-two-people', [candidate('owner', 'Lin Vale'),
+    candidate('reference', 'Mira Reference')]);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start-two-people' }, 'reviewer');
+  const ready = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  await expect(h.service.commit({ import_id: started.import_id,
+    preview_version: ready.version as number,
+    operation_id: 'contact-import:' + started.import_id,
+    choices: [{ candidate_id: 'owner', action: 'create' },
+      { candidate_id: 'reference', action: 'create' }] }, 'reviewer'))
+    .rejects.toThrow('MULTIPLE_PERSON_CREATE_FOR_ONE_FILE');
+  expect((await new ContactSearch(h.graph).search({ name: 'Lin Vale' })).items).toEqual([]);
+  expect((await new ContactSearch(h.graph).search({ name: 'Mira Reference' })).items).toEqual([]);
+});
+
+it('rejects ambiguous or missing resume owners before auto-create writes any nodes', async () => {
+  for (const [fileId, candidates, code] of [
+    ['auto-ambiguous', [candidate('p1', 'Lin Vale'), candidate('p2', 'Mira Chen')], 'AUTO_CREATE_AMBIGUOUS_PERSON'],
+    ['auto-missing', [], 'AUTO_CREATE_NO_PERSON'],
+  ] as const) {
+    const h = await harness(fileId, [...candidates]);
+    const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start-' + fileId }, 'reviewer');
+    const ready = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+    await expect(h.service.commit({ import_id: started.import_id, preview_version: ready.version as number,
+      operation_id: 'contact-import:' + started.import_id, auto_create: true }, 'reviewer')).rejects.toThrow(code);
+    expect(await h.service.get(started.import_id, 'reviewer')).toMatchObject({ status: 'ready_for_review' });
+    expect((await new ContactSearch(h.graph).search({ name: 'Lin Vale' })).items).toEqual([]);
+  }
+});
+
 it('imports a nameless resume, finds it by school, then confirms a name on the same id', async () => {
   const anonymous = ImportCandidateSchema.parse({
     candidate_id: 'anonymous', label: 'Person', properties: { skills: ['Python'] },
@@ -289,7 +511,7 @@ it('suggests renamed people with the same self phone without choosing a merge', 
   const committed = await h.service.commit({ import_id: started.import_id,
     preview_version: preview.version as number,
     operation_id: `contact-import:${started.import_id}`,
-    choices: [{ candidate_id: 'c_rename', action: 'create' }] }, 'reviewer') as {
+    auto_create: true }, 'reviewer') as {
       results: Array<{ entity_id: string }>;
     };
   expect(committed.results[0]?.entity_id).not.toBe(existing.entity_id);

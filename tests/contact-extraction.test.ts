@@ -20,6 +20,253 @@ function extractor(fetchFn: typeof fetch, overrides = {}) {
 }
 
 describe('document extraction', () => {
+  it('removes a completely empty second person while keeping the real resume owner', async () => {
+    const input = [{ block_id: 'name', text: '姓名：林舟', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      person('owner', '林舟', 'name'),
+      { candidate_id: 'ghost', label: 'Person', properties: {}, evidence: [], relation_suggestions: [] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates.filter(item => item.label === 'Person')).toHaveLength(1);
+    expect(result.candidates[0].properties.name).toBe('林舟');
+  });
+
+  it('keeps a weak employment proposal as an unverified review item on its real owner', async () => {
+    const input = [{ block_id: 'name', text: '姓名：林舟', page: 1 },
+      { block_id: 'company', text: '杉木科技', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      { ...person('owner', '林舟', 'name'), relation_suggestions: [{
+        source_candidate_id: 'owner', target_candidate_id: 'company', relation_type: 'worksFor',
+        properties: { role: { '@type': 'OrganizationRole' } },
+        evidence: [{ block_id: 'company', quote: '杉木科技' }],
+      }] },
+      { candidate_id: 'company', label: 'Organization', properties: { name: '杉木科技' },
+        evidence: [{ field_path: 'properties.name', value: '杉木科技', block_id: 'company', quote: '杉木科技' }] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    const owner = result.candidates.find(item => item.label === 'Person')!;
+    expect(owner.relation_suggestions).toEqual([]);
+    expect(owner.review_items).toContainEqual(expect.objectContaining({
+      kind: 'relation', reason: 'ambiguous_context', source_candidate_id: owner.candidate_id,
+      target_candidate_id: 'batch1:company', relation_type: 'worksFor',
+      quote: '杉木科技', page: 1,
+    }));
+  });
+
+  it('does not turn a weak relation attached to a blank person into another person', async () => {
+    const input = [{ block_id: 'name', text: '姓名：林舟', page: 1 },
+      { block_id: 'company', text: '杉木科技', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      person('owner', '林舟', 'name'),
+      { candidate_id: 'ghost', label: 'Person', properties: {}, evidence: [], relation_suggestions: [{
+        source_candidate_id: 'ghost', target_candidate_id: 'company', relation_type: 'worksFor',
+        properties: {}, evidence: [{ block_id: 'company', quote: '杉木科技' }],
+      }] },
+      { candidate_id: 'company', label: 'Organization', properties: { name: '杉木科技' },
+        evidence: [{ field_path: 'properties.name', value: '杉木科技', block_id: 'company', quote: '杉木科技' }] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates.filter(item => item.label === 'Person')).toHaveLength(1);
+    expect(result.candidates[0].review_items).toEqual([]);
+    expect(result.warnings).toContain('关系归属人物缺少独立线索');
+  });
+
+  it('attaches an unanchored later-batch resume fragment as marked clues without making a second person', async () => {
+    const input = [
+      { block_id: 'owner', text: '个人简历\n林舟\n' + '附注'.repeat(300), page: 1 },
+      { block_id: 'school', text: '教育经历\n海岚大学\n技能 Python\n' + '附注'.repeat(300), page: 1 },
+    ];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const sent = JSON.parse(JSON.parse(String(init?.body)).messages[1].content).blocks as
+        { block_id: string; text: string }[];
+      return response(sent.flatMap(block => {
+        if (block.text.includes('个人简历')) return [person('owner', '林舟', block.block_id)];
+        if (!block.text.includes('海岚大学')) return [];
+        return [
+          { candidate_id: 'fragment', label: 'Person', properties: { skills: ['Python'] },
+            evidence: [], relation_suggestions: [{
+              source_candidate_id: 'fragment', target_candidate_id: 'school', relation_type: 'alumniOf',
+              properties: {}, evidence: [{ block_id: block.block_id, quote: '海岚大学' }], uncertain: true,
+            }] },
+          { candidate_id: 'school', label: 'Organization', properties: { name: '海岚大学' },
+            evidence: [{ field_path: 'properties.name', value: '海岚大学', block_id: block.block_id, quote: '海岚大学' }] },
+        ];
+      }));
+    });
+    const result = await extractor(fetchFn, { requestMaxBytes: 6_500 }).extract(input, new AbortController().signal);
+    expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(2);
+    const people = result.candidates.filter(item => item.label === 'Person');
+    expect(people).toHaveLength(1);
+    expect(people[0].review_items).toContainEqual(expect.objectContaining({
+      kind: 'field', field_path: 'properties.skills', value: 'Python',
+    }));
+    expect(people[0].relation_suggestions).toContainEqual(expect.objectContaining({
+      source_candidate_id: people[0].candidate_id, target_candidate_id: expect.stringContaining('school'),
+      relation_type: 'alumniOf', uncertain: true,
+    }));
+  });
+
+  it('keeps one resume owner when a later batch has located skills and a school but no identity', async () => {
+    const input = [
+      { block_id: 'owner', text: '个人简历\n林舟\n' + '附注'.repeat(300), page: 1 },
+      { block_id: 'education', text: '教育经历\n海岚大学\n熟悉 Python\n' + '附注'.repeat(300), page: 2 },
+    ];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const sent = JSON.parse(JSON.parse(String(init?.body)).messages[1].content).blocks as
+        { block_id: string; text: string }[];
+      return response(sent.flatMap(block => {
+        if (block.text.includes('个人简历')) return [person('owner', '林舟', block.block_id)];
+        if (!block.text.includes('海岚大学')) return [];
+        return [
+          { candidate_id: 'fragment', label: 'Person', properties: { skills: ['Python'] },
+            evidence: [{ field_path: 'properties.skills', value: 'Python', block_id: block.block_id,
+              quote: '熟悉 Python' }], relation_suggestions: [{
+              source_candidate_id: 'fragment', target_candidate_id: 'school', relation_type: 'alumniOf',
+              properties: {}, evidence: [{ block_id: block.block_id, quote: '海岚大学' }], uncertain: true,
+            }] },
+          { candidate_id: 'school', label: 'Organization', properties: { name: '海岚大学' },
+            evidence: [{ field_path: 'properties.name', value: '海岚大学', block_id: block.block_id,
+              quote: '海岚大学' }] },
+        ];
+      }));
+    });
+    const result = await extractor(fetchFn, { requestMaxBytes: 6_500 }).extract(input, new AbortController().signal);
+    const people = result.candidates.filter(item => item.label === 'Person');
+    expect(people).toHaveLength(1);
+    expect(people[0].properties).toMatchObject({ name: '林舟', skills: ['Python'] });
+    expect(people[0].relation_suggestions).toContainEqual(expect.objectContaining({
+      source_candidate_id: people[0].candidate_id, relation_type: 'alumniOf', uncertain: true,
+      target_candidate_id: expect.stringContaining('school'),
+    }));
+  });
+
+  it('keeps a role-like phrase in narrative prose as review instead of an asserted job title', async () => {
+    const quote = '在产品项目管理中推动并保障项目顺利推进，协调供应商解决相关问题；';
+    const result = await extractor(vi.fn(async () => response([{
+      candidate_id: 'owner', label: 'Person', properties: { name: '林舟', jobTitle: '产品项目管理' },
+      evidence: [
+        { field_path: 'properties.name', value: '林舟', block_id: 'owner', quote: '林舟' },
+        { field_path: 'properties.jobTitle', value: '产品项目管理', block_id: 'narrative', quote },
+      ],
+    }]))).extract([
+      { block_id: 'owner', text: '林舟', page: 1 },
+      { block_id: 'narrative', text: quote, page: 2 },
+    ], new AbortController().signal);
+    const owner = result.candidates[0];
+    expect(owner.properties).not.toHaveProperty('jobTitle');
+    expect(owner.review_items).toContainEqual(expect.objectContaining({ kind: 'field',
+      field_path: 'properties.jobTitle', value: '产品项目管理', reason: 'ambiguous_context' }));
+  });
+
+  it('marks an explicitly named reference as noncommittable without attaching its phone to the owner', async () => {
+    const input = [
+      { block_id: 'owner', text: '个人简历\n姓名：林舟', page: 1 },
+      { block_id: 'reference', text: '证明人：吴雨\n电话：13900000000', page: 2 },
+    ];
+    const result = await extractor(vi.fn(async () => response([
+      person('owner', '林舟', 'owner'),
+      { ...person('reference', '吴雨', 'reference'),
+        properties: { name: '吴雨', telephone: ['13900000000'] },
+        evidence: [...person('reference', '吴雨', 'reference').evidence,
+          { field_path: 'properties.telephone', value: '13900000000',
+            block_id: 'reference', quote: '13900000000' }] },
+    ]))).extract(input, new AbortController().signal);
+    const people = result.candidates.filter(item => item.label === 'Person');
+    expect(people).toHaveLength(2);
+    expect(people.find(item => item.properties.name === '林舟')?.can_commit).toBe(true);
+    expect(people.find(item => item.properties.name === '吴雨')).toMatchObject({
+      can_commit: false, warnings: expect.arrayContaining(['非主体人物线索']),
+    });
+    expect(people.find(item => item.properties.name === '林舟')?.properties.telephone).toEqual([]);
+  });
+
+  it('still links a structured school clue to the owner when a reference is present', async () => {
+    const input = [
+      { block_id: 'owner', text: '个人简历\n姓名：林舟', page: 1 },
+      { block_id: 'reference', text: '证明人：吴雨', page: 2 },
+      { block_id: 'heading', text: '教育经历', page: 3 },
+      { block_id: 'school', text: '海岚大学', page: 3 },
+    ];
+    const result = await extractor(vi.fn(async () => response([
+      person('owner', '林舟', 'owner'), person('reference', '吴雨', 'reference'),
+      { candidate_id: 'school', label: 'Organization', properties: { name: '海岚大学' },
+        evidence: [{ field_path: 'properties.name', value: '海岚大学', block_id: 'school', quote: '海岚大学' }] },
+    ]))).extract(input, new AbortController().signal);
+    const owner = result.candidates.find(item => item.properties.name === '林舟')!;
+    expect(owner.relation_suggestions).toContainEqual(expect.objectContaining({
+      source_candidate_id: owner.candidate_id, target_candidate_id: 'batch1:school',
+      relation_type: 'alumniOf', uncertain: true, review_reason: 'structured_heading',
+    }));
+    expect(result.candidates.find(item => item.properties.name === '吴雨')?.relation_suggestions).toEqual([]);
+  });
+
+  it('retains work and school claims across separate model batches without confirming edges', async () => {
+    const input = [
+      { block_id: 'owner', text: '简历\n姓名：林舟\n' + '附注'.repeat(300), page: 1 },
+      { block_id: 'work', text: '工作经历\n杉木科技\n' + '附注'.repeat(300), page: 1 },
+      { block_id: 'school', text: '教育经历\n海岚大学\n' + '附注'.repeat(300), page: 1 },
+    ];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const sent = JSON.parse(JSON.parse(String(init?.body)).messages[1].content).blocks as
+        { block_id: string; text: string }[];
+      return response(sent.flatMap(block => {
+        if (block.text.includes('姓名：林舟')) return [person('p', '林舟', block.block_id)];
+        const name = block.text.includes('杉木科技') ? '杉木科技'
+          : block.text.includes('海岚大学') ? '海岚大学' : undefined;
+        return name ? [{ candidate_id: name, label: 'Organization', properties: { name },
+          evidence: [{ field_path: 'properties.name', value: name, block_id: block.block_id, quote: name }] }] : [];
+      }));
+    });
+    const result = await extractor(fetchFn, { requestMaxBytes: 6_500 }).extract(input, new AbortController().signal);
+    expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(3);
+    const owner = result.candidates.find(item => item.label === 'Person')!;
+    expect(owner.relation_suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ relation_type: 'worksFor', uncertain: true, review_reason: 'structured_heading',
+        source_candidate_id: owner.candidate_id }),
+      expect.objectContaining({ relation_type: 'alumniOf', uncertain: true, review_reason: 'structured_heading',
+        source_candidate_id: owner.candidate_id }),
+    ]));
+    expect(owner.relation_suggestions.every(item => item.evidence.some(proof =>
+      proof.field_path === '$relation' && proof.page === 1 && proof.locator_status === 'located'))).toBe(true);
+  });
+
+  it('keeps two dated employment episodes at the same organization separate', async () => {
+    const input = [{ block_id: 'owner', text: '简历\n姓名：林舟', page: 1 },
+      { block_id: 'first', text: '工作经历\n杉木科技 | 2019-01 - 2020-12 | 工程师', page: 1 },
+      { block_id: 'second', text: '工作经历\n杉木科技 | 2022-03 - 2024-06 | 经理', page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      person('p', '林舟', 'owner'),
+      { candidate_id: 'o', label: 'Organization', properties: { name: '杉木科技' },
+        evidence: [{ field_path: 'properties.name', value: '杉木科技', block_id: 'first', quote: '杉木科技' }] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    const work = result.candidates.find(item => item.label === 'Person')!.relation_suggestions
+      .filter(item => item.relation_type === 'worksFor');
+    expect(work).toHaveLength(2);
+    expect(work.map(item => item.properties.role)).toEqual([
+      { '@type': 'OrganizationRole', startDate: '2019-01', endDate: '2020-12', roleName: '工程师' },
+      { '@type': 'OrganizationRole', startDate: '2022-03', endDate: '2024-06', roleName: '经理' },
+    ]);
+  });
+
+  it.each([
+    ['project client', '工作经历\n项目客户：杉木科技', 1],
+    ['negation', '工作经历\n未在杉木科技任职', 1],
+    ['nonadjacent line', '工作经历\n其他信息\n杉木科技', 1],
+    ['different page', '工作经历', 2],
+  ] as const)('does not invent cross-batch employment for %s', async (_mode, workText, workPage) => {
+    const input = [{ block_id: 'owner', text: '简历\n姓名：林舟', page: 1 },
+      { block_id: 'heading', text: workText, page: 1 },
+      { block_id: 'org', text: '杉木科技', page: workPage }];
+    const fetchFn = vi.fn(async () => response([
+      person('p', '林舟', 'owner'),
+      { candidate_id: 'o', label: 'Organization', properties: { name: '杉木科技' },
+        evidence: [{ field_path: 'properties.name', value: '杉木科技', block_id: 'org', quote: '杉木科技' }] },
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(result.candidates.find(item => item.label === 'Person')!.relation_suggestions).toEqual([]);
+  });
+
   it('uses short unique model block aliases and preserves original processing provenance', async () => {
     const longId = 'd1d3a7b8-12ab-45cd-89ef-123456789abc:0:0';
     const input = [{ block_id: longId, text: 'Riley Example', page: 2 },
@@ -160,6 +407,32 @@ describe('document extraction', () => {
     expect(result.candidates[0].evidence.every(item => item.subject_id === 'batch1:p')).toBe(true);
     expect(result.candidates[1].review_items).toEqual([expect.objectContaining({ kind: 'relation',
       source_candidate_id: 'batch1:p', target_candidate_id: 'batch1:o', reason: 'ambiguous_owner' })]);
+  });
+
+  it('remaps relation evidence values together with a coalesced person source', async () => {
+    const input = [
+      { block_id: 'owner', text: '个人简历\n姓名：陈晓', page: 1 },
+      { block_id: 'work', text: '技能 Python；陈晓任职甲公司', page: 2 },
+    ];
+    const result = await extractor(vi.fn(async () => response([
+      person('owner', '陈晓', 'owner'),
+      { candidate_id: 'fragment', label: 'Person', properties: { skills: ['Python'] },
+        evidence: [{ field_path: 'properties.skills', value: 'Python', block_id: 'work', quote: 'Python' }],
+        relation_suggestions: [{ source_candidate_id: 'fragment', target_candidate_id: 'company',
+          relation_type: 'worksFor', properties: { role: { '@type': 'OrganizationRole' } },
+          evidence: [{ block_id: 'work', quote: '陈晓任职甲公司' }], uncertain: false }] },
+      { candidate_id: 'company', label: 'Organization', properties: { name: '甲公司' },
+        evidence: [{ field_path: 'properties.name', value: '甲公司', block_id: 'work', quote: '甲公司' }] },
+    ]))).extract(input, new AbortController().signal);
+    const owner = result.candidates.find(item => item.label === 'Person')!;
+    expect(result.candidates.filter(item => item.label === 'Person')).toHaveLength(1);
+    const relation = owner.relation_suggestions.find(item => item.relation_type === 'worksFor')!;
+    expect(relation.source_candidate_id).toBe(owner.candidate_id);
+    expect(relation.evidence.find(item => item.field_path === '$relation')).toMatchObject({
+      subject_id: `${owner.candidate_id}:${relation.target_candidate_id}`,
+      value: { relation_type: 'worksFor', source_id: owner.candidate_id,
+        target_id: relation.target_candidate_id },
+    });
   });
 
   it('does not use an organization contact number as a personal identifier', async () => {
@@ -503,7 +776,7 @@ describe('document extraction', () => {
       ] }]));
     const candidate = (await extractor(fetchFn).extract(input, new AbortController().signal)).candidates[0];
     expect(candidate.properties.name).toBeUndefined();
-    expect(candidate.properties.telephone).toEqual(['13800138000']);
+    expect(candidate.label === 'Person' && candidate.properties.telephone).toEqual(['13800138000']);
     expect(candidate.review_items).toEqual(expect.arrayContaining([
       expect.objectContaining({ field_path: 'properties.name', value: ['陈晓'], reason: 'invalid_shape' }),
     ]));
@@ -625,7 +898,8 @@ describe('document extraction', () => {
         relation_suggestions: [] },
     ]));
     const result = await extractor(fetchFn).extract(input, new AbortController().signal);
-    expect(result.candidates[0]).toMatchObject({ can_commit: false, relation_suggestions: [] });
+    expect(result.candidates.filter(item => item.label === 'Person')).toEqual([]);
+    expect(result.candidates.filter(item => item.label === 'Organization')).toHaveLength(1);
   });
 
   it('does not turn a negated institution statement into an anonymous relation', async () => {
@@ -643,7 +917,8 @@ describe('document extraction', () => {
           evidence: [{ field_path: 'properties.name', value: '甲公司', block_id: 'negated', quote: '甲公司' }] },
       ]));
       const result = await extractor(fetchFn).extract(input, new AbortController().signal);
-      expect(result.candidates[0]).toMatchObject({ can_commit: false, relation_suggestions: [] });
+      expect(result.candidates.filter(item => item.label === 'Person')).toEqual([]);
+      expect(result.candidates.filter(item => item.label === 'Organization')).toHaveLength(1);
     }
   });
 
@@ -717,8 +992,8 @@ describe('document extraction', () => {
       })),
     ]));
     const result = await extractor(fetchFn).extract(input, new AbortController().signal);
-    expect(result.candidates[0]).toMatchObject({ can_commit: false, relation_suggestions: [] });
-    expect(result.candidates[1]).toMatchObject({ can_commit: false, relation_suggestions: [] });
+    expect(result.candidates.filter(item => item.label === 'Person')).toEqual([]);
+    expect(result.candidates.filter(item => item.label === 'Organization')).toHaveLength(2);
   });
 
   it('drops an unsupported role title while preserving an anonymous employment relation', async () => {
@@ -803,7 +1078,7 @@ describe('document extraction', () => {
       { field_path: 'properties.email', value: 'chen@example.com', block_id: 'b1', quote: 'chen@example.com' },
     ] }]));
     const result = await extractor(fetchFn).extract(blocks.slice(0, 1), new AbortController().signal);
-    expect(result.candidates[0].properties.email).toEqual([]);
+    expect(result.candidates[0].label === 'Person' && result.candidates[0].properties.email).toEqual([]);
     expect(result.candidates[0].review_items).toEqual(expect.arrayContaining([
       expect.objectContaining({ value: 'chen@example.com', reason: 'quote_mismatch' }),
     ]));
@@ -828,7 +1103,7 @@ describe('document extraction', () => {
         { field_path: 'properties.email', value: 'invented@example.com', block_id: 'b1', quote: '陈晓' },
       ] }]));
     const result = await extractor(fetchFn).extract(blocks.slice(0, 1), new AbortController().signal);
-    expect(result.candidates[0].properties.email).toEqual([]);
+    expect(result.candidates[0].label === 'Person' && result.candidates[0].properties.email).toEqual([]);
     expect(result.candidates[0].review_items).toEqual(expect.arrayContaining([
       expect.objectContaining({ value: 'invented@example.com', reason: 'quote_mismatch' }),
     ]));
@@ -865,6 +1140,700 @@ describe('document extraction', () => {
     expect(result.candidates).toHaveLength(2);
     expect(result.candidates[0].relation_suggestions).toEqual([]);
     expect(result.warnings).toContain('关系缺少可定位的直接陈述');
+  });
+
+  it('keeps an employer distinct from a client and partner in a shared sentence', async () => {
+    const quote = '陈晓在甲公司任职实施顾问；乙公司为项目客户，丙公司是合作方';
+    const input = [{ block_id: 'work', text: quote, page: 1 }];
+    const fetchFn = vi.fn(async () => response([
+      { ...person('p', '陈晓', 'work'), relation_suggestions: ['甲公司', '乙公司', '丙公司'].map((name, index) => ({
+        source_candidate_id: 'p', target_candidate_id: `o${index}`, relation_type: 'worksFor',
+        properties: { role: { '@type': 'OrganizationRole' } },
+        evidence: [{ block_id: 'work', quote }], uncertain: false,
+      })) },
+      ...['甲公司', '乙公司', '丙公司'].map((name, index) => ({
+        candidate_id: `o${index}`, label: 'Organization', properties: { name },
+        evidence: [{ field_path: 'properties.name', value: name, block_id: 'work', quote: name }],
+      })),
+    ]));
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    const owner = result.candidates.find(item => item.label === 'Person')!;
+    expect(owner.relation_suggestions.map(relation => [relation.relation_type, relation.target_candidate_id]))
+      .toEqual([['worksFor', 'batch1:o0']]);
+    expect(owner.relation_suggestions[0].evidence[0]).toMatchObject({ quote, locator_status: 'located' });
+    expect(owner.review_items.filter(item => item.kind === 'relation')).toHaveLength(2);
+  });
+
+  it('does not attach a client as employer when a different company has the employment verb', async () => {
+    const quote = '陈晓在甲公司任职，项目客户乙公司';
+    const result = await extractor(vi.fn(async () => response([
+      { ...person('p', '陈晓', 'work'), relation_suggestions: [{
+        source_candidate_id: 'p', target_candidate_id: 'client', relation_type: 'worksFor',
+        properties: { role: { '@type': 'OrganizationRole' } },
+        evidence: [{ block_id: 'work', quote }], uncertain: false,
+      }] },
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'work', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'work', text: quote, page: 1 }], new AbortController().signal);
+    const owner = result.candidates.find(item => item.label === 'Person')!;
+    expect(owner.relation_suggestions).toEqual([]);
+    expect(owner.review_items).toContainEqual(expect.objectContaining({
+      kind: 'relation', relation_type: 'worksFor', target_candidate_id: 'batch1:client',
+      reason: 'ambiguous_context', quote,
+    }));
+  });
+
+  it('does not borrow an employment verb across an unpunctuated project clause', async () => {
+    const quote = '陈晓在甲公司任职并负责乙公司项目';
+    const result = await extractor(vi.fn(async () => response([
+      { ...person('p', '陈晓', 'work'), relation_suggestions: ['甲公司', '乙公司'].map((name, index) => ({
+        source_candidate_id: 'p', target_candidate_id: `org${index}`, relation_type: 'worksFor',
+        properties: { role: { '@type': 'OrganizationRole' } },
+        evidence: [{ block_id: 'work', quote }], uncertain: false,
+      })) },
+      ...['甲公司', '乙公司'].map((name, index) => ({
+        candidate_id: `org${index}`, label: 'Organization', properties: { name },
+        evidence: [{ field_path: 'properties.name', value: name, block_id: 'work', quote: name }],
+      })),
+    ]))).extract([{ block_id: 'work', text: quote, page: 1 }], new AbortController().signal);
+    expect(result.candidates.find(item => item.label === 'Person')?.relation_suggestions
+      .filter(item => item.relation_type === 'worksFor').map(item => item.target_candidate_id))
+      .toEqual(['batch1:org0']);
+  });
+
+  it.each(['陈晓任职甲公司并为乙公司提供服务', '陈晓任职甲公司并在乙公司实施项目'])(
+    'keeps %s from becoming two employers', async quote => {
+      const result = await extractor(vi.fn(async () => response([
+        { ...person('p', '陈晓', 'work'), relation_suggestions: ['甲公司', '乙公司'].map((name, index) => ({
+          source_candidate_id: 'p', target_candidate_id: `org${index}`, relation_type: 'worksFor',
+          properties: { role: { '@type': 'OrganizationRole' } },
+          evidence: [{ block_id: 'work', quote }], uncertain: false,
+        })) },
+        ...['甲公司', '乙公司'].map((name, index) => ({
+          candidate_id: `org${index}`, label: 'Organization', properties: { name },
+          evidence: [{ field_path: 'properties.name', value: name, block_id: 'work', quote: name }],
+        })),
+      ]))).extract([{ block_id: 'work', text: quote, page: 1 }], new AbortController().signal);
+      expect(result.candidates.find(item => item.label === 'Person')?.relation_suggestions
+        .filter(item => item.relation_type === 'worksFor').map(item => item.target_candidate_id))
+        .toEqual(['batch1:org0']);
+    });
+
+  it('extracts a project path with independently located member and client relations', async () => {
+    const work = '陈晓在甲公司任职实施顾问';
+    const project = '项目经历：PLM 升级；项目角色：顾问；客户：乙公司';
+    const result = await extractor(vi.fn(async () => response([
+      { ...person('p', '陈晓', 'work'), relation_suggestions: [
+        { source_candidate_id: 'p', target_candidate_id: 'employer', relation_type: 'worksFor',
+          properties: { role: { '@type': 'OrganizationRole' } },
+          evidence: [{ block_id: 'work', quote: work }], uncertain: false },
+        { source_candidate_id: 'p', target_candidate_id: 'project', relation_type: 'memberOf',
+          properties: { role: { '@type': 'OrganizationRole', roleName: '顾问' } },
+          evidence: [{ block_id: 'project', quote: project },
+            { field_path: 'properties.role.roleName', value: '顾问', block_id: 'project', quote: '项目角色：顾问' }],
+          uncertain: false },
+      ] },
+      { candidate_id: 'employer', label: 'Organization', properties: { name: '甲公司' },
+        evidence: [{ field_path: 'properties.name', value: '甲公司', block_id: 'work', quote: '甲公司' }] },
+      { candidate_id: 'project', label: 'Project', properties: { name: 'PLM 升级' },
+        evidence: [{ field_path: 'properties.name', value: 'PLM 升级', block_id: 'project', quote: 'PLM 升级' }],
+        relation_suggestions: [{ source_candidate_id: 'project', target_candidate_id: 'client',
+          relation_type: 'clientOrganization', properties: {},
+          evidence: [{ block_id: 'project', quote: project }], uncertain: false }] },
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'project', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'person', text: '陈晓', page: 1 },
+      { block_id: 'work', text: work, page: 1 }, { block_id: 'project', text: project, page: 2 }],
+    new AbortController().signal);
+    const owner = result.candidates.find(item => item.label === 'Person')!;
+    const projectCandidate = result.candidates.find(item => item.label === 'Project')!;
+    expect(result.candidates.filter(item => item.label === 'Person')).toHaveLength(1);
+    expect(projectCandidate).toMatchObject({ properties: { name: 'PLM 升级' }, can_commit: true });
+    expect(owner.relation_suggestions.map(item => [item.relation_type, item.target_candidate_id]))
+      .toEqual([['worksFor', 'batch1:employer'], ['memberOf', projectCandidate.candidate_id]]);
+    expect(owner.relation_suggestions[1].properties).toEqual({ role: { '@type': 'OrganizationRole', roleName: '顾问' } });
+    expect(owner.relation_suggestions[1].evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field_path: '$relation', locator_status: 'located', quote: project }),
+      expect.objectContaining({ field_path: 'properties.role.roleName', value: '顾问' }),
+    ]));
+    expect(projectCandidate.relation_suggestions).toEqual([expect.objectContaining({
+      relation_type: 'clientOrganization', source_candidate_id: projectCandidate.candidate_id,
+      target_candidate_id: 'batch1:client',
+      evidence: [expect.objectContaining({ field_path: '$relation', quote: project, locator_status: 'located' })],
+    })]);
+  });
+
+  it('keeps two same-client projects separate and avoids a bare product term', async () => {
+    const blocks = [
+      { block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'first', text: '项目经历：PLM 升级；客户：乙公司', page: 2 },
+      { block_id: 'second', text: '项目经历：PDM 改造；客户：乙公司', page: 3 },
+      { block_id: 'term', text: '技能：ERP', page: 4 },
+    ];
+    const result = await extractor(vi.fn(async () => response([
+      person('p', '陈晓', 'owner'),
+      ...[['first', 'PLM 升级'], ['second', 'PDM 改造']].map(([block_id, name], index) => ({
+        candidate_id: `project${index}`, label: 'Project', properties: { name },
+        evidence: [{ field_path: 'properties.name', value: name, block_id, quote: name }],
+        relation_suggestions: [{ source_candidate_id: `project${index}`, target_candidate_id: 'client',
+          relation_type: 'clientOrganization', properties: {}, evidence: [{ block_id, quote: blocks[index + 1].text }], uncertain: false }],
+      })),
+      { candidate_id: 'term', label: 'Project', properties: { name: 'ERP' },
+        evidence: [{ field_path: 'properties.name', value: 'ERP', block_id: 'term', quote: 'ERP' }] },
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'first', quote: '乙公司' }] },
+    ]))).extract(blocks, new AbortController().signal);
+    const projects = result.candidates.filter(item => item.label === 'Project' && item.can_commit);
+    expect(projects.map(item => item.properties.name)).toEqual(['PLM 升级', 'PDM 改造']);
+    expect(new Set(projects.map(item => item.candidate_id)).size).toBe(2);
+    expect(projects.every(item => item.relation_suggestions[0]?.relation_type === 'clientOrganization')).toBe(true);
+  });
+
+  it('does not assert a client edge when the quote lacks this project anchor', async () => {
+    const result = await extractor(vi.fn(async () => response([
+      person('p', '陈晓', 'owner'),
+      { candidate_id: 'project', label: 'Project', properties: { name: 'PLM 升级' },
+        evidence: [{ field_path: 'properties.name', value: 'PLM 升级', block_id: 'project', quote: 'PLM 升级' }],
+        relation_suggestions: [{ source_candidate_id: 'project', target_candidate_id: 'client',
+          relation_type: 'clientOrganization', properties: {},
+          evidence: [{ block_id: 'client', quote: '客户：乙公司' }], uncertain: false }] },
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'client', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'owner', text: '陈晓', page: 1 },
+      { block_id: 'project', text: '项目经历：PLM 升级', page: 2 },
+      { block_id: 'client', text: '客户：乙公司', page: 2 }], new AbortController().signal);
+    const project = result.candidates.find(item => item.label === 'Project')!;
+    expect(project.can_commit).toBe(true);
+    expect(project.relation_suggestions).toEqual([]);
+    expect(project.review_items).toContainEqual(expect.objectContaining({
+      kind: 'relation', relation_type: 'clientOrganization', reason: 'ambiguous_context',
+    }));
+  });
+
+  it('retains a description-only project but rejects an unsupported project name', async () => {
+    const result = await extractor(vi.fn(async () => response([
+      person('p', '陈晓', 'owner'),
+      { candidate_id: 'described', label: 'Project', properties: { description: '实施 PLM 系统' },
+        evidence: [{ field_path: 'properties.description', value: '实施 PLM 系统',
+          block_id: 'project', quote: '项目描述：实施 PLM 系统' }] },
+      { candidate_id: 'bare', label: 'Project', properties: { name: 'CRM' },
+        evidence: [{ field_path: 'properties.name', value: 'CRM', block_id: 'technology', quote: 'CRM' }] },
+    ]))).extract([{ block_id: 'owner', text: '陈晓', page: 1 },
+      { block_id: 'project', text: '项目描述：实施 PLM 系统', page: 2 },
+      { block_id: 'technology', text: '技能：CRM', page: 3 }], new AbortController().signal);
+    expect(result.candidates.find(item => item.candidate_id === 'batch1:described')).toMatchObject({
+      label: 'Project', properties: { description: '实施 PLM 系统' }, can_commit: true,
+    });
+    const bare = result.candidates.find(item => item.candidate_id === 'batch1:bare')!;
+    expect(bare.can_commit).toBe(false);
+    expect(bare.review_items).toContainEqual(expect.objectContaining({
+      kind: 'field', field_path: 'properties.name', value: 'CRM', reason: 'ambiguous_context',
+    }));
+  });
+
+  it('locates a cross-page project title and marks its implied participation as unverified', async () => {
+    const title = '松林科技-PLM系统上线 项目负责人';
+    const result = await extractor(vi.fn(async () => response([
+      person('p', '陈晓', 'owner'),
+      { candidate_id: 'project', label: 'Project', properties: { name: '松林科技-PLM系统上线' },
+        evidence: [{ field_path: 'properties.name', value: '松林科技-PLM系统上线',
+          block_id: 'title', quote: '松林科技 PLM 系统上线' }] },
+      { candidate_id: 'organization', label: 'Organization', properties: { name: '松林科技' },
+        evidence: [{ field_path: 'properties.name', value: '松林科技', block_id: 'title', quote: '松林科技' }] },
+    ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'heading', text: '项目经历', page: 1 },
+      { block_id: 'title', text: title, page: 2 }], new AbortController().signal);
+    const project = result.candidates.find(item => item.label === 'Project')!;
+    expect(project).toMatchObject({ properties: { name: '松林科技-PLM系统上线' }, can_commit: true });
+    expect(project.evidence).toContainEqual(expect.objectContaining({
+      field_path: 'properties.name', value: '松林科技-PLM系统上线',
+      quote: '松林科技-PLM系统上线', page: 2, locator_status: 'located',
+    }));
+    expect(result.candidates.find(item => item.label === 'Person')?.relation_suggestions)
+      .toContainEqual(expect.objectContaining({ relation_type: 'memberOf',
+        target_candidate_id: project.candidate_id, uncertain: true, review_reason: 'ambiguous_owner' }));
+    expect(project.relation_suggestions).toContainEqual(expect.objectContaining({
+      relation_type: 'clientOrganization', uncertain: true, review_reason: 'ambiguous_owner',
+    }));
+  });
+
+  it('recovers an exact project title from a project section when the model rewrites its name', async () => {
+    const title = '松林科技-PLM系统上线';
+    const result = await extractor(vi.fn(async () => response([
+      person('owner', '陈晓', 'owner'),
+      { candidate_id: 'rewritten', label: 'Project', properties: { name: '松林科技 PLM 系统上线' },
+        evidence: [{ field_path: 'properties.name', value: '松林科技 PLM 系统上线',
+          block_id: 'title', quote: '松林科技 PLM 系统上线' }] },
+    ]))).extract([
+      { block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'heading', text: '项目经历', page: 1 },
+      { block_id: 'title', text: `${title} 项目负责人`, page: 2 },
+    ], new AbortController().signal);
+    const project = result.candidates.find(item => item.label === 'Project' && item.can_commit)!;
+    expect(project).toBeDefined();
+    if (!project) return;
+    expect(project.properties.name).toBe(title);
+    expect(project.evidence).toContainEqual(expect.objectContaining({
+      field_path: 'properties.name', value: title, quote: title, page: 2, locator_status: 'located',
+    }));
+    expect(result.candidates.find(item => item.label === 'Person')?.relation_suggestions)
+      .toContainEqual(expect.objectContaining({ relation_type: 'memberOf',
+        target_candidate_id: project.candidate_id, uncertain: true, review_reason: 'ambiguous_owner' }));
+  });
+
+  it('recovers a located project title even when the model omits every project candidate', async () => {
+    const title = '松林科技-PLM系统上线';
+    const result = await extractor(vi.fn(async () => response([
+      person('owner', '陈晓', 'owner'),
+    ]))).extract([
+      { block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'heading', text: '项目经历', page: 1 },
+      { block_id: 'title', text: `${title} 项目负责人`, page: 2 },
+    ], new AbortController().signal);
+    const project = result.candidates.find(item => item.label === 'Project' && item.can_commit);
+    expect(project?.properties.name).toBe(title);
+    expect(result.candidates.find(item => item.label === 'Person')?.relation_suggestions)
+      .toContainEqual(expect.objectContaining({ relation_type: 'memberOf',
+        target_candidate_id: project?.candidate_id, uncertain: true }));
+  });
+
+  it('keeps two recovered titles in one parsed block as distinct project candidates', async () => {
+    const result = await extractor(vi.fn(async () => response([
+      person('owner', '陈晓', 'owner'),
+    ]))).extract([
+      { block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'heading', text: '项目经历', page: 1 },
+      { block_id: 'titles', text: '甲公司-PLM上线 项目负责人\n乙公司-PDM改造 项目负责人', page: 2 },
+    ], new AbortController().signal);
+    const projects = result.candidates.filter(item => item.label === 'Project' && item.can_commit);
+    expect(projects.map(item => item.properties.name)).toEqual(['甲公司-PLM上线', '乙公司-PDM改造']);
+    expect(new Set(projects.map(item => item.candidate_id)).size).toBe(2);
+  });
+
+  it('does not recover a project from a product mention outside project experience', async () => {
+    const result = await extractor(vi.fn(async () => response([
+      person('owner', '陈晓', 'owner'),
+      { candidate_id: 'product', label: 'Project', properties: { name: 'Creo-Windchill集成上线' },
+        evidence: [{ field_path: 'properties.name', value: 'Creo-Windchill集成上线',
+          block_id: 'skill', quote: 'Creo-Windchill集成上线' }] },
+    ]))).extract([
+      { block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'skill', text: '技能：Creo-Windchill集成上线', page: 2 },
+    ], new AbortController().signal);
+    expect(result.candidates.filter(item => item.label === 'Project' && item.can_commit)).toEqual([]);
+    expect(result.candidates.find(item => item.label === 'Person')?.relation_suggestions)
+      .toEqual([]);
+  });
+
+  it('does not pull a skill before the project heading into the project section', async () => {
+    const result = await extractor(vi.fn(async () => response([
+      person('owner', '陈晓', 'owner'),
+      { candidate_id: 'product', label: 'Project', properties: { name: 'Creo Windchill集成上线' },
+        evidence: [{ field_path: 'properties.name', value: 'Creo Windchill集成上线',
+          block_id: 'combined', quote: 'Creo Windchill集成上线' }] },
+    ]))).extract([
+      { block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'combined', text: '技能：Creo-Windchill集成上线；项目经历', page: 1 },
+    ], new AbortController().signal);
+    expect(result.candidates.filter(item => item.label === 'Project' && item.can_commit)).toEqual([]);
+  });
+
+  it('does not turn an integration task inside project prose into another project', async () => {
+    const result = await extractor(vi.fn(async () => response([
+      person('owner', '陈晓', 'owner'),
+      { candidate_id: 'task', label: 'Project', properties: { name: 'PLM ERP数据迁移' },
+        evidence: [{ field_path: 'properties.name', value: 'PLM ERP数据迁移',
+          block_id: 'detail', quote: 'PLM ERP数据迁移' }] },
+    ]))).extract([
+      { block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'heading', text: '项目经历', page: 1 },
+      { block_id: 'detail', text: '负责PLM-ERP数据迁移，提升交付效率', page: 2 },
+    ], new AbortController().signal);
+    expect(result.candidates.filter(item => item.label === 'Project' && item.can_commit)).toEqual([]);
+  });
+
+  it('does not assign a recovered title to the resume owner when another person is named', async () => {
+    const title = '松林科技-PLM系统上线';
+    const result = await extractor(vi.fn(async () => response([
+      person('owner', '陈晓', 'owner'),
+      { candidate_id: 'rewritten', label: 'Project', properties: { name: '松林科技 PLM 系统上线' },
+        evidence: [{ field_path: 'properties.name', value: '松林科技 PLM 系统上线',
+          block_id: 'title', quote: '松林科技 PLM 系统上线' }] },
+    ]))).extract([
+      { block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'heading', text: '项目经历', page: 1 },
+      { block_id: 'title', text: `由王五负责 ${title}`, page: 2 },
+    ], new AbortController().signal);
+    expect(result.candidates.filter(item => item.label === 'Project' && item.can_commit)).toEqual([]);
+    expect(result.candidates.find(item => item.label === 'Person')?.relation_suggestions)
+      .toEqual([]);
+  });
+
+  it('repairs only project values present verbatim in their cited block', async () => {
+    const description = '实施 PLM 流程迁移与数据整合';
+    const result = await extractor(vi.fn(async () => response([
+      { candidate_id: 'good', label: 'Project', properties: { description },
+        evidence: [{ field_path: 'properties.description', value: description,
+          block_id: 'description', quote: 'PLM 流程迁移和数据整合' }] },
+      { candidate_id: 'invented', label: 'Project', properties: { name: '云端 PDM 系统上线' },
+        evidence: [{ field_path: 'properties.name', value: '云端 PDM 系统上线',
+          block_id: 'description', quote: 'PLM 流程迁移和数据整合' }] },
+    ]))).extract([{ block_id: 'heading', text: '项目经历', page: 1 },
+      { block_id: 'description', text: `项目描述：${description}`, page: 2 }], new AbortController().signal);
+    expect(result.candidates.find(item => item.candidate_id === 'batch1:good'))
+      .toMatchObject({ properties: { description }, can_commit: true });
+    const invented = result.candidates.find(item => item.candidate_id === 'batch1:invented')!;
+    expect(invented.can_commit).toBe(false);
+    expect(invented.review_items).toContainEqual(expect.objectContaining({
+      field_path: 'properties.name', value: '云端 PDM 系统上线', reason: 'quote_mismatch',
+    }));
+  });
+
+  it('accepts an adjacent project heading across a page without treating a bare product as a project', async () => {
+    const result = await extractor(vi.fn(async () => response([
+      { candidate_id: 'project', label: 'Project', properties: { name: 'PLM系统上线' },
+        evidence: [{ field_path: 'properties.name', value: 'PLM系统上线', block_id: 'title', quote: 'PLM系统上线' }] },
+      { candidate_id: 'product', label: 'Project', properties: { name: 'PLM' },
+        evidence: [{ field_path: 'properties.name', value: 'PLM', block_id: 'product', quote: 'PLM' }] },
+    ]))).extract([{ block_id: 'heading', text: '项目经历', page: 1 },
+      { block_id: 'title', text: 'PLM系统上线', page: 2 },
+      { block_id: 'product', text: '技能：PLM', page: 2 }], new AbortController().signal);
+    expect(result.candidates.find(item => item.candidate_id === 'batch1:project'))
+      .toMatchObject({ properties: { name: 'PLM系统上线' }, can_commit: true });
+    expect(result.candidates.find(item => item.candidate_id === 'batch1:product')?.can_commit).toBe(false);
+  });
+
+  it('marks a client edge spanning two named projects as uncertain', async () => {
+    const quote = '项目经历：PLM 升级、PDM 改造；客户：乙公司';
+    const result = await extractor(vi.fn(async () => response([
+      person('p', '陈晓', 'owner'),
+      ...['PLM 升级', 'PDM 改造'].map((name, index) => ({
+        candidate_id: `project${index}`, label: 'Project', properties: { name },
+        evidence: [{ field_path: 'properties.name', value: name, block_id: 'both', quote: name }],
+        relation_suggestions: index === 0 ? [{ source_candidate_id: 'project0', target_candidate_id: 'client',
+          relation_type: 'clientOrganization', properties: {}, evidence: [{ block_id: 'both', quote }],
+          uncertain: false }] : [],
+      })),
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'both', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'owner', text: '陈晓', page: 1 },
+      { block_id: 'both', text: quote, page: 2 }], new AbortController().signal);
+    const project = result.candidates.find(item => item.candidate_id === 'batch1:project0')!;
+    expect(project.relation_suggestions).toEqual([expect.objectContaining({
+      relation_type: 'clientOrganization', uncertain: true, review_reason: 'ambiguous_owner',
+    })]);
+  });
+
+  it('reconnects a unique located project path across model batches on the same page', async () => {
+    const input = [
+      { block_id: 'owner', text: '简历 姓名：陈晓\n' + '附注'.repeat(300), page: 1 },
+      { block_id: 'project', text: '项目经历：PLM 升级；客户：乙公司\n' + '附注'.repeat(300), page: 2 },
+      { block_id: 'client', text: '乙公司\n' + '附注'.repeat(300), page: 2 },
+    ];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const sent = JSON.parse(JSON.parse(String(init?.body)).messages[1].content).blocks as
+        { block_id: string; text: string }[];
+      return response(sent.flatMap(block => {
+        if (block.text.includes('姓名：陈晓')) return [person('p', '陈晓', block.block_id)];
+        if (block.text.includes('PLM 升级')) return [{ candidate_id: 'project', label: 'Project',
+          properties: { name: 'PLM 升级' },
+          evidence: [{ field_path: 'properties.name', value: 'PLM 升级', block_id: block.block_id,
+            quote: 'PLM 升级' }] }];
+        if (block.text.includes('乙公司')) return [{ candidate_id: 'client', label: 'Organization',
+          properties: { name: '乙公司' },
+          evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: block.block_id,
+            quote: '乙公司' }] }];
+        return [];
+      }));
+    });
+    const result = await extractor(fetchFn, { requestMaxBytes: 5_000 }).extract(input, new AbortController().signal);
+    expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(3);
+    const owner = result.candidates.find(item => item.label === 'Person')!;
+    const project = result.candidates.find(item => item.label === 'Project')!;
+    expect(owner.relation_suggestions).toContainEqual(expect.objectContaining({
+      relation_type: 'memberOf', target_candidate_id: project.candidate_id,
+      evidence: [expect.objectContaining({ field_path: '$relation', page: 2, locator_status: 'located' })],
+    }));
+    expect(project.relation_suggestions).toContainEqual(expect.objectContaining({
+      relation_type: 'clientOrganization', target_candidate_id: expect.stringContaining('client'),
+      evidence: [expect.objectContaining({ field_path: '$relation', page: 2, locator_status: 'located' })],
+    }));
+  });
+
+  it('does not assign a reference person project to the resume owner', async () => {
+    const reference = '证明人：吴雨；项目经历：PLM 升级；客户：乙公司';
+    const result = await extractor(vi.fn(async () => response([
+      person('p', '陈晓', 'owner'),
+      { candidate_id: 'project', label: 'Project', properties: { name: 'PLM 升级' },
+        evidence: [{ field_path: 'properties.name', value: 'PLM 升级', block_id: 'reference', quote: 'PLM 升级' }],
+        relation_suggestions: [] },
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'reference', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'reference', text: reference, page: 2 }], new AbortController().signal);
+    expect(result.candidates.find(item => item.label === 'Person')!.relation_suggestions
+      .filter(item => item.relation_type === 'memberOf')).toEqual([]);
+  });
+
+  it.each(['项目经历：王五参与 PLM 升级，客户乙公司',
+    '项目经历：由王五负责 PLM 升级，客户乙公司'])(
+    'does not assign another named subject project to the only extracted owner: %s', async quote => {
+    const result = await extractor(vi.fn(async () => response([
+      person('p', '陈晓', 'owner'),
+      { candidate_id: 'project', label: 'Project', properties: { name: 'PLM 升级' },
+        evidence: [{ field_path: 'properties.name', value: 'PLM 升级', block_id: 'project', quote: 'PLM 升级' }] },
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'project', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'project', text: quote, page: 2 }], new AbortController().signal);
+    const owner = result.candidates.find(item => item.label === 'Person')!;
+    const project = result.candidates.find(item => item.label === 'Project')!;
+    expect(owner.relation_suggestions.filter(item => item.relation_type === 'memberOf')).toEqual([]);
+    expect(project.relation_suggestions.filter(item => item.relation_type === 'clientOrganization'))
+      .toEqual([]);
+    });
+
+  it('downgrades a model-reported member edge when its quote names another participant', async () => {
+    const quote = '项目经历：王五参与 PLM 升级，客户乙公司';
+    const result = await extractor(vi.fn(async () => response([
+      { ...person('p', '陈晓', 'owner'), relation_suggestions: [{
+        source_candidate_id: 'p', target_candidate_id: 'project', relation_type: 'memberOf',
+        properties: {}, evidence: [{ block_id: 'project', quote }], uncertain: false,
+      }] },
+      { candidate_id: 'project', label: 'Project', properties: { name: 'PLM 升级' },
+        evidence: [{ field_path: 'properties.name', value: 'PLM 升级', block_id: 'project', quote: 'PLM 升级' }] },
+    ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'project', text: quote, page: 2 }], new AbortController().signal);
+    expect(result.candidates.find(item => item.label === 'Person')?.relation_suggestions)
+      .toContainEqual(expect.objectContaining({ relation_type: 'memberOf', uncertain: true,
+        review_reason: 'ambiguous_owner' }));
+  });
+
+  it.each(['本人参与', '项目参与', '项目负责', '团队参与', '独立负责', '部门负责'])(
+    'does not mistake %s for another named person', async subject => {
+      const quote = `项目经历：${subject} PLM 升级`;
+      const result = await extractor(vi.fn(async () => response([
+        { ...person('p', '陈晓', 'owner'), relation_suggestions: [{
+          source_candidate_id: 'p', target_candidate_id: 'project', relation_type: 'memberOf',
+          properties: {}, evidence: [{ block_id: 'project', quote }], uncertain: false,
+        }] },
+        { candidate_id: 'project', label: 'Project', properties: { name: 'PLM 升级' },
+          evidence: [{ field_path: 'properties.name', value: 'PLM 升级', block_id: 'project', quote: 'PLM 升级' }] },
+      ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+        { block_id: 'project', text: quote, page: 2 }], new AbortController().signal);
+      expect(result.candidates.find(item => item.label === 'Person')?.relation_suggestions)
+        .toContainEqual(expect.objectContaining({ relation_type: 'memberOf', uncertain: false }));
+    });
+
+  it('does not confirm a customer shared by two projects when the model omitted one', async () => {
+    const quote = '项目经历：PLM 升级、PDM 改造；客户乙公司';
+    const result = await extractor(vi.fn(async () => response([
+      person('p', '陈晓', 'owner'),
+      { candidate_id: 'project', label: 'Project', properties: { name: 'PLM 升级' },
+        evidence: [{ field_path: 'properties.name', value: 'PLM 升级', block_id: 'project', quote: 'PLM 升级' }] },
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'project', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'project', text: quote, page: 2 }], new AbortController().signal);
+    const project = result.candidates.find(item => item.label === 'Project')!;
+    expect(project.relation_suggestions).toContainEqual(expect.objectContaining({
+      relation_type: 'clientOrganization', uncertain: true, review_reason: 'ambiguous_owner',
+    }));
+  });
+
+  it('downgrades a model-reported client edge over a multi-project quote', async () => {
+    const quote = '项目经历：PLM 升级、PDM 改造；客户乙公司';
+    const result = await extractor(vi.fn(async () => response([
+      person('p', '陈晓', 'owner'),
+      { candidate_id: 'project', label: 'Project', properties: { name: 'PLM 升级' },
+        evidence: [{ field_path: 'properties.name', value: 'PLM 升级', block_id: 'project', quote: 'PLM 升级' }],
+        relation_suggestions: [{ source_candidate_id: 'project', target_candidate_id: 'client',
+          relation_type: 'clientOrganization', properties: {}, evidence: [{ block_id: 'project', quote }],
+          uncertain: false }] },
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'project', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'project', text: quote, page: 2 }], new AbortController().signal);
+    expect(result.candidates.find(item => item.label === 'Project')?.relation_suggestions)
+      .toContainEqual(expect.objectContaining({ relation_type: 'clientOrganization', uncertain: true,
+        review_reason: 'ambiguous_owner' }));
+  });
+
+  it('keeps a single project client confirmed when a comma introduces the project role', async () => {
+    const quote = '项目经历：PLM 升级，项目角色顾问，客户乙公司';
+    const result = await extractor(vi.fn(async () => response([
+      person('p', '陈晓', 'owner'),
+      { candidate_id: 'project', label: 'Project', properties: { name: 'PLM 升级' },
+        evidence: [{ field_path: 'properties.name', value: 'PLM 升级', block_id: 'project', quote: 'PLM 升级' }],
+        relation_suggestions: [{ source_candidate_id: 'project', target_candidate_id: 'client',
+          relation_type: 'clientOrganization', properties: {}, evidence: [{ block_id: 'project', quote }],
+          uncertain: false }] },
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'project', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'project', text: quote, page: 2 }], new AbortController().signal);
+    expect(result.candidates.find(item => item.label === 'Project')?.relation_suggestions)
+      .toContainEqual(expect.objectContaining({ relation_type: 'clientOrganization', uncertain: false }));
+  });
+
+  it('does not treat a company in the project title as the client named in another clause', async () => {
+    const quote = '项目经历：乙公司--PLM上线；客户甲公司';
+    const result = await extractor(vi.fn(async () => response([
+      person('p', '陈晓', 'owner'),
+      { candidate_id: 'project', label: 'Project', properties: { name: '乙公司--PLM上线' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司--PLM上线', block_id: 'project', quote: '乙公司--PLM上线' }],
+        relation_suggestions: [{ source_candidate_id: 'project', target_candidate_id: 'titleOrg',
+          relation_type: 'clientOrganization', properties: {}, evidence: [{ block_id: 'project', quote }],
+          uncertain: false }] },
+      { candidate_id: 'titleOrg', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'project', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'project', text: quote, page: 2 }], new AbortController().signal);
+    expect(result.candidates.find(item => item.label === 'Project')?.relation_suggestions)
+      .toContainEqual(expect.objectContaining({ relation_type: 'clientOrganization',
+        uncertain: true, review_reason: 'ambiguous_owner' }));
+  });
+
+  it('never confirms a cross-batch client from a project title when the client clause names another company', async () => {
+    const quote = '项目经历：乙公司--PLM上线；客户甲公司';
+    const input = [{ block_id: 'owner', text: '简历 姓名：陈晓\n' + '附注'.repeat(300), page: 1 },
+      { block_id: 'project', text: quote + '\n' + '附注'.repeat(300), page: 2 },
+      { block_id: 'titleOrg', text: '乙公司\n' + '附注'.repeat(300), page: 2 }];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const sent = JSON.parse(JSON.parse(String(init?.body)).messages[1].content).blocks as
+        { block_id: string; text: string }[];
+      return response(sent.flatMap(block => {
+        if (block.text.includes('姓名：陈晓')) return [person('p', '陈晓', block.block_id)];
+        if (block.text.includes('PLM上线')) return [{ candidate_id: 'project', label: 'Project',
+          properties: { name: '乙公司--PLM上线' }, evidence: [{ field_path: 'properties.name',
+            value: '乙公司--PLM上线', block_id: block.block_id, quote: '乙公司--PLM上线' }] }];
+        if (block.text.includes('乙公司')) return [{ candidate_id: 'titleOrg', label: 'Organization',
+          properties: { name: '乙公司' }, evidence: [{ field_path: 'properties.name', value: '乙公司',
+            block_id: block.block_id, quote: '乙公司' }] }];
+        return [];
+      }));
+    });
+    const result = await extractor(fetchFn, { requestMaxBytes: 5_000 }).extract(input, new AbortController().signal);
+    expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(result.candidates.find(item => item.label === 'Project')?.relation_suggestions)
+      .toContainEqual(expect.objectContaining({ relation_type: 'clientOrganization',
+        uncertain: true, review_reason: 'ambiguous_owner' }));
+  });
+
+  it('keeps a company in a project title as an unverified client clue', async () => {
+    const title = '项目经历：乙公司--PLM系统上线';
+    const result = await extractor(vi.fn(async () => response([
+      { ...person('p', '陈晓', 'owner'), relation_suggestions: [{
+        source_candidate_id: 'p', target_candidate_id: 'project', relation_type: 'memberOf',
+        properties: {}, evidence: [{ block_id: 'project', quote: title }], uncertain: false,
+      }] },
+      { candidate_id: 'project', label: 'Project', properties: { name: '乙公司--PLM系统上线' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司--PLM系统上线',
+          block_id: 'project', quote: '乙公司--PLM系统上线' }] },
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'project', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'project', text: title, page: 2 }], new AbortController().signal);
+    const project = result.candidates.find(item => item.label === 'Project')!;
+    expect(project.relation_suggestions).toEqual([expect.objectContaining({
+      relation_type: 'clientOrganization', target_candidate_id: 'batch1:client',
+      uncertain: true, review_reason: 'ambiguous_owner',
+      evidence: [expect.objectContaining({ field_path: '$relation', quote: title, page: 2, locator_status: 'located' })],
+    })]);
+  });
+
+  it('uses a separate project heading when the title line itself has no project word', async () => {
+    const blockText = '项目经历\n乙公司--PLM系统上线';
+    const result = await extractor(vi.fn(async () => response([
+      { ...person('p', '陈晓', 'owner'), relation_suggestions: [{
+        source_candidate_id: 'p', target_candidate_id: 'project', relation_type: 'memberOf',
+        properties: {}, evidence: [{ block_id: 'project', quote: blockText }], uncertain: false,
+      }] },
+      { candidate_id: 'project', label: 'Project', properties: { name: '乙公司--PLM系统上线' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司--PLM系统上线',
+          block_id: 'project', quote: '乙公司--PLM系统上线' }] },
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'project', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'project', text: blockText, page: 2 }], new AbortController().signal);
+    expect(result.candidates.find(item => item.label === 'Project')?.relation_suggestions)
+      .toContainEqual(expect.objectContaining({
+        relation_type: 'clientOrganization', uncertain: true, review_reason: 'ambiguous_owner',
+        evidence: [expect.objectContaining({ quote: '乙公司--PLM系统上线', page: 2 })],
+      }));
+  });
+
+  it.each([
+    ['two organizations', '项目经历：乙公司与丙公司--PLM系统上线', ['乙公司', '丙公司']],
+    ['negated client', '项目经历：乙公司--PLM系统上线；并非乙公司客户', ['乙公司']],
+    ['reference', '证明人：吴雨；项目经历：乙公司--PLM系统上线', ['乙公司']],
+    ['employer', '项目经历：乙公司--PLM系统上线；任职乙公司', ['乙公司']],
+  ] as const)('does not suggest a title-only client for %s', async (_mode, title, names) => {
+    const result = await extractor(vi.fn(async () => response([
+      { ...person('p', '陈晓', 'owner'), relation_suggestions: [{
+        source_candidate_id: 'p', target_candidate_id: 'project', relation_type: 'memberOf',
+        properties: {}, evidence: [{ block_id: 'project', quote: title }], uncertain: false,
+      }] },
+      { candidate_id: 'project', label: 'Project', properties: { name: title.slice(title.indexOf('乙公司')) },
+        evidence: [{ field_path: 'properties.name', value: title.slice(title.indexOf('乙公司')),
+          block_id: 'project', quote: title.slice(title.indexOf('乙公司')) }] },
+      ...names.map((name, index) => ({ candidate_id: `org${index}`, label: 'Organization',
+        properties: { name }, evidence: [{ field_path: 'properties.name', value: name,
+          block_id: 'project', quote: name }] })),
+    ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'project', text: title, page: 2 }], new AbortController().signal);
+    expect(result.candidates.find(item => item.label === 'Project')?.relation_suggestions
+      .filter(item => item.relation_type === 'clientOrganization')).toEqual([]);
+  });
+
+  it('does not assign a title-only client when one line names two projects', async () => {
+    const title = '项目经历：乙公司--PLM上线、乙公司--PDM改造';
+    const result = await extractor(vi.fn(async () => response([
+      { ...person('p', '陈晓', 'owner'), relation_suggestions: [
+        'project0', 'project1'].map(id => ({ source_candidate_id: 'p', target_candidate_id: id,
+          relation_type: 'memberOf', properties: {}, evidence: [{ block_id: 'project', quote: title }],
+          uncertain: false })) },
+      ...['乙公司--PLM上线', '乙公司--PDM改造'].map((name, index) => ({
+        candidate_id: `project${index}`, label: 'Project', properties: { name },
+        evidence: [{ field_path: 'properties.name', value: name, block_id: 'project', quote: name }],
+      })),
+      { candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
+        evidence: [{ field_path: 'properties.name', value: '乙公司', block_id: 'project', quote: '乙公司' }] },
+    ]))).extract([{ block_id: 'owner', text: '简历 姓名：陈晓', page: 1 },
+      { block_id: 'project', text: title, page: 2 }], new AbortController().signal);
+    expect(result.candidates.filter(item => item.label === 'Project')
+      .every(item => item.relation_suggestions.length === 0)).toBe(true);
+  });
+
+  it('retains a title-only client clue across separate model batches', async () => {
+    const title = '项目经历：乙公司--PLM系统上线';
+    const input = [
+      { block_id: 'owner', text: '简历 姓名：陈晓\n' + '附注'.repeat(300), page: 1 },
+      { block_id: 'project', text: title + '\n' + '附注'.repeat(300), page: 2 },
+      { block_id: 'client', text: '乙公司\n' + '附注'.repeat(300), page: 2 },
+    ];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const sent = JSON.parse(JSON.parse(String(init?.body)).messages[1].content).blocks as
+        { block_id: string; text: string }[];
+      return response(sent.flatMap(block => {
+        if (block.text.includes('姓名：陈晓')) return [person('p', '陈晓', block.block_id)];
+        if (block.text.includes('PLM系统上线')) return [{ candidate_id: 'project', label: 'Project',
+          properties: { name: '乙公司--PLM系统上线' }, evidence: [{ field_path: 'properties.name',
+            value: '乙公司--PLM系统上线', block_id: block.block_id, quote: '乙公司--PLM系统上线' }] }];
+        if (block.text.includes('乙公司')) return [{ candidate_id: 'client', label: 'Organization',
+          properties: { name: '乙公司' }, evidence: [{ field_path: 'properties.name',
+            value: '乙公司', block_id: block.block_id, quote: '乙公司' }] }];
+        return [];
+      }));
+    });
+    const result = await extractor(fetchFn, { requestMaxBytes: 5_000 }).extract(input, new AbortController().signal);
+    expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(3);
+    const project = result.candidates.find(item => item.label === 'Project')!;
+    expect(result.candidates.find(item => item.label === 'Person')?.relation_suggestions)
+      .toContainEqual(expect.objectContaining({ relation_type: 'memberOf', target_candidate_id: project.candidate_id }));
+    expect(project.relation_suggestions).toContainEqual(expect.objectContaining({
+      relation_type: 'clientOrganization', uncertain: true, review_reason: 'ambiguous_owner',
+    }));
   });
 
   it('retains an explicit employment claim with a valid empty OrganizationRole', async () => {
@@ -981,7 +1950,7 @@ describe('document extraction', () => {
 
   it('does not exceed a one-call budget even if a response is retryable', async () => {
     const fetchFn = vi.fn(async () => new Response('', { status: 503 }));
-    await expect(extractor(fetchFn, { maxBatches: 8, maxModelCalls: 1, requestMaxBytes: 3_700 })
+    await expect(extractor(fetchFn, { maxBatches: 8, maxModelCalls: 1, requestMaxBytes: 4_200 })
       .extract([blocks[0], { block_id: 'large', text: '大'.repeat(700) }], new AbortController().signal))
       .rejects.toMatchObject({ code: 'BUDGET_EXHAUSTED' });
     expect(fetchFn).toHaveBeenCalledTimes(1);

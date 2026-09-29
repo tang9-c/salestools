@@ -21,7 +21,7 @@ const getInput = z.object({
 const saveInput = z.object({
   operation_id: operationId,
   action: z.enum(['save', 'restore']).default('save'),
-  label: z.enum(['Person', 'Organization']).optional(),
+  label: z.enum(['Person', 'Organization', 'Project']).optional(),
   entity_id: id.optional(), expected_version: version.optional(),
   set_properties: fields.optional(), unset_properties: z.array(z.string().min(1)).optional(),
   set_extensions: fields.optional(), unset_extensions: z.array(z.string().min(1)).optional(),
@@ -91,7 +91,7 @@ export function registerContactTools(server: McpServer, library: ContactLibraryS
   });
 
   server.registerTool('save_contact', {
-    description: '创建或按版本修改共享 Person/Organization 档案；保留 operation_id 以安全重试。恢复归档档案需 action=restore。',
+    description: '创建或按版本修改共享 Person/Organization/Project 档案；保留 operation_id 以安全重试。恢复归档档案需 action=restore。',
     inputSchema: saveInput,
   }, async (input, context) => {
     const { action, ...payload } = input;

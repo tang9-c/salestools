@@ -8,6 +8,7 @@ import {
   ParsedBlockSchema,
   PersonExtensionsSchema,
   PersonPropertiesSchema,
+  ProjectPropertiesSchema,
   normalizeRelationEndpoints,
 } from '../src/contracts/contact-graph.js';
 import { ImportCandidateSchema } from '../src/contracts/contact-import.js';
@@ -39,6 +40,24 @@ describe('shared contact graph contract', () => {
       ...organization,
       properties: { ...organization.properties, gender: '女' },
     }).success).toBe(false);
+  });
+
+  it('accepts a documented Project and only its typed project path', () => {
+    const metadata = { version: 1, created_at: '2026-09-26T00:00:00.000Z', updated_at: '2026-09-26T00:00:00.000Z' };
+    expect(ContactEntitySchema.safeParse({ entity_id: 'j_1', label: 'Project', properties: { name: 'PLM 升级' }, metadata }).success).toBe(true);
+    expect(ContactEntitySchema.safeParse({ entity_id: 'j_2', label: 'Project', properties: { description: '制造业系统升级' }, metadata }).success).toBe(true);
+    expect(ProjectPropertiesSchema.safeParse({}).success).toBe(false);
+    expect(ProjectPropertiesSchema.safeParse({ name: '项目', jobTitle: '顾问' }).success).toBe(false);
+    expect(ImportCandidateSchema.safeParse({ candidate_id: 'j', label: 'Project', properties: { description: '系统升级' }, evidence: [], relation_suggestions: [], warnings: [], can_commit: true }).success).toBe(true);
+    expect(ImportCandidateSchema.safeParse({ candidate_id: 'j', label: 'Project', properties: {}, evidence: [], relation_suggestions: [], warnings: [], can_commit: true }).success).toBe(false);
+    const participation = { relation_id: 'r_1', source_id: 'p_1', target_id: 'j_1', relation_type: 'memberOf' as const, properties: { role: { '@type': 'OrganizationRole', roleName: '顾问' } }, metadata };
+    const client = { relation_id: 'r_2', source_id: 'j_1', target_id: 'o_1', relation_type: 'clientOrganization' as const, properties: {}, metadata };
+    expect(ContactRelationSchema.safeParse(participation).success).toBe(true);
+    expect(ContactRelationSchema.safeParse(client).success).toBe(true);
+    expect(normalizeRelationEndpoints(participation, 'Person', 'Project')).toEqual(participation);
+    expect(normalizeRelationEndpoints(client, 'Project', 'Organization')).toEqual(client);
+    expect(() => normalizeRelationEndpoints(client, 'Person', 'Organization')).toThrow();
+    expect(() => normalizeRelationEndpoints({ ...participation, relation_type: 'worksFor' as const }, 'Person', 'Project')).toThrow();
   });
 
   it('rejects unknown business fields, nested keys and invalid dates', () => {

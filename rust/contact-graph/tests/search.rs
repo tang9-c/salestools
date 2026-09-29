@@ -84,6 +84,41 @@ fn works_for(store: &Store, operation: &str, person: &str, organization: &str, t
     assert_eq!(result["ok"], true, "{result}");
 }
 
+fn project_relation(store: &Store, operation: &str, source: &str, target: &str, kind: &str) {
+    let relation = json!({"relation_type":kind,"source_id":source,"target_id":target});
+    let result = request(
+        store,
+        "save_relation",
+        json!({
+            "operation_id":operation,"actor":"tester","source_id":source,"target_id":target,
+            "relation_type":kind,"properties":{},"evidence":[proof("$relation",relation)]
+        }),
+    );
+    assert_eq!(result["ok"], true, "{result}");
+}
+
+fn project_claim(
+    store: &Store,
+    operation: &str,
+    subject: &str,
+    target: &str,
+    kind: &str,
+) -> String {
+    let job = store
+        .put_import_job(&json!({
+            "operation_id":format!("job-{operation}"),"actor":"tester","file_id":operation,
+            "status":"queued","data":{"candidates":[]}
+        }))
+        .unwrap();
+    let claim_id = format!("claim_{operation}");
+    store.graph.connection().execute(
+        "INSERT INTO contact_claims(claim_id,subject_id,kind,relation_type,target_id,value_json,source_json,status,reason,import_id,candidate_id,created_at,updated_at)
+         VALUES(?1,?2,'relation',?3,?4,'{}','{}','unverified','missing_evidence',?5,'fixture','2026-09-28','2026-09-28')",
+        rusqlite::params![claim_id,subject,kind,target,job["import_id"].as_str().unwrap()],
+    ).unwrap();
+    claim_id
+}
+
 fn search(store: &Store, payload: Value) -> Value {
     search::search_keyword(store, &payload).unwrap()
 }
@@ -255,6 +290,314 @@ fn search_filters_one_employment_episode_by_organization_and_role() {
         })
     ))
     .is_empty());
+}
+
+#[test]
+fn project_client_query_returns_person_only_through_the_correct_project_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let person = entity(
+        &store,
+        "project-person",
+        "Person",
+        "项目顾问",
+        &[],
+        &[],
+        None,
+    );
+    let unrelated = entity(&store, "other-person", "Person", "另一顾问", &[], &[], None);
+    let project = entity(&store, "project-a", "Project", "PLM 升级", &[], &[], None);
+    let same_name = entity(&store, "project-b", "Project", "PLM 升级", &[], &[], None);
+    let customer = entity(
+        &store,
+        "client",
+        "Organization",
+        "乙客户公司",
+        &[],
+        &[],
+        None,
+    );
+    assert!(!ids(&search(&store, json!({"query":"乙客户公司"}))).contains(&person));
+    project_relation(&store, "member-a", &person, &project, "memberOf");
+    project_relation(&store, "member-b", &unrelated, &same_name, "memberOf");
+    assert!(!ids(&search(&store, json!({"query":"乙客户公司"}))).contains(&person));
+    project_relation(
+        &store,
+        "client-a",
+        &project,
+        &customer,
+        "clientOrganization",
+    );
+    let page = search(&store, json!({"query":"乙客户公司"}));
+    let hit = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["entity_id"] == person)
+        .unwrap();
+    assert_eq!(hit["matched_project_id"], project);
+    assert_eq!(hit["match_status"], "confirmed");
+    assert!(hit["reasons"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("project_client_match")));
+    assert!(!ids(&page).contains(&unrelated));
+    assert!(!ids(&search(&store, json!({"organization_id":customer}))).contains(&person));
+}
+
+#[test]
+fn project_client_claim_path_requires_opt_in_and_reports_both_claim_ids() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let person = entity(&store, "claim-person", "Person", "候选顾问", &[], &[], None);
+    let project = entity(
+        &store,
+        "claim-project",
+        "Project",
+        "ERP 交付",
+        &[],
+        &[],
+        None,
+    );
+    let customer = entity(
+        &store,
+        "claim-client",
+        "Organization",
+        "乙客户公司",
+        &[],
+        &[],
+        None,
+    );
+    let member_claim = project_claim(&store, "member-claim", &person, &project, "memberOf");
+    let client_claim = project_claim(
+        &store,
+        "client-claim",
+        &project,
+        &customer,
+        "clientOrganization",
+    );
+    assert!(!ids(&search(&store, json!({"query":"乙客户公司"}))).contains(&person));
+    let page = search(
+        &store,
+        json!({"query":"乙客户公司","include_unverified":true}),
+    );
+    let hit = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["entity_id"] == person)
+        .unwrap();
+    assert_eq!(hit["matched_project_id"], project);
+    assert_eq!(hit["match_status"], "unverified");
+    assert_eq!(hit["claim_ids"], json!([member_claim, client_claim]));
+    store
+        .graph
+        .connection()
+        .execute(
+            "UPDATE contact_claims SET status='rejected' WHERE claim_id=?1",
+            [&client_claim],
+        )
+        .unwrap();
+    assert!(!ids(&search(
+        &store,
+        json!({"query":"乙客户公司","include_unverified":true})
+    ))
+    .contains(&person));
+}
+
+#[test]
+fn project_client_query_marks_a_single_weak_edge_and_hides_archived_client() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let person = entity(&store, "mixed-person", "Person", "候选顾问", &[], &[], None);
+    let project = entity(
+        &store,
+        "mixed-project",
+        "Project",
+        "PLM 实施",
+        &[],
+        &[],
+        None,
+    );
+    let customer = entity(
+        &store,
+        "mixed-client",
+        "Organization",
+        "乙客户公司",
+        &[],
+        &[],
+        None,
+    );
+    project_relation(&store, "mixed-member", &person, &project, "memberOf");
+    let client_claim = project_claim(
+        &store,
+        "mixed-client-claim",
+        &project,
+        &customer,
+        "clientOrganization",
+    );
+    assert!(!ids(&search(&store, json!({"query":"乙客户公司"}))).contains(&person));
+    let page = search(
+        &store,
+        json!({"query":"乙客户公司","include_unverified":true}),
+    );
+    let hit = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["entity_id"] == person)
+        .unwrap();
+    assert_eq!(hit["claim_ids"], json!([client_claim]));
+    assert_eq!(hit["match_status"], "unverified");
+    assert_eq!(
+        request(
+            &store,
+            "archive_contact",
+            json!({
+                "operation_id":"mixed-archive-client","actor":"tester",
+                "entity_id":customer,"expected_version":1
+            })
+        )["ok"],
+        true
+    );
+    assert!(!ids(&search(
+        &store,
+        json!({"query":"乙客户公司","include_unverified":true})
+    ))
+    .contains(&person));
+}
+
+#[test]
+fn confirmed_direct_hits_are_not_relabelled_by_an_unverified_project_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let client = entity(
+        &store,
+        "priority-client",
+        "Organization",
+        "乙客户公司",
+        &[],
+        &[],
+        None,
+    );
+    let by_name = entity(
+        &store,
+        "priority-name",
+        "Person",
+        "乙客户公司顾问",
+        &[],
+        &[],
+        None,
+    );
+    let by_employer = entity(
+        &store,
+        "priority-employer",
+        "Person",
+        "正式雇员",
+        &[],
+        &[],
+        None,
+    );
+    works_for(
+        &store,
+        "priority-works-for",
+        &by_employer,
+        &client,
+        "工程师",
+    );
+    for (index, person) in [&by_name, &by_employer].iter().enumerate() {
+        let project = entity(
+            &store,
+            &format!("priority-project-{index}"),
+            "Project",
+            &format!("弱项目{index}"),
+            &[],
+            &[],
+            None,
+        );
+        project_relation(
+            &store,
+            &format!("priority-member-{index}"),
+            person,
+            &project,
+            "memberOf",
+        );
+        project_claim(
+            &store,
+            &format!("priority-claim-{index}"),
+            &project,
+            &client,
+            "clientOrganization",
+        );
+    }
+    let page = search(
+        &store,
+        json!({"query":"乙客户公司","include_unverified":true}),
+    );
+    for person in [&by_name, &by_employer] {
+        let hit = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["entity_id"] == *person)
+            .unwrap();
+        assert_eq!(hit["match_status"], "confirmed", "{hit}");
+        assert!(hit.get("matched_project_id").is_none(), "{hit}");
+        assert!(hit.get("claim_ids").is_none(), "{hit}");
+    }
+}
+
+#[test]
+fn project_client_query_deduplicates_people_and_hides_archived_project() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let person = entity(&store, "dedup-person", "Person", "项目顾问", &[], &[], None);
+    let customer = entity(
+        &store,
+        "dedup-client",
+        "Organization",
+        "乙客户公司",
+        &[],
+        &[],
+        None,
+    );
+    let first = entity(&store, "dedup-project-a", "Project", "一期", &[], &[], None);
+    let second = entity(&store, "dedup-project-b", "Project", "二期", &[], &[], None);
+    for (index, project) in [&first, &second].iter().enumerate() {
+        project_relation(
+            &store,
+            &format!("dedup-member-{index}"),
+            &person,
+            project,
+            "memberOf",
+        );
+        project_relation(
+            &store,
+            &format!("dedup-client-{index}"),
+            project,
+            &customer,
+            "clientOrganization",
+        );
+    }
+    let page = search(&store, json!({"query":"乙客户公司","limit":1}));
+    assert_eq!(page["total"], 2); // Customer node and one Person; projects are not search results.
+    let second_page = search(&store, json!({"query":"乙客户公司","limit":1,"offset":1}));
+    let all = [ids(&page), ids(&second_page)].concat();
+    assert_eq!(all.iter().filter(|id| *id == &person).count(), 1);
+    for (index, project) in [&first, &second].iter().enumerate() {
+        assert_eq!(
+            request(
+                &store,
+                "archive_contact",
+                json!({
+                    "operation_id":format!("archive-project-{index}"),"actor":"tester",
+                    "entity_id":project,"expected_version":1
+                })
+            )["ok"],
+            true
+        );
+    }
+    assert!(!ids(&search(&store, json!({"query":"乙客户公司"}))).contains(&person));
 }
 
 #[test]

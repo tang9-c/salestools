@@ -50,11 +50,13 @@ pub fn has_substantive_person_data(properties: &Value, extensions: Option<&Value
 
 pub fn allowed_entity_evidence_path(label: &str, path: &str) -> bool {
     if let Some(key) = path.strip_prefix("properties.") {
-        COMMON_ARRAYS.contains(&key)
-            || COMMON_SCALARS.contains(&key)
-            || (label == "Person"
-                && (PERSON_ARRAYS.contains(&key) || PERSON_SCALARS.contains(&key)))
-            || (label == "Organization" && ["legalName", "identifier"].contains(&key))
+        (label == "Project" && ["name", "description"].contains(&key))
+            || (label != "Project"
+                && (COMMON_ARRAYS.contains(&key)
+                    || COMMON_SCALARS.contains(&key)
+                    || (label == "Person"
+                        && (PERSON_ARRAYS.contains(&key) || PERSON_SCALARS.contains(&key)))
+                    || (label == "Organization" && ["legalName", "identifier"].contains(&key))))
     } else if let Some(key) = path.strip_prefix("extensions.") {
         label == "Person"
             && [
@@ -236,23 +238,27 @@ fn normalize_object_array(raw: &Value, key: &str, kind: &str) -> Result<Value, S
 }
 
 pub fn normalize_properties(label: &str, raw: &Value, create: bool) -> Result<Value, String> {
-    if label != "Person" && label != "Organization" {
+    if label != "Person" && label != "Organization" && label != "Project" {
         return Err("Unknown entity label".into());
     }
     let fields = object(raw, "properties")?;
     let mut output = Map::new();
     for (key, value) in fields {
-        let normalized = if COMMON_ARRAYS.contains(&key.as_str())
-            || (label == "Person"
-                && PERSON_ARRAYS.contains(&key.as_str())
-                && !matches!(
-                    key.as_str(),
-                    "nationality"
-                        | "workLocation"
-                        | "hasOccupation"
-                        | "hasCredential"
-                        | "contactPoint"
-                )) {
+        let normalized = if label == "Project" && ["name", "description"].contains(&key.as_str()) {
+            Value::String(nonempty(value, key)?)
+        } else if label != "Project"
+            && (COMMON_ARRAYS.contains(&key.as_str())
+                || (label == "Person"
+                    && PERSON_ARRAYS.contains(&key.as_str())
+                    && !matches!(
+                        key.as_str(),
+                        "nationality"
+                            | "workLocation"
+                            | "hasOccupation"
+                            | "hasCredential"
+                            | "contactPoint"
+                    )))
+        {
             normalize_text_array(value, key)?
         } else if label == "Organization" && key == "identifier" {
             normalize_object_array(value, key, "PropertyValue")?
@@ -272,7 +278,7 @@ pub fn normalize_properties(label: &str, raw: &Value, create: bool) -> Result<Va
             normalize_object_array(value, key, kind)?
         } else if label == "Person" && matches!(key.as_str(), "birthPlace" | "homeLocation") {
             validate_nested(value, "Place")?
-        } else if COMMON_SCALARS.contains(&key.as_str())
+        } else if (label != "Project" && COMMON_SCALARS.contains(&key.as_str()))
             || (label == "Person" && PERSON_SCALARS.contains(&key.as_str()))
             || (label == "Organization" && key == "legalName")
         {
@@ -293,14 +299,20 @@ pub fn normalize_properties(label: &str, raw: &Value, create: bool) -> Result<Va
         if label == "Organization" && !output.get("name").is_some_and(Value::is_string) {
             return Err("name is required".into());
         }
-        for key in COMMON_ARRAYS.iter().chain(if label == "Person" {
-            PERSON_ARRAYS
+        if label == "Project" {
+            if !output.contains_key("name") && !output.contains_key("description") {
+                return Err("Project needs a name or description".into());
+            }
         } else {
-            &["identifier"]
-        }) {
-            output
-                .entry((*key).to_owned())
-                .or_insert_with(|| Value::Array(vec![]));
+            for key in COMMON_ARRAYS.iter().chain(if label == "Person" {
+                PERSON_ARRAYS
+            } else {
+                &["identifier"]
+            }) {
+                output
+                    .entry((*key).to_owned())
+                    .or_insert_with(|| Value::Array(vec![]));
+            }
         }
     }
     if let (Some(birth), Some(death)) = (output.get("birthDate"), output.get("deathDate")) {

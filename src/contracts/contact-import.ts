@@ -5,6 +5,7 @@ import {
   OrganizationPropertiesSchema,
   PersonCandidatePropertiesSchema,
   PersonExtensionsSchema,
+  ProjectCandidatePropertiesSchema,
 } from './contact-graph.js';
 
 const candidateText = z.string().trim().min(1);
@@ -84,6 +85,15 @@ export const ImportCandidateSchema = z.discriminatedUnion('label', [
   }).strict().superRefine((value, context) => {
     if (!value.properties.name && value.can_commit) {
       context.addIssue({ code: 'custom', path: ['can_commit'], message: 'Candidate without name is not committable' });
+    }
+  }),
+  z.object({
+    ...candidateBase,
+    label: z.literal('Project'),
+    properties: ProjectCandidatePropertiesSchema,
+  }).strict().superRefine((value, context) => {
+    if (value.can_commit && !value.properties.name && !value.properties.description) {
+      context.addIssue({ code: 'custom', path: ['can_commit'], message: 'Project needs a name or description' });
     }
   }),
 ]);

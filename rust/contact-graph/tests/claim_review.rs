@@ -54,6 +54,69 @@ fn detail(s: &Store, id: &str) -> Value {
 }
 
 #[test]
+fn project_path_claims_can_be_reviewed_with_typed_targets() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path().join("g.db")).unwrap();
+    let person = entity(&s, "Person", "Synthetic Person");
+    let project = entity(&s, "Project", "Synthetic Project");
+    let client = entity(&s, "Organization", "Synthetic Client");
+    claim(
+        &s,
+        "project-detail",
+        &project,
+        "properties.description",
+        json!("PLM implementation"),
+    );
+    let detail_review = call(
+        &s,
+        "review_contact_claim",
+        review("project-detail", "confirm", 1),
+    );
+    assert_eq!(detail_review["ok"], true, "{detail_review}");
+    assert_eq!(
+        detail(&s, &project)["entity"]["properties"]["description"],
+        "PLM implementation"
+    );
+    claim(
+        &s,
+        "participation",
+        &person,
+        "memberOf",
+        json!({
+            "properties":{"role":{"@type":"OrganizationRole","roleName":"Consultant"}}
+        }),
+    );
+    let mut participation_review = review("participation", "confirm", 1);
+    participation_review["target_id"] = json!(project);
+    let participation_result = call(&s, "review_contact_claim", participation_review);
+    assert_eq!(participation_result["ok"], true, "{participation_result}");
+    claim(
+        &s,
+        "customer",
+        &project,
+        "clientOrganization",
+        json!({"properties":{}}),
+    );
+    let mut wrong = review("customer", "confirm", 2);
+    wrong["target_id"] = json!(person);
+    assert_eq!(
+        call(&s, "review_contact_claim", wrong)["error"]["code"],
+        "VALIDATION_ERROR"
+    );
+    let mut customer_review = review("customer", "confirm", 2);
+    customer_review["target_id"] = json!(client);
+    let customer_result = call(&s, "review_contact_claim", customer_review);
+    assert_eq!(customer_result["ok"], true, "{customer_result}");
+    assert_eq!(
+        call(&s, "list_relations", json!({"entity_id":project}))["result"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn confirmation_appends_dedupes_and_replays_with_manual_evidence() {
     let d = tempfile::tempdir().unwrap();
     let s = Store::open(d.path().join("g.db")).unwrap();

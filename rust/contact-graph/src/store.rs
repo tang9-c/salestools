@@ -382,7 +382,7 @@ impl Store {
         if input.operation_id.trim().is_empty() || input.actor.trim().is_empty() {
             return Err(AppError::validation("operation_id and actor are required"));
         }
-        if input.label != "Person" && input.label != "Organization" {
+        if input.label != "Person" && input.label != "Organization" && input.label != "Project" {
             return Err(AppError::validation("Unknown entity label"));
         }
         let hash = canonical_hash(raw)?;
@@ -406,7 +406,11 @@ impl Store {
 
         let is_create = input.entity_id.is_none();
         let entity_id = input.entity_id.clone().unwrap_or_else(|| {
-            let prefix = if input.label == "Person" { "p" } else { "o" };
+            let prefix = match input.label.as_str() {
+                "Person" => "p",
+                "Organization" => "o",
+                _ => "j",
+            };
             format!("{prefix}_{}", Uuid::new_v4().as_simple())
         });
         let now = now_utc();
@@ -489,7 +493,7 @@ impl Store {
         }
         let unset = input.unset_properties.unwrap_or_default();
         for key in &unset {
-            if key == "name" || set_properties.get(key).is_some() {
+            if (key == "name" && input.label != "Project") || set_properties.get(key).is_some() {
                 return Err(AppError::validation(
                     "Cannot unset name or set and unset one field",
                 ));
@@ -526,7 +530,9 @@ impl Store {
             }
             *value = normalize_extensions(value, true).map_err(AppError::validation)?;
         } else if input.set_extensions.is_some() || input.unset_extensions.is_some() {
-            return Err(AppError::validation("Organization has no extensions"));
+            return Err(AppError::validation(
+                "Organization and Project have no extensions",
+            ));
         }
 
         let new_evidence = collect_evidence(

@@ -27,7 +27,7 @@ export function registerContactSearchTools(
   server: McpServer, search: ContactSearch, indexer?: VectorIndexer,
 ): void {
   server.registerTool('search_contacts', {
-    description: '搜索共享联系人图谱；支持字段过滤、关键词以及可用时的语义或混合检索。include_unverified 仅允许 keyword 模式且须有非空 query；结构化过滤仍基于正式事实，线索命中含 match_status 和 claim_id。',
+    description: '搜索共享联系人图谱；关键词可经人物参与项目、项目服务客户的两跳关系按客户名查人，返回 matched_project_id 和 project_client_match。include_unverified 仅允许 keyword 模式且须有非空 query；待核实项目路径返回 claim_ids，旧线索保留 claim_id。organization_id 仍仅按任职或就读过滤。',
     inputSchema: searchInput,
   }, async input => result(await search.search(input)));
   if (indexer) server.registerTool('retry_contact_index', {

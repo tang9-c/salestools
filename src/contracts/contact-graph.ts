@@ -111,6 +111,12 @@ export const OrganizationPropertiesSchema = z.object({
   identifier: z.array(IdentifierSchema).default([]).transform(uniqueObjects),
 }).strict();
 
+export const ProjectCandidatePropertiesSchema = z.object({
+  name: text.optional(), description: text.optional(),
+}).strict();
+export const ProjectPropertiesSchema = ProjectCandidatePropertiesSchema.refine(
+  value => Boolean(value.name || value.description), 'Project needs a name or description');
+
 const InstantMessagingSchema = z.object({
   platform: z.string().regex(/^[a-z][a-z0-9_-]*$/u),
   accountId: text,
@@ -152,10 +158,14 @@ export const ContactEntitySchema = z.discriminatedUnion('label', [
     entity_id: text, label: z.literal('Organization'), properties: OrganizationPropertiesSchema,
     metadata: ContactMetadataSchema,
   }).strict(),
+  z.object({
+    entity_id: text, label: z.literal('Project'), properties: ProjectPropertiesSchema,
+    metadata: ContactMetadataSchema,
+  }).strict(),
 ]);
 
 export const ContactRelationTypeSchema = z.enum([
-  'worksFor', 'alumniOf', 'affiliation', 'memberOf', 'colleague', 'spouse', 'parent', 'children',
+  'worksFor', 'alumniOf', 'affiliation', 'memberOf', 'clientOrganization', 'colleague', 'spouse', 'parent', 'children',
 ]);
 export type ContactRelationType = z.infer<typeof ContactRelationTypeSchema>;
 
@@ -196,14 +206,28 @@ export const ContactRelationSchema = z.union([
     ...relationBase, relation_type: z.enum(['alumniOf', 'affiliation', 'memberOf', 'colleague', 'spouse', 'parent', 'children']),
     properties: z.object({}).strict(), metadata: RelationMetadataSchema,
   }).strict(),
+  z.object({
+    ...relationBase, relation_type: z.literal('memberOf'),
+    properties: z.object({ role: OrganizationRoleSchema }).strict(), metadata: RelationMetadataSchema,
+  }).strict(),
+  z.object({
+    ...relationBase, relation_type: z.literal('clientOrganization'),
+    properties: z.object({}).strict(), metadata: RelationMetadataSchema,
+  }).strict(),
 ]);
 
 export function normalizeRelationEndpoints<T extends {
   relation_type: ContactRelationType; source_id: string; target_id: string; properties: unknown;
-}>(relation: T, sourceLabel: 'Person' | 'Organization', targetLabel: 'Person' | 'Organization'): T {
+}>(relation: T, sourceLabel: 'Person' | 'Organization' | 'Project', targetLabel: 'Person' | 'Organization' | 'Project'): T {
   if (relation.source_id === relation.target_id) throw new Error('Self relations are not allowed');
-  const organizationRelation = ['worksFor', 'alumniOf', 'affiliation', 'memberOf'].includes(relation.relation_type);
-  if (sourceLabel !== 'Person' || targetLabel !== (organizationRelation ? 'Organization' : 'Person')) {
+  const valid = relation.relation_type === 'clientOrganization'
+    ? sourceLabel === 'Project' && targetLabel === 'Organization'
+    : relation.relation_type === 'memberOf'
+      ? sourceLabel === 'Person' && (targetLabel === 'Organization' || targetLabel === 'Project')
+        && (targetLabel === 'Project' || !Object.hasOwn(relation.properties ?? {}, 'role'))
+      : sourceLabel === 'Person' && targetLabel === (
+        ['worksFor', 'alumniOf', 'affiliation'].includes(relation.relation_type) ? 'Organization' : 'Person');
+  if (!valid) {
     throw new Error('Invalid relation endpoint labels');
   }
   if (relation.relation_type === 'children') {

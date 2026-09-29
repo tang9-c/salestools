@@ -4,10 +4,12 @@
 
 ## 业务数据
 
-- 正式节点仅有 `Person` 与 `Organization`。`entity_id` 是应用生成的稳定字符串，不能用姓名推导。`properties` 使用方案列出的完整字段白名单；Person 另外有同级 `extensions`。`metadata` 存版本、UTC 时间和归档／合并状态，不混入 Schema.org 属性。
-- `Organization.name` 非空；`Person.name` 仅在真实姓名已确认时填写。无姓名简历可经人工审核保存为匿名 `Person`，前提是至少一项有来源证据的非姓名业务属性，或一条已选择、具备可定位文件证据的 `worksFor`／`alumniOf` 关系。空匿名档案被拒绝。输入允许省略可选单值；完整输出包含全部适用数组，未知值为 `[]`。数组按规范化完整值去重，电话保留原文，不猜测区号。匿名档案的显示文字由稳定 ID 派生，不写入 `name` 或向量内容；日后确认姓名时在原 ID 上补录姓名及证据。
-- 关系类型仅有 `worksFor`、`alumniOf`、`affiliation`、`memberOf`、`colleague`、`spouse`、`parent`、`children`。`children` 输入归一化为子女指向父母的 `parent`；`spouse` 和 `colleague` 以稳定 ID 排序后存一条、双向读取。`worksFor` 一段任职一条关系，不按两端实体去重。Rust 负责验证端点实际存在、类型、状态证据和版本。
+- 正式节点有 `Person`、`Organization` 与 Schema.org `Project`。`Project` 只保存有文件原文定位的 `name`、`description`（至少一项），不参加联系人身份匹配或人物向量索引；不同文件的同名项目不自动合并。`entity_id` 是应用生成的稳定字符串，不能用姓名或项目名推导。人物、组织的 `properties` 使用方案列出的字段白名单；Person 另有同级 `extensions`。`metadata` 存版本、UTC 时间和归档／合并状态，不混入 Schema.org 属性。
+- `Organization.name` 非空；`Person.name` 仅在原文或人工确认提供姓名时填写。无姓名简历也可自动保存为匿名 `Person`，前提是至少一项有来源证据的非姓名业务属性，或一条已选择、具备可定位文件证据的 `worksFor`／`alumniOf` 关系。空匿名档案被拒绝。输入允许省略可选单值；完整输出包含全部适用数组，未知值为 `[]`。数组按规范化完整值去重，电话保留原文，不猜测区号。匿名档案的显示文字由稳定 ID 派生，不写入 `name` 或向量内容；日后确认姓名时在原 ID 上补录姓名及证据。
+- 关系类型有 `worksFor`、`alumniOf`、`affiliation`、`memberOf`、`clientOrganization`、`colleague`、`spouse`、`parent`、`children`。`Person → Project memberOf` 表示有证据的项目参与，可用 `OrganizationRole` 记录本人在该项目的角色和日期；旧 `Person → Organization memberOf` 仍使用空属性。`Project → Organization clientOrganization` 表示项目客户，是本项目扩展词，**不是 Schema.org 原生关系**。项目客户不能由此推成 `Person → 客户 worksFor`。`children` 输入归一化为子女指向父母的 `parent`；`spouse` 和 `colleague` 以稳定 ID 排序后存一条、双向读取。`worksFor` 一段任职一条关系，不按两端实体去重。Rust 负责验证端点实际存在、类型、状态证据和版本。
 - 证据独立于业务属性；`field_path` 指向允许字段，数组值逐项绑定，嵌入对象使用完整对象值，必要时以 `value_path` 定位叶子字段。关系存在使用 `$relation`。文件证据保存文件名及 SHA-256，网页证据保存 URL，人工证据以确认人和时间为依据，不伪造页码或引文。
+
+一份简历／名片只自动创建一个主体 `Person`，可另建多个有证据的 `Project` 和 `Organization`。`auto_create:true` 在预览中自动选择关系端点、机构／项目名称和关系引文都可定位且语境明确的 `worksFor`、`alumniOf`、项目 `memberOf`、`clientOrganization`；自动边只保留文件证据，不附会人工确认。每一跳独立判断；未选建议落为 `unverified` claim，默认搜索和问答不当作事实。`confirmed` 仅表示已进入正式图谱，不表示人工认证。按客户关键词查人沿 `Person → Project → 客户 Organization`；任一跳待核实时，只有 `include_unverified:true` 才可命中并显示相关 `claim_ids`。`organization_id` 仍只过滤旧任职／就读关系。`ask_contacts` 不用项目客户推断任职。
 
 ## 共享样例
 

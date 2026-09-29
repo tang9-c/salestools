@@ -37,6 +37,96 @@ fn count(store: &Store, table: &str) -> i64 {
 }
 
 #[test]
+fn auto_selected_relation_keeps_only_located_file_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let mut person = candidate("person", "林晓");
+    person["relation_suggestions"] = json!([{
+        "source_candidate_id":"person","target_candidate_id":"company",
+        "relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole","roleName":"顾问"}},
+        "uncertain":false,
+        "evidence":[
+            {"field_path":"$relation","value":{"relation_type":"worksFor","source_id":"person","target_id":"company"},
+             "source_type":"file","file_name":"resume.pdf","file_sha256":"abc","quote":"林晓任职甲公司",
+             "page":1,"locator_status":"located","collected_at":"2026-09-26T00:00:00.000Z"},
+            {"field_path":"properties.role.roleName","value":"顾问","source_type":"file",
+             "file_name":"resume.pdf","file_sha256":"abc","quote":"顾问",
+             "page":1,"locator_status":"located","collected_at":"2026-09-26T00:00:00.000Z"}
+        ]
+    }]);
+    let company = json!({"candidate_id":"company","label":"Organization",
+        "properties":{"name":"甲公司"},"evidence":[proof("properties.name",json!("甲公司"))],
+        "relation_suggestions":[],"warnings":[],"can_commit":true});
+    let import_id = ready(&store, vec![person, company]);
+    let input = json!({"operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+        "import_id":import_id,"expected_version":2,"auto_selected_relations":true,
+        "choices":[{"candidate_id":"person","action":"create"},{"candidate_id":"company","action":"create"}],
+        "relation_choices":[{"source_candidate_id":"person","target_candidate_id":"company",
+            "relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole","roleName":"顾问"}}}]});
+    let saved = store.commit_import(&input).unwrap();
+    let relation_id = saved["relations"][0]["relation_id"].as_str().unwrap();
+    let evidence: Vec<String> = store.graph.connection().prepare(
+        "SELECT json_extract(record_json,'$.source_type') FROM evidence WHERE subject_kind='relation' AND subject_id=?1"
+    ).unwrap().query_map([relation_id], |row| row.get(0)).unwrap()
+        .map(Result::unwrap).collect();
+    assert_eq!(evidence, vec!["file", "file"]);
+    let replay = store.commit_import(&input).unwrap();
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(count(&store, "kg_relations"), 1);
+}
+
+#[test]
+fn auto_selected_relation_without_located_file_proof_rolls_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let mut person = candidate("person", "林晓");
+    person["relation_suggestions"] = json!([{
+        "source_candidate_id":"person","target_candidate_id":"company",
+        "relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole"}},
+        "uncertain":false,"evidence":[]
+    }]);
+    let company = json!({"candidate_id":"company","label":"Organization",
+        "properties":{"name":"甲公司"},"evidence":[proof("properties.name",json!("甲公司"))],
+        "relation_suggestions":[],"warnings":[],"can_commit":true});
+    let import_id = ready(&store, vec![person, company]);
+    let result = store.commit_import(&json!({"operation_id":format!("contact-import:{import_id}"),
+        "actor":"reviewer","import_id":import_id,"expected_version":2,"auto_selected_relations":true,
+        "choices":[{"candidate_id":"person","action":"create"},{"candidate_id":"company","action":"create"}],
+        "relation_choices":[{"source_candidate_id":"person","target_candidate_id":"company",
+            "relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole"}}}]}));
+    assert_eq!(result.unwrap_err().code, "VALIDATION_ERROR");
+    assert_eq!(count(&store, "kg_entities"), 0);
+}
+
+#[test]
+fn unnamed_employment_does_not_borrow_a_verb_from_another_company_in_the_same_clause() {
+    for (target_name, should_commit) in [("甲公司", true), ("乙公司", false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let person = json!({"candidate_id":"person","label":"Person","properties":{},
+            "extensions":{"hobbies":[],"instantMessaging":[]},"evidence":[],
+            "relation_suggestions":[{"source_candidate_id":"person","target_candidate_id":"company",
+                "relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole"}},
+                "uncertain":false,"evidence":[{"field_path":"$relation",
+                    "value":{"relation_type":"worksFor","source_id":"person","target_id":"company"},
+                    "source_type":"file","file_name":"resume.pdf","file_sha256":"abc",
+                    "quote":"任职甲公司并负责乙公司项目","page":1,"locator_status":"located",
+                    "collected_at":"2026-09-26T00:00:00.000Z"}]}],
+            "warnings":[],"can_commit":true});
+        let company = json!({"candidate_id":"company","label":"Organization",
+            "properties":{"name":target_name},"evidence":[proof("properties.name",json!(target_name))],
+            "relation_suggestions":[],"warnings":[],"can_commit":true});
+        let import_id = ready(&store, vec![person, company]);
+        let result = store.commit_import(&json!({"operation_id":format!("contact-import:{import_id}"),
+            "actor":"reviewer","import_id":import_id,"expected_version":2,
+            "choices":[{"candidate_id":"person","action":"create"},{"candidate_id":"company","action":"create"}],
+            "relation_choices":[{"source_candidate_id":"person","target_candidate_id":"company",
+                "relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole"}}}]}));
+        assert_eq!(result.is_ok(), should_commit, "target={target_name}");
+    }
+}
+
+#[test]
 fn review_item_survives_preview_but_requires_explicit_manual_confirmation_to_commit() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
@@ -44,29 +134,39 @@ fn review_item_survives_preview_but_requires_explicit_manual_confirmation_to_com
     preview["review_items"] = json!([{"kind":"field","field_path":"properties.skills",
         "value":"Java","reason":"missing_evidence","page":1,"quote":"Java"}]);
     let import_id = ready(&store, vec![preview.clone()]);
-    let committed = store.commit_import(&json!({
-        "operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
-        "import_id":import_id,"expected_version":2,
-        "choices":[{"candidate_id":"person","action":"create"}]
-    })).unwrap();
+    let committed = store
+        .commit_import(&json!({
+            "operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+            "import_id":import_id,"expected_version":2,
+            "choices":[{"candidate_id":"person","action":"create"}]
+        }))
+        .unwrap();
     let id = committed["results"][0]["entity_id"].as_str().unwrap();
     let saved = store.get_contact(&json!({"entity_id":id})).unwrap();
     assert_eq!(saved["entity"]["properties"]["skills"], json!([]));
-    assert_eq!(store.get_import_job(&json!({"import_id":import_id})).unwrap()
-        ["data"]["candidates"][0]["review_items"], preview["review_items"]);
+    assert_eq!(
+        store
+            .get_import_job(&json!({"import_id":import_id}))
+            .unwrap()["data"]["candidates"][0]["review_items"],
+        preview["review_items"]
+    );
 
     let second_dir = tempfile::tempdir().unwrap();
     let second_store = Store::open(second_dir.path().join("graph.sqlite")).unwrap();
     let second_import_id = ready(&second_store, vec![preview]);
-    let confirmed = second_store.commit_import(&json!({
-        "operation_id":format!("contact-import:{second_import_id}"),"actor":"reviewer",
-        "import_id":second_import_id,"expected_version":2,
-        "choices":[{"candidate_id":"person","action":"create",
-            "set_properties":{"skills":["Java"]},
-            "evidence":[proof("properties.skills",json!("Java"))]}]
-    })).unwrap();
+    let confirmed = second_store
+        .commit_import(&json!({
+            "operation_id":format!("contact-import:{second_import_id}"),"actor":"reviewer",
+            "import_id":second_import_id,"expected_version":2,
+            "choices":[{"candidate_id":"person","action":"create",
+                "set_properties":{"skills":["Java"]},
+                "evidence":[proof("properties.skills",json!("Java"))]}]
+        }))
+        .unwrap();
     let confirmed_id = confirmed["results"][0]["entity_id"].as_str().unwrap();
-    let saved = second_store.get_contact(&json!({"entity_id":confirmed_id})).unwrap();
+    let saved = second_store
+        .get_contact(&json!({"entity_id":confirmed_id}))
+        .unwrap();
     assert_eq!(saved["entity"]["properties"]["skills"], json!(["Java"]));
 }
 
@@ -918,7 +1018,6 @@ fn oversized_review_items_fail_without_partial_graph_writes() {
     }
 }
 
-
 #[test]
 fn invalid_relation_endpoint_clue_does_not_block_a_supported_person() {
     let dir = tempfile::tempdir().unwrap();
@@ -926,12 +1025,16 @@ fn invalid_relation_endpoint_clue_does_not_block_a_supported_person() {
     let mut person = candidate("person", "示例甲");
     person["review_items"] = json!([{"kind":"relation","source_candidate_id":"person",
         "target_candidate_id":"person","relation_type":"worksFor","properties":{},"reason":"invalid_shape"}]);
-    let import_id = ready(&store,vec![person]);
-    store.commit_import(&json!({"operation_id":format!("contact-import:{import_id}"),
+    let import_id = ready(&store, vec![person]);
+    store
+        .commit_import(
+            &json!({"operation_id":format!("contact-import:{import_id}"),
         "actor":"reviewer","import_id":import_id,"expected_version":2,
-        "choices":[{"candidate_id":"person","action":"create"}]})).unwrap();
-    assert_eq!(count(&store,"contact_claims"),1);
-    assert_eq!(count(&store,"kg_relations"),0);
+        "choices":[{"candidate_id":"person","action":"create"}]}),
+        )
+        .unwrap();
+    assert_eq!(count(&store, "contact_claims"), 1);
+    assert_eq!(count(&store, "kg_relations"), 0);
 }
 
 #[test]
@@ -947,10 +1050,18 @@ fn claim_sources_bound_serialized_unicode_and_escaping_without_losing_file_ident
         source["file_name"] = json!(file_name);
         source["file_sha256"] = json!(hash);
         let import_id = ready(&store, previews);
-        let result = store.commit_import(&claim_commit(&import_id, "create", "skip")).unwrap();
-        let loaded = store.get_contact(&json!({"entity_id":result["results"][0]["entity_id"]})).unwrap();
-        let claim = loaded["unverified_claims"].as_array().unwrap().iter()
-            .find(|claim| claim["kind"] == "relation").unwrap();
+        let result = store
+            .commit_import(&claim_commit(&import_id, "create", "skip"))
+            .unwrap();
+        let loaded = store
+            .get_contact(&json!({"entity_id":result["results"][0]["entity_id"]}))
+            .unwrap();
+        let claim = loaded["unverified_claims"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|claim| claim["kind"] == "relation")
+            .unwrap();
         let source = &claim["source"];
         assert_eq!(source["file_name"], file_name);
         assert_eq!(source["file_sha256"], hash);

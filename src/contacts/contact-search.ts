@@ -7,7 +7,7 @@ export interface ContactSearchInput {
   mode?: 'keyword' | 'semantic' | 'hybrid'; offset?: number; limit?: number;
 }
 
-interface SearchItem { entity_id: string; label?: string; name?: string | null; display_name?: string; reasons?: string[]; score?: number; match_status?: 'confirmed' | 'unverified'; claim_id?: string }
+interface SearchItem { entity_id: string; label?: string; name?: string | null; display_name?: string; reasons?: string[]; score?: number; match_status?: 'confirmed' | 'unverified'; claim_id?: string; claim_ids?: string[]; matched_project_id?: string }
 interface SearchPage { items: SearchItem[]; total: number; next_offset?: number }
 
 function displayItems(items: SearchItem[]): SearchItem[] {

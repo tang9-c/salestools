@@ -1,4 +1,4 @@
-use rusqlite::named_params;
+use rusqlite::{named_params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -173,7 +173,76 @@ const ACTIVE_INSTITUTION_RELATION: &str = r#"
       AND json_extract(om.metadata_json,'$.merged_into') IS NULL
 "#;
 
-fn where_sql() -> String {
+// The only customer-to-person route is an explicit project participation and
+// an explicit project client edge. Claims can substitute for either edge only
+// when the caller opted in; every endpoint must still be a visible graph node.
+const PROJECT_PATH_CTES: &str = r#"
+    member_edges AS (
+      SELECT person.entity_id AS person_id,project.entity_id AS project_id,
+             NULL AS claim_id
+      FROM kg_relations r
+      JOIN relation_ids rid ON rid.kg_id=r.id
+      JOIN relation_meta rm ON rm.relation_id=rid.relation_id
+      JOIN entity_ids person ON person.kg_id=r.source_id
+      JOIN entity_ids project ON project.kg_id=r.target_id
+      WHERE r.rel_type='memberOf'
+        AND json_extract(rm.metadata_json,'$.archived_at') IS NULL
+      UNION ALL
+      SELECT c.subject_id,c.target_id,c.claim_id
+      FROM contact_claims c
+      WHERE :include_unverified=1 AND c.kind='relation'
+        AND c.relation_type='memberOf' AND c.status='unverified'
+        AND c.target_id IS NOT NULL
+    ), client_edges AS (
+      SELECT project.entity_id AS project_id,client.entity_id AS client_id,
+             NULL AS claim_id
+      FROM kg_relations r
+      JOIN relation_ids rid ON rid.kg_id=r.id
+      JOIN relation_meta rm ON rm.relation_id=rid.relation_id
+      JOIN entity_ids project ON project.kg_id=r.source_id
+      JOIN entity_ids client ON client.kg_id=r.target_id
+      WHERE r.rel_type='clientOrganization'
+        AND json_extract(rm.metadata_json,'$.archived_at') IS NULL
+      UNION ALL
+      SELECT c.subject_id,c.target_id,c.claim_id
+      FROM contact_claims c
+      WHERE :include_unverified=1 AND c.kind='relation'
+        AND c.relation_type='clientOrganization' AND c.status='unverified'
+        AND c.target_id IS NOT NULL
+    ), project_matches AS (
+      SELECT member.person_id,member.project_id,
+             member.claim_id AS member_claim_id,client.claim_id AS client_claim_id,
+             (member.claim_id IS NOT NULL)+(client.claim_id IS NOT NULL) AS claim_count
+      FROM member_edges member
+      JOIN client_edges client ON client.project_id=member.project_id
+      JOIN entity_ids pid ON pid.entity_id=member.person_id
+      JOIN kg_entities pe ON pe.id=pid.kg_id AND pe.entity_type='Person'
+      JOIN entity_meta pm ON pm.entity_id=pid.entity_id
+      JOIN entity_ids prid ON prid.entity_id=member.project_id
+      JOIN kg_entities pre ON pre.id=prid.kg_id AND pre.entity_type='Project'
+      JOIN entity_meta prm ON prm.entity_id=prid.entity_id
+      JOIN entity_ids oid ON oid.entity_id=client.client_id
+      JOIN kg_entities oe ON oe.id=oid.kg_id AND oe.entity_type='Organization'
+      JOIN entity_meta om ON om.entity_id=oid.entity_id
+      WHERE :query IS NOT NULL
+        AND (instr(lower(json_extract(oe.properties,'$.name')),lower(:query))>0
+          OR EXISTS (SELECT 1 FROM json_each(oe.properties,'$.alternateName') alias
+            WHERE instr(lower(alias.value),lower(:query))>0))
+        AND json_extract(pm.metadata_json,'$.archived_at') IS NULL
+        AND json_extract(pm.metadata_json,'$.merged_into') IS NULL
+        AND json_extract(prm.metadata_json,'$.archived_at') IS NULL
+        AND json_extract(prm.metadata_json,'$.merged_into') IS NULL
+        AND json_extract(om.metadata_json,'$.archived_at') IS NULL
+        AND json_extract(om.metadata_json,'$.merged_into') IS NULL
+    )
+"#;
+
+fn where_sql(include_project_match: bool) -> String {
+    let project_match = if include_project_match {
+        "OR EXISTS (SELECT 1 FROM project_matches pm WHERE pm.person_id=i.entity_id AND pm.claim_count=0)"
+    } else {
+        ""
+    };
     format!(
         r#"
       AND (:name IS NULL OR lower(json_extract(e.properties,'$.name'))=lower(:name)
@@ -200,9 +269,37 @@ fn where_sql() -> String {
           WHERE instr(lower(skill.value),lower(:query))>0)
         OR EXISTS ({ACTIVE_INSTITUTION_RELATION}
           AND ((r.rel_type='worksFor' AND instr(lower(json_extract(r.properties,'$.role.roleName')),lower(:query))>0)
-            OR instr(lower(json_extract(oe.properties,'$.name')),lower(:query))>0)))
+            OR instr(lower(json_extract(oe.properties,'$.name')),lower(:query))>0))
+        {project_match})
     "#
     )
+}
+
+fn matching_project(
+    store: &Store,
+    person_id: &str,
+    query: &str,
+    include_unverified: bool,
+) -> Result<Option<(String, Option<String>, Option<String>)>, AppError> {
+    let sql = format!(
+        "WITH {PROJECT_PATH_CTES}
+         SELECT project_id,member_claim_id,client_claim_id FROM project_matches
+         WHERE person_id=:person_id
+         ORDER BY claim_count,project_id,member_claim_id,client_claim_id LIMIT 1"
+    );
+    store
+        .graph
+        .connection()
+        .query_row(
+            &sql,
+            named_params! {
+                ":query":query, ":include_unverified":include_unverified as i64,
+                ":person_id":person_id,
+            },
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(internal)
 }
 
 /// Deterministic, read-only candidate lookup. Node adds mode_used and warnings.
@@ -223,14 +320,14 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
     if include_unverified && query.is_none() {
         return Err(invalid("include_unverified requires a nonempty query"));
     }
-    let predicates = where_sql();
+    let predicates = where_sql(true);
     // Structured filters retain their factual meaning. Only the free-text query
     // may match a claim; provenance quotes and JSON keys are not searchable facts.
     let official = format!("SELECT i.entity_id,e.entity_type,e.properties,NULL AS claim_id,0 AS priority {FROM_VISIBLE} {predicates}");
     let candidates = if include_unverified {
-        let factual_filters = predicates.replace(":query", "NULL");
+        let factual_filters = where_sql(false).replace(":query", "NULL");
         format!(
-            r#"WITH confirmed AS ({official}), claim_hits AS (
+            r#"WITH {PROJECT_PATH_CTES}, confirmed AS ({official}), claim_hits AS (
             SELECT i.entity_id,e.entity_type,e.properties,
               (SELECT MIN(c.claim_id) FROM contact_claims c
                 WHERE c.subject_id=i.entity_id AND c.status='unverified'
@@ -244,11 +341,14 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
             {FROM_VISIBLE} {factual_filters}
               AND NOT EXISTS (SELECT 1 FROM confirmed f WHERE f.entity_id=i.entity_id)
         ), candidates AS (
-            SELECT * FROM confirmed UNION ALL SELECT * FROM claim_hits WHERE claim_id IS NOT NULL
+            SELECT * FROM confirmed UNION ALL SELECT * FROM claim_hits
+              WHERE claim_id IS NOT NULL OR EXISTS (
+                SELECT 1 FROM project_matches pm
+                WHERE pm.person_id=claim_hits.entity_id AND pm.claim_count>0)
         )"#
         )
     } else {
-        format!("WITH candidates AS ({official})")
+        format!("WITH {PROJECT_PATH_CTES}, candidates AS ({official})")
     };
     let count_sql = format!("{candidates} SELECT COUNT(*) FROM candidates");
     let conn = store.graph.connection();
@@ -259,12 +359,13 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
                 ":query":query.as_deref(), ":name":name.as_deref(),
                 ":organization_id":organization_id.as_deref(),
                 ":job_title":job_title.as_deref(), ":skill":skill.as_deref(),
+                ":include_unverified":include_unverified as i64,
             },
             |row| row.get(0),
         )
         .map_err(internal)?;
     let page_sql = format!(
-        "{candidates} SELECT entity_id,entity_type,properties,claim_id FROM candidates
+        "{candidates} SELECT entity_id,entity_type,properties,claim_id,priority FROM candidates
          ORDER BY priority,lower(json_extract(properties,'$.name')),entity_id
          LIMIT :limit OFFSET :offset"
     );
@@ -275,6 +376,7 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
                 ":query":query.as_deref(), ":name":name.as_deref(),
                 ":organization_id":organization_id.as_deref(),
                 ":job_title":job_title.as_deref(), ":skill":skill.as_deref(),
+                ":include_unverified":include_unverified as i64,
                 ":limit":limit, ":offset":offset,
             },
             |row| {
@@ -283,14 +385,28 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, Option<String>>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             },
         )
         .map_err(internal)?;
     let mut items = Vec::new();
     for row in rows {
-        let (id, label, raw_properties, claim_id) = row.map_err(internal)?;
+        let (id, label, raw_properties, claim_id, priority) = row.map_err(internal)?;
         let properties: Value = serde_json::from_str(&raw_properties).map_err(internal)?;
+        let project = if label == "Person" {
+            query
+                .as_deref()
+                // A confirmed direct hit must not inherit the status of an
+                // unrelated weak project route that happens to match the query.
+                .map(|query| {
+                    matching_project(store, &id, query, include_unverified && priority > 0)
+                })
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
         let mut reasons = query
             .as_deref()
             .map_or_else(Vec::new, |query| properties_reason(&properties, query));
@@ -306,6 +422,9 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
         if skill.is_some() && !reasons.contains(&"skill") {
             reasons.push("skill");
         }
+        if project.is_some() {
+            reasons.push("project_client_match");
+        }
         if query.is_some() && reasons.is_empty() {
             reasons.push("relation_match");
         }
@@ -316,6 +435,18 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
                 item["match_status"] = json!("unverified");
                 item["claim_id"] = json!(claim_id);
                 item["reasons"] = json!(["unverified_claim"]);
+            } else {
+                item["match_status"] = json!("confirmed");
+            }
+        }
+        if let Some((project_id, member_claim, client_claim)) = project {
+            item["matched_project_id"] = json!(project_id);
+            let claim_ids: Vec<String> =
+                [member_claim, client_claim].into_iter().flatten().collect();
+            if !claim_ids.is_empty() {
+                item["match_status"] = json!("unverified");
+                item["claim_ids"] = json!(claim_ids);
+                item["reasons"] = json!(["project_client_match"]);
             } else {
                 item["match_status"] = json!("confirmed");
             }

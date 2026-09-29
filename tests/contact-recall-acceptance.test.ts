@@ -92,13 +92,13 @@ it('keeps resume clues through upload, parsing, commit, opt-in lookup and explic
       .toMatchObject({ uncertain: true, review_reason: 'structured_heading' });
     const input = { import_id: started.import_id, preview_version: preview!.version as number,
       operation_id: `contact-import:${started.import_id}`,
-      choices: candidates.map(item => ({ candidate_id: item.candidate_id, action: 'create' })), relation_choices: [] };
+      auto_create: true };
     const committed = await service.commit(input, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
     const id = committed.results.find(item => item.candidate_id === person.candidate_id)!.entity_id;
     const get = () => graph.request<Detail>('get_contact', { entity_id: id });
     const saved = await get();
-    expect(saved.relations).toEqual([]);
-    expect(saved.unverified_claims.length).toBeGreaterThanOrEqual(5);
+    expect(saved.relations.map(item => item.relation_type).sort()).toEqual(['alumniOf', 'worksFor', 'worksFor']);
+    expect(saved.unverified_claims.length).toBeGreaterThanOrEqual(2);
     expect(saved.entity.properties.skills).toEqual(['Python']);
     expect((await service.get(started.import_id, 'reviewer'))!.candidates).toEqual(candidates);
     await service.commit(input, 'reviewer');
@@ -136,32 +136,25 @@ it('keeps resume clues through upload, parsing, commit, opt-in lookup and explic
     expect((await search.search({ query: 'Merge-only skill', include_unverified: true })).items)
       .toEqual([expect.objectContaining({ entity_id: id, claim_id: movedClaimId, match_status: 'unverified' })]);
     const answer = new ContactAnswerService({ graph, resolvePeople: async () => [] });
-    for (const query of ['Unproven Kubernetes', 'Solutions Architect', 'Willow Example Academy', 'Cedar Example Labs']) {
+    for (const query of ['Unproven Kubernetes', 'Solutions Architect']) {
       expect((await search.search({ query })).items.some(item => item.entity_id === id)).toBe(false);
       expect((await search.search({ query, include_unverified: true })).items)
         .toContainEqual(expect.objectContaining({ entity_id: id, match_status: 'unverified', claim_id: expect.any(String) }));
     }
-    expect(await answer.ask({ entity_id: id, question: '在哪家公司工作？' })).toMatchObject({ status: 'insufficient', citations: [] });
+    for (const query of ['Willow Example Academy', 'Cedar Example Labs']) {
+      expect((await search.search({ query })).items).toContainEqual(expect.objectContaining({ entity_id: id }));
+    }
     const skill = saved.unverified_claims.find(item => item.field_path === 'properties.skills')!;
     await graph.request('review_contact_claim', { claim_id: skill.claim_id, action: 'reject',
       operation_id: 'reject-skill', expected_entity_version: (await get()).entity.metadata.version, actor: 'reviewer' });
     expect((await search.search({ query: 'Unproven Kubernetes', include_unverified: true })).items).toEqual([]);
-    const employment = saved.unverified_claims.filter(item => item.relation_type === 'worksFor'
-      && item.target_id === committed.results.find(item => item.candidate_id.endsWith(':employer'))!.entity_id);
-    expect(employment).toHaveLength(2);
-    for (const claim of employment) {
-      const current = await get();
-      await graph.request('review_contact_claim', { claim_id: claim.claim_id, action: 'confirm',
-        operation_id: `confirm-${claim.claim_id}`, expected_entity_version: current.entity.metadata.version,
-        confirmation_note: 'Riley Example works for Cedar Example Labs; manually checked this employment episode.', actor: 'reviewer' });
-    }
-    expect((await get()).relations).toHaveLength(2);
+    expect((await get()).relations).toHaveLength(3);
     expect((await search.search({ query: 'Cedar Example Labs' })).items).toContainEqual(expect.objectContaining({ entity_id: id }));
     const answered = await answer.ask({ entity_id: id, question: '在哪家公司工作？' });
     expect(answered.status).toBe('answered');
     expect(answered.citations).toHaveLength(2);
-    expect(answered.citations.every(item => item.file_name === undefined && item.quote.includes('manually checked'))).toBe(true);
-    expect(await answer.ask({ entity_id: id, question: '就读哪所学校？' })).toMatchObject({ status: 'insufficient', citations: [] });
+    expect(answered.citations.every(item => item.file_name === 'recall-acceptance.pdf')).toBe(true);
+    expect(await answer.ask({ entity_id: id, question: '就读哪所学校？' })).toMatchObject({ status: 'insufficient' });
   } finally {
     await jobs.recover(); await uploads.close(); await graph.close(); await rm(directory, { recursive: true, force: true });
   }

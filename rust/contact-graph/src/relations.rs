@@ -94,13 +94,13 @@ fn valid_role(raw: &Value) -> Result<Value, AppError> {
 
 pub(crate) fn relation_properties(kind: &str, raw: &Value) -> Result<Value, AppError> {
     let fields = object(raw, "properties")?;
-    if kind == "worksFor" {
+    if kind == "worksFor" || (kind == "memberOf" && fields.contains_key("role")) {
         if fields.len() != 1 {
-            return Err(invalid("worksFor requires only role"));
+            return Err(invalid("Relation accepts only role"));
         }
         let role = fields
             .get("role")
-            .ok_or_else(|| invalid("worksFor requires role"))?;
+            .ok_or_else(|| invalid("Relation requires role"))?;
         Ok(json!({"role":valid_role(role)?}))
     } else if fields.is_empty() {
         Ok(json!({}))
@@ -168,6 +168,7 @@ pub(crate) fn normalize_endpoints(
         "alumniOf",
         "affiliation",
         "memberOf",
+        "clientOrganization",
         "colleague",
         "spouse",
         "parent",
@@ -339,7 +340,7 @@ pub(crate) fn collect_relation_evidence(
     if !has_relation {
         return Err(invalid("Missing relation existence evidence"));
     }
-    if kind == "worksFor" {
+    if properties.get("role").is_some() {
         for (key, value) in properties["role"].as_object().unwrap() {
             if key != "@type"
                 && !result.iter().any(|item| {
@@ -350,6 +351,8 @@ pub(crate) fn collect_relation_evidence(
                 return Err(invalid(format!("Missing role evidence for {key}")));
             }
         }
+    }
+    if kind == "worksFor" {
         for key in ["employment_status", "status_as_of"] {
             if let Some(value) = metadata.get(key) {
                 if key == "employment_status" && value == "unknown" {
@@ -401,16 +404,22 @@ pub(crate) fn persist_relation(
     };
     let (source_kg, source_label) = endpoint(&source)?;
     let (target_kg, target_label) = endpoint(&target)?;
-    let target_expected =
-        if ["worksFor", "alumniOf", "affiliation", "memberOf"].contains(&kind.as_str()) {
-            "Organization"
-        } else {
-            "Person"
-        };
-    if source_label != "Person" || target_label != target_expected {
+    let valid_endpoints = match kind.as_str() {
+        "clientOrganization" => source_label == "Project" && target_label == "Organization",
+        "memberOf" => {
+            source_label == "Person"
+                && (target_label == "Project" || target_label == "Organization")
+                && (target_label == "Project" || properties.get("role").is_none())
+        }
+        "worksFor" | "alumniOf" | "affiliation" => {
+            source_label == "Person" && target_label == "Organization"
+        }
+        _ => source_label == "Person" && target_label == "Person",
+    };
+    if !valid_endpoints {
         return Err(invalid("Invalid relation endpoint labels"));
     }
-    let existing: Option<String> = if kind == "worksFor" {
+    let existing: Option<String> = if kind == "worksFor" || properties.get("role").is_some() {
         None
     } else {
         tx.query_row("SELECT ids.relation_id FROM relation_ids ids JOIN kg_relations r ON r.id=ids.kg_id JOIN relation_meta m USING(relation_id) WHERE r.rel_type=?1 AND r.source_id=?2 AND r.target_id=?3 AND json_extract(m.metadata_json,'$.archived_at') IS NULL LIMIT 1",
@@ -453,7 +462,7 @@ pub(crate) fn persist_relation(
         next
     } else {
         let mut relation = Relation::new(source_kg, target_kg, &kind, 1.0).map_err(internal)?;
-        if kind == "worksFor" {
+        if properties.get("role").is_some() {
             relation.set_property("role", properties["role"].clone());
         }
         let kg_id = store.graph.insert_relation(&relation).map_err(internal)?;

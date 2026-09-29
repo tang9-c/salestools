@@ -53,9 +53,10 @@ export function registerContactImportTools(server: McpServer, imports: ContactIm
     input.offset, input.limit) ?? { found: false }));
 
   server.registerTool('commit_contact_import', {
-    description: '逐个选择创建、合并或跳过，再一次性提交已审核候选；operation_id 固定为 contact-import:<import_id>。',
+    description: 'auto_create 自动创建单一主体、证据充分的组织与项目；明确的雇主、学校、项目参与和客户关系写为文件来源正式边，弱建议保留为待核实线索。也可逐个传 choices 手工提交。operation_id 固定为 contact-import:<import_id>。',
     inputSchema: z.object({ import_id: id, preview_version: z.int().positive(),
-      operation_id: operationId, choices: z.array(choice).max(800),
+      operation_id: operationId, choices: z.array(choice).max(800).optional(),
+      auto_create: z.boolean().optional(),
       relation_choices: z.array(relationChoice).max(800).optional() }).strict(),
   }, async (input, context) => result(await imports.commit(input, actor(context))));
 

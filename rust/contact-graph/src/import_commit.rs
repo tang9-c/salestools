@@ -23,6 +23,8 @@ struct CommitInput {
     choices: Vec<Choice>,
     #[serde(default)]
     relation_choices: Vec<RelationChoice>,
+    #[serde(default)]
+    auto_selected_relations: bool,
 }
 
 #[derive(Deserialize)]
@@ -128,7 +130,7 @@ fn candidate<'a>(value: &'a Value, id: &str) -> Result<CandidateView<'a>, AppErr
         .get("label")
         .and_then(Value::as_str)
         .ok_or_else(|| validation("Candidate label is required"))?;
-    if label != "Person" && label != "Organization" {
+    if label != "Person" && label != "Organization" && label != "Project" {
         return Err(validation("Invalid candidate label"));
     }
     let properties = fields
@@ -136,8 +138,8 @@ fn candidate<'a>(value: &'a Value, id: &str) -> Result<CandidateView<'a>, AppErr
         .ok_or_else(|| validation("Candidate properties are required"))?;
     object(properties)?;
     let extensions = fields.get("extensions");
-    if label == "Organization" && extensions.is_some() {
-        return Err(validation("Organization has no extensions"));
+    if label != "Person" && extensions.is_some() {
+        return Err(validation("Only Person has extensions"));
     }
     let evidence = fields
         .get("evidence")
@@ -212,9 +214,9 @@ fn apply_extensions(
     unset: Option<&[String]>,
     label: &str,
 ) -> Result<(), AppError> {
-    if label == "Organization" {
+    if label != "Person" {
         if set.is_some() || unset.is_some() {
-            return Err(validation("Organization has no extensions"));
+            return Err(validation("Only Person has extensions"));
         }
         return Ok(());
     }
@@ -278,29 +280,6 @@ fn direct_institution_statement(relation_type: &str, quote: &str, target_name: &
     if target_name.is_empty() || !quote.contains(target_name) {
         return false;
     }
-    let lower = quote.to_lowercase();
-    if lower.starts_with("not ") || lower.starts_with("never ") {
-        return false;
-    }
-    if [
-        "不是",
-        "并非",
-        "未曾",
-        "未在",
-        "未于",
-        "未就读",
-        "未任职",
-        "未毕业",
-        "未学习",
-        "没有",
-        " not ",
-        " never ",
-    ]
-    .iter()
-    .any(|word| lower.contains(word))
-    {
-        return false;
-    }
     let words: &[&str] = match relation_type {
         "worksFor" => &[
             "任职",
@@ -325,7 +304,60 @@ fn direct_institution_statement(relation_type: &str, quote: &str, target_name: &
         ],
         _ => return false,
     };
-    words.iter().any(|word| lower.contains(word))
+    quote
+        .split(['。', '；', ';', '，', ',', '\n'])
+        .any(|segment| {
+            if !segment.contains(target_name) {
+                return false;
+            }
+            let lower = segment.to_lowercase();
+            let target_lower = target_name.to_lowercase();
+            ![
+                "不是",
+                "并非",
+                "未曾",
+                "未在",
+                "未于",
+                "未就读",
+                "未任职",
+                "未毕业",
+                "未学习",
+                "没有",
+                "客户",
+                "合作方",
+                "甲方",
+                "服务对象",
+                "外包服务对象",
+                "not ",
+                "never ",
+                "client",
+                "customer",
+                "partner",
+            ]
+            .iter()
+            .any(|word| lower.contains(word))
+                && lower.match_indices(&target_lower).any(|(target_start, _)| {
+                    let target_end = target_start + target_lower.len();
+                    words.iter().any(|word| {
+                        lower.match_indices(word).any(|(verb_start, _)| {
+                            let verb_end = verb_start + word.len();
+                            let between = if verb_end <= target_start {
+                                &lower[verb_end..target_start]
+                            } else if verb_start >= target_end {
+                                &lower[target_end..verb_start]
+                            } else {
+                                return false;
+                            };
+                            ![
+                                "负责", "参与", "服务", "协助", "对接", "实施", "项目", "并", "且",
+                                "同时", "合作", "project", "client", " and ",
+                            ]
+                            .iter()
+                            .any(|marker| between.contains(marker))
+                        })
+                    })
+                })
+        })
 }
 
 fn has_selected_located_institution_relation(
@@ -388,6 +420,7 @@ fn commit_relations(
     candidates: &[Value],
     landed: &HashMap<String, String>,
     unnamed_landed: &HashSet<String>,
+    auto_selected: bool,
     actor: &str,
     now: &str,
 ) -> Result<Vec<Value>, AppError> {
@@ -487,10 +520,16 @@ fn commit_relations(
             normalize_endpoints(&choice.relation_type, source_id, target_id)?;
         let properties = relation_properties(&kind, &choice.properties)?;
         let selected_meta = relation_metadata(&kind, &choice.metadata, &properties)?;
-        let mut proof = vec![json!({"field_path":"$relation",
+        if auto_selected && choice.metadata != json!({}) {
+            return Err(validation("Auto-selected relations cannot infer metadata"));
+        }
+        let mut proof = Vec::new();
+        if !auto_selected {
+            proof.push(json!({"field_path":"$relation",
             "value":{"relation_type":kind,"source_id":source,"target_id":target},
-            "source_type":"manual","collected_at":now,"locator_status":"not_applicable"})];
-        if kind == "worksFor" {
+            "source_type":"manual","collected_at":now,"locator_status":"not_applicable"}));
+        }
+        if !auto_selected && kind == "worksFor" {
             for (field, value) in properties["role"].as_object().unwrap() {
                 if field != "@type" {
                     proof.push(json!({"field_path":format!("properties.role.{field}"),"value":value,
@@ -545,8 +584,47 @@ fn commit_relations(
                 };
                 let located = item.get("source_type").and_then(Value::as_str) == Some("manual")
                     || item.get("locator_status").and_then(Value::as_str) == Some("located");
-                if selected.is_some() && selected == item.get("value") && quote_matches && located {
+                if selected.is_some()
+                    && selected == item.get("value")
+                    && quote_matches
+                    && located
+                    && (!auto_selected
+                        || item.get("source_type").and_then(Value::as_str) == Some("file"))
+                {
                     proof.push(unbind_preview_evidence(item));
+                }
+            }
+        }
+        if auto_selected {
+            let file_proof = |item: &&Value| {
+                item["source_type"] == "file"
+                    && item["locator_status"] == "located"
+                    && item["file_sha256"]
+                        .as_str()
+                        .is_some_and(|hash| !hash.is_empty())
+            };
+            if !proof
+                .iter()
+                .filter(file_proof)
+                .any(|item| item["field_path"] == "$relation")
+            {
+                return Err(validation(
+                    "Auto-selected relation needs located file evidence",
+                ));
+            }
+            if let Some(role) = properties.get("role").and_then(Value::as_object) {
+                for (field, value) in role {
+                    if field == "@type" {
+                        continue;
+                    }
+                    let path = format!("properties.role.{field}");
+                    if !proof
+                        .iter()
+                        .filter(file_proof)
+                        .any(|item| item["field_path"] == path && item["value"] == *value)
+                    {
+                        return Err(validation("Auto-selected role needs located file evidence"));
+                    }
                 }
             }
         }
@@ -709,6 +787,7 @@ fn persist_claims(
                             "spouse",
                             "parent",
                             "children",
+                            "clientOrganization",
                         ]
                         .contains(&relation_type)
                         {
@@ -721,9 +800,32 @@ fn persist_claims(
                             .iter()
                             .find(|c| c["candidate_id"] == target_candidate);
                         // Candidate IDs are provenance, never graph IDs. A skipped target stays absent.
-                        let target_id = target
-                            .filter(|c| c["label"] == "Organization")
-                            .and_then(|_| landed.get(target_candidate));
+                        let source_label = candidates
+                            .iter()
+                            .find(|c| c["candidate_id"] == source_candidate)
+                            .and_then(|c| c["label"].as_str());
+                        let target_label = target.and_then(|c| c["label"].as_str());
+                        let valid_labels = match relation_type {
+                            "clientOrganization" => {
+                                source_label == Some("Project")
+                                    && target_label == Some("Organization")
+                            }
+                            "memberOf" => {
+                                source_label == Some("Person")
+                                    && [Some("Organization"), Some("Project")]
+                                        .contains(&target_label)
+                            }
+                            "worksFor" | "alumniOf" | "affiliation" => {
+                                source_label == Some("Person")
+                                    && target_label == Some("Organization")
+                            }
+                            _ => source_label == Some("Person") && target_label == Some("Person"),
+                        };
+                        let target_id = if valid_labels {
+                            landed.get(target_candidate)
+                        } else {
+                            None
+                        };
                         let mut value = json!({"target_candidate_id":target_candidate,"properties":item["properties"]});
                         if let Some(name) = target.and_then(|c| c["properties"]["name"].as_str()) {
                             value["target_name"] =
@@ -881,7 +983,12 @@ impl Store {
                     }
                     entity_id = format!(
                         "{}_{}",
-                        if label == "Person" { "p" } else { "o" },
+                        match label {
+                            "Person" => "p",
+                            "Organization" => "o",
+                            "Project" => "j",
+                            _ => unreachable!(),
+                        },
                         Uuid::new_v4().as_simple()
                     );
                     properties = candidate_properties.clone();
@@ -1066,6 +1173,7 @@ impl Store {
             candidates,
             &landed,
             &unnamed_landed,
+            input.auto_selected_relations,
             &input.actor,
             &now,
         )?;

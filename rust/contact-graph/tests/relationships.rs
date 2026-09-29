@@ -72,6 +72,146 @@ fn relation(
 }
 
 #[test]
+fn project_participation_and_client_path_have_typed_endpoints_and_evidence() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let person = entity(&store, "Person", "陈晓", "project-person");
+    let project = entity(&store, "Project", "PLM 升级", "project");
+    let client = entity(&store, "Organization", "乙公司", "project-client");
+    let participation = relation(
+        &store,
+        "participation",
+        &person,
+        &project,
+        "memberOf",
+        json!({"role":{"@type":"OrganizationRole","roleName":"顾问"}}),
+        json!({}),
+    );
+    assert_eq!(participation["ok"], true, "{participation}");
+    let customer = relation(
+        &store,
+        "customer",
+        &project,
+        &client,
+        "clientOrganization",
+        json!({}),
+        json!({}),
+    );
+    assert_eq!(customer["ok"], true, "{customer}");
+    let legacy_membership = relation(
+        &store,
+        "legacy-membership",
+        &person,
+        &client,
+        "memberOf",
+        json!({}),
+        json!({}),
+    );
+    assert_eq!(legacy_membership["ok"], true, "{legacy_membership}");
+    let listed = request(&store, "list_relations", json!({"entity_id":project}));
+    assert_eq!(listed["result"].as_array().unwrap().len(), 2, "{listed}");
+    assert_eq!(
+        relation(
+            &store,
+            "wrong-person-client",
+            &person,
+            &client,
+            "clientOrganization",
+            json!({}),
+            json!({})
+        )["error"]["code"],
+        "VALIDATION_ERROR"
+    );
+    assert_eq!(
+        relation(
+            &store,
+            "wrong-project-work",
+            &person,
+            &project,
+            "worksFor",
+            json!({"role":{"@type":"OrganizationRole"}}),
+            json!({})
+        )["error"]["code"],
+        "VALIDATION_ERROR"
+    );
+    assert_eq!(
+        relation(
+            &store,
+            "wrong-member-role",
+            &person,
+            &client,
+            "memberOf",
+            json!({"role":{"@type":"OrganizationRole","roleName":"顾问"}}),
+            json!({})
+        )["error"]["code"],
+        "VALIDATION_ERROR"
+    );
+    let missing_role_proof = request(
+        &store,
+        "save_relation",
+        json!({
+            "operation_id":"missing-project-role-proof","actor":"tester","source_id":person,
+            "target_id":project,"relation_type":"memberOf",
+            "properties":{"role":{"@type":"OrganizationRole","roleName":"顾问"}},
+            "evidence":[evidence("$relation", json!({"relation_type":"memberOf","source_id":person,"target_id":project}))]
+        }),
+    );
+    assert_eq!(missing_role_proof["error"]["code"], "VALIDATION_ERROR");
+    let no_evidence = request(
+        &store,
+        "save_contact",
+        json!({"operation_id":"no-evidence-project",
+        "actor":"tester","label":"Project","set_properties":{"description":"实施项目"}}),
+    );
+    assert_eq!(no_evidence["error"]["code"], "VALIDATION_ERROR");
+    let empty = request(
+        &store,
+        "save_contact",
+        json!({"operation_id":"empty-project",
+        "actor":"tester","label":"Project","set_properties":{}}),
+    );
+    assert_eq!(empty["error"]["code"], "VALIDATION_ERROR");
+    let described = request(
+        &store,
+        "save_contact",
+        json!({"operation_id":"described-project",
+        "actor":"tester","label":"Project","set_properties":{"description":"实施项目"},
+        "evidence":[evidence("properties.description", json!("实施项目"))]}),
+    );
+    assert_eq!(described["ok"], true, "{described}");
+    assert!(described["result"]["entity_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("j_"));
+    let project_id = described["result"]["entity_id"].as_str().unwrap();
+    let fetched = request(&store, "get_contact", json!({"entity_id":project_id}));
+    assert_eq!(
+        fetched["result"]["entity"]["properties"]["description"], "实施项目",
+        "{fetched}"
+    );
+    let invented = request(
+        &store,
+        "save_contact",
+        json!({"operation_id":"invented-project",
+        "actor":"tester","label":"Project","set_properties":{"name":"项目", "jobTitle":"顾问"},
+        "evidence":[evidence("properties.name", json!("项目"))]}),
+    );
+    assert_eq!(invented["error"]["code"], "VALIDATION_ERROR");
+    assert_eq!(
+        relation(
+            &store,
+            "missing-client",
+            &project,
+            "o_missing",
+            "clientOrganization",
+            json!({}),
+            json!({})
+        )["error"]["code"],
+        "VALIDATION_ERROR"
+    );
+}
+
+#[test]
 fn promotions_are_two_edges_and_survive_restart() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("graph.sqlite");

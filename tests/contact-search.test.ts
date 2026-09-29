@@ -83,6 +83,18 @@ describe('shared contact search', () => {
 
 
 describe('unverified keyword isolation', () => {
+  it('preserves the matched project and all unresolved path claims', async () => {
+    const client: GraphClient = { request: async <T>(op: GraphOp) => {
+      if (op !== 'search_keyword') throw new Error(`Unexpected ${op}`);
+      return { items: [{ entity_id: 'p_1', label: 'Person', name: null,
+        matched_project_id: 'pr_1', reasons: ['project_client_match'],
+        match_status: 'unverified', claim_ids: ['claim_member', 'claim_client'] }], total: 1 } as T;
+    }, close: async () => undefined };
+    const page = await new ContactSearch(client).search({ query: '乙客户公司', include_unverified: true });
+    expect(page.items[0]).toMatchObject({ matched_project_id: 'pr_1',
+      reasons: ['project_client_match'], match_status: 'unverified',
+      claim_ids: ['claim_member', 'claim_client'] });
+  });
   it('forwards opt-in and preserves claim match markers', async () => {
     const calls: unknown[] = [];
     const client: GraphClient = { request: async <T>(_op: GraphOp, payload: unknown) => {
