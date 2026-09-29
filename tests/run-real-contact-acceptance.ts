@@ -1,31 +1,36 @@
 /** Explicit opt-in live acceptance. Never included by Vitest; emits counts and codes only. */
 import { config } from 'dotenv';
 import { join } from 'node:path';
-import { acceptanceHarness, root, type Detail } from './contact-acceptance-support.js';
+import { acceptanceHarness, acceptanceBudgetOptions, root, type Detail } from './contact-acceptance-support.js';
 import { ContactSearch } from '../src/contacts/contact-search.js';
 import { evaluateInventedSample } from './contact-live-verdict.js';
 config({ path: process.env.ACCEPTANCE_ENV ?? '/Users/tang-codeing/code/salestools/.env', quiet: true });
+const budgetOptions = acceptanceBudgetOptions(process.env.ACCEPTANCE_REQUEST_MAX_BYTES);
 const samples = ['layout-single-column.pdf', 'layout-two-column.pdf', 'synthetic-card.png', process.env.ACCEPTANCE_RESUME ?? '/Users/tang-codeing/Downloads/J运维简历.pdf'];
 for (const [index, file] of samples.entries()) {
   if (process.env.ACCEPTANCE_SAMPLE && Number(process.env.ACCEPTANCE_SAMPLE) !== index + 1) continue;
+  const requestStats: Array<{ bytes: number; blocks: number }> = [];
   let stage = 'extract';
   let h: Awaited<ReturnType<typeof acceptanceHarness>> | undefined;
   try {
     h = await acceptanceHarness(file.startsWith('/') ? file : join(root, 'tests/fixtures/contact-documents', file), {
       url: process.env.ARK_API_URL!, model: process.env.ARK_MODEL!, credential: process.env.ARK_CREDENTIAL!,
-      ...(process.env.ACCEPTANCE_SHAPE_DIAGNOSTICS === '1' ? { fetchFn: (async (url, init) => {
+      ...budgetOptions,
+      fetchFn: (async (url, init) => {
+        const body = String(init?.body);
+        requestStats.push({ bytes: Buffer.byteLength(body), blocks: JSON.parse(JSON.parse(body).messages[1].content).blocks.length });
         const response = await fetch(url, init);
-        try {
+        if (process.env.ACCEPTANCE_SHAPE_DIAGNOSTICS === '1') try {
           const envelope = await response.clone().json() as any;
           const profile = JSON.parse(envelope.choices[0].message.content);
           const shapes = [...(profile.education ?? []).map((x: any) => ['attendance', x.attendance]), ...(profile.employment ?? []).map((x: any) => ['employment', x.employment]), ...(profile.projects ?? []).flatMap((x: any) => [['participation', x.participation], ...(x.clients ?? []).map((c: any) => ['client', c.client])])];
           console.log(JSON.stringify({ sample: index + 1, linkShapes: shapes.map(([kind, value]) => ({ kind, type: Array.isArray(value) ? 'array' : typeof value, keys: value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value).filter(k => ['evidence', 'uncertain', 'field_path', 'value', 'status', 'startDate', 'endDate'].includes(k)) : [], keyCount: value && typeof value === 'object' ? Object.keys(value).length : 0 })) }));
         } catch { /* Never print malformed model content. */ }
         return response;
-      }) as typeof fetch } : {}),
+      }) as typeof fetch,
     });
     const reasons = h.candidates.flatMap(c => c.review_items).reduce((a, c) => ({ ...a, [c.reason]: (a[c.reason] ?? 0) + 1 }), {} as Record<string, number>);
-    const base = { reasons, sample: index + 1, status: h.preview.status, blocks: h.parsed.length, warnings: h.preview.warnings, processed: (h.preview.processed_block_ids as unknown[])?.length, unprocessed: (h.preview.unprocessed_block_ids as unknown[])?.length };
+    const base = { requestMaxBytes: budgetOptions.requestMaxBytes ?? 12288, requestStats, reasons, sample: index + 1, status: h.preview.status, blocks: h.parsed.length, warnings: h.preview.warnings, processed: (h.preview.processed_block_ids as unknown[])?.length, unprocessed: (h.preview.unprocessed_block_ids as unknown[])?.length };
     if (h.preview.status !== 'ready_for_review' || !h.candidates.length) { process.exitCode = 1; console.log(JSON.stringify(base)); continue; }
     stage = 'commit';
 

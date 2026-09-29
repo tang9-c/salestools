@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { ContactSearch } from '../src/contacts/contact-search.js';
 import { DocumentExtractor } from '../src/contacts/document-extractor.js';
-import { acceptanceHarness, fixtureProfile, root, type Detail } from './contact-acceptance-support.js';
+import { acceptanceHarness, acceptanceBudgetOptions, fixtureProfile, root, type Detail } from './contact-acceptance-support.js';
 const stub = (card = false) => ({ url: 'https://model.example/chat', model: 'fixture', credential: 'fixture', fetchFn: (async (_url, init) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(fixtureProfile(JSON.parse(JSON.parse(String(init?.body)).messages[1].content).blocks, card)) } }] }))) as typeof fetch });
 
 it.each(['layout-single-column.pdf', 'layout-two-column.pdf'])('commits real Docling %s through profile mapping and SQLite', async filename => {
@@ -68,4 +68,12 @@ it.each([['empty', JSON.stringify({ subject_status: 'absent', person: [], educat
   const result = await new DocumentExtractor({ ...stub(), fileName: 'invented.pdf', fileSha256: 'a'.repeat(64), fetchFn: async () => new Response(JSON.stringify({ choices: [{ message: { content } }] })) }).extract([{ block_id: 'one', text: 'Invented resume', page: 1 }], new AbortController().signal);
   expect(result.candidates).toEqual([]);
   expect(result.warnings).toContain(warning);
+});
+
+it('keeps the live runner budget default and validates explicit byte overrides', () => {
+  expect(acceptanceBudgetOptions(undefined)).toEqual({});
+  expect(acceptanceBudgetOptions('20000')).toEqual({ requestMaxBytes: 20000 });
+  for (const invalid of ['', '0', '-1', '12.5', 'not-a-number', 'Infinity', '9007199254740992']) {
+    expect(() => acceptanceBudgetOptions(invalid)).toThrow('INVALID_ACCEPTANCE_REQUEST_MAX_BYTES');
+  }
 });

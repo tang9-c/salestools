@@ -30,7 +30,16 @@ export function fixtureProfile(blocks: ParsedBlock[], card = false) {
     projects: [['Project Aurora', 'Maple Example Client'], ['Project Beacon', 'Ash Example Client']].map(([name, client], i) => ({ local_id: `project${i}`, project: [fact('properties.name', name, name)], participation: link(name), role: [], clients: [{ organization: org(client), client: link(client, i === 1) }] })),
     organization_clues: [{ organization: org('Spruce Example Network'), association: link('Spruce Example Network', true) }] };
 }
-export async function acceptanceHarness(filePath: string, model: Pick<DocumentExtractorOptions, 'url' | 'model' | 'credential' | 'fetchFn'>) {
+// Explicit test-only override; absence leaves production extractor defaults intact.
+export function acceptanceBudgetOptions(raw: string | undefined): Pick<DocumentExtractorOptions, 'requestMaxBytes'> {
+  if (raw === undefined) return {};
+  const requestMaxBytes = Number(raw);
+  if (!/^\d+$/u.test(raw) || !Number.isSafeInteger(requestMaxBytes) || requestMaxBytes <= 0) {
+    throw new Error('INVALID_ACCEPTANCE_REQUEST_MAX_BYTES');
+  }
+  return { requestMaxBytes };
+}
+export async function acceptanceHarness(filePath: string, model: Pick<DocumentExtractorOptions, 'url' | 'model' | 'credential' | 'fetchFn' | 'requestMaxBytes'>) {
   const directory = await mkdtemp(join(tmpdir(), 'contact-acceptance-'));
   const graph = new ContactGraphClient({ command: join(root, 'rust/contact-graph/target/debug/contact-graph'), dbPath: join(directory, 'graph.sqlite') });
   const uploads = new UploadStore({ directory: join(directory, 'uploads'), maxPendingFiles: 3, maxFileBytes: 20_000_000, maxTempBytes: 60_000_000 });
