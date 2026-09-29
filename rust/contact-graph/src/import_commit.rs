@@ -811,6 +811,11 @@ impl Store {
                 "A prefixed operation_id, actor and import_id are required",
             ));
         }
+        // Candidate evidence is server-owned preview data. Choice evidence is
+        // supplied by the caller and cannot mint additional file provenance.
+        for choice in &input.choices {
+            crate::validation::reject_caller_file_evidence(&choice.evidence).map_err(validation)?;
+        }
         let hash = canonical_hash(raw)?;
         let conn = self.graph.connection();
         let prior: Option<(String, String, String, String)> = conn.query_row(

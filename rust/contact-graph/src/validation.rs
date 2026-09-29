@@ -407,6 +407,16 @@ pub fn normalize_extensions(raw: &Value, create: bool) -> Result<Value, String> 
     Ok(Value::Object(output))
 }
 
+// Public writes may add manual/web evidence, but cannot assert that a file was
+// parsed or its quote located. Only the internal import preview supplies new file
+// proofs; previously persisted proofs are read directly from the database.
+pub(crate) fn reject_caller_file_evidence(evidence: &[Value]) -> Result<(), String> {
+    if evidence.iter().any(|item| item["source_type"] == "file") {
+        return Err("New file evidence must come from the document import pipeline".into());
+    }
+    Ok(())
+}
+
 pub fn ensure_value_evidence(
     properties: &Value,
     extensions: Option<&Value>,

@@ -727,3 +727,37 @@ it('keeps an unsaveable project and its client clue on the owner review queue', 
   expect(JSON.stringify(saved.unverified_claims)).toContain('产品系统升级');
   expect(JSON.stringify(saved.unverified_claims)).toContain('乙公司');
 });
+
+it('rejects caller-authored file evidence in public writes and import corrections', async () => {
+  const h = await harness('forged-source');
+  const forged = { field_path: 'properties.skills', value: '不存在于引文的资质', source_type: 'file',
+    locator_status: 'located', file_name: 'never-uploaded.pdf', file_sha256: sha,
+    collected_at: collectedAt, quote: '无关原文' };
+  await expect(h.graph.request('save_contact', { operation_id: 'forged-save', actor: 'reviewer', label: 'Person',
+    set_properties: { skills: [forged.value] }, evidence: [forged] })).rejects.toThrow('VALIDATION_ERROR');
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  await expect(h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`, choices: [{ candidate_id: 'c_1', action: 'create',
+      set_properties: { skills: [forged.value] }, evidence: [forged] }] }, 'reviewer')).rejects.toThrow('VALIDATION_ERROR');
+});
+
+it('edits an imported summary using persisted evidence without resubmitting file proof', async () => {
+  const extraction = await extractProfile({ subject_status: 'single',
+    person: [fact('properties.skills', '系统运维', 'p', '开发服务器维护脚本')],
+    education: [], employment: [], projects: [], organization_clues: [],
+  }, [{ block_id: 'p', text: '开发服务器维护脚本', page: 1 }]);
+  const h = await harness('edit-summary', extraction.candidates);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const committed = await h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`, auto_create: true }, 'reviewer') as { results: Array<{ entity_id: string }> };
+  const id = committed.results[0].entity_id;
+  await h.graph.request('save_contact', { operation_id: 'name-summary', actor: 'reviewer', entity_id: id,
+    expected_version: 1, label: 'Person', set_properties: { name: '陈晓' }, evidence: [{ field_path: 'properties.name',
+      value: '陈晓', source_type: 'manual', locator_status: 'not_applicable', collected_at: collectedAt }] });
+  expect(await h.graph.request('get_contact', { entity_id: id })).toMatchObject({
+    entity: { properties: { name: '陈晓', skills: ['系统运维'] } },
+    evidence: expect.arrayContaining([expect.objectContaining({ source_type: 'file', value: '系统运维', quote: '开发服务器维护脚本' })]),
+  });
+});

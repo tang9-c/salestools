@@ -379,6 +379,8 @@ impl Store {
     pub fn save_contact(&self, raw: &Value) -> Result<Value, AppError> {
         let input: SaveContactInput = serde_json::from_value(raw.clone())
             .map_err(|error| AppError::validation(error.to_string()))?;
+        crate::validation::reject_caller_file_evidence(&input.evidence)
+            .map_err(AppError::validation)?;
         if input.operation_id.trim().is_empty() || input.actor.trim().is_empty() {
             return Err(AppError::validation("operation_id and actor are required"));
         }

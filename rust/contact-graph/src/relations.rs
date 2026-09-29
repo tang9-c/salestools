@@ -501,6 +501,7 @@ impl Store {
     pub fn save_relation(&self, raw: &Value) -> Result<Value, AppError> {
         let input: SaveRelationInput =
             serde_json::from_value(raw.clone()).map_err(|error| invalid(error.to_string()))?;
+        crate::validation::reject_caller_file_evidence(&input.evidence).map_err(invalid)?;
         if input.operation_id.trim().is_empty() || input.actor.trim().is_empty() {
             return Err(invalid("operation_id and actor are required"));
         }

@@ -564,3 +564,18 @@ fn repeated_privacy_value_after_another_scrub_input_invalidates_ready_vector() {
         doc["index_content_version"]
     );
 }
+
+#[test]
+fn claim_confirmation_cannot_supply_file_provenance() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path().join("g.db")).unwrap();
+    let person = entity(&s, "Person", "Synthetic Person");
+    claim(&s, "skill", &person, "properties.skills", json!("Rust"));
+    let mut input = review("skill", "confirm", 1);
+    input["evidence"] = json!([{"field_path":"properties.skills","value":"Rust",
+        "source_type":"file","locator_status":"located","file_name":"never-uploaded.pdf",
+        "file_sha256":"abc","quote":"unrelated","collected_at":"2026-09-26T00:00:00Z"}]);
+    assert_eq!(call(&s, "review_contact_claim", input)["ok"], false);
+    assert_eq!(status(&s, "skill"), "unverified");
+    assert_eq!(detail(&s, &person)["entity"]["metadata"]["version"], 1);
+}

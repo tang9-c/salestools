@@ -315,31 +315,50 @@ fn merge_deduplicates_colleague_edges_and_keeps_both_proofs() {
         } else {
             (&third, left)
         };
-        let mut existence = proof(
-            "$relation",
-            json!({"relation_type":"colleague","source_id":a,"target_id":b}),
-        );
         if op == "colleague-a" {
-            existence["source_type"] = json!("file");
-            existence["locator_status"] = json!("located");
-            existence["file_name"] = json!("conference.pdf");
-            existence["file_sha256"] = json!("a".repeat(64));
-            existence["quote"] = json!("甲与丙共同参与项目");
+            // File provenance is minted only by the internal import pipeline.
+            let job = store
+                .put_import_job(&json!({"operation_id":"start-file-edge","actor":"tester",
+                "file_id":"conference","status":"queued","data":{}}))
+                .unwrap();
+            let import_id = job["import_id"].as_str().unwrap();
+            let previews = [("a", a), ("b", b)].iter().map(|(id, _)| json!({
+                "candidate_id":id,"label":"Person","properties":{},"extensions":{},"evidence":[],
+                "can_commit":true,"warnings":[],"relation_suggestions": if *id == "a" { json!([{
+                    "source_candidate_id":"a","target_candidate_id":"b","relation_type":"colleague","properties":{},
+                    "uncertain":false,"evidence":[{"field_path":"$relation",
+                        "value":{"relation_type":"colleague","source_id":"a","target_id":"b"},
+                        "source_type":"file","locator_status":"located","file_name":"conference.pdf",
+                        "file_sha256":"a".repeat(64),"quote":"甲与丙共同参与项目",
+                        "collected_at":"2026-09-26T00:00:00Z"}]}]) } else { json!([]) }
+            })).collect::<Vec<_>>();
+            store.put_import_job(&json!({"operation_id":"ready-file-edge","actor":"system",
+                "file_id":"conference","import_id":import_id,"expected_version":1,"status":"ready_for_review",
+                "data":{"candidates":previews}})).unwrap();
+            store.commit_import(&json!({"operation_id":format!("contact-import:{import_id}"),"actor":"tester",
+                "import_id":import_id,"expected_version":2,
+                "choices":[{"candidate_id":"a","action":"merge","target_id":a,"expected_target_version":1,"keep_name":true},
+                    {"candidate_id":"b","action":"merge","target_id":b,"expected_target_version":1,"keep_name":true}],
+                "relation_choices":[{"source_candidate_id":"a","target_candidate_id":"b","relation_type":"colleague","properties":{}}]})).unwrap();
+        } else {
+            let existence = proof(
+                "$relation",
+                json!({"relation_type":"colleague","source_id":a,"target_id":b}),
+            );
+            let saved = request(
+                &store,
+                "save_relation",
+                json!({"operation_id":op,"actor":"tester",
+                "source_id":a,"target_id":b,"relation_type":"colleague","properties":{},"metadata":{},"evidence":[existence]}),
+            );
+            assert_eq!(saved["ok"], true, "{saved}");
         }
-        let saved = request(
-            &store,
-            "save_relation",
-            json!({"operation_id":op,"actor":"tester",
-            "source_id":a,"target_id":b,"relation_type":"colleague","properties":{},"metadata":{},
-            "evidence":[existence]}),
-        );
-        assert_eq!(saved["ok"], true, "{saved}");
     }
     let merged = request(
         &store,
         "merge_contacts",
         json!({"operation_id":"merge","actor":"tester",
-        "source_id":source,"target_id":target,"expected_source_version":1,"expected_target_version":1}),
+        "source_id":source,"target_id":target,"expected_source_version":2,"expected_target_version":1}),
     );
     assert_eq!(merged["ok"], true, "{merged}");
     let listed = request(&store, "list_relations", json!({"entity_id":target}));

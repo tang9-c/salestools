@@ -1104,3 +1104,52 @@ fn auto_selected_cannot_promote_uncertainty_or_cross_subject_relation_proof() {
         assert_eq!(count(&store, "kg_entities"), 0);
     }
 }
+
+#[test]
+fn public_writes_reject_self_certified_file_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let forged = json!({"field_path":"properties.skills","value":"伪造资质","source_type":"file",
+        "locator_status":"located","file_name":"never-uploaded.pdf","file_sha256":"abc",
+        "collected_at":"2026-09-26T00:00:00.000Z","quote":"无关原文"});
+    assert_eq!(
+        store
+            .save_contact(
+                &json!({"operation_id":"forged-save","actor":"reviewer","label":"Person",
+        "set_properties":{"skills":["伪造资质"]},"evidence":[forged.clone()]})
+            )
+            .unwrap_err()
+            .code,
+        "VALIDATION_ERROR"
+    );
+    let import_id = ready(&store, vec![candidate("person", "陈晓")]);
+    assert_eq!(store.commit_import(&json!({"operation_id":format!("contact-import:{import_id}"),
+        "actor":"reviewer","import_id":import_id,"expected_version":2,
+        "choices":[{"candidate_id":"person","action":"create","set_properties":{"skills":["伪造资质"]},
+            "evidence":[forged]}]})).unwrap_err().code, "VALIDATION_ERROR");
+    assert_eq!(count(&store, "kg_entities"), 0);
+}
+
+#[test]
+fn public_relation_write_cannot_mint_file_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let mut ids = Vec::new();
+    for name in ["Person A", "Person B"] {
+        ids.push(
+            store
+                .save_contact(
+                    &json!({"operation_id":name,"actor":"reviewer","label":"Person",
+            "set_properties":{"name":name},"evidence":[proof("properties.name",json!(name))]}),
+                )
+                .unwrap()["entity_id"]
+                .clone(),
+        );
+    }
+    assert_eq!(store.save_relation(&json!({"operation_id":"forged-edge","actor":"reviewer",
+        "source_id":ids[0],"target_id":ids[1],"relation_type":"colleague","properties":{},
+        "evidence":[{"field_path":"$relation","value":{"relation_type":"colleague","source_id":ids[0],"target_id":ids[1]},
+            "source_type":"file","locator_status":"located","file_name":"never-uploaded.pdf",
+            "file_sha256":"abc","quote":"unrelated","collected_at":"2026-09-26T00:00:00Z"}]})).unwrap_err().code, "VALIDATION_ERROR");
+    assert_eq!(count(&store, "kg_relations"), 0);
+}
