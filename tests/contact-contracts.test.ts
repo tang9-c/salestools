@@ -18,6 +18,10 @@ function fixture(name: string): unknown {
 }
 
 describe('shared contact graph contract', () => {
+  it('accepts old parsed blocks and optional Docling layout labels', () => {
+    expect(ParsedBlockSchema.parse({ block_id: 'b1', text: '教育背景' }).text).toBe('教育背景');
+    expect(ParsedBlockSchema.parse({ block_id: 'b2', text: '海岚大学', layout_label: 'text' }).layout_label).toBe('text');
+  });
   it('normalizes complete Person arrays and preserves two different WeChat accounts', () => {
     const person = ContactEntitySchema.parse(fixture('person-valid'));
     expect(person.label).toBe('Person');

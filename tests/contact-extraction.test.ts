@@ -1072,6 +1072,86 @@ describe('document extraction', () => {
     expect(result.candidates[1].evidence[0]).toMatchObject({ page: 2, locator_status: 'located' });
   });
 
+  it('sends all ordered original blocks together when the full request fits', async () => {
+    const input = [
+      { block_id: 'heading', text: '教育经历', layout_label: 'section_header' },
+      { block_id: 'school', text: '海岚大学', layout_label: 'text' },
+      { block_id: 'work', text: '任职星辰科技经理' },
+    ];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const body = String(init?.body);
+      expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(12_288);
+      const sent = JSON.parse(JSON.parse(body).messages[1].content).blocks;
+      expect(sent.map((block: { block_id: string }) => block.block_id)).toEqual(input.map(block => block.block_id));
+      expect(sent.map((block: { text: string }) => block.text)).toEqual(input.map(block => block.text));
+      return response([]);
+    });
+    const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(result.processedBlockIds).toEqual(input.map(block => block.block_id));
+  });
+
+  it('carries located prior subject and quote into a later request within the byte limit', async () => {
+    const input = [
+      { block_id: 'owner', text: '个人简历 林舟 ' + '附注'.repeat(500), page: 1 },
+      { block_id: 'work', text: '任职星辰科技经理 ' + '说明'.repeat(380), page: 2 },
+    ];
+    const requestMaxBytes = 7_500;
+    const sent: any[] = [];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const body = String(init?.body);
+      expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(requestMaxBytes);
+      const payload = JSON.parse(JSON.parse(body).messages[1].content);
+      sent.push(payload);
+      if (payload.blocks.some((block: { text: string }) => block.text.includes('个人简历'))) {
+        return response([person('owner', '林舟', payload.blocks[0].block_id)]);
+      }
+      return response([]);
+    });
+    await extractor(fetchFn, { requestMaxBytes }).extract(input, new AbortController().signal);
+    expect(sent.length).toBeGreaterThan(1);
+    expect(sent[1].extracted_context?.subjects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Person', name: '林舟' }),
+    ]));
+    expect(sent[1].extracted_context?.source_quotes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ quote: '林舟' }),
+    ]));
+    expect(sent[1].blocks.some((block: { text: string }) => block.text.includes('任职星辰科技经理'))).toBe(true);
+  });
+
+  it('keeps successful earlier blocks but reports a malformed later batch as unprocessed', async () => {
+    const input = [
+      { block_id: 'owner', text: '个人简历 林舟 ' + '附注'.repeat(500), page: 1 },
+      { block_id: 'work', text: '任职星辰科技经理 ' + '说明'.repeat(380), page: 2 },
+    ];
+    let calls = 0;
+    const fetchFn = vi.fn(async (_url, init) => {
+      const sent = JSON.parse(JSON.parse(String(init?.body)).messages[1].content).blocks;
+      if (calls++ === 0) return response([person('owner', '林舟', sent[0].block_id)]);
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{broken' } }] }), { status: 200 });
+    });
+    const result = await extractor(fetchFn, { requestMaxBytes: 7_500 }).extract(input, new AbortController().signal);
+    expect(result.processedBlockIds).toEqual(['owner']);
+    expect(result.unprocessedBlockIds).toEqual(['work']);
+    expect(result.candidates[0].properties.name).toBe('林舟');
+    expect(result.warnings).toContain('模型响应无效');
+  });
+
+  it('does not accept unseen text from a prior block as context evidence', async () => {
+    const input = [
+      { block_id: 'owner', text: '个人简历 林舟 ' + '附注'.repeat(500), page: 1 },
+      { block_id: 'work', text: '任职星辰科技经理 ' + '说明'.repeat(380), page: 2 },
+    ];
+    let calls = 0;
+    const fetchFn = vi.fn(async (_url, init) => {
+      const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      if (calls++ === 0) return response([person('owner', '林舟', payload.blocks[0].block_id)]);
+      return response([person('invented', '附注', payload.extracted_context.source_quotes[0].block_id)]);
+    });
+    const result = await extractor(fetchFn, { requestMaxBytes: 7_500 }).extract(input, new AbortController().signal);
+    expect(result.candidates.some(candidate => candidate.properties.name === '附注')).toBe(false);
+  });
+
   it('keeps an unlocated quote in review only', async () => {
     const fetchFn = vi.fn(async () => response([{ ...person('a', '陈晓', 'b1'), properties: { name: '陈晓', email: ['chen@example.com'] }, evidence: [
       { field_path: 'properties.name', value: '陈晓', block_id: 'b1', quote: '陈晓' },

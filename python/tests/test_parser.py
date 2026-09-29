@@ -40,6 +40,24 @@ def test_missing_provenance_omits_page():
     assert "page" not in blocks[0]
 
 
+def test_layout_labels_keep_order_and_skip_only_docling_picture_placeholder():
+    heading = item("教育经历", 1, "#/texts/0")
+    heading.label = "section_header"
+    picture = item("<!-- image -->", 1, "#/pictures/0")
+    picture.label = "picture"
+    ocr = item("<!-- image --> OCR: 海岚大学", 1, "#/texts/1")
+    ocr.label = "text"
+    work = item("任职星辰科技经理", 2, "#/texts/2")
+    work.label = "text"
+    blocks = parse(FIXTURES / "synthetic-resume.pdf", "pdf", "document-1",
+                   converter=fake_converter(heading, picture, ocr, work))
+    assert [(block["text"], block.get("layout_label"), block.get("source_ref")) for block in blocks] == [
+        ("教育经历", "section_header", "#/texts/0"),
+        ("<!-- image --> OCR: 海岚大学", "text", "#/texts/1"),
+        ("任职星辰科技经理", "text", "#/texts/2"),
+    ]
+
+
 def test_multi_page_item_splits_only_at_verified_charspans():
     text = "First page Second page"
     merged = item(text, ref="#/texts/0")

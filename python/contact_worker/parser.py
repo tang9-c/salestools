@@ -255,6 +255,10 @@ def parse(path: str | Path, file_type: str, document_id: str,
         list(getattr(document, "texts", [])) + list(getattr(document, "tables", [])))
     blocks: list[dict[str, Any]] = []
     for ordinal, item in enumerate(items):
+        label = getattr(item, "label", None)
+        label = getattr(label, "value", label)
+        if label == "picture" and getattr(item, "text", None) == "<!-- image -->":
+            continue
         value = getattr(item, "text", None)
         if not isinstance(value, str) and hasattr(item, "export_to_markdown"):
             value = item.export_to_markdown(document)
@@ -272,5 +276,7 @@ def parse(path: str | Path, file_type: str, document_id: str,
                 block["page"] = page
             if isinstance(ref, str) and ref.strip():
                 block["source_ref"] = ref
+            if isinstance(label, str) and label.strip():
+                block["layout_label"] = label
             blocks.extend(split_block(block, request_id))
     return blocks

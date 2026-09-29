@@ -290,6 +290,7 @@ export const ContactEvidenceSchema = z.object({
 
 export const ParsedBlockSchema = z.object({
   block_id: text, text, page: z.int().positive().optional(), source_ref: text.optional(),
+  layout_label: text.optional(),
 }).strict();
 
 export type ContactEntity = z.infer<typeof ContactEntitySchema>;
