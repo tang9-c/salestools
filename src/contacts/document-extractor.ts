@@ -142,7 +142,7 @@ function request(model: string, batch: readonly ParsedBlock[], prior: readonly P
     pending_experiences: [...new Map(prior.flatMap(c => c.pending_experiences).map(e => [JSON.stringify(e), e])).values()],
     source_quotes: prior.map(c => ({ subject_candidate_id: c.subject.candidate_id, block_id: aliases.get(c.block.block_id)!, quote: c.quote, ...(c.block.page === undefined ? {} : { page: c.block.page }) })),
   } : undefined;
-  return JSON.stringify({ model, messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: JSON.stringify({ ...(extracted_context ? { extracted_context } : {}), blocks: batch.map(b => ({ ...b, block_id: aliases.get(b.block_id)! })) }) }], response_format: { type: 'json_object' }, temperature: 0 });
+  return JSON.stringify({ model, messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: JSON.stringify({ ...(extracted_context ? { extracted_context } : {}), blocks: batch.map(b => ({ block_id: aliases.get(b.block_id)!, text: b.text })) }) }], response_format: { type: 'json_object' }, temperature: 0 });
 }
 export function quoteLocated(block: ParsedBlock, quote: string): boolean { return quote.trim().length > 0 && block.text.includes(quote); }
 function splitBlock(block: ParsedBlock, model: string, maxBytes: number, usedIds: Set<string>): ParsedBlock[] {
@@ -565,10 +565,20 @@ export class DocumentExtractor {
     const reserve = Math.min(1024, Math.max(0, Math.floor((maxBytes - emptyBytes) / 4)));
     const batchBytes = Buffer.byteLength(request(this.options.model, pieces), 'utf8') <= maxBytes
       ? maxBytes : maxBytes - reserve;
+    // Page boundaries are transport hints only. Keep a complete page together
+    // when it fits; oversized or unpaged input retains byte-bounded packing.
+    const pages: ParsedBlock[][] = [];
     for (const piece of pieces) {
+      const page = pages.at(-1);
+      if (piece.page !== undefined && page?.[0].page === piece.page) page.push(piece);
+      else pages.push([piece]);
+    }
+    const groups = pages.flatMap(page => Buffer.byteLength(request(this.options.model, page), 'utf8') <= batchBytes
+      ? [page] : page.map(piece => [piece]));
+    for (const group of groups) {
       const current = batches.at(-1);
-      if (current && Buffer.byteLength(request(this.options.model, [...current, piece]), 'utf8') <= batchBytes) current.push(piece);
-      else batches.push([piece]);
+      if (current && Buffer.byteLength(request(this.options.model, [...current, ...group]), 'utf8') <= batchBytes) current.push(...group);
+      else batches.push([...group]);
     }
     let candidates: ImportCandidate[] = [];
     let profiles: Profile[] = [];

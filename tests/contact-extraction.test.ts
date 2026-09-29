@@ -114,12 +114,12 @@ describe('DocumentProfile mapping', () => {
 });
 
 describe('DocumentProfile transport and context', () => {
-  it('sends full ordered blocks with labels in one request when they fit', async () => {
+  it('sends full ordered text and IDs in one request while retaining layout locally', async () => {
     const input = [{ block_id: 'h', text: '教育', layout_label: 'section_header' }, { block_id: 's', text: '学校' }, { block_id: 'w', text: '雇主' }];
     const fetchFn = vi.fn(async (_url, init) => {
       const body = String(init?.body), parsed = JSON.parse(body);
       expect(Buffer.byteLength(body)).toBeLessThanOrEqual(12288);
-      expect(JSON.parse(parsed.messages[1].content).blocks).toEqual(input);
+      expect(JSON.parse(parsed.messages[1].content).blocks).toEqual(input.map(({block_id,text}) => ({block_id,text})));
       expect(parsed.messages[0].content).toContain('subject_status');
       return response(profile());
     });
@@ -128,7 +128,7 @@ describe('DocumentProfile transport and context', () => {
     expect(result.processedBlockIds).toEqual(['h', 's', 'w']);
   });
   const bigInput = () => [{ block_id: 'document-owner-123456789012345', text: '林舟 甲 乙 秘密 ' + '附注'.repeat(1100), page: 1 }, { block_id: 'work', text: '星辰科技 ' + '说明'.repeat(1000), page: 2 }];
-  it('carries a profile and authorized quotes, resolves aliases, and maps cross-block employment without extra calls', async () => {
+  it('carries a profile and authorized quotes, resolves aliases, and maps cross-page employment without extra calls', async () => {
     const sent: any[] = [];
     const fetchFn = vi.fn(async (_url, init) => {
       const body = String(init?.body);
@@ -519,4 +519,23 @@ it('keeps a sourced earlier experience when a later batch repeats only an uncert
   expect(person.relation_suggestions).toContainEqual(expect.objectContaining({ relation_type: 'alumniOf', uncertain: false }));
   expect(person.review_items).toContainEqual(expect.objectContaining({ kind: 'relation', relation_type: 'alumniOf', reason: 'missing_evidence' }));
   expect(result.candidates.find(c => c.label === 'Organization')?.properties.name).toBe('学校');
+});
+
+it('keeps locator metadata local and packs complete pages when each fits the byte budget', async () => {
+  const sent: any[] = [];
+  const input = Array.from({ length: 50 }, (_, i) => ({ block_id: `p${i}`, text: (i === 30 ? '项目甲' : i === 40 ? '项目乙' : '正文') + '甲'.repeat(45), page: i < 25 ? 1 : 2 }));
+  const fetchFn = vi.fn(async (_url, init) => {
+    const body = String(init?.body);
+    expect(Buffer.byteLength(body)).toBeLessThanOrEqual(12288);
+    const payload = JSON.parse(JSON.parse(body).messages[1].content); sent.push(payload);
+    return response(profile({ person: sent.length === 1 ? [fact('properties.name', '正文', '正文', payload.blocks[0].block_id)] : [] }));
+  });
+  const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+  expect(sent).toHaveLength(2);
+  expect(sent.map(p => p.blocks.map((b: any) => b.block_id))).toEqual([input.slice(0, 25).map(b => b.block_id), input.slice(25).map(b => b.block_id)]);
+  expect(Object.keys(sent[0].blocks[0]).sort()).toEqual(['block_id', 'text']);
+  expect(sent[1].blocks.filter((b: any) => b.text.startsWith('项目'))).toHaveLength(2);
+  expect(sent[1].extracted_context.source_quotes).toContainEqual(expect.objectContaining({ quote: '正文', page: 1, subject_candidate_id: owner(result.candidates).candidate_id }));
+  expect(owner(result.candidates).evidence[0].page).toBe(1);
+  expect(result.processedBlockIds).toHaveLength(50);
 });
