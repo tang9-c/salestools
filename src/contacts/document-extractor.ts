@@ -176,14 +176,36 @@ type Draft = {
   review_items: ReviewItem[]; warnings: string[]; can_commit: boolean;
 };
 const PERSON_ID = 'document:person';
-const keyFor = (kind: string, id: string) => `${kind}:${id}`;
+// Tuple encoding keeps model-controlled local IDs separate from internal namespaces.
+const keyFor = (...parts: (string | number)[]) => JSON.stringify(parts);
 const entityId = (key: string) => `document:${key}`;
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
+const normalizedName = (name: string) => name.normalize('NFKC').trim();
+function matchingOrganizations(raw: unknown, candidates: ImportCandidate[]): string[] {
+  if (!Array.isArray(raw)) return [];
+  const facts = raw.map(f => Fact.safeParse(f));
+  if (facts.some(f => !f.success)) return [];
+  const valid = facts.flatMap(f => f.success ? [f.data] : []);
+  const names = valid.filter(f => f.field_path === 'properties.name');
+  if (!names.length || names.some(f => f.uncertain || typeof f.value !== 'string')) return [];
+  const name = normalizedName(names[0].value as string);
+  if (names.some(f => normalizedName(f.value as string) !== name)) return [];
+  return candidates.filter(c => c.label === 'Organization' && typeof c.properties.name === 'string'
+    && normalizedName(c.properties.name) === name && valid.every(f => {
+      const [root, field, extra] = f.field_path.split('.');
+      if (root !== 'properties' || !field || extra || !shapeValid('Organization', 'properties', field, f.value)) return false;
+      if (field === 'name') return true;
+      const prior = (c.properties as Record<string, unknown>)[field];
+      return prior === undefined || Array.isArray(prior) && prior.length === 0
+        || (arrayFields.has(field) && Array.isArray(prior) ? prior.some(v => equal(v, f.value)) : equal(prior, f.value));
+    })).map(c => c.candidate_id);
+}
+
 // Resolve aliases and scope old quotes before accumulating facts. Never join old quotes.
 function resolveProfile(profile: Profile, resolve: (block: string, quote: string, subjects: string[]) => string,
-  keys: Map<string, string>, batch: number): Profile {
+  keys: Map<string, string>, batch: number, previous: ImportCandidate[]): Profile {
   const bind = (raw: unknown, subjects: string[]) => {
     const value = object(raw);
     if (!Array.isArray(value.evidence)) return raw;
@@ -200,8 +222,12 @@ function resolveProfile(profile: Profile, resolve: (block: string, quote: string
     const ids = [PERSON_ID, id];
     if (kind === 'projects') return { ...entry, project: facts(entry.project, [id]), participation: bind(entry.participation, ids), role: facts(entry.role, ids),
       clients: Array.isArray(entry.clients) ? entry.clients.map((rawClient, n) => {
-        const client = object(rawClient), clientKey = `${key}:client:${n}`, clientId = keys.get(clientKey) ?? entityId(clientKey);
-        return { ...client, organization: facts(client.organization, [clientId]), client: bind(client.client, [id, clientId]) };
+        const client = object(rawClient), clientKey = keyFor('client', key, batch, index, n);
+        // Clients have no local_id: order is not identity. Only an unambiguous,
+        // compatible full organization name can authorize that prior entity's quotes.
+        const priorIds = matchingOrganizations(client.organization, previous);
+        const clientIds = [entityId(clientKey), ...(priorIds.length === 1 ? priorIds : [])];
+        return { ...client, organization: facts(client.organization, clientIds), client: bind(client.client, [id, ...clientIds]) };
       }) : entry.clients };
     const link = kind === 'education' ? 'attendance' : kind === 'employment' ? 'employment' : 'association';
     return { ...entry, organization: facts(entry.organization, [id]), [link]: bind(entry[link], ids), ...(kind === 'employment' ? { role: facts(entry.role, ids) } : {}) };
@@ -221,7 +247,10 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
   const reviewClues: { subjectId: string; blockId: string; quote: string }[] = [];
   let ambiguous = profiles.some(p => p.subject_status === 'ambiguous');
   const single = profiles.some(p => p.subject_status === 'single');
+  const allocatedIds = new Set<string>();
   const create = (label: Draft['label'], id: string): Draft => {
+    if (allocatedIds.has(id)) throw new Error('duplicate candidate ID');
+    allocatedIds.add(id);
     const draft: Draft = { candidate_id: id, label, properties: {}, extensions: {}, evidence: [], relation_suggestions: [], review_items: [], warnings: [], can_commit: false };
     drafts.push(draft); return draft;
   };
@@ -290,7 +319,12 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
     }
     if (role && typeof properties.startDate === 'string' && typeof properties.endDate === 'string'
       && properties.startDate.slice(0, properties.endDate.length) > properties.endDate.slice(0, properties.startDate.length)) {
-      review(draft, 'properties.role.endDate', properties.endDate, 'invalid_shape', {});
+      for (const raw of rawFacts) {
+        const fact = object(raw);
+        if (fact.field_path === 'properties.role.endDate' && equal(fact.value, properties.endDate)) {
+          review(draft, 'properties.role.endDate', properties.endDate, 'invalid_shape', raw);
+        }
+      }
       delete properties.endDate;
       draft.evidence = draft.evidence.filter(e => e.field_path !== 'properties.role.endDate');
     }
@@ -324,7 +358,8 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
     }
     source.relation_suggestions.push({ source_candidate_id: source.candidate_id, target_candidate_id: target.candidate_id, relation_type: type, properties, evidence: [...proofs, ...roleDraft.evidence], uncertain: clue });
   };
-  const groups = new Map<string, { kind: string; entries: Record<string, unknown>[]; conflict: boolean; ambiguousOwner: boolean }>();
+  const entryPositions = new Map<Record<string, unknown>, [number, number]>();
+  const groups = new Map<string, { kind: string; localId: string; entries: Record<string, unknown>[]; conflict: boolean; ambiguousOwner: boolean }>();
   const idKinds = new Map<string, string>();
   profiles.forEach((profile, batch) => {
     const localIds = new Set<string>();
@@ -336,9 +371,10 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
         const entry = parsed.data as Record<string, unknown>, localId = String(entry.local_id ?? `${batch}:${n}`), key = keyFor(kind, localId);
         const duplicate = kind !== 'organization_clues' && (localIds.has(localId) || idKinds.has(localId) && idKinds.get(localId) !== kind);
         if (kind !== 'organization_clues') { localIds.add(localId); idKinds.set(localId, kind); }
-        const group = groups.get(key) ?? { kind, entries: [], conflict: false, ambiguousOwner: false };
+        const group = groups.get(key) ?? { kind, localId, entries: [], conflict: false, ambiguousOwner: false };
+        entryPositions.set(entry, [batch, n]);
         group.entries.push(entry); group.conflict ||= duplicate; group.ambiguousOwner ||= profile.subject_status !== 'single'; groups.set(key, group);
-        if (duplicate) for (const [otherKey, other] of groups) if (otherKey.endsWith(`:${localId}`)) other.conflict = true;
+        if (duplicate) for (const other of groups.values()) if (other.localId === localId) other.conflict = true;
       });
     }
   });
@@ -352,16 +388,18 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
     const assessment = kind === 'education' ? 'attendance' : kind === 'employment' ? 'employment' : kind === 'projects' ? 'participation' : 'association';
     const type = kind === 'education' ? 'alumniOf' : kind === 'employment' ? 'worksFor' : kind === 'projects' ? 'memberOf' : 'affiliation';
     relation(person, target, type, entries.map(e => e[assessment]), entries.flatMap(e => Array.isArray(e.role) ? e.role : []), group.ambiguousOwner ? 'ambiguous_owner' : conflicting ? 'ambiguous_context' : undefined, kind === 'organization_clues');
-    if (kind !== 'organization_clues') pending.push({ local_id: key.slice(kind.length + 1), kind, source_candidate_id: PERSON_ID, target_candidate_id: target.candidate_id });
+    if (kind !== 'organization_clues') pending.push({ local_id: group.localId, kind, source_candidate_id: PERSON_ID, target_candidate_id: target.candidate_id });
     if (kind === 'projects') {
-      const clients = new Map<number, unknown[]>();
-      for (const entry of entries) (entry.clients as unknown[]).forEach((c, n) => clients.set(n, [...clients.get(n) ?? [], c]));
-      for (const [n, rawClients] of clients) {
-        const valid = rawClients.flatMap(raw => { const parsed = Client.safeParse(raw); if (parsed.success) return [parsed.data]; review(target, '$client', raw, 'invalid_shape', raw); return []; });
-        if (!valid.length) continue;
-        const clientKey = `${key}:client:${n}`, client = create('Organization', entityId(clientKey)); keys.set(clientKey, client.candidate_id);
-        fields(client, valid.flatMap(c => c.organization), forced);
-        relation(target, client, 'clientOrganization', valid.map(c => c.client), [], group.ambiguousOwner ? 'ambiguous_owner' : conflicting || client.review_items.some(r => r.reason === 'ambiguous_context') ? 'ambiguous_context' : undefined);
+      for (const entry of entries) {
+        const [batch, entryIndex] = entryPositions.get(entry)!;
+        (entry.clients as unknown[]).forEach((raw, n) => {
+          const parsed = Client.safeParse(raw);
+          if (!parsed.success) { review(target, '$client', raw, 'invalid_shape', raw); return; }
+          const clientKey = keyFor('client', key, batch, entryIndex, n);
+          const client = create('Organization', entityId(clientKey)); keys.set(clientKey, client.candidate_id);
+          fields(client, parsed.data.organization, forced);
+          relation(target, client, 'clientOrganization', [parsed.data.client], [], group.ambiguousOwner ? 'ambiguous_owner' : conflicting || client.review_items.some(r => r.reason === 'ambiguous_context') ? 'ambiguous_context' : undefined);
+        });
       }
     }
   }
@@ -390,6 +428,16 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
         if (proof.field_path === '$relation') proof.value = { relation_type: r.relation_type, source_id: r.source_candidate_id, target_id: r.target_candidate_id };
       }
     }
+    const clientRelations = new Map<string, ImportCandidate['relation_suggestions'][number]>();
+    draft.relation_suggestions = draft.relation_suggestions.filter(r => {
+      if (r.relation_type !== 'clientOrganization') return true;
+      const key = keyFor(r.source_candidate_id, r.target_candidate_id, JSON.stringify(r.properties), String(r.uncertain));
+      const prior = clientRelations.get(key);
+      if (!prior) { clientRelations.set(key, r); return true; }
+      for (const proof of r.evidence) if (!prior.evidence.some(e => e.field_path === proof.field_path && equal(e.value, proof.value)
+        && e.quote === proof.quote && origin.get(e.evidence_id) === origin.get(proof.evidence_id))) prior.evidence.push(proof);
+      return false;
+    });
     draft.can_commit = draft.label === 'Person' ? single && !ambiguous && (draft.evidence.length > 0 || draft.relation_suggestions.some(r => ['worksFor', 'alumniOf'].includes(r.relation_type) && !r.uncertain))
       : draft.label === 'Organization' ? typeof draft.properties.name === 'string' : typeof draft.properties.name === 'string' || typeof draft.properties.description === 'string';
     if (draft === person && ambiguous) draft.warnings.push('主体身份存在歧义，未自动选择联系人');
@@ -399,6 +447,7 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
     const { extensions, ...rest } = d;
     return ImportCandidateSchema.parse({ ...rest, ...(d.label === 'Person' ? { extensions } : {}), review_items: d.review_items.slice(0, 100) });
   });
+  if (new Set(candidates.map(c => c.candidate_id)).size !== candidates.length) throw new Error('duplicate output candidate ID');
   const clues: PriorClue[] = [];
   for (const candidate of candidates) {
     const subject = { candidate_id: candidate.candidate_id, label: candidate.label, ...(candidate.properties.name ? { name: candidate.properties.name } : {}) };
@@ -512,7 +561,7 @@ export class DocumentExtractor {
         const entityCount = 1 + raw.education.length + raw.employment.length + raw.organization_clues.length
           + raw.projects.reduce<number>((count, item) => count + 1 + (Array.isArray(object(item).clients) ? (object(item).clients as unknown[]).length : 0), 0);
         if (entityCount > 100) throw new Error('candidate limit exceeded');
-        const profile = resolveProfile(raw, resolveProof, keys, index);
+        const profile = resolveProfile(raw, resolveProof, keys, index, candidates);
         const next = [...profiles, profile];
         const mapped = mapProfiles(next, pieceMap, this.options);
         profiles = next; candidates = mapped.candidates; keys = mapped.keys; priorClues = mapped.clues;

@@ -338,3 +338,90 @@ it('deduplicates only normalized full organization names and remaps relation evi
   expect(relations).toHaveLength(2);
   for (const relation of relations) expect(relation.evidence.find(e => e.field_path === '$relation')?.value).toEqual({ relation_type: 'worksFor', source_id: relation.source_candidate_id, target_id: relation.target_candidate_id });
 });
+
+describe('review regressions: candidate identity and client accumulation', () => {
+  const project = (local_id: string, clients: unknown[], block = 'b1') => ({ local_id, project: org('项目', '原文', block), participation: link('原文', block), role: [], clients });
+  it('keeps delimiter-bearing local_ids distinct from generated client identities', async () => {
+    const result = await run(profile({ person: [fact('properties.name', '本人')], projects: [project('p', [{ organization: org('客户甲'), client: link() }]), project('p:client:0', [])] }));
+    const ids = result.candidates.map(c => c.candidate_id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const byId = new Map(result.candidates.map(c => [c.candidate_id, c]));
+    for (const candidate of result.candidates) for (const relation of candidate.relation_suggestions) {
+      expect(byId.get(relation.source_candidate_id)?.label).toBe(relation.relation_type === 'clientOrganization' ? 'Project' : 'Person');
+      expect(byId.get(relation.target_candidate_id)?.label).toBe(relation.relation_type === 'clientOrganization' ? 'Organization' : 'Project');
+    }
+    expect(result.candidates.filter(c => c.label === 'Project')).toHaveLength(2);
+  });
+  it.each(['new', 'reordered'])('keeps cross-batch clients and their properties attached when %s', async mode => {
+    let call = 0; const sent: any[] = [];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content); sent.push(payload);
+      const block = payload.blocks[0].block_id;
+      const client = (name: string) => ({ organization: [...org(name, name, block), fact('properties.address', name === '客户甲' ? '北京' : '上海', name, block)], client: link(name, block) });
+      return response(profile({ person: [fact('properties.name', '本人', '原文', block)], projects: [project('p', call++ === 0 ? [client('客户甲'), ...(mode === 'reordered' ? [client('客户乙')] : [])] : mode === 'reordered' ? [client('客户乙'), client('客户甲')] : [client('客户乙')], block)] }));
+    });
+    const result = await extractor(fetchFn).extract([{ block_id: 'a', text: '原文 客户甲 客户乙 ' + '甲'.repeat(2300) }, { block_id: 'b', text: '原文 客户甲 客户乙 ' + '乙'.repeat(2300) }], new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    const clients = result.candidates.filter(c => c.label === 'Organization');
+    expect(clients.map(c => [c.properties.name, c.properties.address]).sort()).toEqual([['客户乙', '上海'], ['客户甲', '北京']].sort());
+    const p = result.candidates.find(c => c.label === 'Project')!;
+    expect(p.relation_suggestions).toHaveLength(2);
+    expect(p.review_items).toEqual([]);
+    for (const relation of p.relation_suggestions) {
+      const target = clients.find(c => c.candidate_id === relation.target_candidate_id)!;
+      expect(relation.uncertain).toBe(false);
+      expect(relation.evidence.filter(e => e.field_path === '$relation').every(e => e.quote === target.properties.name)).toBe(true);
+    }
+  });
+  it('binds reordered client old quotes by organization identity instead of prior array position', async () => {
+    let call = 0;
+    const fetchFn = vi.fn(async (_url, init) => {
+      const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content), block = payload.blocks[0].block_id;
+      if (call++ === 0) return response(profile({ projects: [project('p', ['客户甲', '客户乙'].map(name => ({ organization: org(name, name, block), client: link(name, block) })), block)] }));
+      const refs = payload.extracted_context.source_quotes;
+      const subjects = payload.extracted_context.subjects;
+      const client = (name: string) => {
+        const subject = subjects.find((s: any) => s.label === 'Organization' && s.name === name);
+        const quote = refs.find((r: any) => r.subject_candidate_id === subject.candidate_id);
+        return { organization: org(name, name, quote.block_id), client: link(name, quote.block_id) };
+      };
+      return response(profile({ projects: [project('p', [client('客户乙'), client('客户甲')], block)] }));
+    });
+    const result = await extractor(fetchFn).extract([{ block_id: 'a', text: '原文 客户甲 客户乙 ' + '甲'.repeat(2200) }, { block_id: 'b', text: '原文 ' + '乙'.repeat(2200) }], new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(result.candidates.filter(c => c.label === 'Organization').map(c => c.properties.name).sort()).toEqual(['客户乙', '客户甲'].sort());
+    expect(result.candidates.flatMap(c => c.review_items)).toEqual([]);
+    expect(result.candidates.find(c => c.label === 'Project')?.relation_suggestions).toHaveLength(2);
+  });
+  it('preserves quote and page when a valid role date is downgraded for an inverted interval', async () => {
+    const result = await run(profile({ employment: [{ local_id: 'job', organization: org('雇主'), employment: link(), role: [fact('properties.role.startDate', '2025'), fact('properties.role.endDate', '2020')] }] }));
+    const person = owner(result.candidates);
+    expect(person.review_items).toContainEqual(expect.objectContaining({ field_path: 'properties.role.endDate', value: '2020', reason: 'invalid_shape', quote: '原文', page: 7 }));
+    expect(person.relation_suggestions[0].evidence.some(e => e.field_path === 'properties.role.endDate')).toBe(false);
+  });
+});
+
+it('does not let a reordered client borrow a different organization old quote', async () => {
+  let call = 0;
+  const fetchFn = vi.fn(async (_url, init) => {
+    const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content), block = payload.blocks[0].block_id;
+    const project = (clients: unknown[]) => ({ local_id: 'p', project: org('项目', '原文', block), participation: link('原文', block), role: [], clients });
+    if (call++ === 0) return response(profile({ projects: [project(['客户甲', '客户乙'].map(name => ({ organization: org(name, name, block), client: link(name, block) })))] }));
+    const old = payload.extracted_context.source_quotes.find((q: any) => q.quote === '客户甲');
+    return response(profile({ projects: [project([{ organization: [fact('properties.name', '客户乙', '客户甲', old.block_id), fact('properties.description', '冒用甲方资料', '客户甲', old.block_id)], client: link('原文', block) }])] }));
+  });
+  const result = await extractor(fetchFn).extract([{ block_id: 'a', text: '原文 客户甲 客户乙 ' + '甲'.repeat(2200) }, { block_id: 'b', text: '原文 ' + '乙'.repeat(2200) }], new AbortController().signal);
+  expect(fetchFn).toHaveBeenCalledTimes(2);
+  expect(result.candidates.some(c => c.properties.description === '冒用甲方资料')).toBe(false);
+  expect(result.candidates.flatMap(c => c.review_items)).toContainEqual(expect.objectContaining({ field_path: 'properties.description', reason: 'quote_mismatch' }));
+});
+it('retains a downgraded date quote and page in later authorized context', async () => {
+  let call = 0; const sent: any[] = [];
+  const fetchFn = vi.fn(async (_url, init) => {
+    const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content), block = payload.blocks[0].block_id; sent.push(payload);
+    return response(call++ === 0 ? profile({ employment: [{ local_id: 'job', organization: org('雇主', '原文', block), employment: link('原文', block), role: [fact('properties.role.startDate', '2025', '原文', block), fact('properties.role.endDate', '2020', '结束日期2020', block)] }] }) : profile());
+  });
+  const result = await extractor(fetchFn).extract([{ block_id: 'a', page: 7, text: '原文 结束日期2020 ' + '甲'.repeat(2200) }, { block_id: 'b', text: '原文 ' + '乙'.repeat(2200) }], new AbortController().signal);
+  expect(fetchFn).toHaveBeenCalledTimes(2);
+  expect(sent[1].extracted_context.source_quotes).toContainEqual(expect.objectContaining({ quote: '结束日期2020', page: 7, subject_candidate_id: owner(result.candidates).candidate_id }));
+});
