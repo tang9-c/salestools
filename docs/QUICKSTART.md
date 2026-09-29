@@ -24,7 +24,12 @@ npm run contacts:upload -- ./简历.pdf ./名片.png
 
 CLI 逐个上传并输出 JSON：`accepted` 列出已接收的本地路径和 `file_id`，`unuploaded` 列出失败文件及尚未尝试的文件。容量满额时以非零状态结束；请记录已接收的 `file_id`，待服务端释放名额后自行重试 `unuploaded` 中的路径。上传不会自动发起联系人抽取、等待名额或续传。Token 只从 `CONTACT_UPLOAD_TOKEN` 环境变量读取，不要作为命令行参数传入。
 
-上传成功后，在启用了 `CONTACT_GRAPH_ENABLED=true` 的服务中，使用返回的 `file_id` 调用 `import_contacts`，并自定一个以后重试仍保持不变的 `operation_id`。再用 `get_contact_import` 查看状态、候选和短证据。单主体简历到达 `ready_for_review` 后，可调用 `commit_contact_import({import_id,preview_version,operation_id:"contact-import:<import_id>",auto_create:true})`：服务创建一个有证据、可提交的主体 `Person`，以及有定位证据的组织、项目节点；明确的任职、就读、项目参与和项目客户关系会以文件证据自动入图，弱建议保存为 `unverified` 线索。项目客户不会被当作雇主。证明人、推荐人或紧急联系人只留在预览，不自动建档；多个仍可提交、无法判定主体的人物或没有可提交主体时，自动模式拒绝且不部分写入。需要合并、跳过或修正字段时仍可使用 `choices` 和 `relation_choices` 手工提交，但同一文件不能选择创建两个 `Person`。系统不会因号码相同而自动合并；响应丢失时用相同提交请求重试。不准备提交时可用 `cancel_contact_import`。
+上传成功后，在启用了 `CONTACT_GRAPH_ENABLED=true` 的服务中，使用返回的 `file_id` 调用 `import_contacts`，并自定一个以后重试仍保持不变的 `operation_id`。再用 `get_contact_import` 查看状态、候选和短证据。单主体简历到达 `ready_for_review` 后，可调用 `commit_contact_import({import_id,preview_version,operation_id:"contact-import:<import_id>",auto_create:true})`：服务创建一个有证据、可提交的主体 `Person`，以及有定位证据的组织、项目节点；明确的任职、就读、项目参与和项目客户关系会以文件证据自动入图，弱建议保存为 `unverified` 线索。项目客户不会被当作雇主。证明人、推荐人或紧急联系人不作为主体抽取或自动建档；多个仍可提交、无法判定主体的人物或没有可提交主体时，自动模式拒绝且不部分写入。需要合并、跳过或修正字段时仍可使用 `choices` 和 `relation_choices` 手工提交，但同一文件不能选择创建两个 `Person`。系统不会因号码相同而自动合并；响应丢失时用相同提交请求重试。不准备提交时可用 `cancel_contact_import`。
+
+导入结果应同时报告已保存的档案／关系、待核实线索和未处理范围（`processed_block_ids`、`unprocessed_block_ids` 及警告）。Docling 负责读出正文，LLM 负责跨块归属和语义归纳；来源引文能定位并不代表已经人工核实。没有姓名的有效简历可保存匿名档案，随后用 `save_contact` 在原 ID 补姓名。求职意向不作现任，在读不代表毕业。
+
+综合查找学校、公司或项目客户时使用 `search_contacts` 的 `include_unverified:true`，按 `match_status` 标记弱结果；默认正式查询和问答语义不变。用 `get_contact({entity_id,claim_offset,claim_limit})` 核对并按返回分页继续读；项目客户的 claims 可能分别属于 Person 和 Project。确认／拒绝用 `review_contact_claim`（确认须审核说明），错误正式字段用 `save_contact` 配合当前版本及真实修正证据。无须导入前逐项人工审核。相同 operation_id 重试不会重新抽取，未处理内容没有自动断点续跑；新操作会提示重复文件，不自动合并。
+
 
 无真实姓名和手机号的简历也可入库：匿名候选须有已定位的技能等实质字段证据。满足条件且只有一个实质人物时，可用同一 `auto_create:true` 模式创建匿名 `Person`，不要填写“未知姓名”等占位 `name`。未确认的任职／就读线索可用 `search_contacts({query:"公司名",mode:"keyword",include_unverified:true})` 或学校名查找，结果标为 `unverified`；已确认关系可用普通 `search_contacts` 查找。结果的 `name` 为 `null`，`display_name` 由稳定 ID 派生。用 `get_contact` 查看资料、证据及线索；确认真实姓名后用 `save_contact` 在同一 `entity_id` 补录。只看到机构名、没有人物自身的实质字段证据时，自动模式不创建空白人物。不同简历不会自动合并，原件及完整 OCR 文本不会持久化到图谱。
 

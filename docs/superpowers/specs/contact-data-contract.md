@@ -15,7 +15,13 @@
 
 `tests/fixtures/contact-contracts/` 中独立 JSON 文件示范完整实体、任职关系与错误块；`cases.json` 的每条记录包含 `id`、`entrypoint`、`input`、`expected_valid`。Node 的 `tests/contact-contracts.test.ts` 按入口调用实际 Zod 契约；Rust 测试复用适用的实体、关系、证据样例执行最终入库校验；Python 只复用 `parsed_block` 样例。只适用于有状态存储的版本冲突、合并及关系去重，放在 Rust 集成测试中，不伪装成单对象解析失败。
 
-`cases.json` 覆盖最小姓名档案、31 项人物标准属性（其中 21 项扩充在同一完整样例中）、组织标识、项目扩展、多个微信号、助理联系方式、部分日期、出生／去世顺序、嵌套未知键、任职状态冲突、反向亲子输入、逐字段证据及块页码。`Person.properties` 的 31 项标准词汇和四项 `extensions` 均以方案表格为封闭白名单。模型抽取时缺失字段不补造；同名、电话号码及向量相似度均不能自行决定跨文件或现有图谱实体的身份合并。同一文件内，可凭有原文证据的相同个人手机号／邮箱，或无第二人物线索且身份字段无冲突的明确单人简历锚点，将跨批次人物片段归到同一个待审核候选。多人、同名不同联系方式、组织总机／公共邮箱保持分开；数组值去重但逐字段来源与待核实项保留。标量冲突不擅选任何值，冲突值与短来源进入待核实项；关系端点和证据主体重映射到最终候选，多段任职仍独立。合并若超出候选契约上限则保留原片段并告警，不能丢弃线索。这不触发现有图谱实体的自动合并。
+`cases.json` 覆盖最小姓名档案、31 项人物标准属性（其中 21 项扩充在同一完整样例中）、组织标识、项目扩展、多个微信号、助理联系方式、部分日期、出生／去世顺序、嵌套未知键、任职状态冲突、反向亲子输入、逐字段证据及块页码。`Person.properties` 的 31 项标准词汇和四项 `extensions` 均以方案表格为封闭白名单。模型抽取时缺失字段不补造；同名、电话号码及向量相似度均不能自行决定跨文件或现有图谱实体的身份合并。同一文件通过模型的 `subject_status:single` 对齐主体；身份标量冲突进入待核实，不根据姓名或号码自动跨文件合并。模型返回临时 `DocumentProfile`：`person` 的逐项 Fact、`education`、`employment`、`projects`（嵌套客户）及 `organization_clues`。Fact 包含字段路径、值、原块短引文和 `uncertain`；关系 Link 独立携带引文和不确定标记。经历的 `local_id` 只在当前文档内使用，后批必须显式沿用同一引用才合并，不能成为数据库 ID。
+
+程序映射 `education→alumniOf`、`employment→worksFor`、`projects→memberOf` 与嵌套 `clientOrganization`；`organization_clues→affiliation` 始终待核实。同一文件的组织仅按规范化完整名称且属性无冲突去重；同名项目和多段任职保留独立经历。该临时结构不增加持久化模型或公共工具。
+
+来源定位与语义理解分开：程序只检查字段白名单、值类型、真实端点、版本、引文确实属于引用原块等确定性约束；模型判断主体、雇主／客户／学校及归纳值是否受来源支持。引文可定位不证明语义正确，不要求字段值完整包含在引文中，也不要求值只出现一次。可引用多个块，但每条引文必须逐块独立定位。`uncertain` 缺省为 true；缺证据、伪引文、结构错误、显式标量冲突进入 `review_items`，保留合法部分。已抽取正式事实不等于人工核实。
+
+完整请求能装下时发送整篇；超预算才分批，后续仅携带受限主体／经历上下文与已成功处理的短原文。默认请求 12,288 字节、8 批、16 次调用不变。失败或预算耗尽保留此前结果，用 `processed_block_ids`／`unprocessed_block_ids` 报告范围，截断有告警。重放同一提交只是幂等回放，不重新提取，也不承诺断点续跑。
 
 ## 进程协议
 
@@ -31,4 +37,4 @@ Python 只接收由 Node 生成的本地临时路径的 `parse` 请求，逐块�
 
 ### Node 候选抽取的上游映射
 
-同一固定提交的 [`direct/prompts.py`](https://github.com/docling-project/docling-graph/blob/bbcd0e4846fadfcadac2800784783e59cd2722a9/docling_graph/core/extractors/contracts/direct/prompts.py) 的“只抽有文本支持的字段、缺失则省略、固定 JSON”映射到 `document-extractor.ts` 的固定提示词和严格 Zod 校验；本地额外要求每个值携带 `block_id` 和短引文。上游 [`document_chunker.py`](https://github.com/docling-project/docling-graph/blob/bbcd0e4846fadfcadac2800784783e59cd2722a9/docling_graph/core/extractors/document_chunker.py) 的超大块硬拆分映射到 Node 完整请求 UTF-8 字节预算，保留子块至父块映射；本地不用 tokenizer。上游 [`llm_backend.py` 的 `_validate_extraction`](https://github.com/docling-project/docling-graph/blob/bbcd0e4846fadfcadac2800784783e59cd2722a9/docling_graph/core/extractors/backends/llm_backend.py) 会尝试填充、强制类型和删去错误字段，本地为了避免联系人凭空补全，校验失败只给告警，不做自动修复。上游 [`many_to_one.py` 的 `_extract_with_vlm`](https://github.com/docling-project/docling-graph/blob/bbcd0e4846fadfcadac2800784783e59cd2722a9/docling_graph/core/extractors/strategies/many_to_one.py) 在合并失败时保留各页结果，本地仅在上述同文件强个人标识或明确单人简历锚点成立时归并片段，仅同名仍保留独立候选。上游 [`provenance/binder.py`](https://github.com/docling-project/docling-graph/blob/bbcd0e4846fadfcadac2800784783e59cd2722a9/docling_graph/core/provenance/binder.py) 以文本锚点定位来源并在歧义时不强绑；本地逐字段验证引文属于精确块、页码只取解析块，无法定位则标为 `unavailable`。OCR 把人名、组织、职位拆成不同块时，仅在同页只有一条明确任职陈述、职位值只出现一次且人名和组织均可定位的情况下补绑定职位证据；同页多关系不猜归属。未复制上游源码。
+固定上游提交保持 `bbcd0e4846fadfcadac2800784783e59cd2722a9`，参照记录见本轮计划和 Task 2 报告。`direct/prompts.py` 的全文语义抽取映射为固定 DocumentProfile 提示词；`document_chunker.py` 的分块映射为完整请求字节预算；`many_to_one.py` 的保留部分结果映射为逐批累积和未处理块清单；`provenance/binder.py` 的来源绑定映射为精确 block_id 与独立短引文检查。没有移植完整框架，也没有新增视觉模型或第二语义审核模型。原本依赖相邻标题、同页唯一职位、完整值包含的本地语义门槛已删除；证明人识别、当前职位和学校／客户归属由模型处理，必须另用真实样本验收，不能用模型桩宣称已证明语义准确。

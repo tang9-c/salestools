@@ -33,7 +33,7 @@ description: Use when a user wants to find contacts across the Salestools librar
 ## 导入与写入边界
 
 1. `import_contacts` 只启动抽取，不创建正式联系人。保存返回的 `import_id`，用 `get_contact_import` 查看状态、分页候选、短引文、`review_items`、未选择的关系建议、警告和重复建议。`ready_for_review` 才能准备提交；`failed/cancelled` 不是成功。
-2. 用户明确要求导入简历／名片时，等预览到 `ready_for_review`，核对候选数量、来源、证据、未核实项和重复建议后，默认调用 `commit_contact_import` 的 `auto_create:true`；无需让用户逐候选或逐关系确认。每份文件只自动创建一个有实质内容的主体 `Person`，以及有定位证据的 `Organization`、与主体项目建议相连的 `Project`。文件证据明确且语境、端点有效时，雇主 `worksFor`、学校 `alumniOf`、项目参与 `memberOf` 和项目客户 `clientOrganization` 分别成为正式边；其余有效建议保留为 `unverified`。项目客户绝不直接作为人物雇主。证明人、推荐人或紧急联系人只留在预览，不自动建档。文件提取的正式事实仍须注明“来自文件，未经人工核对”。姓名、手机号或账号相同只提示可能重复，不自动合并。
+2. 用户明确要求导入简历／名片时，等预览到 `ready_for_review`，核对候选数量、来源、证据、未核实项和重复建议后，默认调用 `commit_contact_import` 的 `auto_create:true`；无需让用户逐候选或逐关系确认。每份文件只自动创建一个有实质内容的主体 `Person`，以及有定位证据的 `Organization`、与主体项目建议相连的 `Project`。文件证据明确且语境、端点有效时，雇主 `worksFor`、学校 `alumniOf`、项目参与 `memberOf` 和项目客户 `clientOrganization` 分别成为正式边；其余有效建议保留为 `unverified`。项目客户绝不直接作为人物雇主。证明人、推荐人或紧急联系人不作为主体抽取或自动建档。文件提取的正式事实仍须注明“来自文件，未经人工核对”。姓名、手机号或账号相同只提示可能重复，不自动合并。
 3. 若预览有多个仍可提交、无法判定主体的人物，或没有可提交的主体人物，自动提交会拒绝且不部分写入；此时只向用户询问具体主体归属或说明缺少证据。用户明确要求合并、跳过、修改字段或直接建立正式关系时，再使用手工 `choices`／`relation_choices`；手工模式同一文件也不能创建两个 `Person`，合并选择需 `target_id` 与 `expected_target_version`。提交一律携带 `preview_version`，`operation_id` 固定为 `contact-import:<import_id>`。响应丢失时用同一 ID 和相同请求重试，不生成新 ID 盲目重放。
 4. 其他写工具也要使用稳定 `operation_id`；修改、归档和合并遵守服务端要求的版本。归档不是永久删除；恢复必须明确请求。敏感的关系或联系方式只按有依据的来源或用户确认保存，不从姓名、公司、照片或号码推断。
 
@@ -42,8 +42,10 @@ description: Use when a user wants to find contacts across the Salestools librar
 ## 解释结果
 
 - 人物的 `jobTitle` 不是某家公司的任职证明。回答“现任公司”须看相应 `worksFor` 的 `employment_status=current`、证据及 `status_as_of`；没有结束日期不表示仍在职。
-- `alumniOf` 只表示校友关系，不自动证明毕业或学位；婚姻状态与 `spouse` 关系也不能互相推断。
+- `alumniOf` 记录就读／校友关系，不自动证明毕业或学位；婚姻状态与 `spouse` 关系也不能互相推断。
 - `ask_contacts` 的 `answered/clarify/insufficient/failed` 按原义呈现，保留实际引文、来源及时间。它回答库内已有资料，不替用户进行新的公开网页尽调。
 - 不把导入文件或库内的个人电话、邮箱自动写入 `get_contacts` 的公开搜索结果，也不将完整原件或 OCR 正文复制进回答。
 
 详细字段与关系契约以仓库 `docs/superpowers/specs/contact-data-contract.md` 和 MCP 工具输入定义为准；不要凭 skill 猜测未列字段。
+
+导入结果必须分别报告：已提交回读的档案和关系、带原因的待核实线索、`processed_block_ids`／`unprocessed_block_ids` 所示处理范围及告警。只有预览或 OCR 成功不能称为已入库。预算耗尽、部分模型失败或 OCR 无正文时，不把未读取部分说成已保存。来源定位只验证引文所属原块，语义归纳及主体归属由模型判断；正式文件事实仍未经人工核实。匿名档案可用学校／公司搜索，后续用 `save_contact` 在原 ID 补姓名。原样重试是幂等回放，不是重新提取，也没有自动断点续跑；重新导入产生重复提示，不自动跨文件合并。
