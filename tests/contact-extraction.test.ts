@@ -13,7 +13,7 @@ const run = (data: unknown, text = '原文', overrides = {}) => extractor(vi.fn(
 const owner = (candidates: ImportCandidate[]) => candidates.find(c => c.label === 'Person')!;
 const org = (name: string, quote = '原文', block_id = 'b1') => [fact('properties.name', name, quote, block_id)];
 
-it('explicitly disables thinking on every contact-document model request within the byte budget', async () => {
+it('explicitly enables thinking on every contact-document model request within the byte budget', async () => {
   const bodies: any[] = [];
   const fetchFn = vi.fn(async (_url, init) => {
     const body = String(init?.body);
@@ -29,7 +29,7 @@ it('explicitly disables thinking on every contact-document model request within 
     [{ block_id: 'b1', text: '本人参与项目甲，使用Python' }], new AbortController().signal);
   expect(bodies).toHaveLength(3);
   expect(bodies.map(body => body.thinking)).toEqual([
-    { type: 'disabled' }, { type: 'disabled' }, { type: 'disabled' },
+    { type: 'enabled' }, { type: 'enabled' }, { type: 'enabled' },
   ]);
   expect(bodies.map(body => body.max_tokens)).toEqual([8192, 8192, 16384]);
   expect(owner(result.candidates).properties).toMatchObject({ name: '本人', skills: ['Python'] });
