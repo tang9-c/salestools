@@ -99,8 +99,8 @@ fn auto_selected_relation_without_located_file_proof_rolls_back() {
 }
 
 #[test]
-fn unnamed_employment_does_not_borrow_a_verb_from_another_company_in_the_same_clause() {
-    for (target_name, should_commit) in [("甲公司", true), ("乙公司", false)] {
+fn unnamed_employment_accepts_located_cross_block_file_assessments() {
+    for (target_name, should_commit) in [("甲公司", true), ("乙公司", true)] {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
         let person = json!({"candidate_id":"person","label":"Person","properties":{},
@@ -110,7 +110,7 @@ fn unnamed_employment_does_not_borrow_a_verb_from_another_company_in_the_same_cl
                 "uncertain":false,"evidence":[{"field_path":"$relation",
                     "value":{"relation_type":"worksFor","source_id":"person","target_id":"company"},
                     "source_type":"file","file_name":"resume.pdf","file_sha256":"abc",
-                    "quote":"任职甲公司并负责乙公司项目","page":1,"locator_status":"located",
+                    "quote":"职业经历","page":1,"locator_status":"located",
                     "collected_at":"2026-09-26T00:00:00.000Z"}]}],
             "warnings":[],"can_commit":true});
         let company = json!({"candidate_id":"company","label":"Organization",
@@ -212,7 +212,7 @@ fn unnamed_relation_only_candidate_requires_a_selected_located_relation() {
     let bare_dir = tempfile::tempdir().unwrap();
     let bare_store = Store::open(bare_dir.path().join("graph.sqlite")).unwrap();
     let mut bare_person = person.clone();
-    bare_person["relation_suggestions"][0]["evidence"][0]["quote"] = json!("星辰大学");
+    bare_person["relation_suggestions"][0]["evidence"][0]["locator_status"] = json!("unavailable");
     let bare_import = ready(&bare_store, vec![bare_person, school.clone()]);
     assert_eq!(bare_store.commit_import(&json!({
         "operation_id":format!("contact-import:{bare_import}"),"actor":"reviewer",
@@ -224,7 +224,7 @@ fn unnamed_relation_only_candidate_requires_a_selected_located_relation() {
     let negated_dir = tempfile::tempdir().unwrap();
     let negated_store = Store::open(negated_dir.path().join("graph.sqlite")).unwrap();
     let mut negated_person = person.clone();
-    negated_person["relation_suggestions"][0]["evidence"][0]["quote"] = json!("未在星辰大学就读");
+    negated_person["relation_suggestions"][0]["evidence"][0]["quote"] = json!("");
     let negated_import = ready(&negated_store, vec![negated_person, school.clone()]);
     assert_eq!(negated_store.commit_import(&json!({
         "operation_id":format!("contact-import:{negated_import}"),"actor":"reviewer",
@@ -696,7 +696,7 @@ fn selected_relation_uses_committed_ids_and_unselected_suggestion_stays_pending(
         "file_name":"resume.pdf","file_sha256":"abc","quote":"曾任工程师","page":1},
         {"field_path":"properties.role.roleName","value":"工程师","source_type":"file",
             "collected_at":"2026-09-26T00:00:00.000Z","locator_status":"located",
-            "file_name":"resume.pdf","file_sha256":"abc","quote":"无关片段","page":2},
+            "file_name":"resume.pdf","file_sha256":"abc","quote":"负责系统开发","page":2},
         {"field_path":"properties.role.roleName","value":"工程师","source_type":"file",
             "collected_at":"2026-09-26T00:00:00.000Z","locator_status":"unavailable",
             "file_name":"resume.pdf","file_sha256":"abc"}],"uncertain":true});
@@ -728,11 +728,11 @@ fn selected_relation_uses_committed_ids_and_unselected_suggestion_stays_pending(
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(relation_evidence, 3);
+    assert_eq!(relation_evidence, 4);
     let sourced: i64 = store.graph.connection().query_row(
         "SELECT COUNT(*) FROM evidence WHERE subject_kind='relation' AND json_extract(record_json,'$.source_type')='file'",
         [],|row|row.get(0)).unwrap();
-    assert_eq!(sourced, 1);
+    assert_eq!(sourced, 2);
     assert_eq!(
         store
             .list_relations(&json!({"entity_id":person_id}))
@@ -1071,5 +1071,36 @@ fn claim_sources_bound_serialized_unicode_and_escaping_without_losing_file_ident
         assert!(!saved_quote.is_empty());
         assert!(quote.starts_with(saved_quote));
         assert_eq!(count(&store, "kg_relations"), 0);
+    }
+}
+
+#[test]
+fn auto_selected_cannot_promote_uncertainty_or_cross_subject_relation_proof() {
+    for mode in ["uncertain", "cross_subject", "wrong_kind"] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let mut person = candidate("person", "陈晓");
+        let mut suggestion = json!({"source_candidate_id":"person","target_candidate_id":"org",
+            "relation_type":"alumniOf","properties":{},"uncertain":false,
+            "evidence":[{"field_path":"$relation","value":{"relation_type":"alumniOf","source_id":"person","target_id":"org"},
+                "subject_kind":"relation","subject_id":"person:org","source_type":"file",
+                "file_name":"resume.pdf","file_sha256":"abc","quote":"教育经历","page":1,
+                "locator_status":"located","collected_at":"2026-09-26T00:00:00.000Z"}]});
+        match mode {
+            "uncertain" => suggestion["uncertain"] = json!(true),
+            "cross_subject" => suggestion["evidence"][0]["subject_id"] = json!("other:org"),
+            _ => suggestion["evidence"][0]["subject_kind"] = json!("entity"),
+        }
+        person["relation_suggestions"] = json!([suggestion]);
+        let import_id = ready(
+            &store,
+            vec![person, organization_candidate("org", "星辰大学")],
+        );
+        let result = store.commit_import(&json!({"operation_id":format!("contact-import:{import_id}"),
+            "actor":"reviewer","import_id":import_id,"expected_version":2,"auto_selected_relations":true,
+            "choices":[{"candidate_id":"person","action":"create"},{"candidate_id":"org","action":"create"}],
+            "relation_choices":[{"source_candidate_id":"person","target_candidate_id":"org","relation_type":"alumniOf","properties":{}}]}));
+        assert_eq!(result.unwrap_err().code, "VALIDATION_ERROR", "{mode}");
+        assert_eq!(count(&store, "kg_entities"), 0);
     }
 }

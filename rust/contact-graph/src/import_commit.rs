@@ -276,90 +276,6 @@ fn unbind_preview_evidence(item: &Value) -> Value {
     proof
 }
 
-fn direct_institution_statement(relation_type: &str, quote: &str, target_name: &str) -> bool {
-    if target_name.is_empty() || !quote.contains(target_name) {
-        return false;
-    }
-    let words: &[&str] = match relation_type {
-        "worksFor" => &[
-            "任职",
-            "就职",
-            "受雇于",
-            "works for",
-            "work for",
-            "worked for",
-            "employed by",
-            "works at",
-            "work at",
-        ],
-        "alumniOf" => &[
-            "校友",
-            "就读",
-            "毕业",
-            "学习",
-            "alumni",
-            "studied",
-            "graduated",
-            "attended",
-        ],
-        _ => return false,
-    };
-    quote
-        .split(['。', '；', ';', '，', ',', '\n'])
-        .any(|segment| {
-            if !segment.contains(target_name) {
-                return false;
-            }
-            let lower = segment.to_lowercase();
-            let target_lower = target_name.to_lowercase();
-            ![
-                "不是",
-                "并非",
-                "未曾",
-                "未在",
-                "未于",
-                "未就读",
-                "未任职",
-                "未毕业",
-                "未学习",
-                "没有",
-                "客户",
-                "合作方",
-                "甲方",
-                "服务对象",
-                "外包服务对象",
-                "not ",
-                "never ",
-                "client",
-                "customer",
-                "partner",
-            ]
-            .iter()
-            .any(|word| lower.contains(word))
-                && lower.match_indices(&target_lower).any(|(target_start, _)| {
-                    let target_end = target_start + target_lower.len();
-                    words.iter().any(|word| {
-                        lower.match_indices(word).any(|(verb_start, _)| {
-                            let verb_end = verb_start + word.len();
-                            let between = if verb_end <= target_start {
-                                &lower[verb_end..target_start]
-                            } else if verb_start >= target_end {
-                                &lower[target_end..verb_start]
-                            } else {
-                                return false;
-                            };
-                            ![
-                                "负责", "参与", "服务", "协助", "对接", "实施", "项目", "并", "且",
-                                "同时", "合作", "project", "client", " and ",
-                            ]
-                            .iter()
-                            .any(|marker| between.contains(marker))
-                        })
-                    })
-                })
-        })
-}
-
 fn has_selected_located_institution_relation(
     candidate_id: &str,
     candidates: &[Value],
@@ -367,10 +283,6 @@ fn has_selected_located_institution_relation(
     relations: &[RelationChoice],
 ) -> bool {
     relations.iter().any(|relation| {
-        let target_name = candidates
-            .iter()
-            .find(|candidate| candidate["candidate_id"] == relation.target_candidate_id)
-            .and_then(|candidate| candidate["properties"]["name"].as_str());
         relation.source_candidate_id == candidate_id
             && ["worksFor", "alumniOf"].contains(&relation.relation_type.as_str())
             && choices.iter().any(|choice| {
@@ -398,15 +310,9 @@ fn has_selected_located_institution_relation(
                                 "target_id":relation.target_candidate_id})
                                     && proof["source_type"] == "file"
                                     && proof["locator_status"] == "located"
-                                    && proof["quote"].as_str().is_some_and(|quote| {
-                                        target_name.is_some_and(|name| {
-                                            direct_institution_statement(
-                                                &relation.relation_type,
-                                                quote,
-                                                name,
-                                            )
-                                        })
-                                    })
+                                    && proof["quote"]
+                                        .as_str()
+                                        .is_some_and(|quote| !quote.trim().is_empty())
                             })
                         })
                 })
@@ -467,26 +373,31 @@ fn commit_relations(
                     && suggestion.get("properties") == Some(&choice.properties)
             })
             .ok_or_else(|| validation("Relation choice is not in the reviewed suggestions"))?;
+        if auto_selected
+            && (suggestion["uncertain"] != false
+                || suggestion
+                    .get("review_reason")
+                    .is_some_and(|reason| !reason.is_null()))
+        {
+            return Err(validation(
+                "Auto-selected relation cannot promote uncertain evidence",
+            ));
+        }
         let source_is_unnamed = unnamed_landed.contains(&choice.source_candidate_id);
         if source_is_unnamed && ["worksFor", "alumniOf"].contains(&choice.relation_type.as_str()) {
-            let target_name = candidates
-                .iter()
-                .find(|candidate| candidate["candidate_id"] == choice.target_candidate_id)
-                .and_then(|candidate| candidate["properties"]["name"].as_str())
-                .ok_or_else(|| validation("Institution name is required"))?;
-            let direct = suggestion["evidence"].as_array().is_some_and(|items| {
+            let located = suggestion["evidence"].as_array().is_some_and(|items| {
                 items.iter().any(|item| {
                     item["field_path"] == "$relation"
                         && item["source_type"] == "file"
                         && item["locator_status"] == "located"
-                        && item["quote"].as_str().is_some_and(|quote| {
-                            direct_institution_statement(&choice.relation_type, quote, target_name)
-                        })
+                        && item["quote"]
+                            .as_str()
+                            .is_some_and(|quote| !quote.trim().is_empty())
                 })
             });
-            if !direct {
+            if !located {
                 return Err(validation(
-                    "Unnamed institution relation needs a direct file statement",
+                    "Unnamed institution relation needs located file evidence",
                 ));
             }
             if choice.relation_type == "worksFor" {
@@ -504,7 +415,7 @@ fn commit_relations(
                                 && item["source_type"] == "file"
                                 && item["locator_status"] == "located"
                                 && item["quote"].as_str().is_some_and(|quote| {
-                                    value.as_str().is_some_and(|text| quote.contains(text))
+                                    value.is_string() && !quote.trim().is_empty()
                                 })
                         })
                     });
@@ -547,6 +458,19 @@ fn commit_relations(
         }
         if let Some(original) = suggestion.get("evidence").and_then(Value::as_array) {
             for item in original {
+                let expected_subject = format!(
+                    "{}:{}",
+                    choice.source_candidate_id, choice.target_candidate_id
+                );
+                if item
+                    .get("subject_kind")
+                    .is_some_and(|kind| kind != "relation")
+                    || item
+                        .get("subject_id")
+                        .is_some_and(|subject| subject != &expected_subject)
+                {
+                    return Err(validation("Relation evidence subject mismatch"));
+                }
                 let path = item.get("field_path").and_then(Value::as_str);
                 if path == Some("$relation") {
                     let candidate_value = json!({"relation_type":choice.relation_type,
@@ -577,7 +501,13 @@ fn commit_relations(
                     })
                     .flatten();
                 let quote_matches = match (item.get("quote").and_then(Value::as_str), selected) {
-                    (Some(quote), Some(Value::String(value))) => quote.contains(value),
+                    (Some(quote), Some(Value::String(value))) => {
+                        if item["source_type"] == "file" {
+                            !quote.trim().is_empty()
+                        } else {
+                            quote.contains(value)
+                        }
+                    }
                     (Some(_), Some(_)) => false,
                     (None, _) => item.get("source_type").and_then(Value::as_str) == Some("manual"),
                     (Some(_), None) => false,
@@ -654,6 +584,7 @@ fn persist_claims(
     candidates: &[Value],
     landed: &HashMap<String, String>,
     input: &CommitInput,
+    file_source: &Value,
     now: &str,
 ) -> Result<(), AppError> {
     for candidate in candidates {
@@ -744,6 +675,12 @@ fn persist_claims(
                         source[key] = value.clone();
                     }
                 }
+                // Review items carry excerpts, while the import job owns file identity.
+                for key in ["file_sha256", "file_name"] {
+                    if let Some(value) = file_source.get(key) {
+                        source[key] = value.clone();
+                    }
+                }
                 reject_raw_content(&source)?;
                 // Bound the serialized source, including UTF-8 and JSON escapes.
                 // Only this claim's display excerpt is shortened; formal evidence and
@@ -830,6 +767,11 @@ fn persist_claims(
                         if let Some(name) = target.and_then(|c| c["properties"]["name"].as_str()) {
                             value["target_name"] =
                                 json!(name.chars().take(500).collect::<String>());
+                        }
+                        if let Some(description) =
+                            target.and_then(|c| c["properties"]["description"].as_str())
+                        {
+                            value["target_description"] = json!(description);
                         }
                         (None, Some(relation_type), target_id, value)
                     }
@@ -1177,7 +1119,7 @@ impl Store {
             &input.actor,
             &now,
         )?;
-        persist_claims(&tx, candidates, &landed, &input, &now)?;
+        persist_claims(&tx, candidates, &landed, &input, &data["source"], &now)?;
         let new_version = version + 1;
         tx.execute(
             "UPDATE import_jobs SET status='committed',version=?1 WHERE import_id=?2",

@@ -426,7 +426,16 @@ pub fn ensure_value_evidence(
     fn supports_value(record: &Value, value: &Value) -> bool {
         match record.get("source_type").and_then(Value::as_str) {
             Some("manual") => record["locator_status"] == "not_applicable",
-            Some("file" | "web") => {
+            // File quote location is checked by Node against the parsed document.
+            // Rust validates provenance and value binding; it does not hold that text.
+            Some("file") => {
+                record["locator_status"] == "located"
+                    && record
+                        .get("quote")
+                        .and_then(Value::as_str)
+                        .is_some_and(|quote| !quote.trim().is_empty())
+            }
+            Some("web") => {
                 record["locator_status"] == "located"
                     && record
                         .get("quote")
@@ -488,4 +497,28 @@ pub fn ensure_value_evidence(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn file_summaries_keep_value_binding_without_loosening_web_or_manual_evidence() {
+        let properties = json!({"skills":["系统运维"]});
+        let mut proof = json!({"field_path":"properties.skills","value":"系统运维",
+            "source_type":"file","locator_status":"located","quote":"开发服务器维护脚本"});
+        assert!(ensure_value_evidence(&properties, None, &[proof.clone()]).is_ok());
+        proof["source_type"] = json!("web");
+        assert!(ensure_value_evidence(&properties, None, &[proof.clone()]).is_err());
+        proof["source_type"] = json!("manual");
+        assert!(ensure_value_evidence(&properties, None, &[proof.clone()]).is_err());
+        proof["source_type"] = json!("file");
+        proof["value"] = json!("专家");
+        assert!(ensure_value_evidence(&properties, None, &[proof.clone()]).is_err());
+        proof["value"] = json!("系统运维");
+        proof["locator_status"] = json!("unavailable");
+        assert!(ensure_value_evidence(&properties, None, &[proof]).is_err());
+    }
 }

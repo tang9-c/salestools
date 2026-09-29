@@ -191,7 +191,7 @@ it('auto-imports one resume owner through a project to its client, without inven
     evidence_id: id, subject_kind: 'relation' as const, subject_id: `${source}:${target}`,
     field_path: '$relation', value: { relation_type: kind, source_id: source, target_id: target },
     source_type: 'file' as const, file_name: 'invented.pdf', file_sha256: sha,
-    quote: projectQuote, page: 2, locator_status: 'located' as const, collected_at: collectedAt,
+    quote: '实施升级交付工作', page: 2, locator_status: 'located' as const, collected_at: collectedAt,
   });
   owner.relation_suggestions.push({
     source_candidate_id: 'owner', target_candidate_id: 'project', relation_type: 'memberOf',
@@ -199,14 +199,14 @@ it('auto-imports one resume owner through a project to its client, without inven
     evidence: [relationProof('ev-member', 'owner', 'project', 'memberOf'),
       { evidence_id: 'ev-project-role', subject_kind: 'relation', subject_id: 'owner:project',
         field_path: 'properties.role.roleName', value: '顾问', source_type: 'file',
-        file_name: 'invented.pdf', file_sha256: sha, quote: projectQuote, page: 2,
+        file_name: 'invented.pdf', file_sha256: sha, quote: '实施升级交付工作', page: 2,
         locator_status: 'located', collected_at: collectedAt }],
   });
   const project = ImportCandidateSchema.parse({
     candidate_id: 'project', label: 'Project', properties: { name: 'PLM 升级' },
     evidence: [{ evidence_id: 'ev-project-name', subject_kind: 'entity', subject_id: 'project',
       field_path: 'properties.name', value: 'PLM 升级', source_type: 'file', file_name: 'invented.pdf',
-      file_sha256: sha, quote: projectQuote, page: 2, locator_status: 'located', collected_at: collectedAt }],
+      file_sha256: sha, quote: '实施升级交付工作', page: 2, locator_status: 'located', collected_at: collectedAt }],
     relation_suggestions: [{ source_candidate_id: 'project', target_candidate_id: 'client',
       relation_type: 'clientOrganization', properties: {}, uncertain: false,
       evidence: [relationProof('ev-client-rel', 'project', 'client', 'clientOrganization')] }],
@@ -216,7 +216,7 @@ it('auto-imports one resume owner through a project to its client, without inven
     candidate_id: 'client', label: 'Organization', properties: { name: '乙公司' },
     evidence: [{ evidence_id: 'ev-client-name', subject_kind: 'entity', subject_id: 'client',
       field_path: 'properties.name', value: '乙公司', source_type: 'file', file_name: 'invented.pdf',
-      file_sha256: sha, quote: projectQuote, page: 2, locator_status: 'located', collected_at: collectedAt }],
+      file_sha256: sha, quote: '实施升级交付工作', page: 2, locator_status: 'located', collected_at: collectedAt }],
     relation_suggestions: [], warnings: [], can_commit: true,
   });
   const h = await harness('file-project', [owner, project, client]);
@@ -327,7 +327,7 @@ it('imports a nameless resume, finds it by school, then confirms a name on the s
       evidence: [{ evidence_id: 'ev-school', subject_kind: 'relation', subject_id: 'anonymous:school',
         field_path: '$relation', value: { relation_type: 'alumniOf', source_id: 'anonymous', target_id: 'school' },
         source_type: 'file', file_name: 'invented.pdf', file_sha256: sha,
-        quote: '曾就读星辰大学', page: 1, locator_status: 'located', collected_at: collectedAt }] }],
+        quote: '教育经历', page: 1, locator_status: 'located', collected_at: collectedAt }] }],
     warnings: [], can_commit: true,
   });
   const school = ImportCandidateSchema.parse({
@@ -552,110 +552,73 @@ it('preserves preview candidates when identity lookup fails', async () => {
   expect(preview.warnings).toContain('身份匹配查询失败，请人工核对已有联系人');
 });
 
-it.each([[false, false], [true, false], [true, true]])('gates structured school suggestions: selected=%s anonymous=%s', async (selected, anonymous) => {
-  const extraction = await new DocumentExtractor({ url: 'https://ark.example/chat', model: 'test', credential: 'test',
-    fileName: 'invented.pdf', fileSha256: sha, collectedAt,
-    fetchFn: async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ candidates: [
-      { candidate_id: 'p', label: 'Person', properties: { name: '陈晓' },
-        evidence: [{ field_path: 'properties.name', value: '陈晓', block_id: 'p', quote: '陈晓' }],
-        relation_suggestions: [{ source_candidate_id: 'p', target_candidate_id: 's', relation_type: 'alumniOf',
-          properties: {}, uncertain: false, evidence: [{ block_id: 's', quote: '星辰大学' }] }] },
-      { candidate_id: 's', label: 'Organization', properties: { name: '星辰大学' },
-        evidence: [{ field_path: 'properties.name', value: '星辰大学', block_id: 's', quote: '星辰大学' }] },
-    ] }) } }] })) }).extract([
-      { block_id: 'p', text: '陈晓', page: 1 }, { block_id: 'h', text: '教育经历', page: 1 },
-      { block_id: 's', text: '星辰大学', page: 1 },
-    ], new AbortController().signal);
-  if (anonymous) {
-    extraction.candidates[0] = ImportCandidateSchema.parse({ ...extraction.candidates[0],
-      properties: { skills: ['Python'] }, evidence: [{ ...extraction.candidates[0].evidence[0],
-        field_path: 'properties.skills', value: 'Python', quote: 'Python' }] });
-  }
-  const h = await harness(`structured-${selected}-${anonymous}`, extraction.candidates);
+
+const fact = (field_path: string, value: unknown, block_id: string, quote: string) =>
+  ({ field_path, value, evidence: [{ block_id, quote }], uncertain: false });
+const link = (block_id: string, quote: string, uncertain = false) => ({ evidence: [{ block_id, quote }], uncertain });
+async function extractProfile(profile: object, blocks: Array<{ block_id: string; text: string; page: number }>, fileName = 'invented.pdf') {
+  return new DocumentExtractor({ url: 'https://ark.example/chat', model: 'test', credential: 'test',
+    fileName, fileSha256: sha, collectedAt,
+    fetchFn: async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(profile) } }] })),
+  }).extract(blocks, new AbortController().signal);
+}
+
+it.each([false, true, 'relation-only'])('auto-commits cross-block schools and summarized skills, anonymous=%s', async anonymous => {
+  const extraction = await extractProfile({ subject_status: 'single',
+    person: [...(anonymous === 'relation-only' ? [] : [fact('properties.skills', '系统运维', 'p', '使用 Python 开发运维脚本')]),
+      ...(anonymous ? [] : [fact('properties.name', '陈晓', 'p', '陈晓')])],
+    education: [{ local_id: 'school', organization: [fact('properties.name', '星辰大学', 's', '星辰大学')],
+      attendance: link('h', '教育经历') }], employment: [], projects: [], organization_clues: [],
+  }, [{ block_id: 'p', text: '陈晓 使用 Python 开发运维脚本', page: 1 },
+    { block_id: 'h', text: '教育经历', page: 1 }, { block_id: 's', text: '星辰大学', page: 2 }]);
+  const h = await harness(`school-${anonymous}`, extraction.candidates);
   const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
   const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
-  expect(preview.candidates).toEqual(expect.arrayContaining([expect.objectContaining({
-    candidate_id: 'batch1:p', relation_suggestions: [expect.objectContaining({ uncertain: true, review_reason: 'structured_heading' })],
-  })]));
-  const committing = h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
-    operation_id: `contact-import:${started.import_id}`,
-    choices: extraction.candidates.map(item => ({ candidate_id: item.candidate_id, action: 'create' })),
-    relation_choices: selected ? [{ source_candidate_id: 'batch1:p', target_candidate_id: 'batch1:s',
-      relation_type: 'alumniOf', properties: {} }] : [],
-  }, 'reviewer');
-  if (anonymous) {
-    await expect(committing).rejects.toThrow('VALIDATION_ERROR');
-    return;
-  }
-  const committed = await committing as { results: Array<{ candidate_id: string; entity_id: string }> };
-  const personId = committed.results.find(item => item.candidate_id === 'batch1:p')!.entity_id;
-  const saved = await h.graph.request<{ relations: unknown[]; evidence: Array<{ quote?: string }> }>('get_contact', { entity_id: personId });
-  expect(saved.relations).toHaveLength(selected ? 1 : 0);
-  expect(saved.evidence.some(proof => /就读|毕业/.test(proof.quote ?? ''))).toBe(false);
-  const search = await new ContactSearch(h.graph).search({ query: '星辰大学' });
-  expect(search.items.some(item => item.entity_id === personId)).toBe(selected);
+  const input = { import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`, auto_create: true };
+  const committed = await h.service.commit(input, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
+  const id = committed.results.find(item => item.candidate_id === 'document:person')!.entity_id;
+  const saved = await h.graph.request<{ entity: { properties: { skills: string[] } }; relations: unknown[]; evidence: unknown[] }>('get_contact', { entity_id: id });
+  expect(saved.entity.properties.skills).toEqual(anonymous === 'relation-only' ? [] : ['系统运维']);
+  expect(saved.relations).toHaveLength(1);
+  if (anonymous !== 'relation-only') expect(saved.evidence).toContainEqual(expect.objectContaining({ value: '系统运维', quote: '使用 Python 开发运维脚本', file_sha256: sha }));
+  expect((await new ContactSearch(h.graph).search({ query: '星辰大学' })).items).toContainEqual(expect.objectContaining({ entity_id: id }));
+  expect(await h.service.commit(input, 'reviewer')).toMatchObject({ replayed: true, results: committed.results });
 });
 
-
-it('creates one same-file person while preserving two employment episodes after fragment merge', async () => {
-  const blocks = [1, 2].map(page => ({ block_id: `p${page}`, page,
-    text: `Riley Moss Mobile: +15550000111 works for Cedar Labs ${page === 1 ? '2020' : '2022'}` }));
-  const raw = blocks.flatMap((block, index) => [
-    { candidate_id: `p${index}`, label: 'Person', properties: { name: 'Riley Moss', telephone: ['+15550000111'] },
-      evidence: [
-        { field_path: 'properties.name', value: 'Riley Moss', block_id: block.block_id, quote: 'Riley Moss' },
-        { field_path: 'properties.telephone', value: '+15550000111', block_id: block.block_id, quote: 'Mobile: +15550000111' },
-      ], relation_suggestions: [{ source_candidate_id: `p${index}`, target_candidate_id: 'o', relation_type: 'worksFor',
-        properties: { role: { '@type': 'OrganizationRole', startDate: index === 0 ? '2020' : '2022' } },
-        evidence: [{ block_id: block.block_id, quote: block.text }], uncertain: false }] },
-    ...(index === 0 ? [{ candidate_id: 'o', label: 'Organization', properties: { name: 'Cedar Labs' },
-      evidence: [{ field_path: 'properties.name', value: 'Cedar Labs', block_id: block.block_id, quote: 'Cedar Labs' }] }] : []),
-  ]);
-  const extraction = await new DocumentExtractor({ url: 'https://ark.example/chat', model: 'test', credential: 'test',
-    fileName: 'invented.pdf', fileSha256: sha, collectedAt,
-    fetchFn: async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ candidates: raw }) } }] }))
-  }).extract(blocks, new AbortController().signal);
-  expect(extraction.candidates.filter(item => item.label === 'Person')).toHaveLength(1);
+it('preserves two employment episodes with summarized role fields', async () => {
+  const extraction = await extractProfile({ subject_status: 'single', person: [fact('properties.name', 'Riley Moss', 'p', 'Riley Moss')],
+    education: [], projects: [], organization_clues: [],
+    employment: ['2020', '2022'].map(year => ({ local_id: year,
+      organization: [fact('properties.name', 'Cedar Labs', 'o', 'Cedar Labs')],
+      employment: link('h', '职业经历'),
+      role: [fact('properties.role.startDate', year, year, `${year}年加入`),
+        fact('properties.role.roleName', '运维工程师', 'p', '负责服务器维护')] })),
+  }, [{ block_id: 'p', text: 'Riley Moss 负责服务器维护', page: 1 }, { block_id: 'o', text: 'Cedar Labs', page: 1 },
+    { block_id: 'h', text: '职业经历', page: 1 }, ...['2020', '2022'].map(year => ({ block_id: year, text: `${year}年加入`, page: 2 }))]);
   const person = extraction.candidates.find(item => item.label === 'Person')!;
   expect(person.relation_suggestions).toHaveLength(2);
-  expect(person.relation_suggestions.every(item => item.source_candidate_id === person.candidate_id)).toBe(true);
-  expect(person.relation_suggestions.every(item => item.evidence.every(proof =>
-    proof.subject_id === `${person.candidate_id}:${item.target_candidate_id}`))).toBe(true);
-  const h = await harness('same-file-merge', extraction.candidates);
+  const h = await harness('episodes', extraction.candidates);
   const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
   const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
   const committed = await h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
-    operation_id: `contact-import:${started.import_id}`,
-    choices: extraction.candidates.map(item => ({ candidate_id: item.candidate_id, action: 'create' })),
-    relation_choices: person.relation_suggestions.map(({ source_candidate_id, target_candidate_id, relation_type, properties }) =>
-      ({ source_candidate_id, target_candidate_id, relation_type, properties })),
-  }, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
+    operation_id: `contact-import:${started.import_id}`, auto_create: true }, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
   const id = committed.results.find(item => item.candidate_id === person.candidate_id)!.entity_id;
   const saved = await h.graph.request<{ relations: unknown[] }>('get_contact', { entity_id: id });
-  expect(committed.results).toHaveLength(2);
   expect(saved.relations).toHaveLength(2);
+  expect((await new ContactSearch(h.graph).search({ query: 'Cedar Labs' })).items).toContainEqual(expect.objectContaining({ entity_id: id }));
 });
 
 it.each([false, true])('commits legal long Unicode relation evidence with selected=%s', async selected => {
   const prefix = 'Morgan Example works for Cedar Labs ';
   const quote = prefix + '😀'.repeat(491 - [...prefix].length);
   const fileName = 'f'.repeat(100) + '.pdf';
-  expect([...quote]).toHaveLength(491);
-  expect(Buffer.byteLength(fileName)).toBe(104);
-  const candidates = [
-    { candidate_id: 'p', label: 'Person', properties: { name: 'Morgan Example' },
-      evidence: [{ field_path: 'properties.name', value: 'Morgan Example', block_id: 'b1', quote: 'Morgan Example' }],
-      relation_suggestions: [{ source_candidate_id: 'p', target_candidate_id: 'o', relation_type: 'worksFor',
-        properties: { role: { '@type': 'OrganizationRole' } }, evidence: [{ block_id: 'b1', quote }], uncertain: false }] },
-    { candidate_id: 'o', label: 'Organization', properties: { name: 'Cedar Labs' },
-      evidence: [{ field_path: 'properties.name', value: 'Cedar Labs', block_id: 'b1', quote: 'Cedar Labs' }] },
-  ];
-  const extraction = await new DocumentExtractor({ url: 'https://ark.example/chat', model: 'test', credential: 'test',
-    fileName, fileSha256: sha, collectedAt,
-    fetchFn: async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ candidates }) } }] })),
-  }).extract([{ block_id: 'b1', text: quote, page: 1 }], new AbortController().signal);
-  expect(extraction.candidates[0].relation_suggestions).toHaveLength(1);
+  const extraction = await extractProfile({ subject_status: 'single', person: [fact('properties.name', 'Morgan Example', 'b1', 'Morgan Example')],
+    education: [], projects: [], organization_clues: [], employment: [{ local_id: 'work',
+      organization: [fact('properties.name', 'Cedar Labs', 'b1', 'Cedar Labs')], employment: link('b1', quote), role: [] }],
+  }, [{ block_id: 'b1', text: quote, page: 1 }], fileName);
   const h = await harness('long-source', extraction.candidates);
+  h.file.fileName = fileName;
   const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
   const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
   const relation = extraction.candidates[0].relation_suggestions[0];
@@ -665,7 +628,7 @@ it.each([false, true])('commits legal long Unicode relation evidence with select
     relation_choices: selected ? [{ source_candidate_id: relation.source_candidate_id,
       target_candidate_id: relation.target_candidate_id, relation_type: relation.relation_type, properties: relation.properties }] : [],
   }, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
-  const id = committed.results.find(item => item.candidate_id === 'batch1:p')!.entity_id;
+  const id = committed.results.find(item => item.candidate_id === 'document:person')!.entity_id;
   const saved = await h.graph.request<{ relations: unknown[]; unverified_claims: Array<{ source: { file_name: string; file_sha256: string; quote: string } }> }>('get_contact', { entity_id: id });
   expect(saved.relations).toHaveLength(selected ? 1 : 0);
   expect(saved.unverified_claims).toHaveLength(selected ? 0 : 1);
@@ -676,4 +639,91 @@ it.each([false, true])('commits legal long Unicode relation evidence with select
     expect(quote.startsWith(source.quote)).toBe(true);
     expect(source.quote).not.toBe('');
   }
+});
+
+it.each([[false, false], [true, false], [false, true], [true, true]])('persists each project hop independently: participation weak=%s client weak=%s', async (participationWeak, clientWeak) => {
+  const extraction = await extractProfile({ subject_status: 'single', person: [fact('properties.name', '项目顾问', 'p', '项目顾问')],
+    education: [], employment: [], organization_clues: [], projects: [{ local_id: 'project',
+      project: [fact('properties.description', '产品数据管理系统升级', 'j', '完成物料系统改造')],
+      participation: link('p', '项目顾问', participationWeak), role: [],
+      clients: [{ organization: [fact('properties.name', '乙公司', 'c', '乙公司')], client: link('c', '乙公司', clientWeak) }] }],
+  }, [{ block_id: 'p', text: '项目顾问', page: 1 }, { block_id: 'j', text: '完成物料系统改造', page: 2 }, { block_id: 'c', text: '乙公司', page: 3 }]);
+  const h = await harness('hops', extraction.candidates);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const committed = await h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`, auto_create: true }, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
+  const personId = committed.results.find(item => item.candidate_id === 'document:person')!.entity_id;
+  const projectId = committed.results.find(item => item.candidate_id === extraction.candidates.find(c => c.label === 'Project')!.candidate_id)!.entity_id;
+  expect(projectId).toMatch(/^j_/);
+  const person = await h.graph.request<{ unverified_claims: Array<{ claim_id: string; source: object }> }>('get_contact', { entity_id: personId });
+  const project = await h.graph.request<{ entity: { properties: object }; unverified_claims: Array<{ claim_id: string; source: object }> }>('get_contact', { entity_id: projectId });
+  expect(project.entity.properties).toMatchObject({ description: '产品数据管理系统升级' });
+  const claims = [...person.unverified_claims, ...project.unverified_claims];
+  expect(claims).toHaveLength(Number(participationWeak) + Number(clientWeak));
+  for (const claim of claims) expect(claim.source).toMatchObject({ file_sha256: sha, file_name: 'invented.pdf' });
+  const formal = await new ContactSearch(h.graph).search({ query: '乙公司' });
+  expect(formal.items.some(item => item.entity_id === personId)).toBe(!participationWeak && !clientWeak);
+  const explicit = await new ContactSearch(h.graph).search({ query: '乙公司', include_unverified: true });
+  expect(explicit.items).toContainEqual(expect.objectContaining({ entity_id: personId, matched_project_id: projectId,
+    ...(claims.length ? { claim_ids: expect.arrayContaining(claims.map(claim => claim.claim_id)) } : {}) }));
+});
+
+it('keeps organization clues unverified and quote failures out of formal edges', async () => {
+  const extraction = await extractProfile({ subject_status: 'single', person: [fact('properties.name', '陈晓', 'p', '陈晓')],
+    education: [{ local_id: 'bad', organization: [fact('properties.name', '星辰大学', 's', '星辰大学')], attendance: link('s', '不存在的引文') }],
+    employment: [], projects: [], organization_clues: [{ organization: [fact('properties.name', '名片公司', 'c', '名片公司')], association: link('c', '名片公司') }],
+  }, [{ block_id: 'p', text: '陈晓', page: 1 }, { block_id: 's', text: '星辰大学', page: 1 }, { block_id: 'c', text: '名片公司', page: 1 }]);
+  const h = await harness('clues', extraction.candidates);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const committed = await h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`, auto_create: true }, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
+  const id = committed.results.find(item => item.candidate_id === 'document:person')!.entity_id;
+  const saved = await h.graph.request<{ relations: unknown[]; unverified_claims: unknown[] }>('get_contact', { entity_id: id });
+  expect(saved.relations).toHaveLength(0);
+  expect(saved.unverified_claims).toHaveLength(2);
+  expect((await new ContactSearch(h.graph).search({ query: '名片公司' })).items.some(item => item.entity_id === id)).toBe(false);
+  expect((await new ContactSearch(h.graph).search({ query: '名片公司', include_unverified: true })).items).toContainEqual(expect.objectContaining({ entity_id: id, match_status: 'unverified' }));
+});
+
+it('preserves project descriptions and client clues when participation is missing', async () => {
+  const extraction = await extractProfile({ subject_status: 'single', person: [fact('properties.name', '陈晓', 'p', '陈晓')],
+    education: [], employment: [], organization_clues: [], projects: [{ local_id: 'project',
+      project: [fact('properties.description', '产品系统升级', 'j', '完成物料系统改造')], role: [],
+      clients: [{ organization: [fact('properties.name', '乙公司', 'c', '乙公司')], client: link('c', '乙公司') }] }],
+  }, [{ block_id: 'p', text: '陈晓', page: 1 }, { block_id: 'j', text: '完成物料系统改造', page: 2 }, { block_id: 'c', text: '乙公司', page: 3 }]);
+  const h = await harness('missing-participation', extraction.candidates);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const committed = await h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`, auto_create: true }, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
+  const id = committed.results.find(item => item.candidate_id === 'document:person')!.entity_id;
+  const saved = await h.graph.request<{ unverified_claims: unknown[] }>('get_contact', { entity_id: id });
+  expect(JSON.stringify(saved.unverified_claims)).toContain('产品系统升级');
+  const projectId = committed.results.find(item => item.candidate_id === extraction.candidates.find(c => c.label === 'Project')!.candidate_id)!.entity_id;
+  const project = await h.graph.request<{ entity: { properties: object }; relations: unknown[] }>('get_contact', { entity_id: projectId });
+  expect(project.entity.properties).toMatchObject({ description: '产品系统升级' });
+  expect(project.relations).toContainEqual(expect.objectContaining({ relation_type: 'clientOrganization' }));
+  expect((await new ContactSearch(h.graph).search({ query: '乙公司', include_unverified: true })).items)
+    .toContainEqual(expect.objectContaining({ entity_id: id, matched_project_id: projectId, match_status: 'unverified' }));
+  expect(JSON.stringify(saved.unverified_claims)).toContain(sha);
+});
+
+it('keeps an unsaveable project and its client clue on the owner review queue', async () => {
+  const extraction = await extractProfile({ subject_status: 'single', person: [fact('properties.name', '陈晓', 'p', '陈晓')],
+    education: [], employment: [], organization_clues: [], projects: [{ local_id: 'weak-project',
+      project: [{ ...fact('properties.description', '产品系统升级', 'j', '完成物料系统改造'), uncertain: true }],
+      participation: link('j', '完成物料系统改造'), role: [],
+      clients: [{ organization: [fact('properties.name', '乙公司', 'c', '乙公司')], client: link('c', '乙公司') }] }],
+  }, [{ block_id: 'p', text: '陈晓', page: 1 }, { block_id: 'j', text: '完成物料系统改造', page: 2 }, { block_id: 'c', text: '乙公司', page: 3 }]);
+  const h = await harness('unsaveable-project', extraction.candidates);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const committed = await h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`, auto_create: true }, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
+  const id = committed.results.find(item => item.candidate_id === 'document:person')!.entity_id;
+  const saved = await h.graph.request<{ unverified_claims: unknown[] }>('get_contact', { entity_id: id });
+  expect(JSON.stringify(saved.unverified_claims)).toContain('产品系统升级');
+  expect(JSON.stringify(saved.unverified_claims)).toContain('乙公司');
 });

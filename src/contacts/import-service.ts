@@ -1,10 +1,9 @@
-import { ContactEntitySchema, ContactEvidenceSchema, ContactRelationSchema, ImportCandidateSchema,
+import { ContactEntitySchema, ContactEvidenceSchema, ContactRelationSchema, ImportCandidateSchema, ReviewItemSchema,
   type ImportCandidate, type ParsedBlock } from '../contracts/index.js';
 import type { GraphClient } from './graph-client.js';
 import type { ImportJobs } from './import-jobs.js';
 import type { UploadedFile, UploadStore } from './upload-store.js';
 import { normalizePhoneForSuggestion, suggestMatches, type MatchSuggestion } from './identity-match.js';
-import { directInstitutionStatement } from './institution-relation.js';
 
 type CandidateRelation = ImportCandidate['relation_suggestions'][number];
 
@@ -34,7 +33,7 @@ function hasLocatedName(candidate: ImportCandidate): boolean {
   return candidate.evidence.some(proof => proof.field_path === 'properties.name'
     && proof.value === candidate.properties.name && proof.source_type === 'file'
     && proof.locator_status === 'located' && !!proof.file_sha256
-    && !!proof.quote?.includes(candidate.properties.name));
+    && !!proof.quote?.trim());
 }
 
 function projectAnchor(candidate: ImportCandidate): string | null {
@@ -42,11 +41,10 @@ function projectAnchor(candidate: ImportCandidate): string | null {
   const field = candidate.properties.name ? 'name' : 'description';
   const value = candidate.properties[field];
   if (!value) return null;
-  const anchor = field === 'description' ? [...value].slice(0, 24).join('') : value;
   return candidate.evidence.some(proof => proof.field_path === `properties.${field}`
     && proof.value === value && proof.source_type === 'file'
     && proof.locator_status === 'located' && !!proof.file_sha256
-    && !!proof.quote?.includes(anchor)) ? anchor : null;
+    && !!proof.quote?.trim()) ? value : null;
 }
 
 function hasLocatedRoleFields(relation: CandidateRelation): boolean {
@@ -56,7 +54,7 @@ function hasLocatedRoleFields(relation: CandidateRelation): boolean {
     || relation.evidence.some(proof => proof.field_path === `properties.role.${field}`
       && proof.value === value && proof.source_type === 'file'
       && proof.locator_status === 'located' && !!proof.file_sha256
-      && typeof value === 'string' && !!proof.quote?.includes(value)));
+      && typeof value === 'string' && !!proof.quote?.trim()));
 }
 
 function isAutoSelectableInstitutionRelation(relation: CandidateRelation, owner: ImportCandidate,
@@ -67,20 +65,7 @@ function isAutoSelectableInstitutionRelation(relation: CandidateRelation, owner:
     || !hasLocatedRoleFields(relation)) return false;
   const target = candidates.find(candidate => candidate.candidate_id === relation.target_candidate_id);
   if (!target || target.label !== 'Organization' || !hasLocatedName(target)) return false;
-  const targetName = target.properties.name;
-  if (!targetName) return false;
-  const proofs = locatedRelationProof(relation);
-  if (relation.review_reason === 'structured_heading') {
-    const heading = relation.relation_type === 'worksFor' ? /工作经历|任职经历|职业经历|employment|experience/iu
-      : /教育经历|教育背景|学历|education/iu;
-    return proofs.some(first => heading.test(first.quote ?? '')
-      && proofs.some(second => second !== first && second.page === first.page
-        && second.file_sha256 === first.file_sha256 && !!second.quote?.includes(targetName)
-        && !/客户|合作方|甲方|服务对象|未在|未于|未曾|没有|不是|并非/iu.test(second.quote ?? '')));
-  }
-  if (relation.uncertain || relation.review_reason) return false;
-  return proofs.some(proof => directInstitutionStatement(relation.relation_type,
-    proof.quote ?? '', targetName));
+  return !relation.uncertain && !relation.review_reason && locatedRelationProof(relation).length > 0;
 }
 
 function isAutoSelectableProjectRelation(relation: CandidateRelation, owner: ImportCandidate,
@@ -94,17 +79,46 @@ function isAutoSelectableProjectRelation(relation: CandidateRelation, owner: Imp
   if (relation.relation_type === 'memberOf') {
     const anchor = target && projectAnchor(target);
     return source?.candidate_id === owner.candidate_id && target?.label === 'Project'
-      && !!anchor && locatedRelationProof(relation).some(proof => proof.quote?.includes(anchor));
+      && !!anchor && locatedRelationProof(relation).length > 0;
   }
   if (relation.relation_type === 'clientOrganization') {
     const anchor = source && projectAnchor(source);
     if (!anchor || source?.label !== 'Project' || !ownerProjectIds.has(source.candidate_id)
       || target?.label !== 'Organization' || !target.properties.name || !hasLocatedName(target)) return false;
-    const targetName = target.properties.name;
-    return locatedRelationProof(relation).some(proof =>
-      proof.quote?.includes(anchor) && proof.quote?.includes(targetName));
+    return locatedRelationProof(relation).length > 0;
   }
   return false;
+}
+
+// A project below the node threshold still belongs to its owner's review queue.
+function preserveSkippedProjects(candidates: ImportCandidate[], warnings: string[]): void {
+  for (const owner of candidates.filter(candidate => candidate.label === 'Person')) {
+    const projectIds = new Set([...owner.relation_suggestions,
+      ...owner.review_items.filter((item): item is Extract<ImportCandidate['review_items'][number], { kind: 'relation' }> => item.kind === 'relation')]
+      .filter(item => item.source_candidate_id === owner.candidate_id && item.relation_type === 'memberOf')
+      .map(item => item.target_candidate_id));
+    for (const project of candidates.filter(candidate => candidate.label === 'Project'
+      && !candidate.can_commit && projectIds.has(candidate.candidate_id))) {
+      const clients = [...project.relation_suggestions,
+        ...project.review_items.filter((item): item is Extract<ImportCandidate['review_items'][number], { kind: 'relation' }> => item.kind === 'relation')]
+        .filter(item => item.relation_type === 'clientOrganization')
+        .map(item => candidates.find(candidate => candidate.candidate_id === item.target_candidate_id)?.properties.name)
+        .filter(Boolean);
+      const value = { project: project.properties, review_items: project.review_items, clients };
+      let item = ReviewItemSchema.safeParse({ kind: 'field', field_path: '$project', value, reason: 'invalid_shape' });
+      if (!item.success) {
+        let excerpt = '';
+        for (const character of JSON.stringify(value)) {
+          if (Buffer.byteLength(excerpt + character, 'utf8') > 1200) break;
+          excerpt += character;
+        }
+        item = ReviewItemSchema.safeParse({ kind: 'field', field_path: '$project', value: `${excerpt}…`, reason: 'invalid_shape' });
+        warnings.push('项目待核实线索超过2KB，已截断');
+      }
+      if (item.success && owner.review_items.length < 100) owner.review_items.push(item.data);
+      else warnings.push('项目待核实线索未能保存：主体待核实队列已满或内容超限');
+    }
+  }
 }
 
 export interface ExtractedDocument {
@@ -176,8 +190,10 @@ export class ContactImportService {
           { candidates: [], source: this.source(file) });
         const blocks = await this.options.parse(file, signal);
         const extracted = await this.options.extract(blocks, file, signal);
+        const candidates = extracted.candidates.map(candidate => ImportCandidateSchema.parse(candidate));
+        preserveSkippedProjects(candidates, extracted.warnings);
         return {
-          candidates: extracted.candidates.map(candidate => ImportCandidateSchema.parse(candidate)),
+          candidates,
           warnings: extracted.warnings,
           source: this.source(file),
           processed_block_ids: extracted.processedBlockIds,
@@ -307,18 +323,23 @@ export class ContactImportService {
         && (typeof value === 'string' ? value.trim().length > 0
           : Array.isArray(value) ? value.some(present) : typeof value === 'object'
             ? Object.values(value).some(present) : true);
+      const hasInstitutionEvidence = (candidate: ImportCandidate) => candidate.relation_suggestions.some(relation =>
+        relation.source_candidate_id === candidate.candidate_id && ['worksFor', 'alumniOf'].includes(relation.relation_type)
+        && !relation.uncertain && !relation.review_reason && locatedRelationProof(relation).length > 0);
       const people = candidates.filter(candidate => candidate.label === 'Person'
         && (Object.values(candidate.properties).some(present)
           || Object.values(candidate.extensions).some(present)
           || candidate.evidence.length > 0
+          || hasInstitutionEvidence(candidate)
           || candidate.review_items.some(item => item.kind === 'field' && present(item.value))));
       const owners = people.filter(person => !person.warnings.includes('非主体人物线索'));
       if (owners.length > 1) throw new Error('AUTO_CREATE_AMBIGUOUS_PERSON');
       if (owners.length !== 1 || !owners[0].can_commit
-        || !owners[0].evidence.some(proof => proof.locator_status === 'located')) {
+        || !(owners[0].evidence.some(proof => proof.locator_status === 'located') || hasInstitutionEvidence(owners[0]))) {
         throw new Error('AUTO_CREATE_NO_PERSON');
       }
-      const ownerProjectIds = new Set(owners[0].relation_suggestions
+      const ownerProjectIds = new Set([...owners[0].relation_suggestions,
+        ...owners[0].review_items.filter((item): item is Extract<ImportCandidate['review_items'][number], { kind: 'relation' }> => item.kind === 'relation')]
         .filter(relation => relation.relation_type === 'memberOf'
           && relation.source_candidate_id === owners[0].candidate_id)
         .map(relation => relation.target_candidate_id));
