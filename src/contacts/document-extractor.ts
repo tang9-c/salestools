@@ -334,13 +334,16 @@ function request(model: string, batch: readonly ParsedBlock[], prior: readonly P
   const aliases = blockAliases([...batch, ...priorBlocks]);
   const extracted_context = prior.length ? {
     subjects: [...new Map(prior.map(clue => [clue.subject.candidate_id, clue.subject])).values()],
-    pending_experiences: prior.flatMap(clue => clue.pending_experiences),
-    source_quotes: prior.map(clue => ({ block_id: aliases.get(clue.block.block_id)!, quote: clue.quote,
+    pending_experiences: [...new Map(prior.flatMap(clue => clue.pending_experiences.map(relation => ({
+      source_candidate_id: clue.subject.candidate_id, ...relation,
+    }))).map(relation => [JSON.stringify(relation), relation])).values()],
+    source_quotes: prior.map(clue => ({ subject_candidate_id: clue.subject.candidate_id,
+      block_id: aliases.get(clue.block.block_id)!, quote: clue.quote,
       ...(clue.block.page === undefined ? {} : { page: clue.block.page }) })),
   } : undefined;
   return JSON.stringify({ model, messages: [
     { role: 'system', content: `${SYSTEM_PROMPT}\n${SHAPE_PROMPT}\n${RELATION_PROMPT}\n${PROJECT_PROMPT}${prior.length
-      ? '\nextracted_context 是已抽取上下文，仅供对齐主体及未完整经历；blocks 是新块。只有 source_quotes 中可定位的原文引文可作证据，摘要不是原文。关系端点仍须引用本次输出的 candidate_id；无法确认时标 uncertain。' : ''}` },
+      ? '\nextracted_context 是已抽取上下文，仅供对齐主体及未完整经历；blocks 是新块。只有 source_quotes 中逐条可定位的原文引文可作证据，摘要不是原文。引用旧引文时，候选 candidate_id 须等于 source_quotes.subject_candidate_id；关系的 source_candidate_id 或 target_candidate_id 须等于该 ID。关系端点仍须引用本次输出的 candidate_id；无法确认时标 uncertain。' : ''}` },
     { role: 'user', content: JSON.stringify({ ...(extracted_context ? { extracted_context } : {}),
       blocks: batch.map(block => ({ ...block, block_id: aliases.get(block.block_id)! })) }) },
   ], response_format: { type: 'json_object' }, temperature: 0 });
@@ -889,6 +892,7 @@ export class DocumentExtractor {
     const candidates: ImportCandidate[] = [];
     const warnings: string[] = [];
     const processed = new Set<string>();
+    const failed = new Set<string>();
     const priorClues: PriorClue[] = [];
     const pieceMap = new Map(pieces.map(piece => [piece.block_id, piece]));
     let attempts = 0;
@@ -906,8 +910,17 @@ export class DocumentExtractor {
       if (included.length < priorClues.length) warnings.push('上下文超出请求预算，跨段关系待核实');
       const body = request(this.options.model, batch, included);
       const contextBlocks = [...new Map(included.map(clue => [clue.block.block_id, clue.block])).values()];
-      const originalIds = new Map([...blockAliases([...batch, ...contextBlocks])]
+      const aliases = blockAliases([...batch, ...contextBlocks]);
+      const originalIds = new Map([...aliases]
         .map(([original, alias]) => [alias, original]));
+      const newIds = new Set(batch.map(block => block.block_id));
+      const resolveProof = (alias: string, quote: string, subjectIds: readonly string[]): string => {
+        const original = originalIds.get(alias);
+        if (!original) return '';
+        if (newIds.has(original)) return original;
+        return included.some(clue => clue.block.block_id === original
+          && subjectIds.includes(clue.subject.candidate_id) && clue.quote.includes(quote)) ? original : '';
+      };
       let content: string | undefined;
       for (let retry = 0; retry < 2 && attempts < maxCalls; retry += 1) {
         attempts += 1;
@@ -923,7 +936,10 @@ export class DocumentExtractor {
           if (!recoverable) break;
         }
       }
-      if (content === undefined) { warnings.push('模型请求失败'); continue; }
+      if (content === undefined) {
+        for (const block of batch) failed.add(block.block_id);
+        warnings.push('模型请求失败'); continue;
+      }
       const candidateCountBefore = candidates.length;
       try {
         const text = content.trim();
@@ -936,7 +952,8 @@ export class DocumentExtractor {
           const proofs = (parsed.data.evidence ?? []).flatMap(rawProof => {
             const proof = ModelEvidence.safeParse(rawProof);
             if (!proof.success) { warnings.push('候选证据形状无效'); return []; }
-            return [{ ...proof.data, block_id: originalIds.get(proof.data.block_id) ?? '' }];
+            return [{ ...proof.data, block_id: resolveProof(proof.data.block_id,
+              proof.data.quote, [parsed.data.candidate_id]) }];
           });
           const rawRelations = Array.isArray(parsed.data.relation_suggestions)
             ? parsed.data.relation_suggestions : [];
@@ -947,7 +964,8 @@ export class DocumentExtractor {
             const relation = ModelRelation.safeParse(rawRelation);
             if (!relation.success) { warnings.push('关系形状无效'); return []; }
             return [{ ...relation.data, evidence: relation.data.evidence.map(proof =>
-              ({ ...proof, block_id: originalIds.get(proof.block_id) ?? '' })) }];
+              ({ ...proof, block_id: resolveProof(proof.block_id, proof.quote,
+                [relation.data.source_candidate_id, relation.data.target_candidate_id]) })) }];
           });
           const rawExtensions = parsed.data.label === 'Person' ? parsed.data.extensions : undefined;
           const extensions = rawExtensions !== null && typeof rawExtensions === 'object'
@@ -1309,7 +1327,11 @@ export class DocumentExtractor {
             if (block && proof) priorClues.push({ subject, block, quote: proof.quote, pending_experiences });
           }
         }
-      } catch { candidates.length = candidateCountBefore; warnings.push('模型响应无效'); }
+      } catch {
+        candidates.length = candidateCountBefore;
+        for (const block of batch) failed.add(block.block_id);
+        warnings.push('模型响应无效');
+      }
     }
     const completeParents = new Set<string>();
     for (const block of blocks) {
@@ -1319,7 +1341,9 @@ export class DocumentExtractor {
     }
     const processedBlockIds = blocks.filter(block => completeParents.has(block.block_id)).map(block => block.block_id);
     const unprocessedBlockIds = blocks.filter(block => !completeParents.has(block.block_id)).map(block => block.block_id);
-    if (unprocessedBlockIds.length) warnings.push('抽取预算耗尽，存在未处理文本块');
+    if (pieces.some(piece => !processed.has(piece.block_id) && !failed.has(piece.block_id))) {
+      warnings.push('抽取预算耗尽，存在未处理文本块');
+    }
     if (unprocessedBlockIds.length && candidates.length === 0 && !warnings.includes('模型响应无效')) {
       throw new DocumentExtractionError(attempts >= maxCalls || batches.length > maxBatches
         ? 'BUDGET_EXHAUSTED' : 'MODEL_REQUEST_FAILED');

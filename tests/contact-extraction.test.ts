@@ -1119,6 +1119,25 @@ describe('document extraction', () => {
     expect(sent[1].blocks.some((block: { text: string }) => block.text.includes('任职星辰科技经理'))).toBe(true);
   });
 
+  it('restores long transport aliases before carrying prior quotes', async () => {
+    const ownerId = 'document-12345678901234567890:0:0';
+    const workId = 'document-12345678901234567890:1:0';
+    const input = [
+      { block_id: ownerId, text: '个人简历 林舟 ' + '附注'.repeat(500), page: 1 },
+      { block_id: workId, text: '任职星辰科技经理 ' + '说明'.repeat(380), page: 2 },
+    ];
+    const sent: any[] = [];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      sent.push(payload);
+      return sent.length === 1 ? response([person('owner', '林舟', payload.blocks[0].block_id)]) : response([]);
+    });
+    const result = await extractor(fetchFn, { requestMaxBytes: 7_500 }).extract(input, new AbortController().signal);
+    expect(sent).toHaveLength(2);
+    expect(sent[1].extracted_context.source_quotes).toContainEqual(expect.objectContaining({ quote: '林舟' }));
+    expect(result.processedBlockIds).toEqual([ownerId, workId]);
+  });
+
   it('keeps successful earlier blocks but reports a malformed later batch as unprocessed', async () => {
     const input = [
       { block_id: 'owner', text: '个人简历 林舟 ' + '附注'.repeat(500), page: 1 },
@@ -1135,6 +1154,60 @@ describe('document extraction', () => {
     expect(result.unprocessedBlockIds).toEqual(['work']);
     expect(result.candidates[0].properties.name).toBe('林舟');
     expect(result.warnings).toContain('模型响应无效');
+    expect(result.warnings).not.toContain('抽取预算耗尽，存在未处理文本块');
+  });
+
+  it('binds each prior quote to its subject and rejects a different subject citation', async () => {
+    const input = [
+      { block_id: 'shared', text: '林舟 星辰科技 ' + '附注'.repeat(550), page: 1 },
+      { block_id: 'work', text: '任职信息 ' + '说明'.repeat(250), page: 2 },
+    ];
+    let calls = 0;
+    const sent: any[] = [];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      sent.push(payload);
+      if (calls++ === 0) return response([person('owner', '林舟', payload.blocks[0].block_id),
+        { candidate_id: 'company', label: 'Organization', properties: { name: '星辰科技' },
+          evidence: [{ field_path: 'properties.name', value: '星辰科技',
+            block_id: payload.blocks[0].block_id, quote: '星辰科技' }] }]);
+      return response([person('batch1:owner', '星辰科技', payload.extracted_context.source_quotes[1].block_id)]);
+    });
+    const result = await extractor(fetchFn, { requestMaxBytes: 8_000 }).extract(input, new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(result.processedBlockIds).toEqual(['shared', 'work']);
+    expect(sent[1].extracted_context.source_quotes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subject_candidate_id: 'batch1:owner', quote: '林舟' }),
+      expect.objectContaining({ subject_candidate_id: 'batch1:company', quote: '星辰科技' }),
+    ]));
+    expect(result.candidates.some(candidate => candidate.label === 'Person'
+      && candidate.properties.name === '星辰科技')).toBe(false);
+  });
+
+  it('does not treat concatenated prior quotes as a single source quote and deduplicates pending relations', async () => {
+    const input = [
+      { block_id: 'shared', text: '甲 乙 ' + '附注'.repeat(550), page: 1 },
+      { block_id: 'work', text: '任职信息 ' + '说明'.repeat(250), page: 2 },
+    ];
+    let calls = 0;
+    const sent: any[] = [];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      sent.push(payload);
+      if (calls++ === 0) return response([{ ...person('owner', '甲', payload.blocks[0].block_id),
+        relation_suggestions: [{ source_candidate_id: 'owner', target_candidate_id: 'org',
+          relation_type: 'worksFor', properties: { role: { '@type': 'OrganizationRole' } },
+          evidence: [{ block_id: payload.blocks[0].block_id, quote: '乙' }], uncertain: true }] },
+      { candidate_id: 'org', label: 'Organization', properties: { name: '乙' }, evidence: [
+        { field_path: 'properties.name', value: '乙', block_id: payload.blocks[0].block_id, quote: '乙' }] }]);
+      return response([person('batch1:owner', '甲\n乙', payload.extracted_context.source_quotes[0].block_id)]);
+    });
+    const result = await extractor(fetchFn, { requestMaxBytes: 8_000 }).extract(input, new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(result.processedBlockIds).toEqual(['shared', 'work']);
+    expect(sent[1].extracted_context.pending_experiences).toHaveLength(1);
+    expect(result.candidates.flatMap(candidate => candidate.evidence)
+      .some(evidence => evidence.quote === '甲\n乙')).toBe(false);
   });
 
   it('does not accept unseen text from a prior block as context evidence', async () => {
