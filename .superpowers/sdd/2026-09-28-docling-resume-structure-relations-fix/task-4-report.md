@@ -71,3 +71,15 @@
 ## 提交与后续
 
 本任务提交固定验收、虚构样例、文档与脱敏报告；未改生产抽取逻辑。真实模型失败已经交回主任务集中修复。真实模型脚本为显式验收工具，最低计数检查不等同语义验收；真实用户样本始终标manual_review_required。可用`ACCEPTANCE_SHAPE_DIAGNOSTICS=1`输出白名单Link键类型诊断，禁止输出完整响应。
+
+## Task 4 审查修正：验收判定器
+
+审查发现旧runner最低数量检查可能漏掉Python/Linux技能、memberOf及实际两跳召回，仍输出semanticAcceptance=passed。已移除这一不可靠结论。新增独立的虚构样本判定器，逐项检查具体组织／项目集合、两电话邮箱、Python/Linux必要覆盖、指定学校与雇主端点及两段日期、两项目正式参与、各自正式客户边、学校／雇主正式与inclusive命中、每客户命中正确matched_project_id、预设关联的弱claim及其标记查询。名片检查确切主体和公司、无额外联系方式／技能／正式关系，以及唯一待核实affiliation和对应claim命中。
+
+所有必要自动检查成立也只输出manual_review_required，因为忠实归纳、来源主体归属等仍需要人工语义核对；不再有任何自动passed语义分支。失败退出码1，自动条件成立但尚需语义复核退出码2。真实用户样本仍仅报告最低检查及manual_review_required。已有真实产品失败结论保持，不因修正判定器改变。
+
+新增判定器回归涵盖缺技能、缺memberOf、错误项目、机构查人失败、缺两跳project ID、部分处理，以及名片公司错名／关系已确认／额外电话；正确自动样本也不允许被标为语义通过。初次新增测试在判定器不存在时红灯；实现后通过。harness清理改为逐阶段allSettled，无论前一清理失败都尝试关闭图谱及删除临时目录，失败只输出CLEANUP_FAILED。
+
+本轮只运行相关固定测试与typecheck，没有重跑真实模型，不修改产品抽取器。
+
+审查修正验证：`rtk npm test -- --run tests/contact-live-verdict.test.ts tests/contact-recall-acceptance.test.ts`通过（当时10+5）；追加正确名片边界后单跑`tests/contact-live-verdict.test.ts`为11 passed；`rtk npm run typecheck`及`rtk proxy git diff --check`通过。

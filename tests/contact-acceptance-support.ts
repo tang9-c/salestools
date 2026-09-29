@@ -40,7 +40,12 @@ export async function acceptanceHarness(filePath: string, model: Pick<DocumentEx
     parse: async (file, signal) => parsed = await parseLocalDocument({ pythonBin: join(root, 'python/.venv/bin/python'), projectDir: join(root, 'python'), filePath: file.tempPath, fileType: filePath.endsWith('.png') ? 'png' : 'pdf', documentId: file.fileId, limits: {} }, signal),
     extract: (blocks, file, signal) => new DocumentExtractor({ ...model, fileName: 'acceptance-input' + (filePath.endsWith('.png') ? '.png' : '.pdf'), fileSha256: file.sha256, collectedAt: file.uploadedAt }).extract(blocks, signal),
   });
-  const close = async () => { await jobs.recover(); await uploads.close(); await graph.close(); await rm(directory, { recursive: true, force: true }); };
+  const close = async () => {
+    const results = await Promise.allSettled([jobs.recover()]);
+    results.push(...await Promise.allSettled([uploads.close(), graph.close()]));
+    results.push(...await Promise.allSettled([rm(directory, { recursive: true, force: true })]));
+    if (results.some(r => r.status === 'rejected')) throw new Error('CLEANUP_FAILED');
+  };
   try {
     const fileId = await uploads.reserve();
     const file = await uploads.receive(fileId, createReadStream(filePath), basename(filePath));
