@@ -761,3 +761,18 @@ it('edits an imported summary using persisted evidence without resubmitting file
     evidence: expect.arrayContaining([expect.objectContaining({ source_type: 'file', value: '系统运维', quote: '开发服务器维护脚本' })]),
   });
 });
+
+it('retains an uncertain organization name for marked search without creating a formal relation', async () => {
+  const extraction = await extractProfile({ subject_status: 'single', person: [fact('properties.name', '本人', 'b', '本人')], education: [], employment: [], projects: [], organization_clues: [{ organization: [{ ...fact('properties.name', '弱公司', 'b', '弱公司'), uncertain: true }], association: link('b', '弱公司', true) }] }, [{ block_id: 'b', text: '本人 弱公司', page: 1 }]);
+  const h = await harness('weak-name', extraction.candidates);
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'weak-name-start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const committed = await h.service.commit({ import_id: started.import_id, preview_version: preview.version as number, operation_id: `contact-import:${started.import_id}`, auto_create: true }, 'reviewer') as { results: Array<{ candidate_id: string; entity_id: string }> };
+  const id = committed.results.find(r => r.candidate_id === 'document:person')!.entity_id;
+  const search = new ContactSearch(h.graph);
+  expect((await search.search({ query: '弱公司' })).items.some(i => i.entity_id === id)).toBe(false);
+  expect((await search.search({ query: '弱公司', include_unverified: true })).items).toContainEqual(expect.objectContaining({ entity_id: id, match_status: 'unverified' }));
+  const saved = await h.graph.request<{ relations: unknown[]; unverified_claims: unknown[] }>('get_contact', { entity_id: id });
+  expect(saved.relations).toEqual([]);
+  expect(saved.unverified_claims).toContainEqual(expect.objectContaining({ field_path: '$organization', status: 'unverified' }));
+});

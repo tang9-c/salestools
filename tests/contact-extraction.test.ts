@@ -164,7 +164,7 @@ describe('DocumentProfile transport and context', () => {
       return calls++ === 0 ? response(profile({ person: [fact('properties.name', '林舟', '林舟', payload.blocks[0].block_id)] })) : new Response(JSON.stringify({ choices: [{ message: { content: '{broken' } }] }));
     });
     const result = await extractor(fetchFn).extract(bigInput(), new AbortController().signal);
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
     expect(result.processedBlockIds).toEqual([bigInput()[0].block_id]);
     expect(result.unprocessedBlockIds).toEqual(['work']);
     expect(owner(result.candidates).properties.name).toBe('林舟');
@@ -185,13 +185,13 @@ describe('DocumentProfile transport and context', () => {
     expect(result.unprocessedBlockIds).toContain('large');
     expect(result.warnings).toContain('抽取预算耗尽，存在未处理文本块');
   });
-  it('does not retry bad JSON or exceed a one-call retry budget', async () => {
+  it('bounds bad JSON retries and never exceeds a one-call budget', async () => {
     const fetchFn = vi.fn(async () => new Response('', { status: 503 }));
     await expect(extractor(fetchFn, { maxModelCalls: 1 }).extract([{ block_id: 'b1', text: '原文' }], new AbortController().signal)).rejects.toMatchObject({ code: 'BUDGET_EXHAUSTED' });
     expect(fetchFn).toHaveBeenCalledTimes(1);
     const invalid = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: '{broken' } }] })));
     const result = await extractor(invalid).extract([{ block_id: 'b1', text: '原文' }], new AbortController().signal);
-    expect(invalid).toHaveBeenCalledTimes(1); expect(result.warnings).toContain('模型响应无效');
+    expect(invalid).toHaveBeenCalledTimes(2); expect(result.warnings).toContain('模型响应无效');
   });
 });
 
@@ -205,7 +205,7 @@ describe('profile accumulation invariants', () => {
       const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content); sent.push(payload);
       return response(outputs[Math.min(call++, outputs.length - 1)](payload.blocks[0].block_id, payload.extracted_context));
     });
-    const result = await extractor(fetchFn).extract(input.map(b => ({ ...b, text: b.text.slice(0, 2400) })), new AbortController().signal);
+    const result = await extractor(fetchFn).extract(input.map(b => ({ ...b, text: b.text.slice(0, 2000) })), new AbortController().signal);
     expect(fetchFn).toHaveBeenCalledTimes(2);
     return { result, sent };
   }
@@ -276,7 +276,7 @@ it('keeps document instructions as data and rejects legacy or injected output sh
   const result = await extractor(fetchFn).extract([{ block_id: 'b1', text }], new AbortController().signal);
   expect(result.candidates).toEqual([]);
   expect(result.warnings).toContain('模型响应无效');
-  expect(fetchFn).toHaveBeenCalledTimes(1);
+  expect(fetchFn).toHaveBeenCalledTimes(2);
 });
 it('isolates duplicate messaging account conflicts and malformed evidence', async () => {
   const result = await run(profile({ person: [fact('properties.skills', 'Python'),
@@ -387,7 +387,7 @@ describe('review regressions: candidate identity and client accumulation', () =>
       };
       return response(profile({ projects: [project('p', [client('客户乙'), client('客户甲')], block)] }));
     });
-    const result = await extractor(fetchFn).extract([{ block_id: 'a', text: '原文 客户甲 客户乙 ' + '甲'.repeat(2200) }, { block_id: 'b', text: '原文 ' + '乙'.repeat(2200) }], new AbortController().signal);
+    const result = await extractor(fetchFn).extract([{ block_id: 'a', text: '原文 客户甲 客户乙 ' + '甲'.repeat(1900) }, { block_id: 'b', text: '原文 ' + '乙'.repeat(1900) }], new AbortController().signal);
     expect(fetchFn).toHaveBeenCalledTimes(2);
     expect(result.candidates.filter(c => c.label === 'Organization').map(c => c.properties.name).sort()).toEqual(['客户乙', '客户甲'].sort());
     expect(result.candidates.flatMap(c => c.review_items)).toEqual([]);
@@ -410,7 +410,7 @@ it('does not let a reordered client borrow a different organization old quote', 
     const old = payload.extracted_context.source_quotes.find((q: any) => q.quote === '客户甲');
     return response(profile({ projects: [project([{ organization: [fact('properties.name', '客户乙', '客户甲', old.block_id), fact('properties.description', '冒用甲方资料', '客户甲', old.block_id)], client: link('原文', block) }])] }));
   });
-  const result = await extractor(fetchFn).extract([{ block_id: 'a', text: '原文 客户甲 客户乙 ' + '甲'.repeat(2200) }, { block_id: 'b', text: '原文 ' + '乙'.repeat(2200) }], new AbortController().signal);
+  const result = await extractor(fetchFn).extract([{ block_id: 'a', text: '原文 客户甲 客户乙 ' + '甲'.repeat(1900) }, { block_id: 'b', text: '原文 ' + '乙'.repeat(1900) }], new AbortController().signal);
   expect(fetchFn).toHaveBeenCalledTimes(2);
   expect(result.candidates.some(c => c.properties.description === '冒用甲方资料')).toBe(false);
   expect(result.candidates.flatMap(c => c.review_items)).toContainEqual(expect.objectContaining({ field_path: 'properties.description', reason: 'quote_mismatch' }));
@@ -421,7 +421,102 @@ it('retains a downgraded date quote and page in later authorized context', async
     const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content), block = payload.blocks[0].block_id; sent.push(payload);
     return response(call++ === 0 ? profile({ employment: [{ local_id: 'job', organization: org('雇主', '原文', block), employment: link('原文', block), role: [fact('properties.role.startDate', '2025', '原文', block), fact('properties.role.endDate', '2020', '结束日期2020', block)] }] }) : profile());
   });
-  const result = await extractor(fetchFn).extract([{ block_id: 'a', page: 7, text: '原文 结束日期2020 ' + '甲'.repeat(2200) }, { block_id: 'b', text: '原文 ' + '乙'.repeat(2200) }], new AbortController().signal);
+  const result = await extractor(fetchFn).extract([{ block_id: 'a', page: 7, text: '原文 结束日期2020 ' + '甲'.repeat(1900) }, { block_id: 'b', text: '原文 ' + '乙'.repeat(1900) }], new AbortController().signal);
   expect(fetchFn).toHaveBeenCalledTimes(2);
   expect(sent[1].extracted_context.source_quotes).toContainEqual(expect.objectContaining({ quote: '结束日期2020', page: 7, subject_candidate_id: owner(result.candidates).candidate_id }));
+});
+
+describe('observed model formatting', () => {
+  it('expands array facts and individually valid semicolon contacts without interpreting prose', async () => {
+    const result = await run(profile({ person: [fact('properties.telephone', '+15550100999; +15550100888'), fact('properties.email', 'one@example.test；two@example.test'), fact('properties.skills', ['Python', 'Linux']), fact('properties.telephone', 'call me; unknown')] }));
+    const person = owner(result.candidates);
+    expect(person.properties.telephone).toEqual(['+15550100999', '+15550100888']);
+    expect(person.properties.email).toEqual(['one@example.test', 'two@example.test']);
+    expect(person.properties.skills).toEqual(['Python', 'Linux']);
+    expect(person.review_items).toContainEqual(expect.objectContaining({ value: 'call me; unknown', reason: 'invalid_shape' }));
+  });
+  it.each([{ evidence: ref('原文'), uncertain: false }, { field_path: '$relation', value: true, evidence: [ref('原文')], uncertain: false }])('retains recoverable Link sources as explicitly weak: %j', async malformed => {
+    const result = await run(profile({ person: [fact('properties.name', '本人')], education: [{ local_id: 'e', organization: org('学校'), attendance: malformed }] }));
+    const person = owner(result.candidates);
+    expect(person.relation_suggestions).toEqual([]);
+    expect(person.review_items).toContainEqual(expect.objectContaining({ kind: 'relation', relation_type: 'alumniOf', quote: '原文', page: 7 }));
+  });
+  it('does not recover unknown or source-free Link shapes into formal relations', async () => {
+    const result = await run(profile({ person: [fact('properties.name', '本人')], education: [{ local_id: 'a', organization: org('学校'), attendance: { status: 'confirmed' } }] }));
+    expect(owner(result.candidates).relation_suggestions).toEqual([]);
+    expect(owner(result.candidates).review_items).toContainEqual(expect.objectContaining({ reason: 'invalid_shape' }));
+  });
+  it('retains an uncertain literal organization name as a searchable weak claim on its owner', async () => {
+    const result = await run(profile({ person: [fact('properties.name', '本人', '本人')], organization_clues: [{ organization: [fact('properties.name', '弱公司', '弱公司', 'b1', true)], association: link('弱公司', 'b1', true) }] }), '本人 弱公司');
+    const person = owner(result.candidates);
+    expect(person.review_items).toContainEqual(expect.objectContaining({ kind: 'field', field_path: '$organization', value: expect.objectContaining({ name: '弱公司' }), quote: '弱公司' }));
+    expect(person.relation_suggestions).toEqual([]);
+  });
+  it('retries invalid model JSON once within the same total call budget', async () => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{broken' } }] }))).mockResolvedValueOnce(response(profile({ person: [fact('properties.skills', 'Python')] })));
+    const result = await extractor(fetchFn, { maxModelCalls: 2 }).extract([{ block_id: 'b1', text: '原文' }], new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(owner(result.candidates).properties.skills).toEqual(['Python']);
+    expect(result.unprocessedBlockIds).toEqual([]);
+  });
+});
+it('maps the same cited profile independently of source block order and treats reference units as model-excluded data', async () => {
+  const input = [{ block_id: 'owner', text: '本人 13800138000' }, { block_id: 'job', text: '雇主 2020-2022' }, { block_id: 'reference', text: '证明人及其单位' }];
+  const payload = profile({ person: [fact('properties.name', '本人', '本人', 'owner')], employment: [{ local_id: 'j', organization: org('雇主', '雇主', 'job'), employment: link('雇主', 'job'), role: [fact('properties.role.startDate', '2020', '2020-2022', 'job'), fact('properties.role.endDate', '2022', '2020-2022', 'job')] }] });
+  for (const order of [input, [...input].reverse()]) {
+    const fetchFn = vi.fn(async (_url, init) => {
+      const prompt = JSON.parse(String(init?.body)).messages[0].content;
+      expect(prompt).toContain('AND their employers');
+      return response(payload);
+    });
+    const result = await extractor(fetchFn).extract(order, new AbortController().signal);
+    expect(result.candidates.map(c => c.properties.name)).toEqual(['本人', '雇主']);
+    expect(owner(result.candidates).relation_suggestions[0].properties).toEqual({ role: { '@type': 'OrganizationRole', startDate: '2020', endDate: '2022' } });
+  }
+});
+it('reserves bounded context space while packing many blocks of an oversized document', async () => {
+  let count = 0; const sent: any[] = [];
+  const input = Array.from({ length: 65 }, (_, i) => ({ block_id: `r${i}`, text: '本人 ' + '甲'.repeat(95) }));
+  const fetchFn = vi.fn(async (_url, init) => {
+    const body = String(init?.body); expect(Buffer.byteLength(body)).toBeLessThanOrEqual(12288);
+    const payload = JSON.parse(JSON.parse(body).messages[1].content); sent.push(payload);
+    return response(profile({ person: count++ === 0 ? [fact('properties.name', '本人', '本人', payload.blocks[0].block_id)] : [] }));
+  });
+  const result = await extractor(fetchFn).extract(input, new AbortController().signal);
+  expect(sent.length).toBeGreaterThan(1);
+  expect(sent.slice(1).every(p => p.extracted_context?.source_quotes.some((r: any) => r.quote === '本人'))).toBe(true);
+  expect(result.processedBlockIds).toHaveLength(65);
+});
+it('maps the observed jobTitle path only inside an explicit employment role container', async () => {
+  const result = await run(profile({ employment: [{ local_id: 'j', organization: org('雇主'), employment: link(), role: [fact('properties.jobTitle', '运维工程师')] }] }));
+  expect(owner(result.candidates).properties.jobTitle).toBeUndefined();
+  expect(owner(result.candidates).relation_suggestions[0].properties).toEqual({ role: { '@type': 'OrganizationRole', roleName: '运维工程师' } });
+  expect(owner(result.candidates).relation_suggestions[0].evidence).toContainEqual(expect.objectContaining({ field_path: 'properties.role.roleName', value: '运维工程师' }));
+});
+it('prioritizes one authorized quote per subject before repeated skill context', async () => {
+  const skillQuotes = Array.from({ length: 35 }, (_, n) => `技能${n}${'甲'.repeat(20)}`);
+  let call = 0; const sent: any[] = [];
+  const fetchFn = vi.fn(async (_url, init) => {
+    const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content); sent.push(payload);
+    return response(call++ === 0 ? profile({ person: [fact('properties.name', '本人', '本人', payload.blocks[0].block_id), ...skillQuotes.map((q, n) => fact('properties.skills', `技能${n}`, q, payload.blocks[0].block_id))], projects: [{ local_id: 'project', project: org('项目A', '项目A', payload.blocks[0].block_id), participation: link('项目A', payload.blocks[0].block_id), role: [], clients: [] }] }) : profile());
+  });
+  await extractor(fetchFn).extract([{ block_id: 'a', text: `本人 项目A ${skillQuotes.join(' ')} ${'甲'.repeat(700)}` }, { block_id: 'b', text: '乙'.repeat(2100) }], new AbortController().signal);
+  expect(fetchFn).toHaveBeenCalledTimes(2);
+  const projectSubject = sent[1].extracted_context.subjects.find((s: any) => s.label === 'Project');
+  expect(projectSubject).toBeDefined();
+  expect(sent[1].extracted_context.source_quotes).toContainEqual(expect.objectContaining({ subject_candidate_id: projectSubject.candidate_id, quote: '项目A' }));
+});
+it('keeps a sourced earlier experience when a later batch repeats only an uncertain empty link placeholder', async () => {
+  let call = 0;
+  const fetchFn = vi.fn(async (_url, init) => {
+    const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content), id = payload.blocks[0].block_id;
+    const later = call++ > 0;
+    return response(profile({ person: later ? [] : [fact('properties.name', '本人', '原文', id)], education: [{ local_id: 'school', organization: [{ ...fact('properties.name', '学校', '原文', id), uncertain: later }], attendance: later ? { evidence: [], uncertain: true } : link('原文', id) }] }));
+  });
+  const result = await extractor(fetchFn).extract([{ block_id: 'a', text: '原文 ' + '甲'.repeat(1800) }, { block_id: 'b', text: '原文 ' + '乙'.repeat(1800) }], new AbortController().signal);
+  expect(fetchFn).toHaveBeenCalledTimes(2);
+  const person = owner(result.candidates);
+  expect(person.relation_suggestions).toContainEqual(expect.objectContaining({ relation_type: 'alumniOf', uncertain: false }));
+  expect(person.review_items).toContainEqual(expect.objectContaining({ kind: 'relation', relation_type: 'alumniOf', reason: 'missing_evidence' }));
+  expect(result.candidates.find(c => c.label === 'Organization')?.properties.name).toBe('学校');
 });

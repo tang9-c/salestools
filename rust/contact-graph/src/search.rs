@@ -212,7 +212,8 @@ const PROJECT_PATH_CTES: &str = r#"
     ), project_matches AS (
       SELECT member.person_id,member.project_id,
              member.claim_id AS member_claim_id,client.claim_id AS client_claim_id,
-             (member.claim_id IS NOT NULL)+(client.claim_id IS NOT NULL) AS claim_count
+             (member.claim_id IS NOT NULL)+(client.claim_id IS NOT NULL) AS claim_count,
+             'project_client_match' AS match_reason
       FROM member_edges member
       JOIN client_edges client ON client.project_id=member.project_id
       JOIN entity_ids pid ON pid.entity_id=member.person_id
@@ -234,6 +235,22 @@ const PROJECT_PATH_CTES: &str = r#"
         AND json_extract(prm.metadata_json,'$.merged_into') IS NULL
         AND json_extract(om.metadata_json,'$.archived_at') IS NULL
         AND json_extract(om.metadata_json,'$.merged_into') IS NULL
+      UNION ALL
+      SELECT member.person_id,member.project_id,member.claim_id,NULL,
+             (member.claim_id IS NOT NULL),'project_match'
+      FROM member_edges member
+      JOIN entity_ids pid ON pid.entity_id=member.person_id
+      JOIN kg_entities pe ON pe.id=pid.kg_id AND pe.entity_type='Person'
+      JOIN entity_meta pm ON pm.entity_id=pid.entity_id
+      JOIN entity_ids prid ON prid.entity_id=member.project_id
+      JOIN kg_entities pre ON pre.id=prid.kg_id AND pre.entity_type='Project'
+      JOIN entity_meta prm ON prm.entity_id=prid.entity_id
+      WHERE :query IS NOT NULL
+        AND instr(lower(json_extract(pre.properties,'$.name')),lower(:query))>0
+        AND json_extract(pm.metadata_json,'$.archived_at') IS NULL
+        AND json_extract(pm.metadata_json,'$.merged_into') IS NULL
+        AND json_extract(prm.metadata_json,'$.archived_at') IS NULL
+        AND json_extract(prm.metadata_json,'$.merged_into') IS NULL
     )
 "#;
 
@@ -280,10 +297,10 @@ fn matching_project(
     person_id: &str,
     query: &str,
     include_unverified: bool,
-) -> Result<Option<(String, Option<String>, Option<String>)>, AppError> {
+) -> Result<Option<(String, Option<String>, Option<String>, String)>, AppError> {
     let sql = format!(
         "WITH {PROJECT_PATH_CTES}
-         SELECT project_id,member_claim_id,client_claim_id FROM project_matches
+         SELECT project_id,member_claim_id,client_claim_id,match_reason FROM project_matches
          WHERE person_id=:person_id
          ORDER BY claim_count,project_id,member_claim_id,client_claim_id LIMIT 1"
     );
@@ -296,7 +313,7 @@ fn matching_project(
                 ":query":query, ":include_unverified":include_unverified as i64,
                 ":person_id":person_id,
             },
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()
         .map_err(internal)
@@ -422,8 +439,8 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
         if skill.is_some() && !reasons.contains(&"skill") {
             reasons.push("skill");
         }
-        if project.is_some() {
-            reasons.push("project_client_match");
+        if let Some((_, _, _, reason)) = &project {
+            reasons.push(reason.as_str());
         }
         if query.is_some() && reasons.is_empty() {
             reasons.push("relation_match");
@@ -439,14 +456,14 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
                 item["match_status"] = json!("confirmed");
             }
         }
-        if let Some((project_id, member_claim, client_claim)) = project {
+        if let Some((project_id, member_claim, client_claim, match_reason)) = project {
             item["matched_project_id"] = json!(project_id);
             let claim_ids: Vec<String> =
                 [member_claim, client_claim].into_iter().flatten().collect();
             if !claim_ids.is_empty() {
                 item["match_status"] = json!("unverified");
                 item["claim_ids"] = json!(claim_ids);
-                item["reasons"] = json!(["project_client_match"]);
+                item["reasons"] = json!([match_reason]);
             } else {
                 item["match_status"] = json!("confirmed");
             }

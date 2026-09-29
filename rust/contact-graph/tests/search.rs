@@ -842,3 +842,54 @@ fn matching_claim_id_is_stable_and_belongs_to_the_matching_claims() {
         .unwrap();
     assert_eq!(search(&store, query)["items"][0]["claim_id"], matching[1]);
 }
+
+#[test]
+fn project_name_finds_participants_without_client_edges() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let person = entity(&store, "direct-person", "Person", "参与者", &[], &[], None);
+    let weak = entity(&store, "weak-person", "Person", "待核实者", &[], &[], None);
+    let project = entity(
+        &store,
+        "direct-project",
+        "Project",
+        "独立项目",
+        &[],
+        &[],
+        None,
+    );
+    project_relation(&store, "direct-member", &person, &project, "memberOf");
+    project_claim(&store, "weak-member", &weak, &project, "memberOf");
+    let formal = search(&store, json!({"query":"独立项目"}));
+    assert!(ids(&formal).contains(&person));
+    assert!(!ids(&formal).contains(&weak));
+    let inclusive = search(
+        &store,
+        json!({"query":"独立项目", "include_unverified":true}),
+    );
+    let hit = inclusive["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["entity_id"] == weak)
+        .unwrap();
+    assert_eq!(hit["match_status"], "unverified");
+    assert_eq!(hit["matched_project_id"], project);
+    assert_eq!(hit["reasons"], json!(["project_match"]));
+    assert_eq!(
+        request(
+            &store,
+            "archive_contact",
+            json!({
+                "operation_id":"archive-direct-project", "actor":"tester",
+                "entity_id":project, "expected_version":1
+            })
+        )["ok"],
+        true
+    );
+    assert!(ids(&search(
+        &store,
+        json!({"query":"独立项目", "include_unverified":true})
+    ))
+    .is_empty());
+}
