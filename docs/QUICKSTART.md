@@ -213,6 +213,18 @@ get_assessment_status：轮询
 get_assessment_report：读取报告并准备拜访
 ```
 
+## 文档导入的抽取预算
+
+文档导入单独配置请求大小，不影响公开网页抽取与问答的 `ARK_REQUEST_MAX_BYTES`（默认 12,288 字节）：
+
+```ini
+CONTACT_EXTRACT_REQUEST_MAX_BYTES=20000
+CONTACT_EXTRACT_MAX_BATCHES=8
+CONTACT_EXTRACT_MAX_MODEL_CALLS=16
+```
+
+`CONTACT_EXTRACT_REQUEST_MAX_BYTES` 允许 6,144–64,000 字节，限制完整 JSON 请求。正文放得下时一次提交全部原块，随后由同一模型最多进行一次技能专注补充；补充也遵守相同字节上限，计入既有总调用预算，不重试。补充只接受当前文件可定位的技能证据，不修改主档案身份或关系。主体不明确、正文未完整处理、全文超出补充上限、调用额度不足或模型失败时会告警，已成功提取的档案保留。块处理完成不等于语义覆盖完整，应检查导入预览中的告警与待核实项。
+
 ## 常见问题
 
 ### 方舟为什么显示 `partial`？

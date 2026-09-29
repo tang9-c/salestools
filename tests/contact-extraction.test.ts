@@ -8,7 +8,7 @@ const fact = (field_path: string, value: unknown, quote = '原文', block_id = '
 const link = (quote = '原文', block_id = 'b1', uncertain = false) => ({ evidence: [ref(quote, block_id)], uncertain });
 const profile = (overrides = {}) => ({ subject_status: 'single', person: [], education: [], employment: [], projects: [], organization_clues: [], ...overrides });
 const response = (data: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(data) } }] }));
-const extractor = (fetchFn: typeof fetch, overrides = {}) => new DocumentExtractor({ url: 'https://ark.example/v3/chat', model: 'test', credential: 'test', fetchFn, ...source, ...overrides });
+const extractor = (fetchFn: typeof fetch, overrides = {}) => new DocumentExtractor({ url: 'https://ark.example/v3/chat', model: 'test', credential: 'test', fetchFn, requestMaxBytes: 12288, skillSupplement: false, ...source, ...overrides });
 const run = (data: unknown, text = '原文', overrides = {}) => extractor(vi.fn(async () => response(data)), overrides).extract([{ block_id: 'b1', text, page: 7 }], new AbortController().signal);
 const owner = (candidates: ImportCandidate[]) => candidates.find(c => c.label === 'Person')!;
 const org = (name: string, quote = '原文', block_id = 'b1') => [fact('properties.name', name, quote, block_id)];
@@ -538,4 +538,54 @@ it('keeps locator metadata local and packs complete pages when each fits the byt
   expect(sent[1].extracted_context.source_quotes).toContainEqual(expect.objectContaining({ quote: '正文', page: 1, subject_candidate_id: owner(result.candidates).candidate_id }));
   expect(owner(result.candidates).evidence[0].page).toBe(1);
   expect(result.processedBlockIds).toHaveLength(50);
+});
+
+describe('bounded skills supplement', () => {
+  const primary = profile({ person: [fact('properties.name', '本人', '本人')], education: [{ local_id: 'school', organization: org('学校', '本人'), attendance: link('本人') }] });
+  const skillOutput = (overrides = {}) => ({ subject_candidate_id: 'document:person', subject_status: 'single', skills: [fact('properties.skills', 'Python', 'Python')], ...overrides });
+  it('sends the whole document then accepts only sourced skills without changing identities or relations', async () => {
+    const bodies: any[] = [];
+    const fetchFn = vi.fn(async (_url, init) => {
+      const body = String(init?.body); expect(Buffer.byteLength(body)).toBeLessThanOrEqual(20000);
+      bodies.push(JSON.parse(JSON.parse(body).messages[1].content));
+      return response(bodies.length === 1 ? primary : skillOutput({ skills: [fact('properties.skills', 'Python', 'Python'), fact('properties.skills', 'Python', 'Python'), fact('properties.skills', 'Invented', 'not present'), fact('properties.name', '他人', '本人')] }));
+    });
+    const input = [{ block_id: 'b1', page: 3, text: '本人 Python ' + '甲'.repeat(3000) }];
+    const result = await extractor(fetchFn, { requestMaxBytes: 20000, skillSupplement: true }).extract(input, new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(bodies.every(b => b.blocks.length === 1 && b.blocks[0].text === input[0].text)).toBe(true);
+    expect(owner(result.candidates).properties).toMatchObject({ name: '本人', skills: ['Python'] });
+    expect(owner(result.candidates).relation_suggestions.map(r => r.relation_type)).toEqual(['alumniOf']);
+    expect(owner(result.candidates).review_items).toContainEqual(expect.objectContaining({ reason: 'quote_mismatch', value: 'Invented' }));
+    expect(owner(result.candidates).evidence.find(e => e.field_path === 'properties.skills')?.page).toBe(3);
+  });
+  it.each([skillOutput({ subject_status: 'absent' }), skillOutput({ subject_candidate_id: 'other-person' }), skillOutput({ skills: [] }), null])('retains the primary profile and warns on unusable supplement %j', async supplement => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(response(primary)).mockImplementationOnce(async () => { if (supplement === null) throw new Error('network'); return response(supplement); });
+    const result = await extractor(fetchFn, { skillSupplement: true }).extract([{ block_id: 'b1', text: '本人 Python' }], new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(owner(result.candidates).properties.name).toBe('本人');
+    expect(owner(result.candidates).properties.skills).toEqual([]);
+    expect(result.warnings.some(w => w.includes('技能补充'))).toBe(true);
+    expect(result.processedBlockIds).toEqual(['b1']);
+  });
+  it('never exceeds the call budget or sends supplementation after cancellation', async () => {
+    const fetchFn = vi.fn(async () => response(primary));
+    const result = await extractor(fetchFn, { skillSupplement: true, maxModelCalls: 1 }).extract([{ block_id: 'b1', text: '本人' }], new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(1); expect(result.warnings).toContain('技能补充未执行：模型调用预算不足');
+    const controller = new AbortController();
+    const cancelFetch = vi.fn(async () => { controller.abort(); return response(primary); });
+    await expect(extractor(cancelFetch, { skillSupplement: true }).extract([{ block_id: 'b1', text: '本人' }], controller.signal)).rejects.toMatchObject({ code: 'ABORTED' });
+    expect(cancelFetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+it('supplementation cannot reinterpret existing ownership or retract primary relations', async () => {
+  const main = profile({ person: [fact('properties.name', '甲'), fact('properties.name', '乙'), fact('properties.skills', 'Linux')], education: [{ local_id: 'school', organization: org('学校'), attendance: link() }] });
+  const fetchFn = vi.fn().mockResolvedValueOnce(response(main)).mockResolvedValueOnce(response({ subject_candidate_id: 'document:person', subject_status: 'single', skills: [fact('properties.skills', 'Python')] }));
+  const result = await extractor(fetchFn, { skillSupplement: true }).extract([{ block_id: 'b1', text: '原文' }], new AbortController().signal);
+  expect(owner(result.candidates).can_commit).toBe(true);
+  expect(owner(result.candidates).relation_suggestions).toHaveLength(1);
+  expect(owner(result.candidates).properties.skills).toEqual(['Linux']);
+  expect(fetchFn).toHaveBeenCalledTimes(1);
+  expect(result.warnings).toContain('技能补充未执行：主体不明确或正文处理不完整');
 });

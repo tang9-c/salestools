@@ -30,7 +30,7 @@ for (const [index, file] of samples.entries()) {
       }) as typeof fetch,
     });
     const reasons = h.candidates.flatMap(c => c.review_items).reduce((a, c) => ({ ...a, [c.reason]: (a[c.reason] ?? 0) + 1 }), {} as Record<string, number>);
-    const base = { requestMaxBytes: budgetOptions.requestMaxBytes ?? 12288, requestStats, reasons, sample: index + 1, status: h.preview.status, blocks: h.parsed.length, warnings: h.preview.warnings, processed: (h.preview.processed_block_ids as unknown[])?.length, unprocessed: (h.preview.unprocessed_block_ids as unknown[])?.length };
+    const base = { requestMaxBytes: budgetOptions.requestMaxBytes ?? 20000, requestStats, reasons, sample: index + 1, status: h.preview.status, blocks: h.parsed.length, warnings: h.preview.warnings, processed: (h.preview.processed_block_ids as unknown[])?.length, unprocessed: (h.preview.unprocessed_block_ids as unknown[])?.length };
     if (h.preview.status !== 'ready_for_review' || !h.candidates.length) { process.exitCode = 1; console.log(JSON.stringify(base)); continue; }
     stage = 'commit';
 

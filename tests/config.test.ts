@@ -137,6 +137,14 @@ describe('loadConfig', () => {
     } as NodeJS.ProcessEnv)).toThrow('Invalid configuration: CONTACT_GRAPH_BIN');
   });
 
+  it('keeps document request bytes independent and bounded', () => {
+    expect(loadConfig(valid as NodeJS.ProcessEnv).contactExtractRequestMaxBytes).toBe(20000);
+    const configured = loadConfig({ ...valid, CONTACT_EXTRACT_REQUEST_MAX_BYTES: '24000' } as NodeJS.ProcessEnv);
+    expect(configured.contactExtractRequestMaxBytes).toBe(24000);
+    expect(configured.arkRequestMaxBytes).toBe(12288);
+    for (const value of ['6143', '64001']) expect(() => loadConfig({ ...valid, CONTACT_EXTRACT_REQUEST_MAX_BYTES: value } as NodeJS.ProcessEnv)).toThrow('CONTACT_EXTRACT_REQUEST_MAX_BYTES');
+  });
+
   it('defaults the Ark request byte budget and rejects a budget below its immutable request', () => {
     expect(loadConfig(valid as NodeJS.ProcessEnv).ARK_REQUEST_MAX_BYTES).toBe(12_288);
     expect(loadConfig(valid as NodeJS.ProcessEnv).arkRequestMaxBytes).toBe(12_288);

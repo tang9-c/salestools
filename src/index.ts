@@ -164,7 +164,7 @@ export function createApplication(
     extract: (blocks, file, signal) => new DocumentExtractor({
       url: config.arkApiUrl, model: config.arkModel, credential: config.arkCredential,
       fileName: file.fileName, fileSha256: file.sha256, collectedAt: file.uploadedAt,
-      requestMaxBytes: config.arkRequestMaxBytes,
+      requestMaxBytes: config.contactExtractRequestMaxBytes,
       maxBatches: config.contactExtractMaxBatches,
       maxModelCalls: config.contactExtractMaxModelCalls,
     }).extract(blocks, signal),

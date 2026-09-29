@@ -6,7 +6,7 @@ const CONFIG_KEYS = [
   'QCC_MCP_COMPANY_URL', 'QCC_MCP_RISK_URL', 'QCC_MCP_IPR_URL', 'QCC_MCP_OPERATION_URL', 'QCC_API_KEY',
   'DOUBAO_SEARCH_API_URL', 'DOUBAO_SEARCH_API_KEY', 'ARK_API_URL', 'ARK_MODEL', 'ARK_CREDENTIAL',
   'ARK_EMBEDDING_API_URL', 'ARK_EMBEDDING_MODEL', 'ARK_EMBEDDING_CREDENTIAL',
-  'ARK_REQUEST_MAX_BYTES', 'MAX_QCC_CALLS', 'MAX_SEARCH_CALLS', 'MAX_ARK_CALLS', 'MAX_TOTAL_UPSTREAM_CALLS',
+  'CONTACT_EXTRACT_REQUEST_MAX_BYTES', 'ARK_REQUEST_MAX_BYTES', 'MAX_QCC_CALLS', 'MAX_SEARCH_CALLS', 'MAX_ARK_CALLS', 'MAX_TOTAL_UPSTREAM_CALLS',
   'PROFILE_CACHE_TTL_DAYS', 'ASSESSMENT_CACHE_TTL_DAYS', 'MAX_CONCURRENT_ASSESSMENTS',
   'CONTACT_GRAPH_ENABLED', 'CONTACT_GRAPH_SQLITE_PATH', 'CONTACT_GRAPH_BIN',
   'CONTACT_MAX_PENDING_FILES', 'CONTACT_MAX_FILE_BYTES', 'CONTACT_MAX_PDF_PAGES',
@@ -60,6 +60,7 @@ const configSchema = z.object({
   ARK_EMBEDDING_API_URL: optionalTrimmed.refine(value => value === undefined || httpsUrl.safeParse(value).success),
   ARK_EMBEDDING_MODEL: optionalTrimmed,
   ARK_EMBEDDING_CREDENTIAL: optionalTrimmed,
+  CONTACT_EXTRACT_REQUEST_MAX_BYTES: positiveInteger.min(6144).max(64000).default(20000),
   ARK_REQUEST_MAX_BYTES: positiveInteger.min(minimumArkRequestBytes).default(12_288),
   MAX_QCC_CALLS: positiveInteger.default(8),
   MAX_SEARCH_CALLS: positiveInteger.default(8),
@@ -124,6 +125,7 @@ export type AppConfig = ParsedConfig & {
   embeddingApiUrl?: string;
   embeddingModel?: string;
   embeddingCredential?: string;
+  contactExtractRequestMaxBytes: number;
   arkRequestMaxBytes: number;
   maxQccCalls: number;
   maxSearchCalls: number;
@@ -181,6 +183,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     embeddingApiUrl: parsed.data.ARK_EMBEDDING_API_URL,
     embeddingModel: parsed.data.ARK_EMBEDDING_MODEL,
     embeddingCredential: parsed.data.ARK_EMBEDDING_CREDENTIAL,
+    contactExtractRequestMaxBytes: parsed.data.CONTACT_EXTRACT_REQUEST_MAX_BYTES,
     arkRequestMaxBytes: parsed.data.ARK_REQUEST_MAX_BYTES,
     maxQccCalls: parsed.data.MAX_QCC_CALLS,
     maxSearchCalls: parsed.data.MAX_SEARCH_CALLS,
