@@ -49,12 +49,13 @@ def _seccomp():
     ctx = lib.seccomp_init(0x7fff0000)  # SCMP_ACT_ALLOW; non-native ABI killed by libseccomp.
     if not ctx:
         raise SandboxError("SANDBOX_UNAVAILABLE")
-    def deny(name, error=errno.EPERM, comparison=None):
+    def deny(name, error=errno.EPERM, comparisons=()):
         number = lib.seccomp_syscall_resolve_name(name.encode())
         if number == -1:
             raise SandboxError("SANDBOX_UNAVAILABLE")
+        conditions = (Compare * len(comparisons))(*comparisons)
         _check(lib.seccomp_rule_add_array(ctx, 0x50000 | error, number,
-               0 if comparison is None else 1, None if comparison is None else C.byref(comparison)))
+                                        len(conditions), conditions))
     try:
         for name in ("socket", "socketpair", "connect", "bind", "listen", "accept", "accept4",
                      "sendto", "sendmsg", "sendmmsg", "recvmsg", "recvmmsg", "ptrace",
@@ -69,8 +70,21 @@ def _seccomp():
         # A child cannot change namespace or parent to escape supervisor ownership.
         for flag in (0x80, 0x8000, 0x20000, 0x2000000, 0x4000000, 0x8000000,
                      0x10000000, 0x20000000, 0x40000000):
-            deny("clone", comparison=Compare(0, 7, flag, flag))  # MASKED_EQ
-        deny("tgkill", comparison=Compare(0, 1, os.getpid(), 0))  # NE: own threads only
+            deny("clone", comparisons=(Compare(0, 7, flag, flag),))  # MASKED_EQ
+        deny("tgkill", comparisons=(Compare(0, 1, os.getpid(), 0),))  # NE: own threads only
+        # glibc/Python self getrlimit/setrlimit use pid=0; descendants retain
+        # that meaning. Explicit PIDs must not lower the same-UID broker's limits.
+        deny("prlimit64", comparisons=(Compare(0, 1, 0, 0),))
+        # kill denial alone cannot block kernel-generated SIGIO/SIGURG. Keep
+        # ordinary fcntl/ioctl operations, but prohibit signal ownership/configuration
+        # and async enabling, including on inherited standard I/O descriptions.
+        # Kernel cmd/request arguments are 32-bit; mask upper bits to prevent bypass.
+        for command in (8, 10, 15):  # F_SETOWN, F_SETSIG, F_SETOWN_EX
+            deny("fcntl", comparisons=(Compare(1, 7, 0xffffffff, command),))
+        deny("fcntl", comparisons=(Compare(1, 7, 0xffffffff, 4),  # F_SETFL
+                                   Compare(2, 7, 0x2000, 0x2000)))  # O_ASYNC
+        for request in (0x8901, 0x8902, 0x5452):  # FIOSETOWN, SIOCSPGRP, FIOASYNC
+            deny("ioctl", comparisons=(Compare(1, 7, 0xffffffff, request),))
         _check(lib.seccomp_load(ctx))
     finally:
         lib.seccomp_release(ctx)

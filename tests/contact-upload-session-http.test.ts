@@ -446,3 +446,41 @@ it('exchanges a same-origin handoff once and denies cross-origin cookie mutation
   expect((await fetch(`${h.base}/contact-upload/import`, { method: 'POST',
     headers: { Cookie: cookie, Origin: 'https://evil.example' } })).status).toBe(403);
 });
+
+
+it.each([
+  ['malformed', '{"code":EXCHANGE_PAYLOAD_CANARY}', 400, 'INVALID_UPLOAD_REQUEST'],
+  ['oversized', JSON.stringify({ code: 'EXCHANGE_PAYLOAD_CANARY'.repeat(100) }), 413, 'UPLOAD_REQUEST_TOO_LARGE'],
+] as const)('keeps %s exchange errors private, uncached and without credential CORS', async (_kind, body, status, code) => {
+  vi.stubEnv('NODE_ENV', 'production');
+  const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  try {
+    const h = await setup();
+    const response = await fetch(`${h.base}/contact-upload/exchange`, { method: 'POST',
+      headers: { Origin: h.base, ...h.headers, 'Content-Type': 'application/json' }, body });
+    const text = await response.text();
+    // Express finalhandler logs on a later turn; let that callback execute before asserting.
+    await new Promise(resolve => setImmediate(resolve));
+    expect.soft(response.status).toBe(status);
+    expect.soft(response.headers.get('Cache-Control')).toBe('no-store');
+    expect.soft(response.headers.get('Content-Type')).toContain('application/json');
+    expect.soft(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
+    expect.soft(response.headers.get('Access-Control-Allow-Credentials')).toBeNull();
+    expect.soft(text).toBe(JSON.stringify({ code }));
+    expect.soft(text).not.toContain('EXCHANGE_PAYLOAD_CANARY');
+    expect(logged).not.toHaveBeenCalled();
+  } finally { logged.mockRestore(); vi.unstubAllEnvs(); }
+});
+
+it('does not exchange a handoff for a foreign Origin even with a valid App Bearer', async () => {
+  const h = await setup();
+  const handoff = h.sessions.createHandoff('alice', 'source');
+  const response = await fetch(`${h.base}/contact-upload/exchange`, { method: 'POST',
+    headers: { ...h.headers, Origin: 'https://foreign.example', 'Content-Type': 'application/json' },
+    body: JSON.stringify(handoff) });
+  expect(response.status).toBe(403);
+  expect(response.headers.get('Set-Cookie')).toBeNull();
+  expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
+  expect(response.headers.get('Cache-Control')).toBe('no-store');
+  expect(h.sessions.exchange(handoff.code)).not.toBeNull();
+});

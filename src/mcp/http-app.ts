@@ -124,8 +124,13 @@ export function createHttpApp(
     else authMiddleware(request, response, next);
   };
   const pageApiPaths = ['/contact-files', '/contact-upload/import', '/contact-upload/commit', '/contact-upload/exit'];
-  if (page) app.use(pageApiPaths, (request, response, next) => {
+  // Exchange carries a handoff secret but must never inherit App Bearer CORS.
+  const privateApiPaths = [...pageApiPaths, '/contact-upload/exchange'];
+  if (page) app.use(privateApiPaths, (_request, response, next) => {
     response.set('Cache-Control', 'no-store');
+    next();
+  });
+  if (page) app.use(pageApiPaths, (request, response, next) => {
     if (pageCredential(request).bearer) response.set('Access-Control-Allow-Origin', '*');
     next();
   });
@@ -376,7 +381,7 @@ export function createHttpApp(
         code: status === 413 ? 'UPLOAD_REQUEST_TOO_LARGE' : status === 400 ? 'INVALID_UPLOAD_REQUEST' : 'UPLOAD_REQUEST_FAILED',
       });
     };
-    app.use(pageApiPaths, pageApiError);
+    app.use(privateApiPaths, pageApiError);
   }
   let handlerClosing: Promise<void> | null = null;
   app.closeMcpHandler = () => {

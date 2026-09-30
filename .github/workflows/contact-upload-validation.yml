@@ -27,10 +27,14 @@ jobs:
       OPENBLAS_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
       TOKENIZERS_PARALLELISM: "false"
-      HF_HOME: ${{ runner.temp }}/contact-models/hf
-      XDG_CACHE_HOME: ${{ runner.temp }}/contact-models/cache
       UV_PYTHON_DOWNLOADS: never
     steps:
+      - name: Set runner-local model paths
+        run: |
+          set -euo pipefail
+          printf 'HF_HOME=%s/contact-models/hf\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'XDG_CACHE_HOME=%s/contact-models/cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
       - name: Check out the tested revision
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -118,10 +122,14 @@ jobs:
     timeout-minutes: 90
     env:
       COMPOSE_PROJECT_NAME: contact-upload-ci
-      # Compose parses all service env_file entries even with --no-deps.
-      # This is an empty runner-local file, never a production environment file.
-      SALESTOOLS_ENV_FILE: ${{ runner.temp }}/contact-upload-ci.env
     steps:
+      - name: Set runner-local Compose environment path
+        run: |
+          set -euo pipefail
+          # Compose parses env_file entries even with --no-deps; use an empty CI file.
+          printf 'SALESTOOLS_ENV_FILE=%s/contact-upload-ci.env\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          : > "$RUNNER_TEMP/contact-upload-ci.env"
+
       - name: Check out the tested revision
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -132,7 +140,6 @@ jobs:
           set -euo pipefail
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           df -h /
-          : > "$SALESTOOLS_ENV_FILE"
           docker compose version
 
       - name: Build worker production image on runner without publishing

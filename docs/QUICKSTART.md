@@ -31,11 +31,11 @@ MCP 注册不会替你部署服务端，也不会创建 Token。服务端地址�
 - 保持 worker 的 `network_mode: none`、只读根文件系统、非 root `node` 用户、`cap_drop: [ALL]`、`no-new-privileges`、`init: true`。不得用 privileged、增加 capability 或关闭过滤器让验证通过。
 - 保持 worker 聚合限制：4 GiB 内存、2 CPU、64 PID；单解析器还限制地址空间 3 GiB、CPU 120 秒、32 个进程、128 FD、单文件 256 MiB、禁止 core dump。监督器将预检墙钟限制为 30 秒、解析限制为 120 秒，并在完成、错误、超时或取消后杀死整个子进程组。
 - 上传与 worker socket 使用独立 tmpfs：上传最多 1 GiB，只读挂载到 broker；socket 最多 1 MiB。worker `/tmp` 为 1 GiB 的 `nosuid,nodev,noexec` tmpfs。不要将上传目录改为 `/data`、持久卷或纳入备份。worker 不挂载服务端数据库卷、不接收模型服务密钥；基础镜像声明的 `/data` 可产生空匿名卷，不能把它替换为应用数据库卷。
-- broker 能访问上传挂载，但解析器在导入任何解析库前封闭权限：只读当前一个输入、镜像中的运行时/模型/字体，独立 scratch 可写；不能读兄弟上传、数据库、凭证或连接 socket/网络。关闭额外 FD，清空继承环境。Landlock 不隐藏所有文件元数据；这里验证的是内容访问和操作权限，不承诺抵御内核漏洞。
+- broker 能访问上传挂载，但解析器在导入任何解析库前封闭权限：只读当前一个输入、镜像中的运行时/模型/字体，独立 scratch 可写；不能读兄弟上传、数据库、凭证或连接 socket/网络。关闭额外 FD，清空继承环境；拒绝非零 PID 的 `prlimit64`、异步信号 owner/信号选择，以及 `fcntl`/`ioctl` 开启异步通知，防止同 UID broker 被改资源限制或收到 SIGIO。自身资源限制通过 `pid=0` 保持可用。Landlock 不隐藏所有文件元数据；这里验证的是内容访问和操作权限，不承诺抵御内核漏洞。
 
 ## 远程验证与真实宿主验收
 
-当前状态（2026-09-29）：后端、页面和 worker 的实现及独立任务审查已完成；本地 no-emit 检查和针对性解释器/Chromium 测试通过。**本 revision 的远程 native/full-suite/生产沙箱门禁仍待运行；ChatGPT、Codex 外部浏览器、手机拍照均待真实环境验收，不能声称可公开部署。** Chromium 中的真实 SDK iframe 回归只验证页面与协议模拟宿主的行为。
+当前状态（2026-09-29）：后端、页面和 worker 的实现及独立任务审查已完成；本地 no-emit 检查和针对性解释器/Chromium 测试通过。整体审查补充发现的资源限制/异步信号控制、兑换错误隐私及 CI 路径初始化已修订，等待复审；首次远程运行因 workflow context 错误未创建 job，不能作为运行证据。**本 revision 的远程 native/full-suite/生产沙箱门禁仍待运行；ChatGPT、Codex 外部浏览器、手机拍照均待真实环境验收，不能声称可公开部署。** Chromium 中的真实 SDK iframe 回归只验证页面与协议模拟宿主的行为。
 
 `.github/workflows/contact-upload-validation.yml` 在 PR、`codex/contact-upload-*` 分支 push 或手动 dispatch 时运行，只读仓库，不发布镜像、不部署、不读取生产凭据。它在 Ubuntu runner 安装锁定依赖，编译/测试 Rust、检查 server/tests/web 类型、打包页面、运行完整 Python/Vitest/Chromium，再构建生产 worker 镜像，强制执行真实 Linux 安全探针、正常 hardened PDF、CPU/内存/期限/取消及深目录清理。容器探针零跳过；隔离失败必须修复，不能放宽控制。
 

@@ -59,6 +59,13 @@ macOS 上 Linux probe 跳过不能算隔离通过。部署必须保留 network n
 - [ ] 控制代理提交并推送新隔离特性分支；只触发验证 workflow，不打 tag、不触发发布。
 - [ ] 远程 tested SHA 的两个 job 全绿；补 run URL、测试计数和零 skip probe 日志。
 
+## 整体审查补充修复（待复审与远程证据）
+
+- I1：补充拒绝非零 PID `prlimit64`（自身 glibc/Python 资源操作保持 `pid=0`），`fcntl` signal owner/选择与 `O_ASYNC`、等价 owner/FIOASYNC ioctl。按内核 32 位参数比较，覆盖高位绕过；保留普通 FD 操作。新增同 UID 哨兵的未加固正向 control 和 hardened EPERM/资源不变/无信号断言，含匿名管道及可信标准 FD socketpair。
+- I2：兑换接口在 JSON 解析前设置 no-store，并走泛化 JSON 错误处理；不授予 App Bearer CORS。畸形/超额请求在 production 错误路径不记录 payload，正常单次兑换和 exact Origin 不变。
+- I3：首次远程 run `36661267650` workflow validation 失败，未创建 job。三个 job.env 的 runner.temp 路径改在各 job 首个 runner step 使用 `$RUNNER_TEMP` 写 `$GITHUB_ENV`；两个脚本已在含空格临时路径实际执行，15 个 shell 块语法通过。
+- 本轮本地 HTTP/session/App 72 项通过、no-emit 通过，seccomp 规则边界有 red→green。macOS 2 项通过/8 项 Linux skip **不是内核通过证据**；最终增量复审、新 tested SHA 的远程两个 job、hardened PDF 及真实宿主门禁保持待验。精确证据见 scratch `final-fix-report.md`。
+
 ## 发布前验收记录
 
 | 门禁 | 状态 | 要保存的证据 |
