@@ -154,6 +154,10 @@ def enter(source: Path, scratch: Path, *, cpu_seconds=120, memory_bytes=3 * 1024
         # scratch: ordinary files/directories/symlinks only, no device/FIFO/socket/exec
         allow(scratch, 2 | 4 | 8 | 16 | 32 | 128 | 256 | 4096 | 8192 | 16384)
         allow(Path('/dev/null'), 2 | 4)
+        allow(Path('/dev/urandom'), 4)  # Torch initialization needs a read-only random source.
+        mime_types = Path('/etc/mime.types')
+        if mime_types.exists():
+            allow(mime_types, 4)  # Docling imports openpyxl's MIME registry even for PDFs.
         _check(libc.syscall(446, ruleset, 0))
     finally:
         os.close(ruleset)

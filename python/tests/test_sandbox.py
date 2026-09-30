@@ -206,7 +206,18 @@ if case!='setsig': fcntl.fcntl(r,fcntl.F_SETFL,os.O_NONBLOCK)
 assert source.read_text() == 'current'
 assert 'SERVICE_SECRET' not in os.environ
 (scratch / 'ok').write_text('scratch')
-for path in [source.parent / 'sibling.pdf', source.parent / 'database.sqlite', source.parent / 'service.env', Path('/proc/self/environ'), Path('/data/salestools.sqlite')]:
+runtime_files = [Path('/dev/urandom')]
+mime_types = Path('/etc/mime.types')
+if mime_types.exists(): runtime_files.append(mime_types)
+for path in runtime_files:
+    with path.open('rb') as stream: stream.read(1)
+    # Check write access without writing or truncating a runtime file.
+    try: fd = os.open(path, os.O_WRONLY)
+    except PermissionError: pass
+    else:
+        os.close(fd)
+        raise AssertionError('runtime file writable: ' + str(path))
+for path in [source.parent / 'sibling.pdf', source.parent / 'database.sqlite', source.parent / 'service.env', Path('/proc/self/environ'), Path('/etc/passwd'), Path('/data/salestools.sqlite')]:
     try: path.read_bytes()
     except PermissionError: pass
     except FileNotFoundError:
