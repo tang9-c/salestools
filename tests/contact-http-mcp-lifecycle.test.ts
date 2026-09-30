@@ -1,6 +1,6 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import { DocumentExtractor } from '../src/contacts/document-extractor.js';
-import * as parserProcess from '../src/contacts/parser-process.js';
 import { ImportCandidateSchema } from '../src/contracts/index.js';
 import { createApplication, type RunningApplication } from '../src/index.js';
 
@@ -60,31 +59,6 @@ async function ready(client: Client, importId: string): Promise<Record<string, u
 it('travels through authenticated HTTP upload, MCP and the real graph without exposing private data through legacy contacts',
   async () => {
     directory = mkdtempSync(join(tmpdir(), 'contact-http-mcp-'));
-    const spawnParser = parserProcess.spawnParser;
-    vi.spyOn(parserProcess, 'spawnParser').mockImplementation((...args) => {
-      const uid = process.getuid!();
-      let threads = 0;
-      for (const pid of readdirSync('/proc').filter(name => /^\d+$/u.test(name))) {
-        try {
-          const status = readFileSync(`/proc/${pid}/status`, 'utf8');
-          if (Number(status.match(/^Uid:\s+(\d+)/mu)?.[1]) === uid) {
-            threads += Number(status.match(/^Threads:\s+(\d+)/mu)?.[1] ?? 0);
-          }
-        } catch { /* Process exited during the synthetic diagnostic. */ }
-      }
-      console.error('Synthetic hardened parser parent:', { uid, threads, mode: args[0].sandboxMode ?? 'hardened' });
-      const spawned = spawnParser(...args);
-      let pending = '';
-      spawned.child.stderr.on('data', chunk => {
-        pending += chunk.toString();
-        const lines = pending.split('\n');
-        pending = lines.pop()!;
-        for (const line of lines) {
-          if (line.startsWith('CONTACT_CONVERSION_DIAGNOSTIC ')) console.error(line);
-        }
-      });
-      return spawned;
-    });
     vi.spyOn(DocumentExtractor.prototype, 'extract').mockImplementation(async blocks => {
       expect(blocks).toEqual(expect.arrayContaining([expect.objectContaining({
         text: expect.stringContaining('Lin Xiang'), page: 1,

@@ -8,7 +8,6 @@ import os
 import errno
 import resource
 import signal
-import sys
 import tempfile
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -30,28 +29,6 @@ FORMATS = {"pdf": b"%PDF-", "png": b"\x89PNG\r\n\x1a\n", "jpg": b"\xff\xd8\xff"}
 
 class ParseError(Exception):
     """An error code safe to send over the process protocol."""
-
-
-def _conversion_diagnostic(error: Exception) -> None:
-    chain = []
-    current = error
-    for _ in range(8):
-        stack = []
-        frame = current.__traceback__
-        while frame is not None and len(stack) < 24:
-            stack.append({"path": frame.tb_frame.f_code.co_filename,
-                          "function": frame.tb_frame.f_code.co_name, "line": frame.tb_lineno})
-            frame = frame.tb_next
-        chain.append({"type": type(current).__name__, "errno": getattr(current, "errno", None),
-                      "filename": getattr(current, "filename", None), "stack": stack})
-        current = current.__cause__ or current.__context__
-        if current is None:
-            break
-    print("CONTACT_CONVERSION_DIAGNOSTIC " + json.dumps({
-        "uid": os.getuid(), "nproc": resource.getrlimit(resource.RLIMIT_NPROC),
-        "address_space": resource.getrlimit(resource.RLIMIT_AS),
-        "max_rss": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, "chain": chain,
-    }), file=sys.stderr, flush=True)
 
 
 def _limits(overrides: dict[str, int] | None) -> dict[str, int]:
@@ -269,12 +246,10 @@ def parse(path: str | Path, file_type: str, document_id: str,
     except ParseError:
         raise
     except OSError as error:
-        _conversion_diagnostic(error)
         if error.errno == errno.EFBIG:
             raise ParseError("TEMP_BYTES_EXCEEDED") from error
         raise ParseError("CONVERSION_FAILED") from error
     except Exception as error:
-        _conversion_diagnostic(error)
         raise ParseError("CONVERSION_FAILED") from error
     items = (item for item, _ in document.iterate_items()) if hasattr(document, "iterate_items") else iter(
         list(getattr(document, "texts", [])) + list(getattr(document, "tables", [])))
