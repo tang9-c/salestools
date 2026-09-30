@@ -29,13 +29,13 @@ MCP 注册不会替你部署服务端，也不会创建 Token。服务端地址�
 
 - Linux x86_64 或 aarch64，内核必须启用 Landlock 并支持 ABI ≥ 3（包含 REFER/TRUNCATE，通常需 Linux ≥ 6.2），安装 `libseccomp.so.2`，容器运行时允许安装追加 seccomp 过滤器；本 CI 生产烟测使用 cgroup v2 检查实际 CPU/内存/PID 限额。缺少能力时返回 `SANDBOX_UNAVAILABLE`，不降级解析。版本号不能代替实际探针。
 - 保持 worker 的 `network_mode: none`、只读根文件系统、非 root `node` 用户、`cap_drop: [ALL]`、`no-new-privileges`、`init: true`。不得用 privileged、增加 capability 或关闭过滤器让验证通过。
-- 保持 worker 聚合限制：4 GiB 内存、2 CPU、64 PID；单解析器还限制地址空间 3 GiB、CPU 120 秒、32 个进程、128 FD、单文件 256 MiB、禁止 core dump。监督器将预检墙钟限制为 30 秒、解析限制为 120 秒，并在完成、错误、超时或取消后杀死整个子进程组。
+- 保持 worker 聚合限制：4 GiB 内存、2 CPU、64 PID；单解析器还限制地址空间 3 GiB、CPU 120 秒、64 个进程／线程、128 FD、单文件 256 MiB、禁止 core dump。Linux 的 `RLIMIT_NPROC` 统计同一 UID 的线程，并非只统计解析器新建的进程。监督器将预检墙钟限制为 30 秒、解析限制为 120 秒，并在完成、错误、超时或取消后杀死整个子进程组。
 - 上传与 worker socket 使用独立 tmpfs：上传最多 1 GiB，只读挂载到 broker；socket 最多 1 MiB。worker `/tmp` 为 1 GiB 的 `nosuid,nodev,noexec` tmpfs。不要将上传目录改为 `/data`、持久卷或纳入备份。worker 不挂载服务端数据库卷、不接收模型服务密钥；基础镜像声明的 `/data` 可产生空匿名卷，不能把它替换为应用数据库卷。
 - broker 能访问上传挂载，但解析器在导入任何解析库前封闭权限：只读当前一个输入、镜像中的运行时/模型/字体，独立 scratch 可写；不能读兄弟上传、数据库、凭证或连接 socket/网络。关闭额外 FD，清空继承环境；拒绝非零 PID 的 `prlimit64`、异步信号 owner/信号选择，以及 `fcntl`/`ioctl` 开启异步通知，防止同 UID broker 被改资源限制或收到 SIGIO。自身资源限制通过 `pid=0` 保持可用。Landlock 不隐藏所有文件元数据；这里验证的是内容访问和操作权限，不承诺抵御内核漏洞。
 
 ## 远程验证与真实宿主验收
 
-当前状态（2026-09-29）：本轮把完整预览与确认规则统一到现有服务，页面只展示服务端结果；本轮验证状态见 `docs/superpowers/plans/2026-09-29-contact-upload-minimal.md`。**本轮 revision 的远程 native/full-suite/生产容器门禁及 ChatGPT、Codex 外部浏览器、手机拍照真实环境验收仍待完成，不能声称可公开部署。** 保留现有解析沙箱，取消强制替代项目；后续仅修复现有 CI 阻塞并验收现有隔离，收尾方案见 `docs/superpowers/plans/2026-09-30-contact-upload-closeout.md`。Chromium 中的真实 SDK iframe 回归只验证页面与协议模拟宿主的行为。
+当前状态（2026-09-30）：联系人上传功能的远程代码门禁已在提交 `d965bdbd2b73683b7585077e50b531fb2127f65f` [运行 36704210079](https://github.com/tang9-c/salestools/actions/runs/36704210079) 通过：Rust 测试、类型检查、服务端和页面构建、Python 33 项及 30 个子测试、Vitest 1257 项（含真实 HTTP/MCP 导入）、生产容器构建及 hardened PDF／资源／清理沙箱门禁均成功。ChatGPT、Codex 外部浏览器与手机相机的真实宿主验收仍未完成，因此不能据此声称这些客户端或公开部署已经验证。保留现有解析沙箱；收尾记录见 `docs/superpowers/plans/2026-09-30-contact-upload-closeout.md`。
 
 `.github/workflows/contact-upload-validation.yml` 在 PR、`codex/contact-upload-*` 分支 push 或手动 dispatch 时运行，只读仓库，不发布镜像、不部署、不读取生产凭据。它在 Ubuntu runner 安装锁定依赖，编译/测试 Rust、检查 server/tests/web 类型、打包页面、运行完整 Python/Vitest/Chromium，再构建生产 worker 镜像，强制执行真实 Linux 安全探针、正常 hardened PDF、CPU/内存/期限/取消及深目录清理。容器探针零跳过；隔离失败必须修复，不能放宽控制。
 
@@ -61,7 +61,7 @@ docker compose -f compose.contact-upload.yaml run --rm --no-deps contact-worker 
 - [ ] Codex 外部 HTTPS 页：短码过期/重放、Cookie 同源限制、刷新、确认回执重试及聊天恢复；证据：待填写。
 - [ ] 手机真实相机：系统/客户端版本、拍照权限、取消拍摄、JPG/PNG 上传及可读预览；证据：待填写。
 - [ ] 各宿主 XSS 文本、失败重试、版本冲突、未处理块/重复建议阻止确认及返回 `import_id`；证据：待填写。
-- [ ] 远程 CI：run URL、tested SHA、两个 job 全绿、安全探针零跳过；证据：待填写。
+- [x] 远程 CI：提交 `d965bdbd2b73683b7585077e50b531fb2127f65f` 的[运行 36704210079](https://github.com/tang9-c/salestools/actions/runs/36704210079) 两个 job 全绿；Python JUnit 零跳过，原失败的 HTTP/MCP 用例通过。
 
 ## 批量上传本地联系人文件
 

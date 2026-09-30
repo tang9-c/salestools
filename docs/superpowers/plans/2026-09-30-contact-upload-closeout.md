@@ -14,7 +14,7 @@
 
 - 禁止本地构建、native 编译、页面打包和启动包含构建的 dev；构建只在远程 CI。
 - 不新增功能、依赖、服务、队列、存储、通用抽象或测试平台；不重写沙箱。
-- 保留现有 Landlock/seccomp、资源限制、无网络、只读根、cap_drop 和 no-new-privileges；不得提高限制、以 root 运行解析探针、跳过安全探针或使用 test-only 来通过门禁。
+- 保留现有 Landlock/seccomp、无网络、只读根、cap_drop 和 no-new-privileges；资源限制仅可在失败证据证明原值阻断正常解析时做最小调整，并须验证新上限仍生效。不得以 root 运行解析探针、跳过安全探针或使用 test-only 来通过门禁。
 - 不改上传/预览/确认协议和 CLI/MCP 行为，不改变用户确认及最终写入前的权限、版本检查。
 - 只修复已复现且阻塞现有流程的问题；与本轮无关的重构不纳入。
 - 使用合成 PDF/图片、临时数据库和无生产凭据的测试环境；本方案不授权生产部署、合并或操作真实联系人。
@@ -32,9 +32,9 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `.github/workflows/contact-upload-validation.yml` | 唯一预期的执行配置改动：Python 安全探针的运行身份及必要诊断 |
-| `python/tests/test_sandbox.py` | 复用现有真实 Linux 探针；默认不修改测试断言 |
-| `python/contact_worker/sandbox.py` | 保持现有安全实现，不属于预期修改范围 |
+| `.github/workflows/contact-upload-validation.yml` | Python 安全探针运行身份、模型目录、完整 Vitest 的测试身份 |
+| `python/tests/test_sandbox.py` | 验证只读运行时文件与调整后的进程／线程上限 |
+| `python/contact_worker/sandbox.py` | 根据真实失败证据，仅增加两个运行时文件只读许可并将 NPROC 上限调至 64 |
 | `docs/QUICKSTART.md`、本方案 | 更新当前验收状态和证据 |
 
 ### Task 1：修复 Python CI 运行环境
@@ -89,11 +89,11 @@ sudo -u contact-ci -- env -i PATH=/usr/bin:/bin \
 
 **Interfaces:** 使用 Task 1 修复后的同一 tested SHA；两个既有 job 全部通过，无跳过安全探针。
 
-- [ ] 复用 Task 1 已触发的完整 run，不因阶段已通过而重复启动构建。
-- [ ] 检查原有类型检查、Rust 测试、服务端/页面构建、Python、完整 Vitest 均通过。
-- [ ] 检查原有 production-sandbox job 通过：真实内核限制、正常 PDF、资源限制、取消和清理；不新增一套验证工具。
-- [ ] 若失败，仅修复该 run 已证明的阻塞；先有失败证据，再做最小修复并跑受影响 gate。与功能无关的改善延后。
-- [ ] 在本方案和 QUICKSTART 记录 tested SHA、run URL、实际结果及剩余验收，不用旧 SHA 的结果证明新代码。
+- [x] 复用既有 workflow 的完整 run，未新增构建或验证系统。
+- [x] 原有类型检查、Rust 测试、服务端/页面构建、Python、完整 Vitest 均通过。
+- [x] production-sandbox job 通过：真实内核限制、正常 PDF、资源限制、取消和清理。
+- [x] 依据失败日志定位 Docling 线程启动受 NPROC32 阻断，只做两个运行时文件只读许可和 NPROC64 上限调整；临时诊断已从最终提交移除。
+- [x] 本方案和 QUICKSTART 记录 tested SHA、run URL、实际结果及剩余验收。
 
 ```bash
 rtk proxy gh run view RUN_ID --json headSha,status,conclusion,jobs,url
@@ -124,10 +124,12 @@ rtk proxy git diff --check
 
 ## 方案状态
 
-2026-09-30：正在执行。CI 环境修复已完成，独立任务及整体审查均通过，最终 SHA 的完整 Python 和零跳过检查通过；其余完整远程门禁正在运行；真实宿主因尚未提供非生产环境信息待验收。没有修改业务代码、安全限制或执行本地构建。
+2026-09-30：代码与远程 CI 门禁已通过。最终代码提交 `d965bdbd2b73683b7585077e50b531fb2127f65f` 的[运行 36704210079](https://github.com/tang9-c/salestools/actions/runs/36704210079)：`native-and-browser` 与 `production-sandbox` 两个 job 成功；Python 33 项、30 个子测试且零跳过，Vitest 1257/1257 通过，其中原失败的真实 HTTP 上传／MCP 导入用例通过。服务端和页面构建、Rust 测试、生产镜像及 hardened PDF／资源／清理门禁均在远程 runner 成功。本地未构建。Task 3 真实宿主验收仍待非生产 HTTPS 环境，不能声称 ChatGPT、Codex 外部页或手机拍照已验证。
 
 ### CI 根因与修复记录
 
 普通 runner UID1001 的线程数在两次诊断分别为50、46，两个原探针均在原定 `RLIMIT_NPROC=32` 下复现 fork EAGAIN。专用 UID999 下父进程、哨兵、被测进程及 fork 后代保持相同 UID，沙箱上限仍为32；[run36690331691](https://github.com/tang9-c/salestools/actions/runs/36690331691) 的 Python 本体33项/30子测试通过，但报告读取权限导致步骤失败，后续门禁未运行。最终修复由同一 UID 读取私有报告，保留零跳过断言。
 
-为避免新增依赖，测试用户复用既有 runner 主组以穿过750的 home 目录；代价是可信 CI harness 继承该组已有读取/遍历权限。生产 UID/GID、Landlock、seccomp 与限额不变，CI 无生产凭据。一次临时 ACL 尝试已取消并从最终配置移除。最终 workflow 相对收尾前仅 +22/-3，无新增依赖或测试平台。
+为避免新增依赖，测试用户复用既有 runner 主组以穿过750的 home 目录；代价是可信 CI harness 继承该组已有读取/遍历权限。生产 UID/GID、Landlock 与 seccomp 不变；解析器 NPROC 后续依据真实失败证据由 32 调至 64。CI 无生产凭据。一次临时 ACL 尝试已取消并从最终配置移除。Task 1 的 workflow 相对收尾前为 +22/-3；Task 2 另有最小环境对齐配置，无新增依赖或测试平台。
+
+Task 2 将 CI 模型准备目录对齐原有 `/opt/contact-models`，完整 Vitest 使用已创建的独立非 root UID/env-i，直接调用已安装 CLI，仅赋予实际测试缓存目录写权限。随后[诊断运行 36700978680](https://github.com/tang9-c/salestools/actions/runs/36700978680) 确认：该 UID 的父进程已有 29 个线程，解析器 NPROC 为 32，Docling 在 `threading.start` 处抛出 `RuntimeError`，导致 `CONVERSION_FAILED`。据此将解析器上限调至 64，与现有容器 PID 上限一致；沙箱测试验证上限不可提高、超额创建会失败。还为 Torch 的 `/dev/urandom` 和 Docling 经 openpyxl 读取的 `/etc/mime.types` 增加精确只读许可。最终提交移除临时诊断，无其他沙箱放宽；[运行 36704210079](https://github.com/tang9-c/salestools/actions/runs/36704210079) 再次全绿。
