@@ -330,7 +330,7 @@ except (ValueError,PermissionError): pass
 else: raise AssertionError('process ceiling lifted')
 children=[]
 try:
-    for _ in range(40):
+    for _ in range(80):
         try: pid=os.fork()
         except BlockingIOError: break
         if pid==0: time.sleep(0.5); os._exit(0)
