@@ -121,6 +121,56 @@ function preserveSkippedProjects(candidates: ImportCandidate[], warnings: string
   }
 }
 
+function autoCreateSelection(candidates: ImportCandidate[]) {
+  const present = (value: unknown): boolean => value !== undefined && value !== null
+    && (typeof value === 'string' ? value.trim().length > 0
+      : Array.isArray(value) ? value.some(present) : typeof value === 'object'
+        ? Object.values(value).some(present) : true);
+  const hasInstitutionEvidence = (candidate: ImportCandidate) => candidate.relation_suggestions.some(relation =>
+    relation.source_candidate_id === candidate.candidate_id && ['worksFor', 'alumniOf'].includes(relation.relation_type)
+    && !relation.uncertain && !relation.review_reason && locatedRelationProof(relation).length > 0);
+  const people = candidates.filter(candidate => candidate.label === 'Person'
+    && (Object.values(candidate.properties).some(present)
+      || Object.values(candidate.extensions).some(present)
+      || candidate.evidence.length > 0
+      || hasInstitutionEvidence(candidate)
+      || candidate.review_items.some(item => item.kind === 'field' && present(item.value))));
+  const owners = people.filter(person => !person.warnings.includes('非主体人物线索'));
+  if (owners.length > 1) throw new Error('AUTO_CREATE_AMBIGUOUS_PERSON');
+  if (owners.length !== 1 || !owners[0].can_commit
+    || !(owners[0].evidence.some(proof => proof.locator_status === 'located') || hasInstitutionEvidence(owners[0]))) {
+    throw new Error('AUTO_CREATE_NO_PERSON');
+  }
+  const ownerProjectIds = new Set([...owners[0].relation_suggestions,
+    ...owners[0].review_items.filter((item): item is Extract<ImportCandidate['review_items'][number], { kind: 'relation' }> => item.kind === 'relation')]
+    .filter(relation => relation.relation_type === 'memberOf'
+      && relation.source_candidate_id === owners[0].candidate_id)
+    .map(relation => relation.target_candidate_id));
+  const autoChoices = candidates.map(candidate => ({
+    candidate_id: candidate.candidate_id,
+    action: candidate.can_commit && (candidate.candidate_id === owners[0].candidate_id
+      || hasLocatedName(candidate)
+      || (candidate.label === 'Project' && ownerProjectIds.has(candidate.candidate_id)
+        && !!projectAnchor(candidate)))
+      ? 'create' : 'skip',
+  }));
+  const createdIds = new Set(autoChoices.filter(choice => choice.action === 'create')
+    .map(choice => choice.candidate_id));
+  const suggestions = candidates.flatMap(candidate => candidate.relation_suggestions);
+  const relationKey = (relation: CandidateRelation) => JSON.stringify([
+    relation.source_candidate_id, relation.target_candidate_id, relation.relation_type,
+    relation.properties]);
+  const counts = new Map<string, number>();
+  for (const relation of suggestions) counts.set(relationKey(relation), (counts.get(relationKey(relation)) ?? 0) + 1);
+  const relationChoices = suggestions
+    .filter(relation => counts.get(relationKey(relation)) === 1)
+    .filter(relation => isAutoSelectableInstitutionRelation(relation, owners[0], candidates, createdIds)
+      || isAutoSelectableProjectRelation(relation, owners[0], candidates, createdIds, ownerProjectIds))
+    .map(({ source_candidate_id, target_candidate_id, relation_type, properties }) =>
+      ({ source_candidate_id, target_candidate_id, relation_type, properties }));
+  return { choices: autoChoices, relationChoices };
+}
+
 export interface ExtractedDocument {
   candidates: ImportCandidate[];
   warnings: string[];
@@ -249,6 +299,74 @@ export class ContactImportService {
     };
   }
 
+  // The upload page consumes one complete preview and one server-owned decision.
+  async getUploadPreview(importId: string, actor: string): Promise<(Record<string, unknown> & {
+    candidates: unknown[]; confirmation: { allowed: boolean; reasons: string[] };
+  }) | null> {
+    const first = await this.get(importId, actor, 0, 50);
+    if (!first) return null;
+    const pages = [first];
+    const reasons: string[] = [];
+    const total = first.total_candidates;
+    const processed = first.processed_block_ids;
+    const unprocessed = first.unprocessed_block_ids;
+    const validIds = (value: unknown): value is string[] => Array.isArray(value)
+      && value.every(id => typeof id === 'string' && !!id.trim());
+    const candidateIds = new Set<string>();
+    const completePage = (page: Record<string, unknown> | null, offset: number): boolean => {
+      if (!page || page.import_id !== importId || page.status !== first.status || page.version !== first.version
+        || page.total_candidates !== total || page.offset !== offset || page.limit !== 50
+        || !Array.isArray(page.candidates) || page.candidates.length !== Math.min(50, Math.max(0, (total as number) - offset))
+        || page.coverage_available !== true || !validIds(processed) || !validIds(unprocessed)
+        || !validIds(page.processed_block_ids) || !validIds(page.unprocessed_block_ids)
+        || JSON.stringify(page.processed_block_ids) !== JSON.stringify(processed)
+        || JSON.stringify(page.unprocessed_block_ids) !== JSON.stringify(unprocessed)) return false;
+      return page.candidates.every(candidate => {
+        const id = candidate && typeof candidate === 'object' ? candidate.candidate_id : undefined;
+        if (typeof id !== 'string' || !id.trim() || candidateIds.has(id)) return false;
+        candidateIds.add(id);
+        return true;
+      });
+    };
+    let complete = Number.isSafeInteger(total) && (total as number) >= 0
+      && Number.isSafeInteger(first.version) && (first.version as number) > 0 && completePage(first, 0);
+    if (Number.isSafeInteger(total) && (total as number) > 0) {
+      for (let offset = 50; offset < (total as number); offset += 50) {
+        const page = await this.get(importId, actor, offset, 50);
+        if (!completePage(page, offset)) complete = false;
+        if (!page) break;
+        pages.push(page);
+      }
+    }
+    if (!complete) reasons.push('预览不完整或版本发生变化，请重新加载完整预览。');
+    if (pages.some(page => Array.isArray(page.unprocessed_block_ids) && page.unprocessed_block_ids.length)) {
+      reasons.push('原件仍有未处理文本块。');
+    }
+    const candidates = pages.flatMap(page => Array.isArray(page.candidates) ? page.candidates : []);
+    const warnings = [...new Set(pages.flatMap(page => Array.isArray(page.warnings) ? page.warnings : []))];
+    const matches = pages.flatMap(page => Array.isArray(page.match_suggestions) ? page.match_suggestions : []);
+    if (pages.some(page => page.match_suggestions_truncated !== false
+      || !Array.isArray(page.match_suggestions) || !Array.isArray(page.warnings))
+      || warnings.some(warning => typeof warning === 'string' && (warning.includes('匹配查询失败') || warning.includes('截断')))) {
+      reasons.push('身份匹配未完整完成。');
+    }
+    if (matches.length) reasons.push('存在可能重复的联系人，请在聊天中比较资料。');
+    if (first.status !== 'ready_for_review') reasons.push('任务尚未达到可确认状态。');
+    else {
+      try { autoCreateSelection(candidates.map(raw => ImportCandidateSchema.parse(raw))); }
+      catch (error) {
+        reasons.push(error instanceof Error && error.message === 'AUTO_CREATE_AMBIGUOUS_PERSON'
+          ? '识别到多个主体人物。' : '缺少可入库且有定位证据的主体人物。');
+      }
+    }
+    return { ...first, import_id: importId, candidates, warnings, match_suggestions: matches,
+      match_suggestions_truncated: pages.some(page => page.match_suggestions_truncated === true),
+      processed_block_ids: [...new Set(pages.flatMap(page => Array.isArray(page.processed_block_ids) ? page.processed_block_ids : []))],
+      unprocessed_block_ids: [...new Set(pages.flatMap(page => Array.isArray(page.unprocessed_block_ids) ? page.unprocessed_block_ids : []))],
+      coverage_available: pages.every(page => page.coverage_available === true),
+      confirmation: { allowed: reasons.length === 0, reasons } };
+  }
+
   private async matchSuggestions(rawCandidates: unknown[]): Promise<{
     suggestions: MatchSuggestion[]; truncated: boolean;
   }> {
@@ -307,11 +425,18 @@ export class ContactImportService {
   }
 
   async commit(input: { import_id: string; preview_version: number; operation_id: string;
-    choices?: unknown[]; relation_choices?: unknown[]; auto_create?: boolean }, actor: string,
+    choices?: unknown[]; relation_choices?: unknown[]; auto_create?: boolean; require_confirmation?: boolean }, actor: string,
     beforeWrite?: () => void): Promise<Record<string, unknown>> {
     if (!actor.trim()) throw new Error('Authenticated client is required');
     if (input.operation_id !== `contact-import:${input.import_id}`) {
       throw new Error('Invalid commit operation_id');
+    }
+    if (input.require_confirmation) {
+      const preview = await this.getUploadPreview(input.import_id, actor);
+      beforeWrite?.();
+      if (!preview) throw new Error('IMPORT_NOT_FOUND');
+      if (preview.version !== input.preview_version) throw new Error('PREVIEW_VERSION_CHANGED');
+      if (!preview.confirmation.allowed) throw new Error('MANUAL_REVIEW_REQUIRED');
     }
     let choices = input.choices;
     let relationChoices = input.relation_choices ?? [];
@@ -320,56 +445,11 @@ export class ContactImportService {
       const job = await this.getRaw(input.import_id);
       if (!job) throw new Error('IMPORT_NOT_FOUND');
       if (job.actor !== actor) throw new Error('IMPORT_ACCESS_DENIED');
+      if (input.require_confirmation && job.version !== input.preview_version) throw new Error('PREVIEW_VERSION_CHANGED');
       if (!['ready_for_review', 'committed'].includes(job.status)) throw new Error('IMPORT_NOT_READY');
       const candidates = (Array.isArray(job.data.candidates) ? job.data.candidates : [])
         .map(raw => ImportCandidateSchema.parse(raw));
-      const present = (value: unknown): boolean => value !== undefined && value !== null
-        && (typeof value === 'string' ? value.trim().length > 0
-          : Array.isArray(value) ? value.some(present) : typeof value === 'object'
-            ? Object.values(value).some(present) : true);
-      const hasInstitutionEvidence = (candidate: ImportCandidate) => candidate.relation_suggestions.some(relation =>
-        relation.source_candidate_id === candidate.candidate_id && ['worksFor', 'alumniOf'].includes(relation.relation_type)
-        && !relation.uncertain && !relation.review_reason && locatedRelationProof(relation).length > 0);
-      const people = candidates.filter(candidate => candidate.label === 'Person'
-        && (Object.values(candidate.properties).some(present)
-          || Object.values(candidate.extensions).some(present)
-          || candidate.evidence.length > 0
-          || hasInstitutionEvidence(candidate)
-          || candidate.review_items.some(item => item.kind === 'field' && present(item.value))));
-      const owners = people.filter(person => !person.warnings.includes('非主体人物线索'));
-      if (owners.length > 1) throw new Error('AUTO_CREATE_AMBIGUOUS_PERSON');
-      if (owners.length !== 1 || !owners[0].can_commit
-        || !(owners[0].evidence.some(proof => proof.locator_status === 'located') || hasInstitutionEvidence(owners[0]))) {
-        throw new Error('AUTO_CREATE_NO_PERSON');
-      }
-      const ownerProjectIds = new Set([...owners[0].relation_suggestions,
-        ...owners[0].review_items.filter((item): item is Extract<ImportCandidate['review_items'][number], { kind: 'relation' }> => item.kind === 'relation')]
-        .filter(relation => relation.relation_type === 'memberOf'
-          && relation.source_candidate_id === owners[0].candidate_id)
-        .map(relation => relation.target_candidate_id));
-      const autoChoices = candidates.map(candidate => ({
-        candidate_id: candidate.candidate_id,
-        action: candidate.can_commit && (candidate.candidate_id === owners[0].candidate_id
-          || hasLocatedName(candidate)
-          || (candidate.label === 'Project' && ownerProjectIds.has(candidate.candidate_id)
-            && !!projectAnchor(candidate)))
-          ? 'create' : 'skip',
-      }));
-      choices = autoChoices;
-      const createdIds = new Set(autoChoices.filter(choice => choice.action === 'create')
-        .map(choice => choice.candidate_id));
-      const suggestions = candidates.flatMap(candidate => candidate.relation_suggestions);
-      const relationKey = (relation: CandidateRelation) => JSON.stringify([
-        relation.source_candidate_id, relation.target_candidate_id, relation.relation_type,
-        relation.properties]);
-      const counts = new Map<string, number>();
-      for (const relation of suggestions) counts.set(relationKey(relation), (counts.get(relationKey(relation)) ?? 0) + 1);
-      relationChoices = suggestions
-        .filter(relation => counts.get(relationKey(relation)) === 1)
-        .filter(relation => isAutoSelectableInstitutionRelation(relation, owners[0], candidates, createdIds)
-          || isAutoSelectableProjectRelation(relation, owners[0], candidates, createdIds, ownerProjectIds))
-        .map(({ source_candidate_id, target_candidate_id, relation_type, properties }) =>
-          ({ source_candidate_id, target_candidate_id, relation_type, properties }));
+      ({ choices, relationChoices } = autoCreateSelection(candidates));
     } else if (Array.isArray(choices)) {
       const createdIds = new Set(choices.flatMap(choice => {
         if (!choice || typeof choice !== 'object' || Array.isArray(choice)) return [];

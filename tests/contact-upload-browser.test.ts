@@ -20,13 +20,13 @@ const person = (id = 'p_1', overrides: Record<string, unknown> = {}) => ({
   evidence: [{ evidence_id: `e_${id}`, subject_kind: 'entity', subject_id: id,
     field_path: 'properties.name', value: '张敏', source_type: 'file', file_name: 'card.pdf',
     file_sha256: 'a'.repeat(64), quote: '张敏 产品经理', page: 1, locator_status: 'located',
-    collected_at: '2026-09-29T00:00:00Z' }], relation_suggestions: [], review_items: [], ...overrides,
+    collected_at: '2026-09-29T00:00:00.000Z' }], relation_suggestions: [], review_items: [], ...overrides,
 });
 const preview = (overrides: Record<string, unknown> = {}) => ({
   import_id: 'ci_browser', status: 'ready_for_review', version: 3, source: { file_name: 'card.pdf' },
   total_candidates: 1, candidates: [person()], warnings: [], match_suggestions: [],
   match_suggestions_truncated: false, processed_block_ids: ['b_1'], unprocessed_block_ids: [],
-  coverage_available: true,
+  coverage_available: true, confirmation: { allowed: true, reasons: [] },
   offset: 0, limit: 50, ...overrides,
 });
 type Harness = { page: Page; ui: Page | Frame; commits: unknown[]; logs: string[]; requests: Array<{ path: string; method: string; auth?: string; cookie?: string; origin?: string }> };
@@ -196,9 +196,10 @@ it('shows warnings, evidence, review fields, matching details and coverage liter
     candidates: [person('p_1', { properties: { name: attack, description: '正常描述' }, warnings: ['候选警告'],
       evidence: [{ ...person().evidence[0], file_name: attack, quote: attack }],
       review_items: [{ kind: 'field', field_path: 'properties.jobTitle', value: attack, reason: 'missing_evidence', quote: '需核对的文字', page: 2 }] })],
+    confirmation: { allowed: false, reasons: ['存在可能重复的联系人，请在聊天中比较资料。'] },
     match_suggestions: [{ entityId: 'existing_1', candidateId: 'p_1', candidateName: attack,
-      existingName: attack, reasons: [{ kind: 'self_phone', value: attack }], existingUpdatedAt: '2026-09-20T00:00:00Z',
-      candidateSources: [{ sourceType: 'file', collectedAt: '2026-09-29T00:00:00Z', fileName: attack }], existingSources: [] }] });
+      existingName: attack, reasons: [{ kind: 'self_phone', value: attack }], existingUpdatedAt: '2026-09-20T00:00:00.000Z',
+      candidateSources: [{ sourceType: 'file', collectedAt: '2026-09-29T00:00:00.000Z', fileName: attack }], existingSources: [] }] });
   const { page } = await open({ data });
   const text = await body(page);
   expect(text).toContain('任务警告二'); expect(text).toContain('已处理 2'); expect(text).toContain('未处理 1');
@@ -223,39 +224,27 @@ it.each([
   ['覆盖不可用', { coverage_available: false }],
   ['缺少覆盖可用标志', { coverage_available: undefined }],
 ])('disables confirmation for %s and retains the import number', async (_name, data) => {
-  const { page } = await open({ data: preview(data) });
+  const { page } = await open({ data: preview({ ...data, confirmation: { allowed: false, reasons: [_name] } }) });
   expect(await page.locator('#commit').isEnabled()).toBe(false);
   expect(await body(page)).toContain('ci_browser');
 });
 
-it.each(['incomplete', 'drifting'])('blocks an %s paginated preview', async kind => {
-  const first = preview({ total_candidates: 51, candidates: [person(), ...Array.from({ length: 49 }, (_, i) => ({
-    candidate_id: `org_${i}`, label: 'Organization', properties: { name: `公司 ${i}` }, can_commit: true,
-    warnings: [], evidence: [], relation_suggestions: [], review_items: [],
-  }))] });
-  const { page } = await open({ data: first, response: async route => {
-    if (route.request().url().includes('offset=50')) {
-      await json(route, preview({ offset: 50, total_candidates: 51, version: kind === 'drifting' ? 4 : 3,
-        candidates: kind === 'incomplete' ? [] : [{ candidate_id: 'org_final', label: 'Organization',
-          properties: { name: '尾页公司' }, can_commit: true, warnings: [], evidence: [], relation_suggestions: [], review_items: [] }] })); return true;
-    } return false;
-  } });
-  await expect.poll(() => hHasTail(page)).toBe(true);
-  expect(await page.locator('#commit').isEnabled()).toBe(false);
-  expect(await body(page)).toContain('ci_browser');
-  async function hHasTail(p: Page) { return (await body(p)).includes(kind === 'drifting' ? '尾页公司' : '预览不完整'); }
-});
+it.each([undefined, { allowed: false, reasons: ['预览不完整，请在聊天中核对。'] }])(
+  'requires the explicit server allowance and shows its reasons', async confirmation => {
+    const { page } = await open({ data: preview({ confirmation }) });
+    expect(await page.locator('#commit').isEnabled()).toBe(false);
+    expect(await body(page)).toContain('ci_browser');
+    if (confirmation) expect(await body(page)).toContain(confirmation.reasons[0]);
+  });
 
-it('loads all candidate pages and displays the final candidate before enabling confirmation', async () => {
-  const orgs = Array.from({ length: 49 }, (_, i) => ({ candidate_id: `org_${i}`, label: 'Organization',
-    properties: { name: `公司 ${i}` }, can_commit: true, warnings: [], evidence: [], relation_suggestions: [], review_items: [] }));
-  const { page } = await open({ data: preview({ total_candidates: 51, candidates: [person(), ...orgs] }), response: async route => {
-    if (route.request().url().includes('offset=50')) {
-      await json(route, preview({ offset: 50, total_candidates: 51, candidates: [{ ...orgs[0], candidate_id: 'org_final', properties: { name: '尾页公司' } }] })); return true;
-    } return false;
-  } });
-  await ready(page); expect(await body(page)).toContain('尾页公司');
-  expect(await page.locator('#preview .item').count()).toBe(51);
+it('displays every candidate from the complete server preview before enabling confirmation', async () => {
+  const orgs = Array.from({ length: 50 }, (_, i) => ({ candidate_id: `org_${i}`, label: 'Organization',
+    properties: { name: i === 49 ? '尾页公司' : `公司 ${i}` }, can_commit: true,
+    warnings: [], evidence: [], relation_suggestions: [], review_items: [] }));
+  const h = await open({ data: preview({ total_candidates: 51, candidates: [person(), ...orgs] }) });
+  await ready(h.page); expect(await body(h.page)).toContain('尾页公司');
+  expect(await h.page.locator('#preview .item').count()).toBe(51);
+  expect(h.requests.filter(request => request.method === 'GET' && request.path.includes('/contact-upload/import'))).toHaveLength(1);
 });
 
 it('refreshes the full preview after a version conflict and requires a new explicit click', async () => {
@@ -467,7 +456,7 @@ it('keeps an unnamed supported subject confirmable when its institution relation
     properties: { telephone: ['13800138000'] }, evidence: [], relation_suggestions: [{
       source_candidate_id: 'p_1', target_candidate_id: 'org_1', relation_type: 'worksFor', properties: {}, uncertain: false,
       evidence: [{ ...person().evidence[0], subject_kind: 'relation', subject_id: 'r_1', field_path: '$relation',
-        value: 'worksFor', quote: '本人就职于测试公司' }],
+        value: { source_id: 'p_1', target_id: 'org_1', relation_type: 'worksFor' }, quote: '本人就职于测试公司' }],
     }],
   })] }) });
   await ready(page); expect(await body(page)).toContain('本人就职于测试公司');
@@ -501,7 +490,7 @@ it('acknowledges actual SDK host teardown while revoking and discarding an in-fl
     expect(await h.ui.locator('#commit').isEnabled()).toBe(false);
     await expect.poll(() => h.requests.filter(request => request.path === '/contact-upload/exit').length).toBe(1);
     expect(h.requests.find(request => request.path === '/contact-upload/exit')?.auth).toBe('Bearer restricted_session.restricted_secret');
-    const returned = h.page.waitForResponse(response => response.url().includes('/contact-upload/import?'));
+    const returned = h.page.waitForResponse(response => new URL(response.url()).pathname === '/contact-upload/import' && response.request().method() === 'GET');
     releasePreview(); await (await returned).finished();
     await h.ui.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
     expect(await h.ui.locator('#commit').isEnabled()).toBe(false);

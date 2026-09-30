@@ -271,9 +271,7 @@ export function createHttpApp(
       void (async () => {
         const session = pageContext.get(request)!;
         if (!session.importId) { response.status(409).json({ code: 'IMPORT_NOT_STARTED' }); return; }
-        const offset = Number(request.query.offset ?? 0);
-        const limit = Number(request.query.limit ?? 20);
-        const preview = await page.imports.get(session.importId, session.actor, offset, limit);
+        const preview = await page.imports.getUploadPreview(session.importId, session.actor);
         response.json(preview);
       })().catch(() => response.status(400).json({ code: 'INVALID_PREVIEW' }));
     });
@@ -296,53 +294,11 @@ export function createHttpApp(
     const commits = new Map<string, { version: number; pending: Promise<void> }>();
     const commitOnce = async (session: UploadSession, version: number, secret: string): Promise<void> => {
       if (!session.importId) throw new UploadError('IMPORT_NOT_STARTED', 409);
-      const first = await page.imports.get(session.importId, session.actor, 0, 50);
-      if (!first || first.status !== 'ready_for_review') throw new UploadError('IMPORT_NOT_READY', 409);
-      const total = first.total_candidates as number;
-      const processed = first.processed_block_ids;
-      const unprocessed = first.unprocessed_block_ids;
-      if (!Number.isSafeInteger(total) || total < 0 || !Number.isSafeInteger(first.version)
-        || (first.version as number) < 1 || !Array.isArray(processed)
-        || !processed.every(id => typeof id === 'string' && !!id.trim())
-        || !Array.isArray(unprocessed) || unprocessed.length !== 0) {
-        throw new UploadError('MANUAL_REVIEW_REQUIRED', 409);
-      }
-      const candidateIds = new Set<string>();
-      const completePage = (item: Record<string, unknown> | null, offset: number): item is Record<string, unknown> => {
-        if (!item || item.import_id !== session.importId || item.status !== first.status
-          || item.version !== first.version || item.total_candidates !== total || item.offset !== offset
-          || item.coverage_available !== true
-          || item.limit !== 50 || !Array.isArray(item.candidates)
-          || item.candidates.length !== Math.min(50, Math.max(0, total - offset))
-          || !Array.isArray(item.processed_block_ids) || item.processed_block_ids.length !== processed.length
-          || !item.processed_block_ids.every((id, index) => id === processed[index])
-          || !Array.isArray(item.unprocessed_block_ids) || item.unprocessed_block_ids.length !== 0) return false;
-        return item.candidates.every(candidate => {
-          const id = candidate && typeof candidate === 'object' ? candidate.candidate_id : undefined;
-          if (typeof id !== 'string' || !id.trim() || candidateIds.has(id)) return false;
-          candidateIds.add(id);
-          return true;
-        });
-      };
-      if (!completePage(first, 0)) throw new UploadError('MANUAL_REVIEW_REQUIRED', 409);
-      const pages = [first];
-      for (let offset = 50; offset < total; offset += 50) {
-        const next = await page.imports.get(session.importId, session.actor, offset, 50);
-        if (!completePage(next, offset)) throw new UploadError('MANUAL_REVIEW_REQUIRED', 409);
-        pages.push(next);
-      }
-      const blocked = pages.some(item => item.version !== first.version
-        || item.match_suggestions_truncated === true
-        || (Array.isArray(item.match_suggestions) && item.match_suggestions.length > 0)
-        || (Array.isArray(item.warnings) && item.warnings.some(warning =>
-          typeof warning === 'string' && (warning.includes('匹配查询失败') || warning.includes('截断')))));
-      if (blocked) throw new UploadError('MANUAL_REVIEW_REQUIRED', 409);
-      if (version !== first.version) throw new UploadError('PREVIEW_VERSION_CHANGED', 409);
       // Exit/source revocation during preview loading must prevent a subsequent write.
       if (!page.sessions.bindImport(session.sessionId, session.importId)) throw new UploadError('UPLOAD_SESSION_UNAUTHORIZED', 401);
       const result = await page.imports.commit({ import_id: session.importId,
         preview_version: version, operation_id: `contact-import:${session.importId}`,
-        auto_create: true }, session.actor, () => {
+        auto_create: true, require_confirmation: true }, session.actor, () => {
         const current = page.sessions.authorize(session.sessionId, secret);
         if (!current || current.actor !== session.actor || current.importId !== session.importId) {
           throw new UploadError('UPLOAD_SESSION_UNAUTHORIZED', 401);
@@ -369,7 +325,9 @@ export function createHttpApp(
         // Retain the cookie until explicit exit so a lost response can retry this fixed receipt.
         response.json(receipt);
       })().catch(error => {
-        const problem = error instanceof UploadError ? error : new UploadError('IMPORT_COMMIT_FAILED', 409);
+        const problem = error instanceof UploadError ? error : new UploadError(
+          error instanceof Error && ['MANUAL_REVIEW_REQUIRED', 'PREVIEW_VERSION_CHANGED', 'VERSION_CONFLICT'].includes(error.message)
+            ? error.message === 'VERSION_CONFLICT' ? 'PREVIEW_VERSION_CHANGED' : error.message : 'IMPORT_COMMIT_FAILED', 409);
         response.status(problem.status).json({ code: problem.code,
           ...(problem.code === 'MANUAL_REVIEW_REQUIRED' ? { import_id: pageContext.get(request)?.importId } : {}) });
       });

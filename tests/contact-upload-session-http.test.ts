@@ -7,7 +7,7 @@ import { createHttpApp } from '../src/mcp/http-app.js';
 import { UploadSessions } from '../src/contacts/upload-session.js';
 import { UploadStore } from '../src/contacts/upload-store.js';
 import { ContactImportService } from '../src/contacts/import-service.js';
-import type { GraphClient, GraphOp } from '../src/contacts/graph-client.js';
+import { GraphClientError, type GraphClient, type GraphOp } from '../src/contacts/graph-client.js';
 import { ImportCandidateSchema } from '../src/contracts/index.js';
 
 const pdf = readFileSync(new URL('./fixtures/contact-documents/synthetic-resume.pdf', import.meta.url));
@@ -16,7 +16,7 @@ afterEach(async () => { await Promise.all(cleanup.splice(0).map(fn => fn())); })
 
 function previewPage(offset = 0, total = 1, patch: Record<string, unknown> = {}): Record<string, unknown> {
   return { import_id: 'import_1', status: 'ready_for_review', version: 3, total_candidates: total,
-    candidates: Array.from({ length: Math.min(50, Math.max(0, total - offset)) }, (_, n) => ({ candidate_id: `c_${offset + n + 1}` })),
+    candidates: Array.from({ length: Math.min(50, Math.max(0, total - offset)) }, (_, n) => ({ ...realReviewService({}).person, candidate_id: `c_${offset + n + 1}`, ...(offset + n > 0 ? { warnings: ['非主体人物线索'], can_commit: false } : {}) })),
     warnings: [], match_suggestions: [], match_suggestions_truncated: false,
     processed_block_ids: ['b_1'], unprocessed_block_ids: [], coverage_available: true, offset, limit: 50, ...patch };
 }
@@ -27,13 +27,16 @@ async function setup(options: { now?: () => number; sourceEnabled?: () => boolea
   const store = new UploadStore({ directory, maxPendingFiles: 10,
     maxFileBytes: 20 * 1024 * 1024, maxTempBytes: 100 * 1024 * 1024 });
   const sessions = new UploadSessions(options.sourceEnabled ?? (() => true), options.now);
+  const review = realReviewService({ processed_block_ids: ['b_1'], unprocessed_block_ids: [] });
+  const service = options.reviewService ?? review.service;
+  const originalGet = service.get.bind(service);
+  const originalCommit = service.commit.bind(service);
   const start = vi.fn(async () => ({ import_id: 'import_1' }));
   const get = vi.fn(async (importId: string, actor: string, offset = 0, limit = 20): Promise<Record<string, unknown> | null> =>
-    options.reviewService ? options.reviewService.get(importId, actor, offset, limit) : previewPage());
+    options.reviewService ? originalGet(importId, actor, offset, limit) : previewPage(offset));
   const commit = vi.fn(async (...args: [Parameters<ContactImportService['commit']>[0], string, (() => void)?]) =>
-    options.reviewService ? options.reviewService.commit(...args) : options.commitService ? options.commitService.commit(...args) : { status: 'committed', version: 4, candidates: ['private'],
-      results: [{ entity_id: 'person_1' }] });
-  const imports = { start, get, commit } as unknown as ContactImportService;
+    options.commitService ? options.commitService.commit(...args) : originalCommit(...args));
+  const imports = Object.assign(service, { start, get, commit });
   const app = createHttpApp({ publicMcpHost: '127.0.0.1', allowedOriginUrls: new Set(),
     allowedOriginHostnames: new Set() }, token => token === 'personal' ? { userId: 'alice' } : null,
   () => ({} as never), store, { sessions, imports, html: async () => '<html>upload</html>' });
@@ -49,7 +52,7 @@ async function setup(options: { now?: () => number; sourceEnabled?: () => boolea
     body.append('file', new Blob([new Uint8Array(pdf)]), 'resume.pdf');
     return fetch(`${base}/contact-files`, { method: 'POST', headers: auth, body });
   };
-  return { base, store, sessions, session, headers, upload, start, get, commit };
+  return { base, store, sessions, session, headers, upload, start, get, commit, formalWrites: review.formalWrites };
 }
 
 it('binds one file and one import to a page session, preserving personal Bearer upload', async () => {
@@ -185,7 +188,7 @@ it.each(['exit', 'disabled', 'expired'] as const)('does not write when %s occurs
         reading = true;
         await gate;
         return { import_id: 'import_1', actor: 'alice', file_id: 'file_1', status: 'ready_for_review',
-          version: 3, data: { candidates: [person] } } as T;
+          version: 3, data: { candidates: [person], processed_block_ids: [], unprocessed_block_ids: [] } } as T;
       }
       if (op === 'commit_import') {
         formalWrites.push(input);
@@ -244,7 +247,7 @@ it('rejects cross-session reads and commits, stale versions, and duplicate sugge
   const duplicate = await fetch(`${h.base}/contact-upload/commit`, { method: 'POST', headers: {
     ...h.headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ preview_version: 3 }) });
   expect(duplicate.status).toBe(409);
-  expect(h.commit).not.toHaveBeenCalled();
+  expect(h.formalWrites).toEqual([]);
 });
 
 it.each([
@@ -268,7 +271,7 @@ it.each([
   const response = await confirm(h);
   expect(response.status).toBe(409);
   expect(await response.json()).toEqual({ code: 'MANUAL_REVIEW_REQUIRED', import_id: 'import_1' });
-  expect(h.commit).not.toHaveBeenCalled();
+  expect(h.formalWrites).toEqual([]);
 });
 
 it.each([
@@ -291,10 +294,11 @@ it.each([
   const response = await confirm(h);
   expect(response.status).toBe(409);
   expect(await response.json()).toEqual({ code: 'MANUAL_REVIEW_REQUIRED', import_id: 'import_1' });
-  expect(h.commit).not.toHaveBeenCalled();
+  expect(h.formalWrites).toEqual([]);
 });
 
-function realReviewService(data: Record<string, unknown>, laterData?: Record<string, unknown>) {
+function realReviewService(data: Record<string, unknown>, laterData?: Record<string, unknown>, laterVersion = 3,
+  matching?: 'duplicate' | 'truncated' | 'failure') {
   const formalWrites: unknown[] = [];
   let reads = 0;
   const person = ImportCandidateSchema.parse({ candidate_id: 'c_1', label: 'Person',
@@ -307,9 +311,16 @@ function realReviewService(data: Record<string, unknown>, laterData?: Record<str
     request: async <T>(op: GraphOp, input: unknown): Promise<T> => {
       if (op === 'get_import_job') {
         reads++;
-        return { import_id: 'import_1', actor: 'alice', file_id: 'file_1', status: 'ready_for_review', version: 3,
+        return { import_id: 'import_1', actor: 'alice', file_id: 'file_1', status: 'ready_for_review', version: reads > 1 ? laterVersion : 3,
           data: { candidates: [person], ...(reads > 1 && laterData ? laterData : data) } } as T;
       }
+      if (op === 'find_identity_candidates') {
+        if (matching === 'failure') throw new Error('private matching dependency unavailable');
+        return { entity_ids: matching === 'duplicate' ? ['existing_1'] : [], truncated: matching === 'truncated' } as T;
+      }
+      if (op === 'get_contact') return { entity: { entity_id: 'existing_1', label: 'Person',
+        properties: { name: '陈晓', telephone: ['13800138000'] },
+        metadata: { version: 1, created_at: '2026-09-29T00:00:00.000Z', updated_at: '2026-09-29T00:00:00.000Z' } }, evidence: [] } as T;
       if (op === 'commit_import') {
         formalWrites.push(input);
         return { import_id: 'import_1', status: 'committed', version: 4 } as T;
@@ -483,4 +494,122 @@ it('does not exchange a handoff for a foreign Origin even with a valid App Beare
   expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
   expect(response.headers.get('Cache-Control')).toBe('no-store');
   expect(h.sessions.exchange(handoff.code)).not.toBeNull();
+});
+
+
+it('returns a complete server decision for a single located subject', async () => {
+  const review = realReviewService({ processed_block_ids: ['b_1'], unprocessed_block_ids: [] });
+  const result = await review.service.getUploadPreview('import_1', 'alice');
+  expect(result).toMatchObject({ total_candidates: 1, confirmation: { allowed: true, reasons: [] } });
+  expect(result!.candidates).toHaveLength(1);
+});
+
+it.each([
+  ['unknown coverage', {}],
+  ['unprocessed coverage', { processed_block_ids: ['b_1'], unprocessed_block_ids: ['b_2'] }],
+  ['matching failure', { processed_block_ids: [], unprocessed_block_ids: [], warnings: ['身份匹配查询失败，请人工核对已有联系人'] }],
+  ['matching truncation', { processed_block_ids: [], unprocessed_block_ids: [], warnings: ['身份匹配结果已截断，可能遗漏已有联系人'] }],
+  ['no subject', { processed_block_ids: [], unprocessed_block_ids: [], candidates: [] }],
+] as const)('uses the service decision to deny %s in both preview and page commit', async (_name, data) => {
+  const review = realReviewService(data);
+  const result = await review.service.getUploadPreview('import_1', 'alice');
+  expect(result!.confirmation.allowed).toBe(false);
+  expect(result!.confirmation.reasons.length).toBeGreaterThan(0);
+  await expect(review.service.commit({ import_id: 'import_1', preview_version: 3,
+    operation_id: 'contact-import:import_1', auto_create: true, require_confirmation: true }, 'alice'))
+    .rejects.toThrow('MANUAL_REVIEW_REQUIRED');
+  expect(review.formalWrites).toEqual([]);
+});
+
+it('rejects multiple real subjects and an unlocated sole subject with the same owner selection used by auto_create', async () => {
+  const { person } = realReviewService({});
+  for (const candidates of [[person, { ...person, candidate_id: 'c_2' }],
+    [{ ...person, evidence: person.evidence.map(proof => ({ ...proof, locator_status: 'unavailable' })) }]]) {
+    const review = realReviewService({ candidates, processed_block_ids: [], unprocessed_block_ids: [] });
+    expect((await review.service.getUploadPreview('import_1', 'alice'))!.confirmation.allowed).toBe(false);
+  }
+});
+
+it('returns the full later-page candidate and refuses its matching blocker', async () => {
+  const { person } = realReviewService({});
+  const candidates = Array.from({ length: 51 }, (_, n) => ({ ...person, candidate_id: `c_${n + 1}`,
+    ...(n > 0 ? { can_commit: false, warnings: ['非主体人物线索'] } : {}) }));
+  const data = { candidates, processed_block_ids: ['b_1'], unprocessed_block_ids: [] };
+  const review = realReviewService(data, { ...data, warnings: ['身份匹配结果已截断，可能遗漏已有联系人'] });
+  const result = await review.service.getUploadPreview('import_1', 'alice');
+  expect(result!.candidates).toHaveLength(51);
+  expect((result!.candidates.at(-1) as { candidate_id: string }).candidate_id).toBe('c_51');
+  expect(result!.confirmation.allowed).toBe(false);
+  await expect(review.service.commit({ import_id: 'import_1', preview_version: 3,
+    operation_id: 'contact-import:import_1', auto_create: true, require_confirmation: true }, 'alice'))
+    .rejects.toThrow('MANUAL_REVIEW_REQUIRED');
+  expect(review.formalWrites).toEqual([]);
+});
+
+it('rereads server policy after GET before accepting the HTTP confirmation', async () => {
+  const review = realReviewService({ processed_block_ids: ['b_1'], unprocessed_block_ids: [] },
+    { processed_block_ids: ['b_1'], unprocessed_block_ids: ['b_2'] });
+  const h = await setup({ reviewService: review.service });
+  await ready(h);
+  const shown = await fetch(`${h.base}/contact-upload/import`, { headers: h.headers });
+  expect((await shown.json() as any).confirmation?.allowed).toBe(true);
+  const response = await confirm(h);
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({ code: 'MANUAL_REVIEW_REQUIRED', import_id: 'import_1' });
+  expect(review.formalWrites).toEqual([]);
+});
+
+
+it.each(['duplicate', 'truncated', 'failure'] as const)('denies an actual %s matching result in the server decision and commit', async matching => {
+  const { person } = realReviewService({});
+  const review = realReviewService({ candidates: [{ ...person, properties: { ...person.properties, telephone: ['13800138000'] } }],
+    processed_block_ids: ['b_1'], unprocessed_block_ids: [] }, undefined, 3, matching);
+  const result = await review.service.getUploadPreview('import_1', 'alice');
+  expect(result!.confirmation.allowed).toBe(false);
+  if (matching === 'duplicate') expect(result!.match_suggestions).toHaveLength(1);
+  await expect(review.service.commit({ import_id: 'import_1', preview_version: 3,
+    operation_id: 'contact-import:import_1', auto_create: true, require_confirmation: true }, 'alice'))
+    .rejects.toThrow('MANUAL_REVIEW_REQUIRED');
+  expect(review.formalWrites).toEqual([]);
+});
+
+it('rejects a job version changed after the complete decision and before auto selection', async () => {
+  const review = realReviewService({ processed_block_ids: ['b_1'], unprocessed_block_ids: [] }, undefined, 4);
+  await expect(review.service.commit({ import_id: 'import_1', preview_version: 3,
+    operation_id: 'contact-import:import_1', auto_create: true, require_confirmation: true }, 'alice'))
+    .rejects.toThrow('PREVIEW_VERSION_CHANGED');
+  expect(review.formalWrites).toEqual([]);
+});
+
+it('preserves the anonymous institution subject rule in the server decision', async () => {
+  const { person } = realReviewService({});
+  const relation = { source_candidate_id: 'c_1', target_candidate_id: 'org_1', relation_type: 'worksFor',
+    properties: {}, evidence: [{ ...person.evidence[0], subject_kind: 'relation', subject_id: 'r_1',
+      field_path: '$relation', value: { source_id: 'c_1', target_id: 'org_1', relation_type: 'worksFor' }, quote: '本人任职测试公司' }] };
+  const candidates = [{ ...person, properties: {}, evidence: [], relation_suggestions: [relation] }];
+  const review = realReviewService({ candidates, processed_block_ids: ['b_1'], unprocessed_block_ids: [] });
+  expect((await review.service.getUploadPreview('import_1', 'alice'))!.confirmation.allowed).toBe(true);
+  await review.service.commit({ import_id: 'import_1', preview_version: 3,
+    operation_id: 'contact-import:import_1', auto_create: true, require_confirmation: true }, 'alice');
+  expect(review.formalWrites).toHaveLength(1);
+});
+
+
+it('reports a final transactional graph version conflict as a refreshable preview conflict', async () => {
+  const h = await setup();
+  await ready(h);
+  h.commit.mockRejectedValueOnce(new GraphClientError('VERSION_CONFLICT'));
+  const response = await confirm(h);
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({ code: 'PREVIEW_VERSION_CHANGED' });
+  expect(h.formalWrites).toEqual([]);
+});
+
+
+it('retains the bound import number when complete GET rejects malformed page identity', async () => {
+  const h = await setup();
+  await ready(h);
+  h.get.mockResolvedValueOnce(previewPage(0, 1, { import_id: 'import_other' }));
+  const response = await fetch(`${h.base}/contact-upload/import`, { headers: h.headers });
+  expect(await response.json()).toMatchObject({ import_id: 'import_1', confirmation: { allowed: false } });
 });

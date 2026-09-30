@@ -25,7 +25,7 @@
 对应原实现计划 Task 4（同一 bundle 用于 MCP App 与外部页）。
 
 - [x] 一份文件、手机 capture 输入、选择前说明临时原件/模型文字/共享库确认。
-- [x] 渲染全部字段、短证据、候选、关系、待核实项、处理范围；全部分页/同版本加载完且无阻断条件后才能人工点击确认。使用 `textContent`，不插入 OCR/模型 HTML。
+- [x] 渲染全部字段、短证据、候选、关系、待核实项、处理范围；服务端聚合全部同版本分页并返回 `confirmation.allowed/reasons`，页面仅在明确允许后才能人工点击确认。使用 `textContent`，不插入 OCR/模型 HTML。
 - [x] 上传/启动/读取/回执重试，版本冲突重新核对；错误码对应动作；保留 `import_id` 回聊天处理。
 - [x] App 内存凭据刷新后不恢复旧会话，外部 Cookie 尝试读取原任务；显式退出、真实 SDK `ui/resource-teardown`、清除本页回调/网络能力；静默 SDK transport 消除内容日志。
 - [x] Chromium DOM/XSS/实际 SDK iframe 回归 35 项通过；最终合并 covering green 91 项、no-emit/diff 通过；独立审查 Approved，无 Critical/Important。证据在 `task-2-report.md` 与 fixround1 review。

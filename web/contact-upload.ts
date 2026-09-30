@@ -7,7 +7,7 @@ type Session = { sessionId: string; bearer: string; base_url: string };
 type Preview = { import_id: string; status: string; version: number; total_candidates: number;
   candidates: ImportCandidate[]; warnings: string[]; match_suggestions: MatchSuggestion[];
   match_suggestions_truncated: boolean; processed_block_ids: string[]; unprocessed_block_ids: string[];
-  coverage_available: boolean;
+  coverage_available: boolean; confirmation?: { allowed: boolean; reasons: string[] };
   source?: Record<string, unknown> | null; offset: number; limit: number };
 type Phase = 'waiting' | 'uploading' | 'extracting' | 'review' | 'committed' | 'failed';
 type Retry = 'start' | 'preview' | 'receipt' | null;
@@ -166,19 +166,18 @@ function evidence(parent: HTMLElement, proof: ContactEvidence): void {
 function reviewItem(parent: HTMLElement, item: ReviewItem): void {
   line(parent, 'p', `待核对：${item.kind === 'field' ? `${label(item.field_path)}：${valueText(item.value)}` : `${item.source_candidate_id} ${label(item.relation_type)} ${item.target_candidate_id}；${valueText(item.properties)}`}；${label(item.reason)}${item.page ? `；第 ${item.page} 页` : ''}${item.quote ? `；原文：${item.quote}` : ''}`);
 }
-function render(pages: Preview[], reasons: string[]): void {
-  const first = pages[0];
+function render(first: Preview): void {
   previewBox.replaceChildren();
   const sourceName = first.source?.file_name ?? first.source?.filename;
   if (typeof sourceName === 'string') line(previewBox, 'p', `原始文件：${sourceName}`);
-  const processed = [...new Set(pages.flatMap(page => page.processed_block_ids ?? []))];
-  const unprocessed = [...new Set(pages.flatMap(page => page.unprocessed_block_ids ?? []))];
-  line(previewBox, 'p', pages.every(page => page.coverage_available === true)
+  const processed = [...new Set(first.processed_block_ids ?? [])];
+  const unprocessed = [...new Set(first.unprocessed_block_ids ?? [])];
+  line(previewBox, 'p', first.coverage_available === true
     ? `提取覆盖：已处理 ${processed.length} 个文本块；未处理 ${unprocessed.length} 个文本块。`
     : '提取覆盖未知：缺少完整的处理记录，无法核实原件的已处理／未处理范围。');
   if (unprocessed.length) line(previewBox, 'p', `尚未处理：${unprocessed.join('、')}。原件提取不完整，请在聊天中核对。`);
-  for (const warning of new Set(pages.flatMap(page => page.warnings))) line(previewBox, 'p', `任务警告：${warning}`);
-  for (const candidate of pages.flatMap(page => page.candidates)) {
+  for (const warning of new Set(first.warnings)) line(previewBox, 'p', `任务警告：${warning}`);
+  for (const candidate of first.candidates) {
     const item = document.createElement('article'); item.className = 'item'; previewBox.append(item);
     line(item, 'h3', `${label(candidate.label)}：${candidate.properties?.name ?? '未识别姓名／名称'}`);
     fields(item, candidate.properties ?? {});
@@ -192,8 +191,8 @@ function render(pages: Preview[], reasons: string[]): void {
     }
     for (const field of candidate.review_items ?? []) reviewItem(item, field);
   }
-  if (!pages.some(page => page.candidates.length)) line(previewBox, 'p', '未识别到可导入联系人。');
-  for (const suggestion of pages.flatMap(page => page.match_suggestions)) {
+  if (!first.candidates.length) line(previewBox, 'p', '未识别到可导入联系人。');
+  for (const suggestion of first.match_suggestions) {
     line(previewBox, 'h3', `可能重复：${suggestion.candidateName || suggestion.candidateId} ↔ ${suggestion.existingName || '已有联系人'}（${suggestion.entityId}）`);
     for (const reason of suggestion.reasons ?? []) line(previewBox, 'p', `匹配线索：${reason.kind === 'email' ? '邮箱相同' : label(reason.kind)}：${reason.value}`);
     if (suggestion.existingUpdatedAt) line(previewBox, 'p', `已有联系人更新时间：${suggestion.existingUpdatedAt}`);
@@ -202,46 +201,15 @@ function render(pages: Preview[], reasons: string[]): void {
       for (const source of sources ?? []) line(previewBox, 'p', `${heading}：${label(source.sourceType)}；${source.fileName ?? source.sourceUrl ?? '未标注名称'}；采集时间：${source.collectedAt}`);
     }
   }
-  for (const reason of reasons) line(previewBox, 'p', `需要人工核对：${reason}`);
+  for (const reason of first.confirmation?.reasons ?? []) line(previewBox, 'p', `需要人工核对：${reason}`);
   review.hidden = false;
-}
-function reviewReasons(pages: Preview[]): string[] {
-  const first = pages[0];
-  const candidates = pages.flatMap(page => page.candidates);
-  const reasons: string[] = [];
-  const complete = Number.isSafeInteger(first.total_candidates) && first.total_candidates >= 0
-    && Number.isSafeInteger(first.version) && first.version > 0
-    && candidates.length === first.total_candidates && new Set(candidates.map(item => item.candidate_id)).size === candidates.length
-    && pages.every((page, index) => page.import_id === first.import_id && page.version === first.version
-      && page.status === first.status && page.total_candidates === first.total_candidates
-      && page.offset === index * 50 && page.candidates.length === Math.min(50, Math.max(0, first.total_candidates - index * 50))
-      && page.coverage_available === true
-      && Array.isArray(page.processed_block_ids) && Array.isArray(page.unprocessed_block_ids)
-      && page.processed_block_ids.join('\0') === first.processed_block_ids.join('\0')
-      && page.unprocessed_block_ids.join('\0') === first.unprocessed_block_ids.join('\0'));
-  if (!complete) reasons.push('预览不完整或版本发生变化，请重新加载完整预览。');
-  if (pages.some(page => page.unprocessed_block_ids?.length)) reasons.push('原件仍有未处理文本块。');
-  if (pages.some(page => page.match_suggestions_truncated)) reasons.push('身份匹配结果已截断，可能遗漏已有联系人。');
-  if (pages.some(page => page.warnings.some(warning => warning.includes('匹配查询失败') || warning.includes('截断')))) reasons.push('身份匹配未完整完成。');
-  if (pages.some(page => page.match_suggestions.length)) reasons.push('存在可能重复的联系人，请在聊天中比较资料。');
-  const owners = candidates.filter(candidate => candidate.label === 'Person' && !candidate.warnings?.includes('非主体人物线索'));
-  if (owners.length !== 1) reasons.push(owners.length ? '识别到多个主体人物。' : '未识别到主体人物。');
-  else if (!owners[0].can_commit) reasons.push('主体人物资料不足，不能入库。');
-  else if (!owners[0].evidence.some(proof => proof.locator_status === 'located')
-    && !owners[0].relation_suggestions.some(relation => relation.source_candidate_id === owners[0].candidate_id
-      && ['worksFor', 'alumniOf'].includes(relation.relation_type) && !relation.uncertain && !relation.review_reason
-      && relation.evidence.some(proof => proof.field_path === '$relation' && proof.locator_status === 'located'))) {
-    reasons.push('缺少可定位的主体或任职／教育证据。');
-  }
-  if (first.status !== 'ready_for_review') reasons.push('任务尚未达到可确认状态。');
-  return reasons;
 }
 async function loadPreview(ticket: number, reconfirm = false): Promise<void> {
   commit.disabled = true;
   offerRetry(null);
   let first: Preview;
   for (;;) {
-    first = await (await api('/contact-upload/import?offset=0&limit=50')).json() as Preview;
+    first = await (await api('/contact-upload/import')).json() as Preview;
     if (!current(ticket)) return;
     remember(first.import_id);
     if (['ready_for_review', 'committed', 'failed', 'cancelled'].includes(first.status)) break;
@@ -249,20 +217,12 @@ async function loadPreview(ticket: number, reconfirm = false): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 1800));
     if (!current(ticket)) return;
   }
-  const pages = [first];
-  for (let offset = 50; offset < first.total_candidates; offset += 50) {
-    const page = await (await api(`/contact-upload/import?offset=${offset}&limit=50`)).json() as Preview;
-    if (!current(ticket)) return;
-    pages.push(page);
-  }
-  if (!current(ticket)) return;
-  const reasons = reviewReasons(pages);
   version = first.version;
   receiptVersion = null;
-  render(pages, reasons);
-  commit.disabled = reasons.length > 0;
+  render(first);
+  commit.disabled = first.confirmation?.allowed !== true;
   manual.textContent = first.status === 'committed' ? '联系人已写入共享联系人库。'
-    : reasons.length ? '请使用任务编号在聊天中人工核对，确认导入暂不可用。'
+    : commit.disabled ? '请使用任务编号在聊天中人工核对，确认导入暂不可用。'
       : reconfirm ? '预览已更新，请重新核对全部资料，再点击确认导入。' : '请核对全部识别资料，确认后写入共享联系人库。';
   if (first.status === 'committed') say('导入完成。', 'committed');
   else if (['failed', 'cancelled'].includes(first.status)) say('识别未完成，请在聊天中使用任务编号查询或重新打开上传入口。', 'failed');
