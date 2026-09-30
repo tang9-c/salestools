@@ -33,7 +33,7 @@ commit.disabled = preview.confirmation?.allowed !== true;
 - [x] Delete frontend reviewReasons/paging business-policy replica; keep pure-text rendering, receipt/retry/teardown, explicit confirmation and all evidence/warnings.
 - [x] Update browser/HTTP integration fixtures to actual new contract; keep malicious HTML, stale-policy direct commit, lost receipt and teardown tests.
 - [x] Focused green + `rtk proxy ./node_modules/.bin/tsc --noEmit` + `rtk proxy git diff --check`; independent scoped review. Document actual code removed and remaining deployment/host gates.
-- [ ] Commit/push isolated existing feature branch for remote build validation only; native/container known prerequisite failures remain explicitly pending, no unrelated sandbox fixing.
+- [x] Commit/push isolated existing feature branch for remote build validation only; native/container known prerequisite failures remain explicitly pending, no unrelated sandbox fixing.
 
 ## 实施记录（2026-09-29）
 
@@ -42,3 +42,9 @@ commit.disabled = preview.confirmation?.allowed !== true;
 - 独立任务审核及最终整体审核均 Approved，无 Critical/Important。既有 Node 实验 API 警告不阻断。
 - 决定：保留现有解析安全限制，冻结沙箱扩展；替代隔离部署须独立验收。代价是仍维护现有沙箱，上线仍受隔离门禁限制。
 - 本轮远程构建验证将在现有功能分支 push 后运行；此前 fe2aab7 的 Python 进程限额测试失败不代表本轮通过。真实宿主、完整远程门禁及隔离替代部署仍待完成，未合并/部署。
+
+### 本轮远程结果
+
+测试提交：`ea33e523502f29ed05ef41445cf6b2817576f07f`。已推送现有功能分支，工作区代码无待提交变更。[验证运行 36667346533](https://github.com/tang9-c/salestools/actions/runs/36667346533)：类型检查、Rust 编译/测试、服务端和上传 App bundle 构建、OCR 预热全部通过；Python 全套 2 failed / 32 passed / 29 subtests passed，两项沙箱测试的 `os.fork()` 报 `BlockingIOError: [Errno 11] Resource temporarily unavailable`，与此前进程限额阻塞一致。后续全套 Vitest 和生产容器 gate 被跳过。完整 CI 未通过，未放宽控制或修复旧沙箱；真实宿主与解析隔离替代部署仍待验收。
+
+本轮简化开发、两轮审核及远程构建验证已完成；完整发布门禁未完成。不合并、不部署，保留功能分支。
