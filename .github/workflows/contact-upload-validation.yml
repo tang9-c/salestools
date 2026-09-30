@@ -101,11 +101,96 @@ jobs:
           TRANSFORMERS_OFFLINE: "1"
         run: |
           set -euo pipefail
-          python/.venv/bin/python -m pytest python/tests -q --junitxml="$RUNNER_TEMP/contact-python.xml"
+          id
+          python/.venv/bin/python <<'PY'
+          import os, resource
+          from pathlib import Path
+          uid = os.getuid()
+          threads = 0
+          for status in Path('/proc').glob('[0-9]*/status'):
+              try:
+                  fields = dict(line.split(':', 1) for line in status.read_text().splitlines() if ':' in line)
+                  if int(fields['Uid'].split()[0]) == uid:
+                      threads += int(fields['Threads'])
+              except (FileNotFoundError, ProcessLookupError, PermissionError):
+                  continue
+          print('runner real UID:', uid, 'same-real-UID threads:', threads,
+                'RLIMIT_NPROC:', resource.getrlimit(resource.RLIMIT_NPROC), flush=True)
+          assert uid != 0 and threads >= 32, 'Shared UID hypothesis requires at least 32 existing threads'
+          PY
+          set +e
+          python/.venv/bin/python -m pytest -q \
+            python/tests/test_sandbox.py::SandboxTests::test_foreign_prlimit_cannot_change_same_uid_sentinel \
+            python/tests/test_sandbox.py::SandboxTests::test_syscalls_and_descendants_remain_sealed \
+            --junitxml="$RUNNER_TEMP/contact-python-before.xml" > "$RUNNER_TEMP/contact-python-before.log" 2>&1
+          before_status=$?
+          set -e
+          cat "$RUNNER_TEMP/contact-python-before.log"
+          test "$before_status" -eq 1
           /usr/bin/python3 <<'PY'
           import os
           import xml.etree.ElementTree as ET
-          report = ET.parse(os.path.join(os.environ['RUNNER_TEMP'], 'contact-python.xml'))
+          report = ET.parse(os.path.join(os.environ['RUNNER_TEMP'], 'contact-python-before.xml'))
+          cases = report.findall('.//testcase')
+          expected = {'test_foreign_prlimit_cannot_change_same_uid_sentinel', 'test_syscalls_and_descendants_remain_sealed'}
+          assert {name for name in expected if any(case.attrib['name'].startswith(name) for case in cases)} == expected
+          assert all(any(case.attrib['name'].startswith(name) for name in expected) for case in cases)
+          assert not report.findall('.//skipped') and not report.findall('.//error')
+          for case in cases:
+              failures = case.findall('failure')
+              assert failures and all('BlockingIOError: [Errno 11]' in (failure.text or '') for failure in failures), case.attrib
+          print('Both original probes reproduced fork EAGAIN under the shared runner UID')
+          PY
+
+          # RLIMIT_NPROC counts every thread with the same real UID, including runner services.
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin contact-ci
+          ci_report_dir=$(mktemp -d "$RUNNER_TEMP/contact-python.XXXXXX")
+          sudo chown contact-ci "$ci_report_dir"
+          sudo -u contact-ci test -x "$GITHUB_WORKSPACE/python/.venv/bin/python"
+          sudo -u contact-ci test -r "$GITHUB_WORKSPACE/python/tests/test_sandbox.py"
+          sudo -u contact-ci test -r "$HF_HOME"
+          sudo -u contact-ci test -r "$XDG_CACHE_HOME"
+          sudo -u contact-ci -- env -i PATH=/usr/bin:/bin \
+            HOME="$ci_report_dir" PYTHONPATH="$GITHUB_WORKSPACE/python:$GITHUB_WORKSPACE/python/tests" \
+            "$GITHUB_WORKSPACE/python/.venv/bin/python" <<'PY'
+          import os, resource
+          from test_sandbox import SandboxTests
+          uid = os.getuid()
+          assert uid != 0
+          print('dedicated parent real UID:', uid, 'RLIMIT_NPROC:', resource.getrlimit(resource.RLIMIT_NPROC), flush=True)
+          probe = SandboxTests()
+          with probe.signal_sentinel() as sentinel:
+              with open(f'/proc/{sentinel.pid}/status') as stream:
+                  sentinel_uid = next(int(line.split()[1]) for line in stream if line.startswith('Uid:'))
+              assert sentinel_uid == uid
+              print('sentinel real UID:', sentinel_uid, flush=True)
+              result = probe.run_probe(f'''
+          import resource
+          assert os.getuid() == {uid}
+          assert resource.getrlimit(resource.RLIMIT_NPROC) == (32, 32)
+          print('sealed probe real UID:', os.getuid(), 'RLIMIT_NPROC:', resource.getrlimit(resource.RLIMIT_NPROC), flush=True)
+          pid = os.fork()
+          if pid == 0:
+              assert os.getuid() == {uid}
+              print('sealed descendant real UID:', os.getuid(), flush=True)
+              os._exit(0)
+          assert os.waitpid(pid, 0)[1] == 0
+          ''')
+              print(result.stdout, end='', flush=True)
+              assert result.returncode == 0, result.stderr
+          PY
+          sudo -u contact-ci -- env -i PATH=/usr/bin:/bin \
+            HOME="$ci_report_dir" PYTHONPATH="$GITHUB_WORKSPACE/python" \
+            HF_HOME="$HF_HOME" XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+            HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+            OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            TOKENIZERS_PARALLELISM=false \
+            "$GITHUB_WORKSPACE/python/.venv/bin/python" -m pytest python/tests -q \
+            -p no:cacheprovider --junitxml="$ci_report_dir/contact-python.xml"
+          CONTACT_PYTHON_REPORT="$ci_report_dir/contact-python.xml" /usr/bin/python3 <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          report = ET.parse(os.environ['CONTACT_PYTHON_REPORT'])
           assert not report.findall('.//skipped'), 'Linux Python gate must never skip security probes'
           PY
 
