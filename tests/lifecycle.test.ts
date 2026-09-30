@@ -397,6 +397,7 @@ describe('application shutdown lifecycle', () => {
       socket!.once('connect', resolve);
       socket!.once('error', reject);
     });
+    socket.resume();
     socket.write('POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 999\r\n\r\n{');
 
     const shutdown = runtime.close(5);
