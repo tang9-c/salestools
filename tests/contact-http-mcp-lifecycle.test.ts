@@ -103,15 +103,6 @@ it('travels through authenticated HTTP upload, MCP and the real graph without ex
       }], selection: { totalPages: 1, includedPages: 1, textTruncated: false } }) },
       logSink: { write: () => undefined },
     });
-    const startJob = runtime.importJobs.start.bind(runtime.importJobs);
-    vi.spyOn(runtime.importJobs, 'start').mockImplementation((...args) => startJob(...args).catch(error => {
-      console.error('Synthetic HTTP import failure:', {
-        name: error.name, code: error.message,
-        causeName: error.cause?.name, causeCode: error.cause?.code,
-        extractCalls: vi.mocked(DocumentExtractor.prototype.extract).mock.calls.length,
-      });
-      throw error;
-    }));
     const tokenA = runtime.tokenService.create('owner-a');
     const tokenB = runtime.tokenService.create('owner-b');
     const server = await runtime.listen(0, '127.0.0.1');

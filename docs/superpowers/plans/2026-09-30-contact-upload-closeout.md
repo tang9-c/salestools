@@ -1,6 +1,6 @@
 # 联系人上传最小收尾方案
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to execute this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to execute this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 解决现有验证阻塞，验收已经完成的上传功能，不新增产品功能或隔离系统。
 
@@ -41,13 +41,13 @@
 
 **Interfaces:** Python 套件继续输出 JUnit XML；Linux 探针必须真实运行且零跳过。生产解析配置与业务接口不变。
 
-- [ ] 保存失败 run 的完整日志，确认失败用例仍为 `test_foreign_prlimit_cannot_change_same_uid_sentinel` 和 `test_syscalls_and_descendants_remain_sealed`，不把其他错误归入同一原因。
+- [x] 保存失败 run 的完整日志，确认失败用例仍为 `test_foreign_prlimit_cannot_change_same_uid_sentinel` 和 `test_syscalls_and_descendants_remain_sealed`，不把其他错误归入同一原因。
 
 ```bash
 rtk proxy gh run view 36667346533 --log-failed
 ```
 
-- [ ] 在远程 Python 测试步骤增加最小诊断，记录 UID、同 UID 线程数和进程限额，不打印环境变量或凭据。在线程数接近/超过 32 的普通 runner UID 下复现失败，作为修复前证据。
+- [x] 在远程 Python 测试步骤增加最小诊断，记录 UID、同 UID 线程数和进程限额，不打印环境变量或凭据。在线程数接近/超过 32 的普通 runner UID 下复现失败，作为修复前证据。
 
 ```bash
 id
@@ -57,7 +57,7 @@ python/.venv/bin/python -c 'import os,resource; print("uid",os.getuid(),"nproc",
 
 以上块是远程 workflow 中的 shell 内容，不在本地执行。它不更改任何限额。
 
-- [ ] 若诊断支持同 UID 占用根因，在现有 job 内为 Python 测试创建专用非 root 用户；使用相同依赖、代码和模型，不增加新 job 或镜像。保持全套测试，而非只挑两个失败探针。最小修改方向如下：
+- [x] 若诊断支持同 UID 占用根因，在现有 job 内为 Python 测试创建专用非 root 用户；使用相同依赖、代码和模型，不增加新 job 或镜像。保持全套测试，而非只挑两个失败探针。最小修改方向如下：
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid "$(id -gn)" contact-ci
@@ -77,9 +77,9 @@ sudo -u contact-ci -- env -i PATH=/usr/bin:/bin \
   --junitxml="$ci_report_dir/contact-python.xml"
 ```
 
-- [ ] 保留既有 JUnit 零跳过检查，由专用用户读取其所有的私有报告目录，避免扩大目录权限。记录实际非 root UID，确认安全探针的父进程、哨兵和被测子进程仍为相同 UID；不能通过把它们拆成不同 UID 绕过测试目的。
-- [ ] 推送现有功能分支，运行既有远程 workflow。必须看到两个探针和完整 Python 套件通过；若同 UID 假设被证据否定，先定位实际原因，不继续叠加 workaround。
-- [ ] 对 workflow 差异做一次范围审查：生产代码、限额和安全断言均不变。提交最小修复，记录 tested SHA、命令和 run URL。
+- [x] 保留既有 JUnit 零跳过检查，由专用用户读取其所有的私有报告目录，避免扩大目录权限。记录实际非 root UID，确认安全探针的父进程、哨兵和被测子进程仍为相同 UID；不能通过把它们拆成不同 UID 绕过测试目的。
+- [x] 推送现有功能分支，运行既有远程 workflow。必须看到两个探针和完整 Python 套件通过；若同 UID 假设被证据否定，先定位实际原因，不继续叠加 workaround。
+- [x] 对 workflow 差异做一次范围审查：生产代码、限额和安全断言均不变。提交最小修复，记录 tested SHA、命令和 run URL。
 
 **完成标准：** 原失败探针及全套 Python 在非 root、真实 Linux、原有限制下通过，JUnit 无跳过。没有新增产品代码。
 
@@ -124,7 +124,7 @@ rtk proxy git diff --check
 
 ## 方案状态
 
-2026-09-30：正在执行。CI 环境修复已完成实现与独立任务审查，最终 SHA 完整远程门禁待运行；真实宿主因尚未提供非生产环境信息待验收。没有修改业务代码、安全限制或执行本地构建。
+2026-09-30：正在执行。CI 环境修复已完成，独立任务及整体审查均通过，最终 SHA 的完整 Python 和零跳过检查通过；其余完整远程门禁正在运行；真实宿主因尚未提供非生产环境信息待验收。没有修改业务代码、安全限制或执行本地构建。
 
 ### CI 根因与修复记录
 

@@ -32,8 +32,10 @@ jobs:
       - name: Set runner-local model paths
         run: |
           set -euo pipefail
-          printf 'HF_HOME=%s/contact-models/hf\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          printf 'XDG_CACHE_HOME=%s/contact-models/cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          # Match the immutable model paths declared by the hardened parser.
+          sudo install -d -m 755 -o "$(id -u)" -g "$(id -g)" /opt/contact-models
+          printf 'HF_HOME=/opt/contact-models/hf\n' >> "$GITHUB_ENV"
+          printf 'XDG_CACHE_HOME=/opt/contact-models/cache\n' >> "$GITHUB_ENV"
 
       - name: Check out the tested revision
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -133,7 +135,23 @@ jobs:
           NODE_ENV: test
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
-        run: npm test -- --run --maxWorkers=1 --minWorkers=1 --no-file-parallelism
+        run: |
+          set -euo pipefail
+          ci_vitest_home=$(mktemp -d "$RUNNER_TEMP/contact-vitest.XXXXXX")
+          sudo chown contact-ci "$ci_vitest_home"
+          # Grant only the installed Vitest's cache directory to the test UID.
+          sudo install -d -m 755 -o contact-ci node_modules/.vite/vitest
+          # Reuse the independent real UID so runner services do not consume NPROC32.
+          ci_node_bin=$(command -v node)
+          sudo -u contact-ci -- env -i PATH="$(dirname "$ci_node_bin"):/usr/bin:/bin" \
+            HOME="$ci_vitest_home" NODE_ENV=test \
+            CONTACT_UPLOAD_CHROMIUM="$CONTACT_UPLOAD_CHROMIUM" \
+            HF_HOME="$HF_HOME" XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+            HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+            OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            TOKENIZERS_PARALLELISM=false \
+            "$ci_node_bin" node_modules/vitest/vitest.mjs \
+            --run --maxWorkers=1 --minWorkers=1 --no-file-parallelism
 
   production-sandbox:
     needs: native-and-browser
