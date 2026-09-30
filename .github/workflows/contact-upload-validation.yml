@@ -56,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends acl libclang-dev libseccomp2 python3 python3-venv libgomp1 libglib2.0-0 libgl1 fonts-dejavu-core
+          sudo apt-get install -y --no-install-recommends libclang-dev libseccomp2 python3 python3-venv libgomp1 libglib2.0-0 libgl1 fonts-dejavu-core
           rustup toolchain install stable --profile minimal
           rustup default stable
           node --version
@@ -102,9 +102,8 @@ jobs:
         run: |
           set -euo pipefail
           # RLIMIT_NPROC counts every thread with the same real UID, including runner services.
-          sudo useradd --system --no-create-home --shell /usr/sbin/nologin contact-ci
-          runner_home=$(getent passwd "$(id -u)" | cut -d: -f6)
-          sudo setfacl -m u:contact-ci:--x "$runner_home"
+          # The existing runner group can traverse its home; keep a separate real UID.
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid "$(id -gn)" contact-ci
           ci_report_dir=$(mktemp -d "$RUNNER_TEMP/contact-python.XXXXXX")
           sudo chown contact-ci "$ci_report_dir"
           for cache_root in "$HF_HOME" "$XDG_CACHE_HOME"; do
