@@ -141,7 +141,7 @@ jobs:
           sudo chown contact-ci "$ci_vitest_home"
           # Grant only the installed Vitest's cache directory to the test UID.
           sudo install -d -m 755 -o contact-ci node_modules/.vite/vitest
-          # Reuse the independent real UID so runner services do not consume NPROC32.
+          # Reuse the independent real UID so runner services do not consume the parser's process limit.
           ci_node_bin=$(command -v node)
           sudo -u contact-ci -- env -i PATH="$(dirname "$ci_node_bin"):/usr/bin:/bin" \
             HOME="$ci_vitest_home" NODE_ENV=test \

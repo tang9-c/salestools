@@ -125,7 +125,7 @@ def enter(source: Path, scratch: Path, *, cpu_seconds=120, memory_bytes=3 * 1024
                       OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1',
                       TOKENIZERS_PARALLELISM='false', LANG='C.UTF-8')
     for kind, cap in ((resource.RLIMIT_CPU, cpu_seconds), (resource.RLIMIT_AS, memory_bytes),
-                      (resource.RLIMIT_FSIZE, max_file_bytes), (resource.RLIMIT_NPROC, 32),
+                      (resource.RLIMIT_FSIZE, max_file_bytes), (resource.RLIMIT_NPROC, 64),
                       (resource.RLIMIT_NOFILE, 128), (resource.RLIMIT_CORE, 0)):
         _, hard = resource.getrlimit(kind)
         cap = cap if hard == resource.RLIM_INFINITY else min(cap, hard)

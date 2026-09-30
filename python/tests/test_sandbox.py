@@ -205,6 +205,8 @@ if case!='setsig': fcntl.fcntl(r,fcntl.F_SETFL,os.O_NONBLOCK)
         result = self.run_probe("""
 assert source.read_text() == 'current'
 assert 'SERVICE_SECRET' not in os.environ
+import resource
+assert resource.getrlimit(resource.RLIMIT_NPROC) == (64, 64)
 (scratch / 'ok').write_text('scratch')
 runtime_files = [Path('/dev/urandom')]
 mime_types = Path('/etc/mime.types')
