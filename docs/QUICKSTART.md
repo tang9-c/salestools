@@ -35,7 +35,7 @@ MCP 注册不会替你部署服务端，也不会创建 Token。服务端地址�
 
 ## 远程验证与真实宿主验收
 
-当前状态（2026-09-29）：本轮把完整预览与确认规则统一到现有服务，页面只展示服务端结果；本轮验证状态见 `docs/superpowers/plans/2026-09-29-contact-upload-minimal.md`。**本轮 revision 的远程 native/full-suite/生产容器门禁及 ChatGPT、Codex 外部浏览器、手机拍照真实环境验收仍待完成，不能声称可公开部署。** 既存自研解析沙箱本轮冻结，解析隔离替代部署仍是独立上线前置项。Chromium 中的真实 SDK iframe 回归只验证页面与协议模拟宿主的行为。
+当前状态（2026-09-29）：本轮把完整预览与确认规则统一到现有服务，页面只展示服务端结果；本轮验证状态见 `docs/superpowers/plans/2026-09-29-contact-upload-minimal.md`。**本轮 revision 的远程 native/full-suite/生产容器门禁及 ChatGPT、Codex 外部浏览器、手机拍照真实环境验收仍待完成，不能声称可公开部署。** 保留现有解析沙箱，取消强制替代项目；后续仅修复现有 CI 阻塞并验收现有隔离，收尾方案见 `docs/superpowers/plans/2026-09-30-contact-upload-closeout.md`。Chromium 中的真实 SDK iframe 回归只验证页面与协议模拟宿主的行为。
 
 `.github/workflows/contact-upload-validation.yml` 在 PR、`codex/contact-upload-*` 分支 push 或手动 dispatch 时运行，只读仓库，不发布镜像、不部署、不读取生产凭据。它在 Ubuntu runner 安装锁定依赖，编译/测试 Rust、检查 server/tests/web 类型、打包页面、运行完整 Python/Vitest/Chromium，再构建生产 worker 镜像，强制执行真实 Linux 安全探针、正常 hardened PDF、CPU/内存/期限/取消及深目录清理。容器探针零跳过；隔离失败必须修复，不能放宽控制。
 

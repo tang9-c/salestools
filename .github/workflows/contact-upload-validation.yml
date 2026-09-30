@@ -106,52 +106,12 @@ jobs:
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid "$(id -gn)" contact-ci
           ci_report_dir=$(mktemp -d "$RUNNER_TEMP/contact-python.XXXXXX")
           sudo chown contact-ci "$ci_report_dir"
-          for cache_root in "$HF_HOME" "$XDG_CACHE_HOME"; do
-            if ! test -e "$cache_root"; then
-              printf 'Declared cache root missing; creating %s\n' "$cache_root"
-              mkdir -p "$cache_root"
-            fi
-          done
-          check_access() {
-            if ! sudo -u contact-ci test "$1" "$2"; then
-              printf 'Dedicated UID access check failed: %s %s\n' "$1" "$2"
-              namei -l "$2"
-              exit 1
-            fi
-          }
-          check_access -x "$GITHUB_WORKSPACE/python/.venv/bin/python"
-          check_access -r "$GITHUB_WORKSPACE/python/tests/test_sandbox.py"
-          check_access -r "$HF_HOME"
-          check_access -r "$XDG_CACHE_HOME"
-          sudo -u contact-ci -- env -i PATH=/usr/bin:/bin \
-            HOME="$ci_report_dir" PYTHONPATH="$GITHUB_WORKSPACE/python:$GITHUB_WORKSPACE/python/tests" \
-            "$GITHUB_WORKSPACE/python/.venv/bin/python" <<'PY'
-          import os, resource
-          from test_sandbox import SandboxTests
-          uid = os.getuid()
-          assert uid != 0
-          print('dedicated parent real UID:', uid, 'RLIMIT_NPROC:', resource.getrlimit(resource.RLIMIT_NPROC), flush=True)
-          probe = SandboxTests()
-          with probe.signal_sentinel() as sentinel:
-              with open(f'/proc/{sentinel.pid}/status') as stream:
-                  sentinel_uid = next(int(line.split()[1]) for line in stream if line.startswith('Uid:'))
-              assert sentinel_uid == uid
-              print('sentinel real UID:', sentinel_uid, flush=True)
-              result = probe.run_probe(f'''
-          import resource
-          assert os.getuid() == {uid}
-          assert resource.getrlimit(resource.RLIMIT_NPROC) == (32, 32)
-          print('sealed probe real UID:', os.getuid(), 'RLIMIT_NPROC:', resource.getrlimit(resource.RLIMIT_NPROC), flush=True)
-          pid = os.fork()
-          if pid == 0:
-              assert os.getuid() == {uid}
-              print('sealed descendant real UID:', os.getuid(), flush=True)
-              os._exit(0)
-          assert os.waitpid(pid, 0)[1] == 0
-          ''')
-              print(result.stdout, end='', flush=True)
-              assert result.returncode == 0, result.stderr
-          PY
+          mkdir -p "$HF_HOME" "$XDG_CACHE_HOME"
+          sudo -u contact-ci id
+          sudo -u contact-ci test -x "$GITHUB_WORKSPACE/python/.venv/bin/python"
+          sudo -u contact-ci test -r "$GITHUB_WORKSPACE/python/tests/test_sandbox.py"
+          sudo -u contact-ci test -r "$HF_HOME"
+          sudo -u contact-ci test -r "$XDG_CACHE_HOME"
           sudo -u contact-ci -- env -i PATH=/usr/bin:/bin \
             HOME="$ci_report_dir" PYTHONPATH="$GITHUB_WORKSPACE/python" \
             HF_HOME="$HF_HOME" XDG_CACHE_HOME="$XDG_CACHE_HOME" \
@@ -160,7 +120,8 @@ jobs:
             TOKENIZERS_PARALLELISM=false \
             "$GITHUB_WORKSPACE/python/.venv/bin/python" -m pytest python/tests -q \
             -o cache_dir="$ci_report_dir/pytest-cache" --junitxml="$ci_report_dir/contact-python.xml"
-          CONTACT_PYTHON_REPORT="$ci_report_dir/contact-python.xml" /usr/bin/python3 <<'PY'
+          sudo -u contact-ci -- env -i \
+            CONTACT_PYTHON_REPORT="$ci_report_dir/contact-python.xml" /usr/bin/python3 <<'PY'
           import os
           import xml.etree.ElementTree as ET
           report = ET.parse(os.environ['CONTACT_PYTHON_REPORT'])

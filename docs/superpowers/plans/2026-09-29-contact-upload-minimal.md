@@ -1,5 +1,7 @@
 # Contact Upload Minimal Implementation Plan
 
+> 2026-09-30 更新：本文件保留上一轮实施记录；“替代隔离部署必须作为上线前置”的历史决定已取消。后续以 `2026-09-30-contact-upload-closeout.md` 为准，仅修现有 CI 阻塞并验收现有方案。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans. Steps use checkbox syntax.
 
 **Goal:** 删除上传页面重复业务判断，保留既定安全和产品流程。
