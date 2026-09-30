@@ -1,0 +1,58 @@
+services:
+  salestools:
+    build: .
+    env_file: ${SALESTOOLS_ENV_FILE:-.env}
+    environment:
+      NODE_ENV: production
+      CONTACT_WORKER_SOCKET: /run/contact-worker/worker.sock
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - salestools_data:/data
+      - contact_uploads:/tmp/salestools-contact-uploads
+      - worker_socket:/run/contact-worker
+    depends_on:
+      contact-worker:
+        condition: service_healthy
+
+  contact-worker:
+    build: .
+    command: ["node", "dist/contacts/worker-server.js"]
+    user: node
+    init: true
+    environment:
+      CONTACT_WORKER_SOCKET: /run/contact-worker/worker.sock
+      CONTACT_UPLOAD_DIR: /tmp/salestools-contact-uploads
+      CONTACT_PYTHON_BIN: /opt/contact-worker/.venv/bin/python
+      HF_HOME: /opt/contact-models/hf
+      XDG_CACHE_HOME: /opt/contact-models/cache
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=1g
+    volumes:
+      - contact_uploads:/tmp/salestools-contact-uploads:ro
+      - worker_socket:/run/contact-worker
+    mem_limit: 4g
+    cpus: 2
+    pids_limit: 64
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/contact-worker/worker.sock"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+
+volumes:
+  salestools_data:
+  contact_uploads:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1g,uid=1000,gid=1000,mode=0700
+  worker_socket:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,uid=1000,gid=1000,mode=0700

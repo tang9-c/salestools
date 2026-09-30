@@ -33,9 +33,9 @@ it('cleans restart orphans and expires only unsubmitted files after one hour', a
   await store.cleanupOrphans();
   expect(readdirSync(directory)).toEqual([]);
   vi.useFakeTimers();
-  const unsubmittedId = await store.reserve();
+  const unsubmittedId = await store.reserve('reviewer');
   await store.receive(unsubmittedId, Readable.from([pdf]), 'resume.pdf');
-  const submittedId = await store.reserve();
+  const submittedId = await store.reserve('reviewer');
   await store.receive(submittedId, Readable.from([pdf]), 'resume.pdf');
   store.markSubmitted(submittedId);
   await vi.advanceTimersByTimeAsync(3_600_000);
@@ -49,7 +49,7 @@ it('enforces the configured aggregate temporary-byte budget while streaming', as
   const store = new UploadStore({ directory, maxPendingFiles: 10, maxFileBytes: 20_971_520,
     maxTempBytes: pdf.length - 1 });
   stores.push(store);
-  const id = await store.reserve();
+  const id = await store.reserve('reviewer');
   await expect(store.receive(id, Readable.from([pdf]), 'resume.pdf')).rejects.toThrow('TEMP_CAPACITY_FULL');
   expect(store.pendingCount).toBe(0);
   expect(readdirSync(directory)).toEqual([]);
@@ -89,7 +89,7 @@ it('accepts one authenticated stream and returns only opaque id, name and digest
 
 it('reserves all ten slots before reading another body', async () => {
   const { store, upload, directory } = await setup();
-  await Promise.all(Array.from({ length: 10 }, () => store.reserve()));
+  await Promise.all(Array.from({ length: 10 }, () => store.reserve('reviewer')));
   const response = await upload();
   expect(response.status).toBe(429);
   expect(await response.json()).toEqual({ code: 'CAPACITY_FULL' });

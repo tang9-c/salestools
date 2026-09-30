@@ -22,13 +22,13 @@ export class ImportJobs {
     concurrency: number;
     timeoutMs: number;
     release: (fileId: string) => Promise<void>;
-    reserve?: () => Promise<string>;
+    reserve?: (actor: string) => Promise<string>;
     submit?: (fileId: string) => void;
   }) {}
 
-  reserve(): Promise<string> {
+  reserve(actor: string): Promise<string> {
     if (!this.options.reserve) throw new Error('UPLOAD_RESERVATION_UNAVAILABLE');
-    return this.options.reserve();
+    return this.options.reserve(actor);
   }
 
   release(fileId: string): Promise<void> { return this.options.release(fileId); }

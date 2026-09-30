@@ -1,0 +1,173 @@
+name: Contact upload validation
+
+on:
+  pull_request:
+  push:
+    branches: ["codex/contact-upload-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contact-upload-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  native-and-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "2"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      HF_HOME: ${{ runner.temp }}/contact-models/hf
+      XDG_CACHE_HOME: ${{ runner.temp }}/contact-models/cache
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - name: Check out the tested revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Set up locked Python tooling
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.9.26"
+          enable-cache: false
+
+      - name: Install native runtime prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev libseccomp2 python3 python3-venv libgomp1 libglib2.0-0 libgl1 fonts-dejavu-core
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          node --version
+          rustc --version
+          /usr/bin/python3 --version
+          uv --version
+          uname -a
+
+      - name: Install locked dependencies and matching Chromium
+        run: |
+          set -euo pipefail
+          npm ci
+          uv sync --project python --locked --no-editable --python /usr/bin/python3
+          python/.venv/bin/python -c "import torch; assert torch.version.cuda is None, 'CPU-only Torch required'"
+          node node_modules/playwright-core/cli.js install --with-deps chromium
+          node --input-type=module <<'JS'
+          import { appendFileSync } from 'node:fs';
+          import { chromium } from 'playwright-core';
+          appendFileSync(process.env.GITHUB_ENV, `CONTACT_UPLOAD_CHROMIUM=${chromium.executablePath()}\n`);
+          JS
+
+      - name: Typecheck server, tests and web sources
+        run: npm run typecheck
+
+      - name: Build native test binary and run Rust tests on runner
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path rust/contact-graph/Cargo.toml
+          cargo test --locked --manifest-path rust/contact-graph/Cargo.toml
+
+      - name: Build server and self-contained upload App bundle on runner
+        run: npm run build
+
+      - name: Prepare synthetic OCR model resources
+        env:
+          PYTHONPATH: python
+        run: python/.venv/bin/python scripts/contact-runtime-smoke.py --ocr-only
+
+      - name: Run full Python suite with real Linux probes and no skips
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          set -euo pipefail
+          python/.venv/bin/python -m pytest python/tests -q --junitxml="$RUNNER_TEMP/contact-python.xml"
+          /usr/bin/python3 <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          report = ET.parse(os.path.join(os.environ['RUNNER_TEMP'], 'contact-python.xml'))
+          assert not report.findall('.//skipped'), 'Linux Python gate must never skip security probes'
+          PY
+
+      - name: Run full Vitest suite including native integration and Chromium SDK iframe
+        env:
+          NODE_ENV: test
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: npm test -- --run --maxWorkers=1 --minWorkers=1 --no-file-parallelism
+
+  production-sandbox:
+    needs: native-and-browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      COMPOSE_PROJECT_NAME: contact-upload-ci
+      # Compose parses all service env_file entries even with --no-deps.
+      # This is an empty runner-local file, never a production environment file.
+      SALESTOOLS_ENV_FILE: ${{ runner.temp }}/contact-upload-ci.env
+    steps:
+      - name: Check out the tested revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Reserve disk for the production runtime image
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+          : > "$SALESTOOLS_ENV_FILE"
+          docker compose version
+
+      - name: Build worker production image on runner without publishing
+        run: docker compose -f compose.contact-upload.yaml build contact-worker
+
+      - name: Require production Compose isolation controls
+        run: |
+          set -euo pipefail
+          docker compose -f compose.contact-upload.yaml config --format json > "$RUNNER_TEMP/contact-compose.json"
+          python3 <<'PY'
+          import json, os
+          config = json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'contact-compose.json')))
+          worker = config['services']['contact-worker']
+          assert worker['network_mode'] == 'none'
+          assert worker['read_only'] is True and worker['init'] is True
+          assert worker['user'] == 'node'
+          assert worker['cap_drop'] == ['ALL']
+          assert 'no-new-privileges:true' in worker['security_opt']
+          assert worker['pids_limit'] == 64
+          assert int(worker['mem_limit']) == 4 * 1024**3 and float(worker['cpus']) == 2
+          mounts = worker['volumes']
+          assert {mount['source'] for mount in mounts} == {'contact_uploads', 'worker_socket'}
+          upload = next(mount for mount in mounts if mount['source'] == 'contact_uploads')
+          assert upload['read_only'] is True and upload['target'] == '/tmp/salestools-contact-uploads'
+          assert all(volume['driver_opts']['type'] == 'tmpfs' for name, volume in config['volumes'].items() if name in ('contact_uploads', 'worker_socket'))
+          assert all(name not in worker['environment'] for name in ('ARK_CREDENTIAL', 'ARK_EMBEDDING_CREDENTIAL', 'QCC_SECRET_KEY'))
+          PY
+
+      - name: Run hardened kernel, PDF, resource and descendant cleanup gate
+        run: |
+          set -euo pipefail
+          timeout 20m docker compose -f compose.contact-upload.yaml run --rm --no-deps contact-worker node /usr/local/bin/contact-sandbox-smoke.mjs
+
+      - name: Remove synthetic worker volumes and empty CI environment
+        if: always()
+        run: |
+          docker compose -f compose.contact-upload.yaml down --volumes --remove-orphans
+          rm -f "$SALESTOOLS_ENV_FILE"

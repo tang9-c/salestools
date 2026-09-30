@@ -775,6 +775,40 @@ impl Store {
         )
     }
 
+    /// Replay only the original queued start, without writing or exposing the preview.
+    pub fn get_import_start(&self, raw: &Value) -> Result<Value, AppError> {
+        let required = |field: &str| -> Result<&str, AppError> {
+            raw.get(field).and_then(Value::as_str).filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| AppError::validation(format!("{} is required", field)))
+        };
+        let operation_id = required("operation_id")?;
+        let actor = required("actor")?;
+        let file_id = required("file_id")?;
+        let prior: Option<(String, String, String, String)> = self.graph.connection().query_row(
+            "SELECT actor,op,request_hash,result_json FROM operation_results WHERE operation_id=?1",
+            [operation_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).optional().map_err(AppError::internal)?;
+        if let Some((original_actor, op, original_hash, result_json)) = prior {
+            let original_start = json!({"operation_id":operation_id,"actor":actor,"file_id":file_id,
+                "status":"queued","data":{"candidates":[]}});
+            if original_actor != actor || op != "put_import_job" || original_hash != canonical_hash(&original_start)? {
+                return Err(AppError { code: "OPERATION_CONFLICT",
+                    message: "Operation ID was used for different content or actor".into() });
+            }
+            let result: Value = serde_json::from_str(&result_json).map_err(AppError::internal)?;
+            return Ok(json!({"import_id":result["import_id"],"status":result["status"],
+                "version":result["version"],"replayed":true}));
+        }
+        let file_actor: Option<String> = self.graph.connection().query_row(
+            "SELECT actor FROM import_jobs WHERE file_id=?1", [file_id], |row| row.get(0),
+        ).optional().map_err(AppError::internal)?;
+        if let Some(original_actor) = file_actor {
+            return Err(AppError { code: if original_actor == actor { "FILE_ALREADY_USED" } else { "IMPORT_ACCESS_DENIED" },
+                message: "Uploaded file has already been submitted".into() });
+        }
+        Ok(Value::Null)
+    }
+
     pub fn put_import_job(&self, raw: &Value) -> Result<Value, AppError> {
         let input: PutImportJobInput = serde_json::from_value(raw.clone())
             .map_err(|error| AppError::validation(error.to_string()))?;

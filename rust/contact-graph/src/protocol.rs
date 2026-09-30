@@ -127,6 +127,10 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
             Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
             Err(err) => error(request_id, err.code, &err.message),
         },
+        "get_import_start" => match store.get_import_start(&request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
         "save_relation" => match store.save_relation(&request.payload) {
             Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
             Err(err) => error(request_id, err.code, &err.message),

@@ -49,6 +49,15 @@ export class TokenService {
     return { userId: record.userId };
   }
 
+  hash(plaintext: string): string {
+    return hashToken(plaintext);
+  }
+
+  isEnabledHash(tokenHash: string, userId: string): boolean {
+    const record = this.repository.findByHash(tokenHash);
+    return record !== null && record.enabled && record.userId === userId;
+  }
+
   disable(userId: string): boolean {
     return this.repository.disableByUserId(userId) > 0;
   }

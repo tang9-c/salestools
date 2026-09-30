@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>导入联系人文件</title>
+  <style>
+    :root{font-family:system-ui,-apple-system,sans-serif;color:#172b29;background:#f7faf8}
+    body{max-width:640px;margin:0 auto;padding:24px 18px 60px}
+    h1{font-size:1.5rem;margin:0 0 8px}p{line-height:1.5}
+    .card{background:white;border:1px solid #dce7e2;border-radius:16px;padding:20px;margin:16px 0;box-shadow:0 4px 20px #16382a0a}
+    .actions{display:flex;gap:10px;flex-wrap:wrap}button,.pick{display:inline-block;border:0;border-radius:10px;background:#096b55;color:white;padding:12px 16px;font:inherit;cursor:pointer}
+    button:disabled{background:#9aa9a3;cursor:not-allowed}.pick input{display:none}
+    .secondary{background:#e4f1eb;color:#125944}#status{min-height:24px}#preview{white-space:pre-wrap;overflow-wrap:anywhere}
+    .item{border-top:1px solid #e5ebe8;padding:12px 0}.muted{color:#52645d;font-size:.9rem}
+    h2{font-size:1.2rem}h3{font-size:1rem}#task-id,#file-name{overflow-wrap:anywhere}
+    [hidden]{display:none!important}.pick:has(input:disabled){opacity:.55;cursor:not-allowed}
+  </style>
+</head>
+<body data-state="waiting">
+  <h1>导入联系人</h1>
+  <p class="muted">选择一份 PDF，或拍摄一张名片。上传后先核对识别结果，再决定是否入库。</p>
+  <p class="muted">原始文件会临时存储，提取的文字会发送给服务配置的模型。您确认后，正式记录将写入共享联系人库。</p>
+  <section class="card">
+    <div class="actions">
+      <label class="pick">选择 PDF／图片<input id="file" type="file" accept=".pdf,application/pdf,image/jpeg,image/png" disabled></label>
+      <label class="pick secondary">拍摄名片<input id="camera" type="file" accept="image/*" capture="environment" disabled></label>
+    </div>
+    <p id="file-name" class="muted"></p>
+    <p id="status" role="status" aria-live="polite">正在建立上传会话…</p>
+    <p id="task-id" hidden></p>
+    <p id="recovery" class="muted"></p>
+    <div class="actions">
+      <button id="retry" type="button" hidden disabled>重试当前步骤</button>
+      <button id="exit" class="secondary" type="button" disabled>退出上传</button>
+    </div>
+  </section>
+  <section id="review" class="card" hidden>
+    <h2>识别预览</h2>
+    <div id="preview"></div>
+    <p id="manual" class="muted"></p>
+    <button id="commit" type="button" disabled>确认导入</button>
+  </section>
+  <!--SCRIPT-->
+</body>
+</html>

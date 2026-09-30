@@ -42,3 +42,25 @@ it('rejects oversized and malformed frames while preserving the next request', a
   expect((frames[1].error as { code: string }).code).toBe('BAD_REQUEST');
   expect(frames[2]).toMatchObject({ request_id: 'healthy', ok: true, result: { nonce: 'alive' } });
 });
+
+it('looks up persisted start operations read-only with actor and file binding', async () => {
+  const request = (id: string, op: string, payload: Record<string, unknown>) =>
+    JSON.stringify({ version: 1, request_id: id, op, payload });
+  const { frames, code } = await exchange([
+    request('start', 'put_import_job', { operation_id: 'start-a', actor: 'alice', file_id: 'file-a',
+      status: 'queued', data: { candidates: [] } }),
+    request('replay', 'get_import_start', { operation_id: 'start-a', actor: 'alice', file_id: 'file-a' }),
+    request('wrong-actor', 'get_import_start', { operation_id: 'start-a', actor: 'bob', file_id: 'file-a' }),
+    request('wrong-file', 'get_import_start', { operation_id: 'start-a', actor: 'alice', file_id: 'file-b' }),
+    request('used-file', 'get_import_start', { operation_id: 'another-start', actor: 'alice', file_id: 'file-a' }),
+    request('unknown', 'get_import_start', { operation_id: 'start-new', actor: 'alice', file_id: 'file-new' }),
+  ]);
+  expect(code).toBe(0);
+  expect(frames[1]).toMatchObject({ ok: true, result: {
+    ...(frames[0].result as object), replayed: true,
+  } });
+  expect(frames[2]).toMatchObject({ ok: false, error: { code: 'OPERATION_CONFLICT' } });
+  expect(frames[3]).toMatchObject({ ok: false, error: { code: 'OPERATION_CONFLICT' } });
+  expect(frames[4]).toMatchObject({ ok: false, error: { code: 'FILE_ALREADY_USED' } });
+  expect(frames[5]).toMatchObject({ ok: true, result: null });
+});

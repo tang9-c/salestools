@@ -12,7 +12,7 @@ const CONFIG_KEYS = [
   'CONTACT_MAX_PENDING_FILES', 'CONTACT_MAX_FILE_BYTES', 'CONTACT_MAX_PDF_PAGES',
   'CONTACT_MAX_IMAGE_PIXELS', 'CONTACT_MAX_TEMP_BYTES', 'CONTACT_IMPORT_TIMEOUT_MS',
   'CONTACT_IMPORT_CONCURRENCY', 'CONTACT_EXTRACT_MAX_BATCHES', 'CONTACT_EXTRACT_MAX_MODEL_CALLS',
-  'CONTACT_PYTHON_BIN',
+  'CONTACT_PYTHON_BIN', 'CONTACT_WORKER_SOCKET',
 ] as const;
 
 const nonEmptyString = z.string().trim().min(1);
@@ -82,6 +82,7 @@ const configSchema = z.object({
   CONTACT_EXTRACT_MAX_BATCHES: positiveInteger.max(8).default(8),
   CONTACT_EXTRACT_MAX_MODEL_CALLS: positiveInteger.max(16).default(16),
   CONTACT_PYTHON_BIN: nonEmptyString.optional(),
+  CONTACT_WORKER_SOCKET: nonEmptyString.optional(),
 }).strict().superRefine((config, context) => {
   const configuredMaximum = config.MAX_QCC_CALLS + config.MAX_SEARCH_CALLS + config.MAX_ARK_CALLS;
   if (config.MAX_TOTAL_UPSTREAM_CALLS < configuredMaximum) {
@@ -102,6 +103,9 @@ const configSchema = z.object({
   }
   if (config.CONTACT_PYTHON_BIN && !isAbsolute(config.CONTACT_PYTHON_BIN)) {
     context.addIssue({ code: 'custom', path: ['CONTACT_PYTHON_BIN'], message: 'absolute Python executable required' });
+  }
+  if (config.CONTACT_WORKER_SOCKET && !isAbsolute(config.CONTACT_WORKER_SOCKET)) {
+    context.addIssue({ code: 'custom', path: ['CONTACT_WORKER_SOCKET'], message: 'absolute worker socket required' });
   }
 });
 
@@ -147,6 +151,7 @@ export type AppConfig = ParsedConfig & {
   contactExtractMaxBatches: number;
   contactExtractMaxModelCalls: number;
   contactPythonBin?: string;
+  contactWorkerSocket?: string;
   allowedOriginUrls: Set<string>;
   allowedOriginHostnames: Set<string>;
 };
@@ -205,6 +210,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     contactExtractMaxBatches: parsed.data.CONTACT_EXTRACT_MAX_BATCHES,
     contactExtractMaxModelCalls: parsed.data.CONTACT_EXTRACT_MAX_MODEL_CALLS,
     contactPythonBin: parsed.data.CONTACT_PYTHON_BIN,
+    contactWorkerSocket: parsed.data.CONTACT_WORKER_SOCKET,
     allowedOriginUrls: new Set(originUrls),
     allowedOriginHostnames: new Set(originUrls.map(value => new URL(value).hostname)),
   };

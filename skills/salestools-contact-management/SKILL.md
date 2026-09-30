@@ -25,10 +25,22 @@ description: Use when a user wants to find contacts across the Salestools librar
 | 查库中已有联系人 | 仅检索时用 `search_contacts`；请求档案核对或综合查找时再用 `get_contact`。读取返回的 `pagination.evidence.next_offset`、`pagination.relations.next_offset`，分别作为下次输入的 `evidence_offset`、`relation_offset`，在所需范围内继续读取；未翻完时说明证据或关系仍有后续页。语义/混合不可用时接受关键词回退及警告。 |
 | 查简历中的待核实线索 | 用户明确要求包括未确认信息时，用 `search_contacts({query:"学校、雇主或项目客户关键词",mode:"keyword",include_unverified:true})`；按 `match_status` 区分 `confirmed` 和 `unverified`，保留返回的 `claim_id` 或全部 `claim_ids`，用 `get_contact` 核对对应人物／项目。此标志需要非空 `query`，不能与 `semantic`／`hybrid` 一起使用。不要用 `ask_contacts` 召回或回答未核实线索。 |
 | 问库中人物关系或任职 | 直接正式关系用 `ask_contacts`；同名时用返回的候选 `entity_id` 请用户选定，再以 `entity_id` 重问。涉及“现任”还须用 `get_contact` 核对关系状态与时间。问参与过的项目或服务过的客户时，用客户名关键词 `search_contacts`，再读取 Person 和 `matched_project_id` 对应 Project 的两跳证据；不要把客户当雇主。`insufficient` 或 `failed` 不补造结论。 |
-| 导入本地简历/名片 | 环境有文件及授权上传能力时，使用鉴权的 `/contact-files` 或仓库 `contacts:upload` CLI 上传，取得 `file_id`；再调用 `import_contacts`。缺少文件或上传能力时请用户提供，不宣称已上传。 |
+| 导入本地简历/名片 | 用户在聊天中提交文件时优先调用 `open_contact_upload`，让用户在内嵌页面选择 PDF／图片或拍摄名片；不支持内嵌界面时给出工具返回的短时链接。页面显示预览后由用户点击确认。若页面提示人工核对，按 `import_id` 调用 `get_contact_import`。有授权的本地文件环境仍可使用鉴权的 `/contact-files` 或 `contacts:upload` CLI，再调用 `import_contacts`。缺少文件或上传能力时请用户提供，不宣称已上传。 |
 | 编辑、合并、归档或恢复 | 先用 `get_contact` 读取版本与证据，再使用 `save_contact`、`merge_contacts`、`delete_contact` 或关系工具。 |
 
 显式待核实查询命中后，用 `get_contact({entity_id,claim_offset,claim_limit})` 读取 `unverified_claims`；项目客户路径还须读取 `matched_project_id` 的档案。按各自 `pagination.unverified_claims.next_offset` 继续翻页，并逐一核对搜索结果的全部 `claim_ids`，它们可能分别属于 Person 和 Project。`match_status=confirmed` 表示正式图谱命中，不保证经过人工核实；`unverified` 表示候选断言命中，不等于已任职、就读、毕业或服务该客户。若用户明确要求确认或拒绝某条线索，先在对应主体核对 `claim_id`、当前版本和原值，再用 `review_contact_claim` 传 `action`、稳定 `operation_id`、`expected_entity_version`；确认还须附 1–500 字审核说明，缺少已建目标时须提供正确的 `target_id`。响应丢失时原样重试，不能把弱文件引文当作人工确认。
+
+## 上传页面的授权、隐私与恢复
+
+在选文件前说明原件临时存储、提取的文字发送给服务配置的模型，确认后写入共享联系人库。页面路径必须由用户核对并点击“确认导入”，不能用后续聊天工具自动绕过页面的重复、处理范围未知/未处理块、匹配不完整或主体不明确阻断。用户另行明确要求人工处理时，先用原 `import_id` 读取完整预览再采用现有导入工具。本文下方默认自动提交约定用于用户明确授权的聊天/CLI 路径。
+
+`open_contact_upload` 的外部短码 60 秒一次性；过期或已兑换时重开工具。页面不接收长期 Token，App 会话凭据只保存在内存中。App 刷新/关闭后不能恢复旧会话；保留真实 `import_id` 用 `get_contact_import` 查原任务，或重开入口。外部页刷新可尝试受限 HttpOnly Cookie 恢复；服务器重启、失效或退出后重开。任务编号不提供授权，不能跨用户读取。
+
+上传失败按当前页面步骤重试；已经接收的文件不能盲目重传。版本冲突须重新加载完整预览并再次核对。成功后会话的新操作权限立即撤销，只有原凭据、同一预览版本能重试固定成功回执；回执最长至原两小时会话期限，也受源 Token 撤销、退出、1000 条容量淘汰和进程重启限制。导入启动重放持久化到图谱；不能据页面回执失败推断未入库，应查原任务。原样重试不重新提取。
+
+用户点击“退出上传”关闭页面操作并请求撤销会话/回执；服务端未确认时如实告知。退出不会撤销已有写入或自动取消任务；用户请求取消时对原 `import_id` 调用 `cancel_contact_import`。原件临时目录在 `/data` 及备份之外，完成/失败/取消/到期时清理；字段及短证据会保存，完整原件/OCR 正文不写入图谱，提取文字已按告知发给模型。
+
+部署须保持 Linux Landlock ABI≥3、libseccomp、无网络、只读根、无 capability、no-new-privileges、非 root 与资源限额，单输入内容隔离失败不能退回无隔离运行。构建和生产镜像验证仅允许远程 CI，`npm run dev` 也会触发构建。真实 ChatGPT/Codex/手机相机仍待宿主验收；Chromium SDK iframe 测试不代表这些客户端已验证。详见 `docs/QUICKSTART.md` 的部署要求与验收清单。
 
 ## 导入与写入边界
 

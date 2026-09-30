@@ -166,17 +166,17 @@ export class ContactImportService {
   async start(input: { file_id: string; operation_id: string }, actor: string): Promise<{ import_id: string }> {
     if (!actor.trim()) throw new Error('Authenticated client is required');
     const file = this.options.uploads.get(input.file_id);
-    // A replay is allowed after the original temporary file has been removed.
+    if (file && file.actor !== actor) throw new Error('IMPORT_ACCESS_DENIED');
+    const prior = await this.options.graph.request<JobWriteResult | null>('get_import_start', {
+      operation_id: input.operation_id, actor, file_id: input.file_id,
+    });
+    if (prior) return { import_id: prior.import_id };
+    if (!file) throw new Error('UPLOADED_FILE_MISSING');
     const result = await this.options.graph.request<JobWriteResult>('put_import_job', {
       operation_id: input.operation_id, actor, file_id: input.file_id,
       status: 'queued', data: { candidates: [] },
     });
     if (result.replayed) return { import_id: result.import_id };
-    if (!file) {
-      await this.transition(result.import_id, input.file_id, 1, 'failed',
-        { candidates: [], warnings: ['uploaded_file_missing'] });
-      throw new Error('UPLOADED_FILE_MISSING');
-    }
     const importId = result.import_id;
     try { this.options.uploads.markSubmitted(file.fileId); }
     catch (error) {
@@ -234,11 +234,14 @@ export class ContactImportService {
         warnings.push('身份匹配查询失败，请人工核对已有联系人');
       }
     }
+    const validBlockIds = (value: unknown): boolean => Array.isArray(value)
+      && value.every(id => typeof id === 'string' && !!id.trim());
     return {
       import_id: job.import_id, status: job.status, version: job.version,
       source: job.data.source ?? null, warnings,
       processed_block_ids: job.data.processed_block_ids ?? [],
       unprocessed_block_ids: job.data.unprocessed_block_ids ?? [],
+      coverage_available: validBlockIds(job.data.processed_block_ids) && validBlockIds(job.data.unprocessed_block_ids),
       total_candidates: candidates.length,
       candidates: page, match_suggestions: matches.suggestions,
       match_suggestions_truncated: matches.truncated,
@@ -304,7 +307,8 @@ export class ContactImportService {
   }
 
   async commit(input: { import_id: string; preview_version: number; operation_id: string;
-    choices?: unknown[]; relation_choices?: unknown[]; auto_create?: boolean }, actor: string): Promise<Record<string, unknown>> {
+    choices?: unknown[]; relation_choices?: unknown[]; auto_create?: boolean }, actor: string,
+    beforeWrite?: () => void): Promise<Record<string, unknown>> {
     if (!actor.trim()) throw new Error('Authenticated client is required');
     if (input.operation_id !== `contact-import:${input.import_id}`) {
       throw new Error('Invalid commit operation_id');
@@ -385,6 +389,8 @@ export class ContactImportService {
       }
     }
     if (!choices) throw new Error('Commit choices are required');
+    // The page capability may be revoked while the service awaits preview reads.
+    beforeWrite?.();
     const result = await this.options.graph.request<Record<string, unknown>>('commit_import', {
       operation_id: input.operation_id, actor, import_id: input.import_id,
       expected_version: input.preview_version, choices,

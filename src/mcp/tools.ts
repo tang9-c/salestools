@@ -1,4 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
+import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
+import { z } from 'zod';
+import type { UploadSessions } from '../contacts/upload-session.js';
 import type { OpportunityLevel, ProductKey, ResearchSourceStatus } from '../contracts/index.js';
 import type { ContactServiceOutput } from '../contacts/contact-service.js';
 import type { ContactLibraryService } from '../contacts/library-service.js';
@@ -116,6 +119,13 @@ export type AssessmentReportServiceOutput = {
 };
 
 export interface McpServices {
+  contactUpload?: {
+    actor: string;
+    sessions: UploadSessions;
+    sourceTokenHash: string;
+    baseUrl: string;
+    html: () => Promise<string>;
+  };
   getCompanyProfile(input: CompanyProfileServiceInput): Awaitable<CompanyProfileServiceOutput>;
   submitAssessment(input: SubmitAssessmentServiceInput, userId: string): Awaitable<SubmitAssessmentServiceOutput>;
   getAssessmentStatus(input: AssessmentServiceInput): Awaitable<AssessmentStatusServiceOutput>;
@@ -243,6 +253,37 @@ function contactsOutput(output: ContactServiceOutput) {
 
 export function buildMcpServer(services: McpServices): McpServer {
   const server = new McpServer({ name: 'target-customer-assessment', version: '0.1.0' });
+
+  if (services.contactUpload) {
+    const upload = services.contactUpload;
+    const resourceUri = 'ui://salestools/contact-upload.html';
+    registerAppTool(server, 'open_contact_upload', {
+      title: '选择 PDF 或拍摄名片',
+      description: '打开联系人文件上传界面。若客户端不支持内嵌界面，请使用返回的短时链接。',
+      inputSchema: z.object({}),
+      _meta: { ui: { resourceUri } },
+    }, async () => {
+      const { code } = upload.sessions.createHandoff(upload.actor, upload.sourceTokenHash);
+      const url = `${upload.baseUrl}/contact-upload#code=${encodeURIComponent(code)}`;
+      return { content: [{ type: 'text' as const, text: `打开上传页面：${url}` }],
+        structuredContent: { fallback_url: url } };
+    });
+    registerAppTool(server, 'create_contact_upload_session', {
+      title: '创建联系人上传会话',
+      description: '仅供联系人上传界面调用。',
+      inputSchema: z.object({}),
+      _meta: { ui: { resourceUri, visibility: ['app'] } },
+    }, async () => {
+      const session = upload.sessions.create(upload.actor, upload.sourceTokenHash);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(session) }],
+        structuredContent: { ...session, base_url: upload.baseUrl } };
+    });
+    registerAppResource(server, '联系人文件上传', resourceUri,
+      { mimeType: RESOURCE_MIME_TYPE }, async () => ({ contents: [{
+        uri: resourceUri, mimeType: RESOURCE_MIME_TYPE, text: await upload.html(),
+        _meta: { ui: { csp: { connectDomains: [upload.baseUrl] } } },
+      }] }));
+  }
 
   if (services.contactLibrary) registerContactTools(server, services.contactLibrary);
   if (services.contactImport) registerContactImportTools(server, services.contactImport);

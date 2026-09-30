@@ -11,6 +11,8 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
+COPY web ./web
+COPY scripts/build-contact-upload.mjs ./scripts/build-contact-upload.mjs
 RUN npm run build
 
 FROM node:24-bookworm-slim AS python-build
@@ -38,21 +40,27 @@ ENV NODE_ENV=production \
     CONTACT_GRAPH_SQLITE_PATH=/data/contact-graph.sqlite \
     CONTACT_GRAPH_BIN=/usr/local/bin/contact-graph \
     CONTACT_PYTHON_BIN=/opt/contact-worker/.venv/bin/python \
+    CONTACT_WORKER_SOCKET=/run/contact-worker/worker.sock \
     HF_HOME=/opt/contact-models/hf \
     XDG_CACHE_HOME=/opt/contact-models/cache
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 libgomp1 libglib2.0-0 libgl1 fonts-dejavu-core \
+    python3 libseccomp2 libgomp1 libglib2.0-0 libgl1 fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=node-build /app/dist ./dist
+COPY --from=node-build /app/web/dist ./web/dist
 COPY python/contact_worker ./python/contact_worker
 COPY --from=python-build /opt/contact-worker/.venv /opt/contact-worker/.venv
 COPY --from=python-build /opt/contact-models /opt/contact-models
 COPY --from=graph-build /build/rust/contact-graph/target/release/contact-graph /usr/local/bin/contact-graph
 COPY scripts/contact-runtime-smoke.py /usr/local/bin/contact-runtime-smoke.py
-RUN mkdir -p /data && chown -R node:node /app /data /opt/contact-models
+COPY scripts/contact-sandbox-smoke.mjs /usr/local/bin/contact-sandbox-smoke.mjs
+COPY python/tests/test_sandbox.py /usr/local/bin/contact-sandbox-tests.py
+COPY tests/fixtures/contact-documents/synthetic-resume.pdf /usr/local/share/contact-sandbox/synthetic-resume.pdf
+RUN mkdir -p /data /run/contact-worker /tmp/salestools-contact-uploads \
+    && chown -R node:node /app /data /opt/contact-models /run/contact-worker /tmp/salestools-contact-uploads
 USER node
 VOLUME ["/data"]
 EXPOSE 3000

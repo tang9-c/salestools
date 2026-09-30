@@ -43,7 +43,7 @@ async function harness(fileId = 'file-import-1', candidates: ImportCandidate[] =
   let worker = new ContactGraphClient({ command: binary, dbPath });
   const statuses: string[] = [];
   const files = new Map<string, UploadedFile>();
-  const file: UploadedFile = { fileId, fileName: 'invented.pdf', sha256: sha,
+  const file: UploadedFile = { fileId, actor: 'reviewer', fileName: 'invented.pdf', sha256: sha,
     mime: 'application/pdf', tempPath: join(directory, 'invented.pdf'), uploadedAt: collectedAt };
   files.set(fileId, file);
   let parseCount = 0;
