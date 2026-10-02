@@ -5,6 +5,8 @@ import { acceptanceHarness, acceptanceBudgetOptions, root, type Detail } from '.
 import { ContactSearch } from '../src/contacts/contact-search.js';
 import { evaluateInventedSample, evaluateRealResume } from './contact-live-verdict.js';
 config({ path: process.env.ACCEPTANCE_ENV ?? '/Users/tang-codeing/code/salestools/.env', quiet: true });
+// This explicit acceptance entry uses local test parsing; production and Linux hardening gates keep their own policy.
+process.env.NODE_ENV = 'test';
 const budgetOptions = acceptanceBudgetOptions(process.env.ACCEPTANCE_REQUEST_MAX_BYTES);
 const samples = ['layout-single-column.pdf', 'layout-two-column.pdf', 'synthetic-card.png', process.env.ACCEPTANCE_RESUME ?? '/Users/tang-codeing/Downloads/J运维简历.pdf'];
 for (const [index, file] of samples.entries()) {

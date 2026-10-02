@@ -11,12 +11,63 @@
 
 MCP 注册不会替你部署服务端，也不会创建 Token。服务端地址和 Token 缺一不可。
 
-## 批量上传本地联系人文件
+## 在聊天中上传 PDF 或名片
 
-联系人导入功能启用后，可在本仓库目录运行上传 CLI。它只接受本地 PDF、JPG、JPEG、PNG 文件，每个文件最多 20 MB。先构建，再设置完整上传地址与个人 Token，最后依次列出文件路径：
+联系人图谱启用后，调用 `open_contact_upload`。支持 MCP Apps 的客户端可在内嵌页面点“选择 PDF／图片”或“拍摄名片”；Codex 或不支持内嵌页面的客户端打开工具返回的短时外部链接。链接 60 秒内只能兑换一次，过期或已兑换时重新调用工具。一次会话接收一份 PDF/JPG/JPEG/PNG，最多 20 MB；手机是否能直接调用相机取决于真实宿主和浏览器，仍需实际验收。
+
+选择文件前，页面告知：原件临时存储，提取的文字会发送给服务配置的模型，用户确认后资料写入共享联系人库。上传后先等待识别，再核对所有候选、字段、短证据、关系建议、待核实项及处理范围。仅当主体唯一、预览完整、原件无未处理文本块、匹配完整且没有重复建议时，才能点“确认导入”。完整预览及是否可确认由服务端统一返回，确认时重新检查同一规则；页面仅在服务端明确允许时启用按钮。页面不自动提交；需要人工处理时，保留 `import_id`，回到聊天调用 `get_contact_import` 核对并决定后续操作。
+
+上传或网络失败按页面提示重试当前步骤；HTTP 上传已被服务接收时不会再次上传同一文件。版本冲突会重新加载完整预览，须重新核对并再次确认。App 刷新或关闭后，内存凭据丢失，原会话不能恢复；使用原 `import_id` 在聊天查进度，或重新调用 `open_contact_upload` 建立新会话。外部页面刷新可以尝试通过受限 HttpOnly Cookie 读取原任务，但会话失效或服务重启后也需要重开。不要把任务编号当作权限凭据。
+
+“退出上传”立即关闭本页操作并请求撤销会话及成功回执；仅关闭页面不保证立即撤销服务端会话。退出不撤销已经写入的联系人，也不代表后台导入已取消；需要取消时在聊天中对原 `import_id` 调用 `cancel_contact_import`。服务端退出未确认时，页面明确显示该状态。成功确认后，上传、预览、新提交权限立即撤销；若成功响应丢失，原凭据、原预览版本和同一会话可重试固定最小成功回执。回执仍受原两小时期限、源 Token 启用状态、显式退出、进程重启和最多 1000 条容量淘汰影响，不能保证长期恢复。导入启动 operation 的重放另有图数据库持久化记录；页面重开后通过原 `import_id` 恢复聊天处理。
+
+页面不会拿到个人长期 Token，App 受限 Bearer 只在内存中；外部链接不包含能直接提交的会话密钥，兑换后立即清除 URL 的交接码。原件默认放在临时目录 `salestools-contact-uploads`，必须位于 `/data` 和数据库备份范围之外。导入完成、失败、取消、未提交文件到期或服务清理时删除；原件与完整 OCR 正文不写入图谱，字段及短来源证据仍会保存。临时原件清理失败必须作为运维错误处理，不能报告为已删除。
+
+## 解析 worker 的部署要求
+
+`compose.contact-upload.yaml` 将服务与解析 broker 分为两个容器。**构建只在远程 CI 执行**；部署时使用该流程验证过的同一 revision 镜像。服务端单独配置 HTTPS、`CONTACT_GRAPH_ENABLED=true`、独立图谱数据库及 `CONTACT_WORKER_SOCKET`。生产解析只能用 hardened 模式；`test-only` 仅供显式测试进程，不能用于部署或验收绕过。
+
+- Linux x86_64 或 aarch64，内核必须启用 Landlock 并支持 ABI ≥ 3（包含 REFER/TRUNCATE，通常需 Linux ≥ 6.2），安装 `libseccomp.so.2`，容器运行时允许安装追加 seccomp 过滤器；本 CI 生产烟测使用 cgroup v2 检查实际 CPU/内存/PID 限额。缺少能力时返回 `SANDBOX_UNAVAILABLE`，不降级解析。版本号不能代替实际探针。
+- 保持 worker 的 `network_mode: none`、只读根文件系统、非 root `node` 用户、`cap_drop: [ALL]`、`no-new-privileges`、`init: true`。不得用 privileged、增加 capability 或关闭过滤器让验证通过。
+- 保持 worker 聚合限制：4 GiB 内存、2 CPU、64 PID；单解析器还限制地址空间 3 GiB、CPU 120 秒、64 个进程／线程、128 FD、单文件 256 MiB、禁止 core dump。Linux 的 `RLIMIT_NPROC` 统计同一 UID 的线程，并非只统计解析器新建的进程。监督器将预检墙钟限制为 30 秒、解析限制为 120 秒，并在完成、错误、超时或取消后杀死整个子进程组。
+- 上传与 worker socket 使用独立 tmpfs：上传最多 1 GiB，只读挂载到 broker；socket 最多 1 MiB。worker `/tmp` 为 1 GiB 的 `nosuid,nodev,noexec` tmpfs。不要将上传目录改为 `/data`、持久卷或纳入备份。worker 不挂载服务端数据库卷、不接收模型服务密钥；基础镜像声明的 `/data` 可产生空匿名卷，不能把它替换为应用数据库卷。
+- broker 能访问上传挂载，但解析器在导入任何解析库前封闭权限：只读当前一个输入、镜像中的运行时/模型/字体，独立 scratch 可写；不能读兄弟上传、数据库、凭证或连接 socket/网络。关闭额外 FD，清空继承环境；拒绝非零 PID 的 `prlimit64`、异步信号 owner/信号选择，以及 `fcntl`/`ioctl` 开启异步通知，防止同 UID broker 被改资源限制或收到 SIGIO。自身资源限制通过 `pid=0` 保持可用。Landlock 不隐藏所有文件元数据；这里验证的是内容访问和操作权限，不承诺抵御内核漏洞。
+
+## 远程验证与真实宿主验收
+
+当前状态（2026-09-30）：联系人上传功能的远程代码门禁已在提交 `d965bdbd2b73683b7585077e50b531fb2127f65f` [运行 36704210079](https://github.com/tang9-c/salestools/actions/runs/36704210079) 通过：Rust 测试、类型检查、服务端和页面构建、Python 33 项及 30 个子测试、Vitest 1257 项（含真实 HTTP/MCP 导入）、生产容器构建及 hardened PDF／资源／清理沙箱门禁均成功。ChatGPT、Codex 外部浏览器与手机相机的真实宿主验收仍未完成，因此不能据此声称这些客户端或公开部署已经验证。保留现有解析沙箱；收尾记录见 `docs/superpowers/plans/2026-09-30-contact-upload-closeout.md`。
+
+`.github/workflows/contact-upload-validation.yml` 在 PR、`codex/contact-upload-*` 分支 push 或手动 dispatch 时运行，只读仓库，不发布镜像、不部署、不读取生产凭据。它在 Ubuntu runner 安装锁定依赖，编译/测试 Rust、检查 server/tests/web 类型、打包页面、运行完整 Python/Vitest/Chromium，再构建生产 worker 镜像，强制执行真实 Linux 安全探针、正常 hardened PDF、CPU/内存/期限/取消及深目录清理。容器探针零跳过；隔离失败必须修复，不能放宽控制。
+
+在已推送的特性分支上查看或重跑远程门禁（本地只调用 GitHub API，不构建）：
 
 ```bash
-npm run build
+rtk proxy gh run list --repo tang9-c/salestools --workflow contact-upload-validation.yml --branch codex/contact-upload-你的分支
+rtk proxy gh workflow run contact-upload-validation.yml --repo tang9-c/salestools --ref codex/contact-upload-你的分支
+rtk proxy gh run watch <run-id> --repo tang9-c/salestools --exit-status
+```
+
+新 workflow 首次尚未进入默认分支时，dispatch 可能不可用；特性分支 push 会自动运行。CI 用空的临时 `SALESTOOLS_ENV_FILE` 满足 Compose 的全配置解析，无需 `.env` 或 `production.env`。以下命令仅用于远程 Linux CI runner，在该 runner 构建镜像后执行：
+
+```bash
+: > "$RUNNER_TEMP/contact-upload-ci.env"
+export SALESTOOLS_ENV_FILE="$RUNNER_TEMP/contact-upload-ci.env"
+docker compose -f compose.contact-upload.yaml run --rm --no-deps contact-worker node /usr/local/bin/contact-sandbox-smoke.mjs
+```
+
+真实宿主验收使用合成文件和一次性库，为每项记录日期、revision、客户端/OS/浏览器版本、结果、脱敏截图或日志位置。尚未提供环境，下面均未验收：
+
+- [ ] ChatGPT MCP Apps：打开页面、文件选择、完整预览、人工确认、失效/退出、真实 `ui/resource-teardown`；证据：待填写。
+- [ ] Codex 外部 HTTPS 页：短码过期/重放、Cookie 同源限制、刷新、确认回执重试及聊天恢复；证据：待填写。
+- [ ] 手机真实相机：系统/客户端版本、拍照权限、取消拍摄、JPG/PNG 上传及可读预览；证据：待填写。
+- [ ] 各宿主 XSS 文本、失败重试、版本冲突、未处理块/重复建议阻止确认及返回 `import_id`；证据：待填写。
+- [x] 远程 CI：提交 `d965bdbd2b73683b7585077e50b531fb2127f65f` 的[运行 36704210079](https://github.com/tang9-c/salestools/actions/runs/36704210079) 两个 job 全绿；Python JUnit 零跳过，原失败的 HTTP/MCP 用例通过。
+
+## 批量上传本地联系人文件
+
+联系人导入功能启用后，可在本仓库目录运行上传 CLI。它只接受本地 PDF、JPG、JPEG、PNG 文件，每个文件最多 20 MB。使用远程 CI 已构建的 CLI 产物或镜像，设置完整上传地址与个人 Token，再依次列出文件路径。本项目禁止本地构建；不要运行 `npm run build` 或 `npm run dev`（后者也会打包页面）：
+
+```bash
 export CONTACT_UPLOAD_URL='https://你的服务域名/contact-files'
 export CONTACT_UPLOAD_TOKEN='粘贴管理员提供的 Token'
 npm run contacts:upload -- ./简历.pdf ./名片.png

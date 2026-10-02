@@ -227,7 +227,7 @@ def parse(path: str | Path, file_type: str, document_id: str,
     preflight(local_path, file_type, limits)
     bounds = _limits(limits)
     try:
-        with tempfile.TemporaryDirectory(prefix="contact-worker-", dir=local_path.parent) as scratch:
+        with tempfile.TemporaryDirectory(prefix="contact-worker-", dir=os.environ.get("TMPDIR")) as scratch:
             old_tmpdir = os.environ.get("TMPDIR")
             old_tempdir = tempfile.tempdir
             os.environ["TMPDIR"] = scratch

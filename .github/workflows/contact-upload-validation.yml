@@ -1,0 +1,217 @@
+name: Contact upload validation
+
+on:
+  pull_request:
+  push:
+    branches: ["codex/contact-upload-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contact-upload-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  native-and-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "2"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - name: Set runner-local model paths
+        run: |
+          set -euo pipefail
+          # Match the immutable model paths declared by the hardened parser.
+          sudo install -d -m 755 -o "$(id -u)" -g "$(id -g)" /opt/contact-models
+          printf 'HF_HOME=/opt/contact-models/hf\n' >> "$GITHUB_ENV"
+          printf 'XDG_CACHE_HOME=/opt/contact-models/cache\n' >> "$GITHUB_ENV"
+
+      - name: Check out the tested revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Set up locked Python tooling
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "0.9.26"
+          enable-cache: false
+
+      - name: Install native runtime prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev libseccomp2 python3 python3-venv libgomp1 libglib2.0-0 libgl1 fonts-dejavu-core
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          node --version
+          rustc --version
+          /usr/bin/python3 --version
+          uv --version
+          uname -a
+
+      - name: Install locked dependencies and matching Chromium
+        run: |
+          set -euo pipefail
+          npm ci
+          uv sync --project python --locked --no-editable --python /usr/bin/python3
+          python/.venv/bin/python -c "import torch; assert torch.version.cuda is None, 'CPU-only Torch required'"
+          node node_modules/playwright-core/cli.js install --with-deps chromium
+          node --input-type=module <<'JS'
+          import { appendFileSync } from 'node:fs';
+          import { chromium } from 'playwright-core';
+          appendFileSync(process.env.GITHUB_ENV, `CONTACT_UPLOAD_CHROMIUM=${chromium.executablePath()}\n`);
+          JS
+
+      - name: Typecheck server, tests and web sources
+        run: npm run typecheck
+
+      - name: Build native test binary and run Rust tests on runner
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path rust/contact-graph/Cargo.toml
+          cargo test --locked --manifest-path rust/contact-graph/Cargo.toml
+
+      - name: Build server and self-contained upload App bundle on runner
+        run: npm run build
+
+      - name: Prepare synthetic OCR model resources
+        env:
+          PYTHONPATH: python
+        run: python/.venv/bin/python scripts/contact-runtime-smoke.py --ocr-only
+
+      - name: Run full Python suite with real Linux probes and no skips
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          set -euo pipefail
+          # RLIMIT_NPROC counts every thread with the same real UID, including runner services.
+          # The existing runner group can traverse its home; keep a separate real UID.
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid "$(id -gn)" contact-ci
+          ci_report_dir=$(mktemp -d "$RUNNER_TEMP/contact-python.XXXXXX")
+          sudo chown contact-ci "$ci_report_dir"
+          mkdir -p "$HF_HOME" "$XDG_CACHE_HOME"
+          sudo -u contact-ci id
+          sudo -u contact-ci test -x "$GITHUB_WORKSPACE/python/.venv/bin/python"
+          sudo -u contact-ci test -r "$GITHUB_WORKSPACE/python/tests/test_sandbox.py"
+          sudo -u contact-ci test -r "$HF_HOME"
+          sudo -u contact-ci test -r "$XDG_CACHE_HOME"
+          sudo -u contact-ci -- env -i PATH=/usr/bin:/bin \
+            HOME="$ci_report_dir" PYTHONPATH="$GITHUB_WORKSPACE/python" \
+            HF_HOME="$HF_HOME" XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+            HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+            OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            TOKENIZERS_PARALLELISM=false \
+            "$GITHUB_WORKSPACE/python/.venv/bin/python" -m pytest python/tests -q \
+            -o cache_dir="$ci_report_dir/pytest-cache" --junitxml="$ci_report_dir/contact-python.xml"
+          sudo -u contact-ci -- env -i \
+            CONTACT_PYTHON_REPORT="$ci_report_dir/contact-python.xml" /usr/bin/python3 <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          report = ET.parse(os.environ['CONTACT_PYTHON_REPORT'])
+          assert not report.findall('.//skipped'), 'Linux Python gate must never skip security probes'
+          PY
+
+      - name: Run full Vitest suite including native integration and Chromium SDK iframe
+        env:
+          NODE_ENV: test
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          set -euo pipefail
+          ci_vitest_home=$(mktemp -d "$RUNNER_TEMP/contact-vitest.XXXXXX")
+          sudo chown contact-ci "$ci_vitest_home"
+          # Grant only the installed Vitest's cache directory to the test UID.
+          sudo install -d -m 755 -o contact-ci node_modules/.vite/vitest
+          # Reuse the independent real UID so runner services do not consume the parser's process limit.
+          ci_node_bin=$(command -v node)
+          sudo -u contact-ci -- env -i PATH="$(dirname "$ci_node_bin"):/usr/bin:/bin" \
+            HOME="$ci_vitest_home" NODE_ENV=test \
+            CONTACT_UPLOAD_CHROMIUM="$CONTACT_UPLOAD_CHROMIUM" \
+            HF_HOME="$HF_HOME" XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+            HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+            OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            TOKENIZERS_PARALLELISM=false \
+            "$ci_node_bin" node_modules/vitest/vitest.mjs \
+            --run --maxWorkers=1 --minWorkers=1 --no-file-parallelism
+
+  production-sandbox:
+    needs: native-and-browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      COMPOSE_PROJECT_NAME: contact-upload-ci
+    steps:
+      - name: Set runner-local Compose environment path
+        run: |
+          set -euo pipefail
+          # Compose parses env_file entries even with --no-deps; use an empty CI file.
+          printf 'SALESTOOLS_ENV_FILE=%s/contact-upload-ci.env\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          : > "$RUNNER_TEMP/contact-upload-ci.env"
+
+      - name: Check out the tested revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Reserve disk for the production runtime image
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+          docker compose version
+
+      - name: Build worker production image on runner without publishing
+        run: docker compose -f compose.contact-upload.yaml build contact-worker
+
+      - name: Require production Compose isolation controls
+        run: |
+          set -euo pipefail
+          docker compose -f compose.contact-upload.yaml config --format json > "$RUNNER_TEMP/contact-compose.json"
+          python3 <<'PY'
+          import json, os
+          config = json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'contact-compose.json')))
+          worker = config['services']['contact-worker']
+          assert worker['network_mode'] == 'none'
+          assert worker['read_only'] is True and worker['init'] is True
+          assert worker['user'] == 'node'
+          assert worker['cap_drop'] == ['ALL']
+          assert 'no-new-privileges:true' in worker['security_opt']
+          assert worker['pids_limit'] == 64
+          assert int(worker['mem_limit']) == 4 * 1024**3 and float(worker['cpus']) == 2
+          mounts = worker['volumes']
+          assert {mount['source'] for mount in mounts} == {'contact_uploads', 'worker_socket'}
+          upload = next(mount for mount in mounts if mount['source'] == 'contact_uploads')
+          assert upload['read_only'] is True and upload['target'] == '/tmp/salestools-contact-uploads'
+          assert all(volume['driver_opts']['type'] == 'tmpfs' for name, volume in config['volumes'].items() if name in ('contact_uploads', 'worker_socket'))
+          assert all(name not in worker['environment'] for name in ('ARK_CREDENTIAL', 'ARK_EMBEDDING_CREDENTIAL', 'QCC_SECRET_KEY'))
+          PY
+
+      - name: Run hardened kernel, PDF, resource and descendant cleanup gate
+        run: |
+          set -euo pipefail
+          timeout 20m docker compose -f compose.contact-upload.yaml run --rm --no-deps contact-worker node /usr/local/bin/contact-sandbox-smoke.mjs
+
+      - name: Remove synthetic worker volumes and empty CI environment
+        if: always()
+        run: |
+          docker compose -f compose.contact-upload.yaml down --volumes --remove-orphans
+          rm -f "$SALESTOOLS_ENV_FILE"

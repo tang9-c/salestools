@@ -8,6 +8,7 @@ import type { UploadStore, UploadedFile } from '../src/contacts/upload-store.js'
 const file: UploadedFile = {
   fileId: 'file-1', fileName: 'invented.pdf', sha256: 'a'.repeat(64),
   mime: 'application/pdf', tempPath: '/tmp/invented.pdf', uploadedAt: '2026-09-26T00:00:00.000Z',
+  actor: 'reviewer',
 };
 const candidate = ImportCandidateSchema.parse({
   candidate_id: 'c_1', label: 'Person', properties: { name: '陈晓' },
@@ -29,6 +30,11 @@ function harness() {
     request: async <T>(op: GraphOp, payload: unknown): Promise<T> => {
       state.calls.push(op);
       const input = payload as Record<string, unknown>;
+      if ((op as string) === 'get_import_start') {
+        if (!state.job || input.operation_id !== state.job.operation_id) return null as T;
+        if (input.actor !== state.job.actor || input.file_id !== state.job.file_id) throw new Error('OPERATION_CONFLICT');
+        return { import_id: state.job.import_id, replayed: true } as T;
+      }
       if (op === 'put_import_job') {
         if (!state.job) {
           state.job = { import_id: 'ci_1', file_id: input.file_id, actor: input.actor,
@@ -61,17 +67,81 @@ function harness() {
     markSubmitted: () => file } as unknown as UploadStore;
   const jobs = new ImportJobs({ concurrency: 1, timeoutMs: 10_000,
     submit: () => undefined, release: async () => { state.released += 1; } });
-  const service = new ContactImportService({ graph, uploads, jobs,
+  const newService = () => new ContactImportService({ graph, uploads, jobs,
     parse: async () => [{ block_id: 'b_1', text: '陈晓', page: 1 }],
     extract: async () => {
       state.runCount += 1;
       return { candidates: [candidate], warnings: [], processedBlockIds: ['b_1'], unprocessedBlockIds: [] };
     },
   });
-  return { state, service, jobs };
+  const service = newService();
+  return { state, service, jobs, newService };
 }
 
 describe('reviewed contact imports', () => {
+  it('replays an old start after more than 1000 later imports and file cleanup', async () => {
+    const starts = new Map<string, { import_id: string; actor: string; file_id: string }>();
+    let available = true;
+    let parsed = 0;
+    let released = 0;
+    const graph: GraphClient = {
+      request: async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+        const input = payload as Record<string, unknown>;
+        if (op === 'get_import_start') {
+          const prior = starts.get(String(input.operation_id));
+          if (!prior) return null as T;
+          if (prior.actor !== input.actor || prior.file_id !== input.file_id) throw new Error('OPERATION_CONFLICT');
+          return { import_id: prior.import_id, replayed: true } as T;
+        }
+        if (op === 'put_import_job') {
+          if (input.import_id) return { import_id: input.import_id, version: Number(input.expected_version) + 1 } as T;
+          const result = { import_id: `import-${starts.size}`, actor: String(input.actor), file_id: String(input.file_id) };
+          starts.set(String(input.operation_id), result);
+          return { import_id: result.import_id, version: 1, replayed: false } as T;
+        }
+        throw new Error(`Unexpected graph op ${op}`);
+      },
+      close: async () => undefined,
+    };
+    const uploads = { get: (id: string) => available ? { ...file, fileId: id } : null,
+      markSubmitted: () => file } as unknown as UploadStore;
+    const jobs = new ImportJobs({ concurrency: 1, timeoutMs: 10_000,
+      release: async () => { released++; } });
+    const service = new ContactImportService({ graph, uploads, jobs,
+      parse: async () => { parsed++; return []; },
+      extract: async () => ({ candidates: [], warnings: [], processedBlockIds: [], unprocessedBlockIds: [] }) });
+    for (let n = 0; n < 1001; n++) await service.start({ file_id: `file-${n}`, operation_id: `start-${n}` }, 'reviewer');
+    await eventually(() => expect(released).toBe(1001));
+    available = false;
+    expect(await service.start({ file_id: 'file-0', operation_id: 'start-0' }, 'reviewer'))
+      .toEqual({ import_id: 'import-0' });
+    expect(parsed).toBe(1001);
+  });
+
+  it('replays start after a service restart and file cleanup through a read-only durable lookup', async () => {
+    const h = harness();
+    const original = await h.service.start({ file_id: file.fileId, operation_id: 'start-1' }, 'reviewer');
+    await eventually(() => expect(h.state.job?.status).toBe('ready_for_review'));
+    h.state.fileAvailable = false;
+    h.state.calls.length = 0;
+    expect(await h.newService().start({ file_id: file.fileId, operation_id: 'start-1' }, 'reviewer')).toEqual(original);
+    expect(h.state.calls).toEqual(['get_import_start']);
+    expect(h.state.runCount).toBe(1);
+    await expect(h.newService().start({ file_id: file.fileId, operation_id: 'start-1' }, 'other-user'))
+      .rejects.toThrow('OPERATION_CONFLICT');
+    await expect(h.newService().start({ file_id: 'different-file', operation_id: 'start-1' }, 'reviewer'))
+      .rejects.toThrow('OPERATION_CONFLICT');
+    expect(h.state.calls).not.toContain('put_import_job');
+  });
+
+  it('rejects another user before creating an import job for the uploaded file', async () => {
+    const { state, service } = harness();
+    await expect(service.start({ file_id: file.fileId, operation_id: 'stolen-file' }, 'other-user'))
+      .rejects.toThrow('IMPORT_ACCESS_DENIED');
+    expect(state.calls).toEqual([]);
+    expect(state.job).toBeNull();
+  });
+
   it('previews without formal graph writes, replays the start, and commits only after confirmation', async () => {
     const { state, service } = harness();
     const started = await service.start({ file_id: file.fileId, operation_id: 'start-1' }, 'reviewer');

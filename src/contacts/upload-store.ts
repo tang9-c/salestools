@@ -6,9 +6,12 @@ import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { Readable } from 'node:stream';
+import { callWorkerSocket } from './worker-ipc.js';
+import { parserEnvironment } from './document-worker.js';
 
 export interface UploadedFile {
   fileId: string;
+  actor: string;
   fileName: string;
   sha256: string;
   mime: 'application/pdf' | 'image/jpeg' | 'image/png';
@@ -20,10 +23,10 @@ export class UploadError extends Error {
   constructor(readonly code: string, readonly status: number) { super(code); }
 }
 
-interface Entry { file?: UploadedFile; bytes: number; timer?: NodeJS.Timeout; submitted: boolean }
+interface Entry { actor: string; file?: UploadedFile; bytes: number; timer?: NodeJS.Timeout; submitted: boolean }
 
 const pythonRoot = fileURLToPath(new URL('../../python/', import.meta.url));
-const pythonPreflight = `import json,sys
+export const pythonPreflight = `import json,sys
 from pathlib import Path
 from contact_worker.parser import preflight,ParseError
 try:
@@ -43,7 +46,8 @@ export class UploadStore {
 
   constructor(private readonly options: {
     directory: string; maxPendingFiles: number; maxFileBytes: number; maxTempBytes: number;
-    maxPdfPages?: number; maxImagePixels?: number; pythonBin?: string; now?: () => Date;
+    maxPdfPages?: number; maxImagePixels?: number; pythonBin?: string; workerSocket?: string;
+    now?: () => Date;
   }) {
     this.now = options.now ?? (() => new Date());
     mkdirSync(options.directory, { recursive: true, mode: 0o700 });
@@ -53,11 +57,12 @@ export class UploadStore {
   get pendingCount(): number { return this.entries.size; }
   get(fileId: string): UploadedFile | null { return this.entries.get(fileId)?.file ?? null; }
 
-  async reserve(): Promise<string> {
+  async reserve(actor: string): Promise<string> {
     // No await before insertion: concurrent HTTP handlers cannot overbook the process-local cap.
+    if (!actor.trim()) throw new UploadError('UPLOAD_ACTOR_REQUIRED', 401);
     if (this.entries.size >= this.options.maxPendingFiles) throw new UploadError('CAPACITY_FULL', 429);
     const id = randomUUID();
-    this.entries.set(id, { bytes: 0, submitted: false });
+    this.entries.set(id, { actor, bytes: 0, submitted: false });
     return id;
   }
 
@@ -113,7 +118,7 @@ export class UploadStore {
       if (mime === 'image/jpeg' && !tail.subarray(-2).equals(Buffer.from([255, 217]))) {
         throw new UploadError('INVALID_DOCUMENT', 422);
       }
-      const file: UploadedFile = { fileId, fileName: safeName, sha256: hash.digest('hex'), mime,
+      const file: UploadedFile = { fileId, actor: entry.actor, fileName: safeName, sha256: hash.digest('hex'), mime,
         tempPath: path, uploadedAt: this.now().toISOString() };
       entry.file = file;
       entry.timer = setTimeout(() => { if (!entry.submitted) void this.release(fileId); }, 3_600_000);
@@ -133,10 +138,23 @@ export class UploadStore {
       max_pages: this.options.maxPdfPages ?? 50,
       max_page_pixels: this.options.maxImagePixels ?? 25_000_000,
       max_temp_bytes: this.options.maxTempBytes };
+    if (this.options.workerSocket) {
+      try {
+        await callWorkerSocket(this.options.workerSocket, '/preflight', {
+          filePath: file.tempPath, fileType: type, limits,
+        }, signal, 4096);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : 'PREFLIGHT_FAILED';
+        const status = code === 'FILE_SIZE_EXCEEDED' ? 413 : code === 'INVALID_FILE_TYPE' ? 415
+          : /^(INVALID_DOCUMENT|ENCRYPTED_PDF|PDF_PAGE_LIMIT|IMAGE_PIXELS_EXCEEDED)$/.test(code) ? 422 : 503;
+        throw new UploadError(status === 503 ? 'PREFLIGHT_FAILED' : code, status);
+      }
+      return;
+    }
     const executable = this.options.pythonBin ?? join(pythonRoot, '.venv', 'bin', 'python');
     await new Promise<void>((resolve, reject) => {
       const child = spawn(executable, ['-c', pythonPreflight, file.tempPath, type, JSON.stringify(limits)], {
-        env: { ...process.env, PYTHONPATH: pythonRoot }, stdio: ['ignore', 'pipe', 'ignore'], signal,
+        env: parserEnvironment(pythonRoot), stdio: ['ignore', 'pipe', 'ignore'], signal,
       });
       let output = '';
       let settled = false;

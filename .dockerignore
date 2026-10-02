@@ -8,5 +8,12 @@ dist
 coverage
 docs
 tests
+!tests/
+tests/*
+!tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/contact-documents/
+tests/fixtures/contact-documents/*
+!tests/fixtures/contact-documents/synthetic-resume.pdf
 python/.venv
 rust/contact-graph/target

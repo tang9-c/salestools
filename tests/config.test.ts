@@ -65,8 +65,8 @@ describe('loadConfig', () => {
   it('wires the configured upload capacity into the running application', async () => {
     const application = createApplication(loadConfig({ ...valid, CONTACT_MAX_PENDING_FILES: '1' } as NodeJS.ProcessEnv),
       { database: new DatabaseSync(':memory:') });
-    await application.uploadStore.reserve();
-    await expect(application.uploadStore.reserve()).rejects.toThrow('CAPACITY_FULL');
+    await application.uploadStore.reserve('reviewer');
+    await expect(application.uploadStore.reserve('reviewer')).rejects.toThrow('CAPACITY_FULL');
     await application.close();
   });
 

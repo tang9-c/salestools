@@ -2,6 +2,7 @@ import { type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -19,6 +20,7 @@ import { ContactGraphClient, type GraphClient } from './contacts/graph-client.js
 import { ContactLibraryService } from './contacts/library-service.js';
 import { SnapshotSync } from './contacts/snapshot-sync.js';
 import { UploadStore } from './contacts/upload-store.js';
+import { UploadSessions } from './contacts/upload-session.js';
 import { ImportJobs } from './contacts/import-jobs.js';
 import { ContactImportService } from './contacts/import-service.js';
 import { parseLocalDocument } from './contacts/document-worker.js';
@@ -98,6 +100,9 @@ export function createApplication(
   config: AppConfig,
   overrides: ApplicationOverrides = {},
 ): RunningApplication {
+  if (process.env.NODE_ENV === 'production' && config.contactGraphEnabled && !config.contactWorkerSocket) {
+    throw new Error('CONTACT_WORKER_SOCKET is required for production contact uploads');
+  }
   const database = overrides.database === undefined
     ? openDatabase(config.sqlitePath)
     : initializeDatabase(overrides.database);
@@ -113,7 +118,7 @@ export function createApplication(
   const ephemeralUploads = config.sqlitePath === ':memory:';
   const uploadDirectory = ephemeralUploads
     ? mkdtempSync(join(tmpdir(), 'contact-uploads-'))
-    : join(dirname(resolve(config.sqlitePath)), '.contact-uploads');
+    : join(tmpdir(), 'salestools-contact-uploads');
   const uploadStore = new UploadStore({ directory: uploadDirectory,
     maxPendingFiles: config.contactMaxPendingFiles,
     maxFileBytes: config.contactMaxFileBytes,
@@ -121,10 +126,11 @@ export function createApplication(
     maxImagePixels: config.contactMaxImagePixels,
     maxTempBytes: config.contactMaxTempBytes,
     pythonBin: config.contactPythonBin,
+    workerSocket: config.contactWorkerSocket,
     now: overrides.now });
   const importJobs = new ImportJobs({ concurrency: config.contactImportConcurrency,
     timeoutMs: config.contactImportTimeoutMs,
-    reserve: () => uploadStore.reserve(), release: id => uploadStore.release(id),
+    reserve: actor => uploadStore.reserve(actor), release: id => uploadStore.release(id),
     submit: id => { uploadStore.markSubmitted(id); } });
   const graphClient = config.contactGraphEnabled
     ? overrides.graphClient ?? new ContactGraphClient({
@@ -155,6 +161,7 @@ export function createApplication(
     graph: graphClient, uploads: uploadStore, jobs: importJobs,
     parse: (file, signal) => parseLocalDocument({
       pythonBin: config.contactPythonBin ?? join(pythonProjectDir, '.venv', 'bin', 'python'),
+      workerSocket: config.contactWorkerSocket,
       projectDir: pythonProjectDir, filePath: file.tempPath,
       fileType: file.mime === 'application/pdf' ? 'pdf' : file.mime === 'image/png' ? 'png' : 'jpg',
       documentId: file.fileId,
@@ -180,6 +187,11 @@ export function createApplication(
       }));
     },
   });
+  const uploadSessions = new UploadSessions((hash, actor) => tokenService.isEnabledHash(hash, actor),
+    () => (overrides.now?.() ?? new Date()).getTime());
+  const uploadHtml = () => readFile(new URL('../web/dist/contact-upload.html', import.meta.url), 'utf8');
+  const baseUrl = /^localhost$|^127\.0\.0\.1$/.test(config.publicMcpHost)
+    ? `http://${config.publicMcpHost}:${config.port}` : `https://${config.publicMcpHost}`;
   const snapshotSync = graphClient === undefined ? undefined : new SnapshotSync(contactSnapshots, graphClient);
   void snapshotSync?.schedule().catch(() => undefined);
   const qccGateway = overrides.qccGateway ?? new QccGateway({
@@ -288,7 +300,9 @@ export function createApplication(
     now: overrides.now,
     signal: abortController.signal,
   });
-  const servicesFor = (userId: string): McpServices => ({
+  const servicesFor = (userId: string, token: string): McpServices => ({
+    contactUpload: contactImport ? { actor: userId, sessions: uploadSessions, sourceTokenHash: tokenService.hash(token),
+      baseUrl, html: uploadHtml } : undefined,
     contactLibrary,
     contactImport,
     contactSearch,
@@ -301,7 +315,10 @@ export function createApplication(
     getContacts: input => activity.track(() => contactService.get(input)),
     askCompany: input => activity.track(() => questionService.ask(input, abortController.signal)),
   });
-  const app = createHttpApp(config, token => tokenService.verify(token), servicesFor, uploadStore);
+  const uploadsEnabled = process.env.NODE_ENV !== 'production' || !!config.contactWorkerSocket;
+  const app = createHttpApp(config, token => tokenService.verify(token), servicesFor,
+    uploadsEnabled ? uploadStore : undefined,
+    contactImport ? { sessions: uploadSessions, imports: contactImport, html: uploadHtml } : undefined);
 
   let upstreamClosing: Promise<void> | null = null;
   const closeUpstreams = (): Promise<void> => {

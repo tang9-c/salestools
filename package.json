@@ -3,11 +3,11 @@
   "version": "1.0.0",
   "description": "Target customer assessment MCP service",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/build-contact-upload.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "start": "node dist/index.js",
-    "dev": "tsx src/index.ts",
+    "dev": "node scripts/build-contact-upload.mjs && tsx src/index.ts",
     "tokens": "node dist/cli/tokens.js",
     "contacts:upload": "node dist/cli/contact-upload.js",
     "contacts:sync": "node dist/cli/contact-sync.js",
@@ -23,6 +23,7 @@
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
     "@modelcontextprotocol/express": "^2.0.0",
+    "@modelcontextprotocol/ext-apps": "^2.0.3",
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "busboy": "^1.6.0",
@@ -34,6 +35,8 @@
     "@types/busboy": "^1.5.4",
     "@types/express": "^5.0.6",
     "@types/node": "^24.13.3",
+    "esbuild": "^0.28.2",
+    "playwright-core": "^1.63.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^3.2.7"
