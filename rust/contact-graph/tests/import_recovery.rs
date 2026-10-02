@@ -90,3 +90,28 @@ fn restart_fails_only_incomplete_jobs_and_replays_by_operation_id() {
         "VALIDATION_ERROR"
     );
 }
+
+#[test]
+fn non_array_warnings_do_not_block_batch_recovery() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let mut jobs = Vec::new();
+    for (index, warnings) in [json!("OCR_PARTIAL"), json!({"code":"OLD"}), json!(7),
+        json!(true), json!(null), json!(["OCR_PARTIAL"])].into_iter().enumerate() {
+        jobs.push(store.put_import_job(&json!({"operation_id":format!("start-{index}"),
+            "actor":"alice","file_id":format!("file-{index}"),"status":"queued",
+            "data":{"candidates":[],"warnings":warnings,"processed_block_ids":["block-1"]}})).unwrap());
+    }
+    let request = json!({"operation_id":"boot-types","actor":"system"});
+    assert_eq!(store.recover_import_jobs(&request).unwrap()["recovered"], 6);
+    assert_eq!(store.recover_import_jobs(&request).unwrap()["replayed"], true);
+    for (index, job) in jobs.iter().enumerate() {
+        let recovered = store.get_import_job(&json!({"import_id":job["import_id"]})).unwrap();
+        let warnings = if index == 5 { json!(["OCR_PARTIAL", "IMPORT_INTERRUPTED"]) }
+            else { json!(["IMPORT_INTERRUPTED"]) };
+        assert_eq!(recovered["status"], "failed");
+        assert_eq!(recovered["version"], 2);
+        assert_eq!(recovered["data"], json!({"candidates":[],"warnings":warnings,
+            "processed_block_ids":["block-1"]}));
+    }
+}
