@@ -36,7 +36,9 @@ impl Store {
         }
         let tx = self.graph.transaction().map_err(AppError::internal)?;
         let recovered = tx.execute(
-            "UPDATE import_jobs SET status='failed',version=version+1 WHERE status IN ('queued','processing')",
+            "UPDATE import_jobs SET status='failed',version=version+1,
+             data_json=json_set(data_json,'$.warnings',json_insert(COALESCE(json_extract(data_json,'$.warnings'),'[]'),'$[#]','IMPORT_INTERRUPTED'))
+             WHERE status IN ('queued','processing')",
             [],
         ).map_err(AppError::internal)?;
         let result = json!({"recovered":recovered,"replayed":false});

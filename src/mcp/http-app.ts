@@ -166,7 +166,7 @@ export function createHttpApp(
         return;
       }
       let parser: ReturnType<typeof Busboy>;
-      try { parser = Busboy({ headers: request.headers, limits: { files: 2, fields: 1, parts: 2 } }); }
+      try { parser = Busboy({ headers: request.headers, defParamCharset: 'utf8', limits: { files: 2, fields: 1, parts: 2 } }); }
       catch { await fail(new UploadError('INVALID_MULTIPART', 400)); return; }
       let fileCount = 0;
       let uploaded: Promise<UploadedFile> | null = null;

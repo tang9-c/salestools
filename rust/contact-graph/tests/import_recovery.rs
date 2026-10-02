@@ -71,15 +71,13 @@ fn restart_fails_only_incomplete_jobs_and_replays_by_operation_id() {
             .unwrap()["recovered"],
         0
     );
-    for (job, version, warnings, blocks) in [
-        (&first, 2, json!(["IMPORT_INTERRUPTED"]), json!(null)),
-        (&second, 3, json!(["OCR_PARTIAL", "IMPORT_INTERRUPTED"]), json!(["block-1"])),
+    for (job, version, data) in [
+        (&first, 2, json!({"candidates":[],"warnings":["IMPORT_INTERRUPTED"]})),
+        (&second, 3, json!({"candidates":[],"warnings":["OCR_PARTIAL", "IMPORT_INTERRUPTED"],"processed_block_ids":["block-1"]})),
     ] {
         let recovered = store.get_import_job(&json!({"import_id":job["import_id"]})).unwrap();
         assert_eq!(recovered["version"], version);
-        assert_eq!(recovered["data"]["warnings"], warnings);
-        assert_eq!(recovered["data"]["candidates"], json!([]));
-        assert_eq!(recovered["data"]["processed_block_ids"], blocks);
+        assert_eq!(recovered["data"], data);
     }
     for before in unchanged {
         assert_eq!(store.get_import_job(&json!({"import_id":before["import_id"]})).unwrap(), before);
