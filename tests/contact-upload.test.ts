@@ -87,6 +87,26 @@ it('accepts one authenticated stream and returns only opaque id, name and digest
   expect(store.get(result.file_id)?.tempPath).toBeTruthy();
 });
 
+it.each([
+  ['filename="合成简历.pdf"', '合成简历.pdf'],
+  ['filename="resume.pdf"', 'resume.pdf'],
+  ["filename=\"fallback.pdf\"; filename*=UTF-8''%E5%90%88%E6%88%90%E7%AE%80%E5%8E%86.pdf", '合成简历.pdf'],
+  ['filename="folder/合成简历.pdf"', '合成简历.pdf'],
+])('preserves multipart filename %s through the upload endpoint', async (disposition, filename) => {
+  const { store, url } = await setup();
+  const body = Buffer.concat([
+    Buffer.from(`--filename-test\r\nContent-Disposition: form-data; name="file"; ${disposition}\r\nContent-Type: application/pdf\r\n\r\n`),
+    pdf, Buffer.from('\r\n--filename-test--\r\n'),
+  ]);
+  const response = await fetch(url, { method: 'POST', headers: {
+    Authorization: 'Bearer good', 'Content-Type': 'multipart/form-data; boundary=filename-test',
+  }, body });
+  expect(response.status).toBe(201);
+  const result = await response.json() as Record<string, string>;
+  expect(result.filename).toBe(filename);
+  expect(store.get(result.file_id)?.fileName).toBe(filename);
+});
+
 it('reserves all ten slots before reading another body', async () => {
   const { store, upload, directory } = await setup();
   await Promise.all(Array.from({ length: 10 }, () => store.reserve('reviewer')));
