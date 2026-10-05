@@ -44,6 +44,7 @@ import { DoubaoSearchClient } from './upstream/search/doubao-client.js';
 import { UpstreamError } from './orchestration/retry.js';
 import { CompanyQuestionService } from './orchestration/company-question-service.js';
 import { CompanyAnswerClient } from './upstream/ark/company-answer.js';
+import { formatStartupFailure } from './startup-error.js';
 
 type QccDependency = Pick<QccGateway, 'call' | 'close'>;
 type SearchDependency = Pick<DoubaoSearchClient, 'search'>
@@ -412,8 +413,8 @@ async function main(): Promise<void> {
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  void main().catch(() => {
-    process.stderr.write('Application startup failed\n');
+  void main().catch(error => {
+    process.stderr.write(formatStartupFailure(error));
     process.exitCode = 1;
   });
 }
