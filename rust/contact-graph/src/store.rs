@@ -210,6 +210,143 @@ fn selected_value<'a>(
     }
 }
 
+// The TS boundary already sanitizes diagnostics. Keep the durable boundary
+// equally narrow so failure metadata cannot become a raw-document escape hatch.
+fn valid_import_failure(value: &Value) -> Result<(), AppError> {
+    fn fields<'a>(value: &'a Value, allowed: &[&str]) -> Result<&'a Map<String, Value>, AppError> {
+        let object = as_object(value)?;
+        if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+            return Err(AppError::validation("Unsupported import failure metadata"));
+        }
+        Ok(object)
+    }
+    fn name(value: &Value, module: bool) -> bool {
+        let Some(text) = value.as_str() else {
+            return false;
+        };
+        let text = if module {
+            match text.strip_suffix(".py") {
+                Some(text) => text,
+                None => return false,
+            }
+        } else {
+            text
+        };
+        !text.is_empty()
+            && text.len() <= 80
+            && (text.as_bytes()[0].is_ascii_alphabetic() || text.starts_with('_'))
+            && text
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    }
+    let failure = fields(value, &["stage", "code", "message", "diagnostic"])?;
+    let message = match failure.get("stage").and_then(Value::as_str) {
+        Some("parse") => "文档解析失败",
+        Some("extract") => "模型提炼失败",
+        Some("validate") => "候选数据校验失败",
+        Some("persist") => "任务结果保存失败",
+        _ => return Err(AppError::validation("Invalid import failure stage")),
+    };
+    let codes = "IMPORT_FAILED IMPORT_TIMEOUT IMPORT_CANCELLED IMPORT_CLEANUP_FAILED IMPORT_STATE_WRITE_FAILED
+        CONVERSION_FAILED SANDBOX_UNAVAILABLE SANDBOX_INIT_FAILED INTERNAL_ERROR INVALID_REQUEST
+        INVALID_OPERATION INVALID_PATH INVALID_LIMIT INVALID_RESPONSE INVALID_DOCUMENT INVALID_FILE_TYPE
+        FILE_SIZE_EXCEEDED PDF_PAGE_LIMIT IMAGE_PIXELS_EXCEEDED ENCRYPTED_PDF TEMP_BYTES_EXCEEDED
+        FRAME_TOO_LARGE DOCUMENT_OUTPUT_TOO_LARGE WORKER_TIMEOUT WORKER_FAILED WORKER_BUSY
+        WORKER_REQUEST_TOO_LARGE WORKER_RESPONSE_TOO_LARGE PREFLIGHT_FAILED PROCESS_ERROR PROCESS_EXITED
+        SCRATCH_CLEANUP_FAILED ABORTED INPUT_TOO_LARGE DUPLICATE_BLOCK_ID INVALID_BUDGET
+        BUDGET_EXHAUSTED MODEL_REQUEST_FAILED REMOTE_HTTP_ERROR NETWORK_ERROR TIMEOUT ECONNREFUSED ENOENT EACCES EPERM
+        ENOSPC EMFILE EPIPE ECONNRESET ETIMEDOUT";
+    let safe_code = |value: &Value| {
+        value
+            .as_str()
+            .is_some_and(|text| codes.split_ascii_whitespace().any(|code| code == text))
+    };
+    let invalid = || AppError::validation("Invalid import failure metadata");
+    if failure.get("message").and_then(Value::as_str) != Some(message)
+        || !failure.get("code").is_some_and(safe_code)
+    {
+        return Err(invalid());
+    }
+    if let Some(value) = failure.get("diagnostic") {
+        let diagnostic = fields(
+            value,
+            &[
+                "exceptions",
+                "exit_code",
+                "signal",
+                "cleanup_code",
+                "root_code",
+                "http_status",
+                "validation_issue_count",
+            ],
+        )?;
+        for (key, value) in diagnostic {
+            let valid = match key.as_str() {
+                "exit_code" => value.is_null() || value.as_i64().is_some(),
+                "signal" => {
+                    value.is_null()
+                        || value.as_str().is_some_and(|signal| {
+                            [
+                                "SIGKILL", "SIGTERM", "SIGABRT", "SIGSEGV", "SIGBUS", "SIGXFSZ",
+                                "SIGALRM",
+                            ]
+                            .contains(&signal)
+                        })
+                }
+                "cleanup_code" => value.as_str() == Some("SCRATCH_CLEANUP_FAILED"),
+                "root_code" => safe_code(value),
+                "http_status" => value
+                    .as_u64()
+                    .is_some_and(|status| (100..=599).contains(&status)),
+                "validation_issue_count" => value.as_u64().is_some(),
+                "exceptions" => {
+                    let items = value.as_array().ok_or_else(invalid)?;
+                    if items.len() > 4 {
+                        return Err(invalid());
+                    }
+                    for item in items {
+                        let item = fields(item, &["type", "errno", "frames"])?;
+                        if !item.get("type").is_some_and(|value| name(value, false))
+                            || item
+                                .get("errno")
+                                .is_some_and(|value| value.as_i64().is_none())
+                        {
+                            return Err(invalid());
+                        }
+                        let frames = item
+                            .get("frames")
+                            .and_then(Value::as_array)
+                            .ok_or_else(invalid)?;
+                        if frames.len() > 4 {
+                            return Err(invalid());
+                        }
+                        for frame in frames {
+                            let frame = fields(frame, &["module", "function", "line"])?;
+                            if !frame.get("module").is_some_and(|value| name(value, true))
+                                || !frame
+                                    .get("function")
+                                    .is_some_and(|value| name(value, false))
+                                || !frame
+                                    .get("line")
+                                    .and_then(Value::as_u64)
+                                    .is_some_and(|line| line > 0)
+                            {
+                                return Err(invalid());
+                            }
+                        }
+                    }
+                    true
+                }
+                _ => false,
+            };
+            if !valid {
+                return Err(invalid());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn valid_import_data(value: &Value) -> Result<(), AppError> {
     let data = as_object(value)?;
     let allowed = [
@@ -218,9 +355,13 @@ fn valid_import_data(value: &Value) -> Result<(), AppError> {
         "source",
         "processed_block_ids",
         "unprocessed_block_ids",
+        "failure",
     ];
     if data.keys().any(|key| !allowed.contains(&key.as_str())) {
         return Err(AppError::validation("Import job contains unsupported data"));
+    }
+    if let Some(failure) = data.get("failure") {
+        valid_import_failure(failure)?;
     }
     fn check(value: &Value) -> Result<(), AppError> {
         match value {

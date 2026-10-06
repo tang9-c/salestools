@@ -5,6 +5,21 @@ from contact_worker.diagnostics import emit
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_cleanup_error_does_not_hide_original_conversion_error(self):
+        try:
+            try:
+                raise PermissionError(13, 'private-model-path')
+            finally:
+                raise RuntimeError('private-unload-message')
+        except RuntimeError as error:
+            stream = io.StringIO()
+            emit(error, stream)
+        text = stream.getvalue()
+        result = json.loads(text.removeprefix('CONTACT_DIAGNOSTIC '))
+        self.assertEqual([item['type'] for item in result['exceptions']], ['RuntimeError', 'PermissionError'])
+        self.assertEqual(result['exceptions'][1]['errno'], 13)
+        self.assertNotIn('private-', text)
+
     def test_cause_is_retained_without_exception_text_or_paths(self):
         try:
             try:

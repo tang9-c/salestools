@@ -101,9 +101,13 @@ export class ImportJobs {
       await job.persistReady(value);
     } catch (error) {
       const code = timedOut ? 'IMPORT_TIMEOUT' : job.controller.signal.aborted ? 'IMPORT_CANCELLED' : 'IMPORT_FAILED';
-      try { await job.persistFailed?.(code, error); }
-      catch { /* Preserve the original failure; Task 10 owns durable graph retry. */ }
       failure = new Error(code, { cause: error });
+      try { await job.persistFailed?.(code, error); }
+      catch (persistenceError) {
+        // Preserve both failures: callers must not mistake a failed durable write
+        // for a successfully recorded parser failure.
+        Object.assign(failure, { persistenceError });
+      }
     } finally {
       clearTimeout(timeout);
       job.done = true;

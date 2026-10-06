@@ -9,6 +9,20 @@ import { ImportJobs } from '../src/contacts/import-jobs.js';
 import { parseLocalDocument } from '../src/contacts/document-worker.js';
 import { fileURLToPath } from 'node:url';
 
+it('exposes terminal write failure without replacing the parser cause or skipping cleanup', async () => {
+  const original = new Error('CONVERSION_FAILED');
+  const writeError = new Error('VALIDATION_ERROR');
+  let released = 0;
+  const jobs = new ImportJobs({ concurrency: 1, timeoutMs: 1000,
+    release: async () => { released += 1; } });
+  const result = await jobs.start('failure-write', async () => { throw original; },
+    async () => undefined, async () => { throw writeError; }).catch(error => error);
+  expect(result.message).toBe('IMPORT_FAILED');
+  expect(result.cause).toBe(original);
+  expect(result.persistenceError).toBe(writeError);
+  expect(released).toBe(1);
+});
+
 it('does not treat an arbitrary uppercase exception message as a public code', () => {
   expect(importFailure('extract', new Error('PRIVATE_DOCUMENT_NAME')).code).toBe('IMPORT_FAILED');
   expect(safeDiagnostic({ exceptions: [{ type: 'Error', frames: [], message: 'private-token' }] })).toBeUndefined();

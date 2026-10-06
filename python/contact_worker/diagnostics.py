@@ -27,7 +27,9 @@ def diagnostic(error):
         if isinstance(error, OSError) and isinstance(error.errno, int):
             item['errno'] = error.errno
         exceptions.append(item)
-        error = error.__cause__
+        # Docling cleanup can replace an earlier conversion error in a finally
+        # block. Retain that implicit chain too, but never its message or locals.
+        error = error.__cause__ if error.__cause__ is not None else error.__context__
     return dict(exceptions=exceptions)
 
 

@@ -293,8 +293,12 @@ export class ContactImportService {
           { candidates: [], source: this.source(file), warnings: [code], failure });
       }).catch(error => {
         // Covers queue admission/persistence failures too; do not log raw errors.
-        this.record({ import_id: importId, file_id: file.fileId, stage,
-          outcome: 'failed', failure: importFailure(stage, error.cause ?? error) });
+        const persistenceFailed = Object.hasOwn(error, 'persistenceError');
+        const failedStage = persistenceFailed ? 'persist' : stage;
+        this.record({ import_id: importId, file_id: file.fileId, stage: failedStage,
+          outcome: 'failed', failure: importFailure(failedStage,
+            persistenceFailed ? error.persistenceError : error.cause ?? error,
+            persistenceFailed ? 'IMPORT_STATE_WRITE_FAILED' : undefined) });
       });
     return { import_id: importId };
   }

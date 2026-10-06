@@ -75,10 +75,30 @@ function harness(overrides: Partial<ConstructorParameters<typeof ContactImportSe
     }, ...overrides,
   });
   const service = newService();
-  return { state, service, jobs, newService };
+  return { state, service, jobs, newService, graph };
 }
 
 describe('reviewed contact imports', () => {
+  it('logs terminal storage failure separately from the original parser failure without private text', async () => {
+    const events: unknown[] = [];
+    const h = harness({ parse: async () => { throw new Error('CONVERSION_FAILED'); },
+      onEvent: event => events.push(event) });
+    const request = h.graph.request;
+    h.graph.request = async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+      if (op === 'put_import_job' && (payload as Record<string, unknown>).status === 'failed') {
+        throw new Error('private database path and document');
+      }
+      return request<T>(op, payload);
+    };
+    await h.service.start({ file_id: file.fileId, operation_id: 'write-fails' }, 'reviewer');
+    await eventually(() => expect(events).toContainEqual(expect.objectContaining({ stage: 'persist',
+      outcome: 'failed', failure: expect.objectContaining({ code: 'IMPORT_STATE_WRITE_FAILED' }) })));
+    expect(events).toContainEqual(expect.objectContaining({ stage: 'parse', outcome: 'failed',
+      failure: expect.objectContaining({ code: 'CONVERSION_FAILED' }) }));
+    expect(JSON.stringify(events)).not.toContain('private');
+    expect(h.state.released).toBe(1);
+  });
+
   it('keeps a safe parse failure on the task without retaining exception text', async () => {
     const error = Object.assign(new Error('CONVERSION_FAILED'), { code: 'CONVERSION_FAILED' });
     const h = harness({ parse: async () => { throw error; } });
