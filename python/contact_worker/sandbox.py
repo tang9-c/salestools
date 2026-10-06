@@ -38,7 +38,14 @@ def _check(result):
     return result
 
 
-def _seccomp():
+def _landlock_abi(libc):
+    abi = _check(libc.syscall(444, 0, 0, 1))
+    if abi < 1:
+        raise SandboxError('SANDBOX_UNAVAILABLE')
+    return abi
+
+
+def _seccomp(abi):
     lib = C.CDLL("libseccomp.so.2", use_errno=True)
     lib.seccomp_init.argtypes = [C.c_uint32]
     lib.seccomp_init.restype = C.c_void_p
@@ -57,6 +64,20 @@ def _seccomp():
         _check(lib.seccomp_rule_add_array(ctx, 0x50000 | error, number,
                                         len(conditions), conditions))
     try:
+        if abi < 3:
+            deny('truncate')
+            deny('ftruncate')
+            # open_how is behind a pointer; force callers' ordinary openat fallback.
+            deny('openat2', errno.ENOSYS)
+            # WRITE_FILE protects normal writable opens. Read-only and Linux
+            # access mode 3 can nevertheless truncate, so deny those combinations.
+            opens = [('openat', 2)]
+            if platform.machine() == 'x86_64':
+                opens.append(('open', 1))
+            mask = os.O_TRUNC | os.O_ACCMODE
+            for name, index in opens:
+                for mode in (os.O_RDONLY, os.O_ACCMODE):
+                    deny(name, comparisons=(Compare(index, 7, mask, os.O_TRUNC | mode),))
         for name in ("socket", "socketpair", "connect", "bind", "listen", "accept", "accept4",
                      "sendto", "sendmsg", "sendmmsg", "recvmsg", "recvmmsg", "ptrace",
                      "process_vm_readv", "process_vm_writev", "pidfd_getfd", "pidfd_open",
@@ -134,16 +155,18 @@ def enter(source: Path, scratch: Path, *, cpu_seconds=120, memory_bytes=3 * 1024
     libc.syscall.restype = C.c_long
     _check(libc.prctl(38, 1, 0, 0, 0))  # PR_SET_NO_NEW_PRIVS
     # The supported x86_64/aarch64 syscall tables assign 444/445/446 to Landlock.
-    abi = _check(libc.syscall(444, 0, 0, 1))
-    if abi < 3:
-        raise SandboxError('SANDBOX_UNAVAILABLE')
+    abi = _landlock_abi(libc)
     handled = (1 << 15) - 1  # all ABI3 FS rights, including REFER and TRUNCATE
+    if abi < 3:
+        handled &= ~(1 << 14)
+    if abi < 2:
+        handled &= ~(1 << 13)
     attr = Ruleset(handled)
     ruleset = _check(libc.syscall(444, C.byref(attr), C.sizeof(attr), 0))
     def allow(path, rights):
         fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
         try:
-            rule = PathRule(rights, fd)
+            rule = PathRule(rights & handled, fd)
             _check(libc.syscall(445, ruleset, 1, C.byref(rule), 0))
         finally:
             os.close(fd)
@@ -161,4 +184,4 @@ def enter(source: Path, scratch: Path, *, cpu_seconds=120, memory_bytes=3 * 1024
         _check(libc.syscall(446, ruleset, 0))
     finally:
         os.close(ruleset)
-    _seccomp()
+    _seccomp(abi)

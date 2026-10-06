@@ -7,13 +7,111 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from unittest.mock import Mock, patch
 
 ROOT = Path(os.environ.get("CONTACT_WORKER_PYTHON_ROOT", Path(__file__).resolve().parents[1]))
 
 class SandboxTests(unittest.TestCase):
-    def run_probe(self, code, *, limits="", before="", hardened=True, **kwargs):
+    def test_landlock_abi_masks_and_query_fail_closed(self):
+        import ctypes
+        from contact_worker import sandbox
+        # The ctypes boundary is the only unavailable dependency on macOS.
+        # Unsupported rights in either the ruleset or path grants must fail here.
+        for abi, expected, scratch_rights in ((1, 8191, 4542), (2, 16383, 12734), (3, 32767, 29118)):
+            with self.subTest(abi=abi), tempfile.TemporaryDirectory() as directory:
+                source, scratch = Path(directory)/'input', Path(directory)/'scratch'
+                source.write_text('current'); scratch.mkdir()
+                handled, grants = [], []
+                def syscall(number, *args):
+                    if number == 444 and args[-1] == 1: return abi
+                    if number == 444:
+                        handled.append(ctypes.cast(args[0], ctypes.POINTER(sandbox.Ruleset)).contents.handled_access_fs)
+                        return 100
+                    if number == 445:
+                        grants.append(ctypes.cast(args[2], ctypes.POINTER(sandbox.PathRule)).contents.allowed_access)
+                    return 0
+                libc = Mock(); libc.syscall.side_effect = syscall; libc.prctl.return_value = 0
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(sandbox.sys, 'platform', 'linux'))
+                    stack.enter_context(patch.object(sandbox.platform, 'machine', return_value='x86_64'))
+                    stack.enter_context(patch.object(sandbox, '_runtime_paths', return_value=[]))
+                    stack.enter_context(patch.object(sandbox.C, 'CDLL', return_value=libc))
+                    stack.enter_context(patch.object(sandbox.os, 'listdir', return_value=[]))
+                    stack.enter_context(patch.object(sandbox.os, 'chdir'))
+                    stack.enter_context(patch.dict(os.environ))
+                    stack.enter_context(patch.object(sandbox.resource, 'setrlimit'))
+                    stack.enter_context(patch.object(sandbox.os, 'close'))
+                    stack.enter_context(patch.object(sandbox.os, 'open', return_value=9))
+                    stack.enter_context(patch.object(sandbox.os, 'O_PATH', 0x200000, create=True))
+                    seccomp = stack.enter_context(patch.object(sandbox, '_seccomp'))
+                    try: sandbox.enter(source, scratch)
+                    except sandbox.SandboxError as error: self.fail(f'ABI {abi} rejected: {error}')
+                self.assertEqual(handled, [expected])
+                self.assertEqual(grants[:2], [4, scratch_rights])
+                self.assertTrue(all(rights & ~expected == 0 for rights in grants))
+                seccomp.assert_called_once_with(abi)
+        libc = Mock(); libc.syscall.return_value = -1
+        try:
+            with self.assertRaises(sandbox.SandboxError): sandbox._landlock_abi(libc)
+        except AttributeError:
+            self.fail('ABI query helper missing')
+        libc.syscall.return_value = 0
+        with self.assertRaises(sandbox.SandboxError): sandbox._landlock_abi(libc)
+
+    def test_legacy_seccomp_truncation_policy_and_install_failure(self):
+        import ctypes
+        from contact_worker import sandbox
+        for abi, machine in ((1,'x86_64'),(2,'x86_64'),(3,'x86_64'),(1,'aarch64'),(2,'aarch64'),(3,'aarch64')):
+            with self.subTest(abi=abi, machine=machine):
+                names, rules = [], []
+                def resolve(name):
+                    if name not in names: names.append(name)
+                    return names.index(name)
+                def add(_ctx, action, number, count, pointer):
+                    comparisons = ctypes.cast(pointer, ctypes.POINTER(sandbox.Compare))
+                    rules.append((names[number].decode(), action, [
+                        (comparisons[i].arg, comparisons[i].op, comparisons[i].datum_a, comparisons[i].datum_b)
+                        for i in range(count)]))
+                    return 0
+                lib = Mock(); lib.seccomp_init.return_value = 1
+                lib.seccomp_syscall_resolve_name.side_effect = resolve
+                lib.seccomp_rule_add_array.side_effect = add; lib.seccomp_load.return_value = 0
+                with patch.object(sandbox.C, 'CDLL', return_value=lib), patch.object(os, 'O_TRUNC', 512), patch.object(os, 'O_ACCMODE', 3), patch.object(sandbox.errno, 'ENOSYS', 38), patch.object(sandbox.platform, 'machine', return_value=machine):
+                    try: sandbox._seccomp(abi)
+                    except TypeError as error: self.fail(f'ABI-aware seccomp missing: {error}')
+                def action(name, args):
+                    for n, result, conditions in rules:
+                        if n != name: continue
+                        if all((args[arg] != a if op == 1 else args[arg] & a == b)
+                               for arg, op, a, b in conditions): return result
+                    return 0x7fff0000
+                for name in ('truncate', 'ftruncate'):
+                    self.assertEqual(action(name, [9, 0]), 0x50001 if abi < 3 else 0x7fff0000)
+                self.assertEqual(action('openat2', [9, 0, 0, 24]), 0x50026 if abi < 3 else 0x7fff0000)
+                # Linux flag literals: portable test runner flags differ on macOS.
+                for name, index in (('open', 1), ('openat', 2)):
+                    for mode in range(4):
+                        args = [0, 0, 0, 0]; args[index] = 512 | 64 | mode
+                        blocked = abi < 3 and mode in (0,3) and (name == 'openat' or machine == 'x86_64')
+                        self.assertEqual(action(name, args), 0x50001 if blocked else 0x7fff0000)
+                    args[index] = 0
+                    self.assertEqual(action(name, args), 0x7fff0000)
+                lib.seccomp_rule_add_array.side_effect = None
+                lib.seccomp_rule_add_array.return_value = -22
+                with patch.object(sandbox.C, 'CDLL', return_value=lib), self.assertRaises(sandbox.SandboxError):
+                    sandbox._seccomp(abi)
+                lib.seccomp_rule_add_array.return_value = 0
+                lib.seccomp_load.return_value = -1
+                with patch.object(sandbox.C, 'CDLL', return_value=lib), self.assertRaises(sandbox.SandboxError):
+                    sandbox._seccomp(abi)
+                if abi < 3:
+                    lib.seccomp_load.return_value = 0
+                    lib.seccomp_syscall_resolve_name.side_effect = lambda name: -1 if name == b'openat2' else resolve(name)
+                    with patch.object(sandbox.C, 'CDLL', return_value=lib), self.assertRaises(sandbox.SandboxError):
+                        sandbox._seccomp(abi)
+
+    def run_probe(self, code, *, limits="", before="", hardened=True, preserve_contents=False, **kwargs):
         with tempfile.TemporaryDirectory(prefix="sandbox-probe-") as directory:
             root = Path(directory)
             source = root / "current.pdf"
@@ -28,9 +126,74 @@ class SandboxTests(unittest.TestCase):
             bootstrap += before + "\n"
             if hardened:
                 bootstrap += f"enter(source, scratch{limits}); "
-            return subprocess.run([sys.executable, "-c", bootstrap + code],
+            result = subprocess.run([sys.executable, "-c", bootstrap + code],
                 env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(ROOT), "SERVICE_SECRET": "canary"},
                 capture_output=True, text=True, timeout=15, **kwargs)
+            if preserve_contents:
+                self.assertEqual(source.read_bytes(), b'current')
+                self.assertEqual((root/'sibling.pdf').read_bytes(), b'tenant-secret')
+                self.assertEqual((scratch/'protected').read_bytes(), b'scratch-secret')
+            return result
+
+    @unittest.skipUnless(sys.platform == "linux", "real Linux kernel required")
+    def test_abi1_compensation_preserves_input_and_scratch_bytes(self):
+        # Real enforcement on this kernel with only the queried ABI changed;
+        # a modern kernel passing this is not evidence of an actual ABI1 node.
+        before = "(scratch/'protected').write_text('scratch-secret'); import contact_worker.sandbox as sandbox; sandbox._landlock_abi=lambda _:1; "
+        result = self.run_probe("""
+import ctypes,errno,platform
+libc=ctypes.CDLL(None,use_errno=True); libc.syscall.restype=ctypes.c_long
+sec=ctypes.CDLL('libseccomp.so.2'); sec.seccomp_syscall_resolve_name.argtypes=[ctypes.c_char_p]
+def denied(name,*args,error=errno.EPERM):
+    number=sec.seccomp_syscall_resolve_name(name.encode())
+    assert number >= 0, (name,number)
+    ctypes.set_errno(0)
+    result=libc.syscall(number,*args)
+    assert result == -1 and ctypes.get_errno() == error, (name,result,ctypes.get_errno())
+class OpenHow(ctypes.Structure):
+    _fields_=[('flags',ctypes.c_uint64),('mode',ctypes.c_uint64),('resolve',ctypes.c_uint64)]
+opens=[('openat',2)]
+if platform.machine()=='x86_64': opens.append(('open',1))
+for path in (source,source.parent/'sibling.pdf',scratch/'protected'):
+    encoded=ctypes.c_char_p(os.fsencode(path))
+    denied('truncate',encoded,ctypes.c_longlong(0))
+    for name,_ in opens:
+        for mode in (os.O_RDONLY,os.O_ACCMODE):
+            flags=os.O_TRUNC | mode
+            args=(encoded,flags,0) if name=='open' else (-100,encoded,flags,0)
+            denied(name,*args)
+    how=OpenHow(os.O_RDONLY|os.O_TRUNC,0,0)
+    denied('openat2',-100,encoded,ctypes.byref(how),ctypes.sizeof(how),error=errno.ENOSYS)
+for path,mode in ((source,os.O_RDONLY),(scratch/'protected',os.O_RDWR)):
+    fd=os.open(path,mode)
+    try: denied('ftruncate',fd,ctypes.c_longlong(0))
+    finally: os.close(fd)
+for path in (source,source.parent/'sibling.pdf'):
+    for mode in (os.O_WRONLY,os.O_RDWR):
+        try: fd=os.open(path,mode|os.O_TRUNC)
+        except PermissionError: pass
+        else: os.close(fd); raise AssertionError('input writable')
+try: (source.parent/'sibling.pdf').read_bytes()
+except PermissionError: pass
+else: raise AssertionError('sibling readable')
+for mode in (os.O_WRONLY,os.O_RDWR):
+    path=scratch/('ordinary-'+str(mode))
+    fd=os.open(path,mode|os.O_CREAT|os.O_TRUNC,0o600)
+    os.write(fd,b'allowed'); os.close(fd)
+    assert path.read_bytes()==b'allowed'
+    renamed=path.with_name(path.name+'-renamed'); path.rename(renamed)
+(scratch/'nested').mkdir()
+try: (scratch/'protected').rename(scratch/'nested'/'moved')
+except OSError as error: assert error.errno in (errno.EXDEV,errno.EACCES)
+else: raise AssertionError('ABI1 cross-directory rename allowed')
+assert source.read_bytes()==b'current'
+assert (scratch/'protected').read_bytes()==b'scratch-secret'
+print('ABI1 policy sealed')
+""", before=before, preserve_contents=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'ABI1 policy sealed')
+        control = self.run_probe("fd=os.open(source,os.O_RDONLY|os.O_TRUNC); os.close(fd); assert source.read_bytes()==b''", hardened=False)
+        self.assertEqual(control.returncode, 0, control.stderr)
 
     @contextmanager
     def signal_sentinel(self):
@@ -168,7 +331,7 @@ if case!='setsig': fcntl.fcntl(r,fcntl.F_SETFL,os.O_NONBLOCK)
         lib.seccomp_rule_add_array.side_effect = add
         lib.seccomp_load.return_value = 0
         with patch.object(sandbox.C, 'CDLL', return_value=lib):
-            sandbox._seccomp()
+            sandbox._seccomp(3)
         def denied(name, *args):
             def matches(c):
                 arg, op, a, b = c
@@ -352,4 +515,62 @@ else: raise AssertionError('inherited fd readable')
 """, pass_fds=(stream.fileno(),))
         self.assertEqual(result.returncode, 0, result.stderr)
 
-if __name__ == '__main__': unittest.main()
+class LegacyParsingTests(unittest.TestCase):
+    """Collected by the existing full pytest gate; separate from 60s kernel smoke.
+
+    Explicit production-image invocation: contact-sandbox-tests.py LegacyParsingTests -v.
+    Mocking only the ABI query on a modern kernel verifies compatibility policy,
+    not actual ABI1 kernel compatibility.
+    """
+    @unittest.skipUnless(sys.platform == 'linux', 'real Linux kernel and production parser required')
+    def test_abi1_policy_hardened_pdf_and_png_have_source_blocks(self):
+        import signal
+        from PIL import Image, ImageDraw, ImageFont
+        with tempfile.TemporaryDirectory(prefix='abi1-parse-') as directory:
+            root = Path(directory)
+            pdf_fixture = ROOT.parent/'tests'/'fixtures'/'contact-documents'/'synthetic-resume.pdf'
+            if not pdf_fixture.exists():
+                pdf_fixture = Path('/usr/local/share/contact-sandbox/synthetic-resume.pdf')
+            pdf = root/'synthetic.pdf'; pdf.write_bytes(pdf_fixture.read_bytes())
+            png = root/'synthetic.png'
+            image = Image.new('RGB', (1200,420), 'white')
+            draw = ImageDraw.Draw(image)
+            font = ImageFont.truetype('DejaVuSans.ttf', 72)
+            draw.text((65,70), 'ROBIN VALE', fill='black', font=font)
+            draw.text((65,200), 'SAMPLE STUDIO', fill='black', font=font)
+            image.save(png)
+            for source, file_type, words in ((pdf,'pdf',('LIN XIANG','ALPHA STUDIO')),
+                                             (png,'png',('ROBIN','VALE','SAMPLE','STUDIO'))):
+                with self.subTest(file_type=file_type):
+                    original = source.read_bytes()
+                    scratch = root/('scratch-'+file_type); scratch.mkdir()
+                    code = f"""
+from pathlib import Path
+from contact_worker import sandbox
+sandbox._landlock_abi=lambda _:1
+sandbox.enter(Path({str(source)!r}),Path({str(scratch)!r}))
+# All parser and Docling imports happen after the full production boundary.
+from contact_worker.parser import parse
+import json
+blocks=parse(Path({str(source)!r}),{file_type!r},'abi1-feasibility')
+assert blocks and all(block['text'].strip() and block.get('source_ref','').startswith('#/') for block in blocks), blocks
+text=' '.join(block['text'] for block in blocks).upper()
+assert all(word in text for word in {words!r}), text
+print(json.dumps(blocks))
+"""
+                    child = subprocess.Popen([sys.executable,'-c',code],
+                        env={'PATH':'/usr/bin:/bin','PYTHONPATH':str(ROOT)},
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                        start_new_session=True)
+                    try:
+                        stdout, stderr = child.communicate(timeout=120)
+                        self.assertEqual(child.returncode, 0, stderr)
+                        self.assertTrue(json.loads(stdout))
+                    finally:
+                        try: os.killpg(child.pid,signal.SIGKILL)
+                        except ProcessLookupError: pass
+                        child.communicate(timeout=5)
+                    self.assertEqual(source.read_bytes(), original)
+
+
+if __name__ == '__main__': unittest.main(defaultTest='SandboxTests')
