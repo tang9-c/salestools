@@ -23,6 +23,8 @@
 - 前次补丁只增加 TS `failure`，遗漏 Rust `valid_import_data` 白名单；队列又吞掉终态保存异常。远程回归 [37485119048](https://github.com/tang9-c/salestools/actions/runs/37485119048) 在真实 Rust 存储上复现 `VALIDATION_ERROR / Import job contains unsupported data`。
 - 修正允许有界安全失败元数据，不存异常消息或路径，不新增表；终态保存异常单独记录 `persist / IMPORT_STATE_WRITE_FAILED`，原始失败与清理流程仍保留。
 - 回归包括真实服务→队列→Rust bridge→SQLite→重启读取，不再只依赖宽松存储 mock。Python 隐式异常链、图存储错误码及日志隐私也有回归。
+- 完整远程 GREEN：[37486503634](https://github.com/tang9-c/salestools/actions/runs/37486503634)，tested code SHA `0829d2379d849cd3d077cfbcd593761cb9bf2912`。Rust 全量通过，TypeScript 1277 项/65 文件通过，Python 40 项及 41 子测试通过；生产容器真实 Linux 沙箱门禁通过，无发布或部署。
+- 此次真实 Rust bridge 持久化测试使用合成上传元数据和确定性的外部解析失败，不等于真实简历解析成功。旧挂起任务由现有启动恢复逻辑标记 `IMPORT_INTERRUPTED`，不伪造历史解析诊断。
 
 ## Docling 定位边界
 
