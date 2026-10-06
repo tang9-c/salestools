@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from .diagnostics import emit
 
 
 def main():
@@ -22,6 +23,7 @@ def main():
         else:
             raise RuntimeError('INVALID_OPERATION')
     except Exception as error:
+        emit(error)
         code = str(error)
         if not code.isascii() or not code.replace('_', '').isalnum() or not code.isupper() or len(code) > 64:
             code = 'SANDBOX_UNAVAILABLE'

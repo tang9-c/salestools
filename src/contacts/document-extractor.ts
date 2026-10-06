@@ -123,7 +123,7 @@ export interface DocumentExtractionResult {
   processedBlockIds: string[]; unprocessedBlockIds: string[];
 }
 export class DocumentExtractionError extends Error {
-  constructor(readonly code: string) { super(code); this.name = 'DocumentExtractionError'; }
+  constructor(readonly code: string, options?: ErrorOptions) { super(code, options); this.name = 'DocumentExtractionError'; }
 }
 
 
@@ -668,6 +668,7 @@ export class DocumentExtractor {
     let priorClues: PriorClue[] = [];
     const pieceMap = new Map(pieces.map(piece => [piece.block_id, piece]));
     let attempts = 0;
+    let lastRequestError: unknown;
     for (let index = 0; index < batches.length && index < maxBatches; index += 1) {
       if (attempts >= maxCalls) break;
       if (signal.aborted) throw new DocumentExtractionError('ABORTED');
@@ -707,6 +708,7 @@ export class DocumentExtractor {
           raw = DocumentProfile.parse(JSON.parse((fenced?.[1] ?? text).trim()));
           break;
         } catch (error) {
+          lastRequestError = error;
           if (signal.aborted) throw new DocumentExtractionError('ABORTED');
           if (content !== undefined) { invalidModel = true; content = undefined; continue; }
           const recoverable = error instanceof ArkTransportError
@@ -850,7 +852,7 @@ export class DocumentExtractor {
     }
     if (unprocessedBlockIds.length && candidates.length === 0 && !warnings.includes('模型响应无效')) {
       throw new DocumentExtractionError(attempts >= maxCalls || batches.length > maxBatches
-        ? 'BUDGET_EXHAUSTED' : 'MODEL_REQUEST_FAILED');
+        ? 'BUDGET_EXHAUSTED' : 'MODEL_REQUEST_FAILED', { cause: lastRequestError });
     }
     if (blocks.length === 0) warnings.push('文件没有可抽取文本');
     else if (candidates.length === 0 && warnings.length === 0) warnings.push('未提取到联系人候选');

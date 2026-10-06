@@ -23,7 +23,7 @@ async function eventually(assertion: () => void): Promise<void> {
   assertion();
 }
 
-function harness() {
+function harness(overrides: Partial<ConstructorParameters<typeof ContactImportService>[0]> = {}) {
   const state = { job: null as Record<string, unknown> | null, calls: [] as GraphOp[],
     runCount: 0, released: 0, fileAvailable: true };
   const graph: GraphClient = {
@@ -72,13 +72,49 @@ function harness() {
     extract: async () => {
       state.runCount += 1;
       return { candidates: [candidate], warnings: [], processedBlockIds: ['b_1'], unprocessedBlockIds: [] };
-    },
+    }, ...overrides,
   });
   const service = newService();
   return { state, service, jobs, newService };
 }
 
 describe('reviewed contact imports', () => {
+  it('keeps a safe parse failure on the task without retaining exception text', async () => {
+    const error = Object.assign(new Error('CONVERSION_FAILED'), { code: 'CONVERSION_FAILED' });
+    const h = harness({ parse: async () => { throw error; } });
+    const started = await h.service.start({ file_id: file.fileId, operation_id: 'diagnostic-parse' }, 'reviewer');
+    await eventually(() => expect(h.state.job?.status).toBe('failed'));
+    const preview = await h.service.get(started.import_id, 'reviewer');
+    expect(preview?.failure).toMatchObject({ stage: 'parse', code: 'CONVERSION_FAILED' });
+    expect(h.state.runCount).toBe(0);
+    expect(h.state.released).toBe(1);
+  });
+
+  it('reports an unknown model error without exposing its response or credentials', async () => {
+    const h = harness({ extract: async () => { throw new Error('private document 13800138000 secret=private-token'); } });
+    await h.service.start({ file_id: file.fileId, operation_id: 'diagnostic-model' }, 'reviewer');
+    await eventually(() => expect(h.state.job?.status).toBe('failed'));
+    const preview = await h.service.get('ci_1', 'reviewer');
+    expect(preview?.failure).toMatchObject({ stage: 'extract', code: 'IMPORT_FAILED' });
+    expect(JSON.stringify(preview)).not.toContain('private document');
+    expect(JSON.stringify(preview)).not.toContain('private-token');
+  });
+
+  it('saves failure even when the diagnostic log sink is unavailable', async () => {
+    const h = harness({ parse: async () => { throw new Error('CONVERSION_FAILED'); },
+      onEvent: () => { throw new Error('broken sink'); } });
+    await h.service.start({ file_id: file.fileId, operation_id: 'broken-log' }, 'reviewer');
+    await eventually(() => expect(h.state.job?.status).toBe('failed'));
+    expect((await h.service.get('ci_1', 'reviewer'))?.failure).toMatchObject({ stage: 'parse', code: 'CONVERSION_FAILED' });
+    expect(h.state.released).toBe(1);
+  });
+
+  it('does not invent diagnostic details for an old failed task', async () => {
+    const h = harness();
+    h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'failed', version: 3,
+      data: { candidates: [], warnings: ['IMPORT_FAILED'] } };
+    expect((await h.service.get('ci_1', 'reviewer'))?.failure).toBeNull();
+  });
   it('replays an old start after more than 1000 later imports and file cleanup', async () => {
     const starts = new Map<string, { import_id: string; actor: string; file_id: string }>();
     let available = true;

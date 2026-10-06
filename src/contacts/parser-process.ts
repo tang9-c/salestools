@@ -2,6 +2,7 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { safeDiagnostic, type Diagnostic } from './import-diagnostics.js';
 
 export type SandboxMode = 'hardened' | 'test-only';
 
@@ -32,7 +33,8 @@ export function parserEnvironment(projectDir: string, scratch = '/tmp'): NodeJS.
 export function spawnParser(options: { pythonBin: string; projectDir: string; filePath: string;
   fileType: string; limits: object; sandboxMode?: SandboxMode; maxRuntimeMs?: number },
 operation: 'parse' | 'preflight', requestId: string,
-onTimeout: () => void): { child: ChildProcessWithoutNullStreams; kill: () => void; cleanup: Promise<Error | undefined> } {
+onTimeout: () => void): { child: ChildProcessWithoutNullStreams; kill: () => void;
+  cleanup: Promise<Error | undefined>; diagnostic: () => Diagnostic | undefined } {
   const mode = options.sandboxMode ?? 'hardened';
   if (mode === 'test-only' && process.env.NODE_ENV !== 'test') throw new Error('SANDBOX_UNAVAILABLE');
   const duration = Math.min(options.maxRuntimeMs ?? (operation === 'parse' ? 120_000 : 30_000), 120_000);
@@ -70,6 +72,24 @@ onTimeout: () => void): { child: ChildProcessWithoutNullStreams; kill: () => voi
     clearTimeout(timer); kill();
     void removeScratch(scratch).then(resolve);
   }));
-  child.stderr.on('data', () => undefined);
-  return { child, kill, cleanup };
+  let metadata: Diagnostic | undefined;
+  let pending = '';
+  let droppingLine = false;
+  child.stderr.on('data', (chunk: Buffer) => {
+    // Bound each line, not the lifetime of stderr: library noise must not hide
+    // a later trusted diagnostic. Do not retain oversized partial lines.
+    const parts = chunk.toString('utf8').split('\n');
+    for (let index = 0; index < parts.length; index += 1) {
+      const part = parts[index];
+      if (pending.length + part.length > 8192) { pending = ''; droppingLine = true; }
+      if (!droppingLine) pending += part;
+      if (index === parts.length - 1) break;
+      const line = pending; pending = '';
+      if (droppingLine) { droppingLine = false; continue; }
+      if (!line.startsWith('CONTACT_DIAGNOSTIC ')) continue;
+      try { metadata = safeDiagnostic(JSON.parse(line.slice('CONTACT_DIAGNOSTIC '.length))) ?? metadata; }
+      catch { /* Discard arbitrary stderr, including parser/library messages. */ }
+    }
+  });
+  return { child, kill, cleanup, diagnostic: () => metadata };
 }

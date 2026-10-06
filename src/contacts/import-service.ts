@@ -4,6 +4,13 @@ import type { GraphClient } from './graph-client.js';
 import type { ImportJobs } from './import-jobs.js';
 import type { UploadedFile, UploadStore } from './upload-store.js';
 import { normalizePhoneForSuggestion, suggestMatches, type MatchSuggestion } from './identity-match.js';
+import { importFailure, type ImportFailure, type ImportStage } from './import-diagnostics.js';
+
+export interface ImportEvent {
+  import_id: string; file_id: string; stage: ImportStage;
+  outcome: 'started' | 'completed' | 'failed'; duration_ms?: number;
+  count?: number; failure?: ImportFailure;
+}
 
 type CandidateRelation = ImportCandidate['relation_suggestions'][number];
 
@@ -211,7 +218,13 @@ export class ContactImportService {
     parse: (file: UploadedFile, signal: AbortSignal) => Promise<ParsedBlock[]>;
     extract: (blocks: ParsedBlock[], file: UploadedFile, signal: AbortSignal) => Promise<ExtractedDocument>;
     onCommitted?: (entityIds: string[]) => Promise<void> | void;
+    onEvent?: (event: ImportEvent) => void;
   }) {}
+
+  private record(event: ImportEvent): void {
+    try { this.options.onEvent?.(event); }
+    catch { /* Logging failure cannot prevent durable task completion. */ }
+  }
 
   async start(input: { file_id: string; operation_id: string }, actor: string): Promise<{ import_id: string }> {
     if (!actor.trim()) throw new Error('Authenticated client is required');
@@ -228,6 +241,14 @@ export class ContactImportService {
     });
     if (result.replayed) return { import_id: result.import_id };
     const importId = result.import_id;
+    let stage: ImportStage = 'persist';
+    let startedAt = Date.now();
+    const begin = (next: ImportStage) => {
+      stage = next; startedAt = Date.now();
+      this.record({ import_id: importId, file_id: file.fileId, stage, outcome: 'started' });
+    };
+    const completed = (count?: number) => this.record({ import_id: importId,
+      file_id: file.fileId, stage, outcome: 'completed', duration_ms: Date.now() - startedAt, count });
     try { this.options.uploads.markSubmitted(file.fileId); }
     catch (error) {
       await this.transition(importId, file.fileId, 1, 'failed',
@@ -238,10 +259,16 @@ export class ContactImportService {
       async signal => {
         await this.transition(importId, file.fileId, 1, 'processing',
           { candidates: [], source: this.source(file) });
+        begin('parse');
         const blocks = await this.options.parse(file, signal);
+        completed(blocks.length);
+        begin('extract');
         const extracted = await this.options.extract(blocks, file, signal);
+        completed(extracted.candidates.length);
+        begin('validate');
         const candidates = extracted.candidates.map(candidate => ImportCandidateSchema.parse(candidate));
         preserveSkippedProjects(candidates, extracted.warnings);
+        completed(candidates.length);
         return {
           candidates,
           warnings: extracted.warnings,
@@ -251,15 +278,24 @@ export class ContactImportService {
         };
       },
       async data => {
+        begin('persist');
         await this.transition(importId, file.fileId, 2, 'ready_for_review', data);
+        completed();
       },
-      async code => {
+      async (code, error) => {
+        const failure = importFailure(stage, error, code);
+        this.record({ import_id: importId, file_id: file.fileId, stage,
+          outcome: 'failed', duration_ms: Date.now() - startedAt, failure });
         const current = await this.getRaw(importId);
         if (!current || ['committed', 'failed', 'cancelled'].includes(current.status)) return;
         await this.transition(importId, file.fileId, current.version,
           code === 'IMPORT_CANCELLED' ? 'cancelled' : 'failed',
-          { candidates: [], source: this.source(file), warnings: [code] });
-      }).catch(() => undefined);
+          { candidates: [], source: this.source(file), warnings: [code], failure });
+      }).catch(error => {
+        // Covers queue admission/persistence failures too; do not log raw errors.
+        this.record({ import_id: importId, file_id: file.fileId, stage,
+          outcome: 'failed', failure: importFailure(stage, error.cause ?? error) });
+      });
     return { import_id: importId };
   }
 
@@ -289,6 +325,7 @@ export class ContactImportService {
     return {
       import_id: job.import_id, status: job.status, version: job.version,
       source: job.data.source ?? null, warnings,
+      failure: job.data.failure ?? null,
       processed_block_ids: job.data.processed_block_ids ?? [],
       unprocessed_block_ids: job.data.unprocessed_block_ids ?? [],
       coverage_available: validBlockIds(job.data.processed_block_ids) && validBlockIds(job.data.unprocessed_block_ids),

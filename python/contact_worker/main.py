@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TextIO
 
 from .parser import FRAME_LIMIT, ParseError, parse
+from .diagnostics import emit
 
 
 def _send(stream: TextIO, frame: dict) -> None:
@@ -61,10 +62,12 @@ def serve(stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout,
                            "kind": "done", "block_count": len(blocks), "warning_codes": []})
         except ParseError as error:
             code = str(error)
+            emit(error, stderr)
             _send(stdout, {"version": 1, "request_id": request_id, "kind": "error",
                            "error": {"code": code, "message": code}})
             stderr.write(code + "\n")
-        except Exception:
+        except Exception as error:
+            emit(error, stderr)
             _send(stdout, {"version": 1, "request_id": request_id, "kind": "error",
                            "error": {"code": "INTERNAL_ERROR", "message": "INTERNAL_ERROR"}})
             stderr.write("INTERNAL_ERROR\n")

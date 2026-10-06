@@ -132,6 +132,7 @@ export function createApplication(
   const importJobs = new ImportJobs({ concurrency: config.contactImportConcurrency,
     timeoutMs: config.contactImportTimeoutMs,
     reserve: actor => uploadStore.reserve(actor), release: id => uploadStore.release(id),
+    onCleanup: (id, error) => logger.logContactCleanup(id, error),
     submit: id => { uploadStore.markSubmitted(id); } });
   const graphClient = config.contactGraphEnabled
     ? overrides.graphClient ?? new ContactGraphClient({
@@ -160,6 +161,7 @@ export function createApplication(
   const pythonProjectDir = fileURLToPath(new URL('../python/', import.meta.url));
   const contactImport = graphClient === undefined ? undefined : new ContactImportService({
     graph: graphClient, uploads: uploadStore, jobs: importJobs,
+    onEvent: event => logger.logContactImport(event),
     parse: (file, signal) => parseLocalDocument({
       pythonBin: config.contactPythonBin ?? join(pythonProjectDir, '.venv', 'bin', 'python'),
       workerSocket: config.contactWorkerSocket,

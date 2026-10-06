@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { ParsedBlockSchema, type ParsedBlock } from '../contracts/index.js';
 import { callWorkerSocket } from './worker-ipc.js';
+import { safeCode, type Diagnostic } from './import-diagnostics.js';
 
 const MAX_FRAME_BYTES = 256 * 1024;
 const MAX_TOTAL_TEXT_BYTES = 16 * 1024 * 1024;
@@ -27,7 +28,7 @@ export interface ParseLocalDocumentOptions {
 }
 
 export class DocumentWorkerError extends Error {
-  constructor(readonly code: string) { super(code); this.name = 'DocumentWorkerError'; }
+  constructor(readonly code: string, readonly diagnostic?: Diagnostic) { super(code); this.name = 'DocumentWorkerError'; }
 }
 
 /** One document per process: cancellation ends Docling conversion and all in-memory page text. */
@@ -58,7 +59,7 @@ export function parseLocalDocument(options: ParseLocalDocumentOptions, signal: A
   } });
   if (Buffer.byteLength(request, 'utf8') > MAX_FRAME_BYTES) return Promise.reject(new DocumentWorkerError('FRAME_TOO_LARGE'));
   return new Promise((resolve, reject) => {
-    const { child, kill, cleanup } = spawnParser(options, 'parse', requestId,
+    const { child, kill, cleanup, diagnostic } = spawnParser(options, 'parse', requestId,
       () => finish(new DocumentWorkerError('WORKER_TIMEOUT')));
     const blocks: ParsedBlock[] = [];
     const seen = new Set<string>();
@@ -91,8 +92,7 @@ export function parseLocalDocument(options: ParseLocalDocumentOptions, signal: A
           const frame = Frame.parse(JSON.parse(raw));
           if (frame.request_id !== requestId) throw new Error('request mismatch');
           if (frame.kind === 'error') {
-            finish(new DocumentWorkerError(/^[A-Z][A-Z0-9_]{0,63}$/u.test(frame.error.code)
-              ? frame.error.code : 'INVALID_RESPONSE'));
+            finish(new DocumentWorkerError(safeCode(frame.error.code, 'INVALID_RESPONSE')));
             return;
           }
           if (frame.kind === 'done') {
@@ -110,14 +110,19 @@ export function parseLocalDocument(options: ParseLocalDocumentOptions, signal: A
       }
       if (buffer.length > MAX_FRAME_BYTES) finish(new DocumentWorkerError('FRAME_TOO_LARGE'));
     });
-    child.stderr.on('data', () => undefined);
     child.stdin.on('error', () => finish(new DocumentWorkerError('PROCESS_ERROR')));
     child.once('error', () => finish(new DocumentWorkerError('PROCESS_ERROR')));
-    child.once('close', async () => {
+    child.once('close', async (exitCode, exitSignal) => {
       const cleanupError = await cleanup;
-      if (cleanupError) failure = new DocumentWorkerError(cleanupError.message);
+      if (cleanupError) failure ??= new DocumentWorkerError('SCRATCH_CLEANUP_FAILED');
       if (!settled) finish(failure ?? new DocumentWorkerError('PROCESS_EXITED'));
-      if (failure) reject(failure); else resolve(blocks);
+      if (failure) reject(new DocumentWorkerError(failure.code, {
+        ...diagnostic(), exit_code: exitCode,
+        // SIGKILL is a signal, not evidence of an OOM kill.
+        ...(['SIGKILL', 'SIGTERM', 'SIGABRT', 'SIGSEGV', 'SIGBUS', 'SIGXFSZ', 'SIGALRM'].includes(exitSignal ?? '')
+          ? { signal: exitSignal as Diagnostic['signal'] } : {}),
+        ...(cleanupError ? { cleanup_code: 'SCRATCH_CLEANUP_FAILED' as const } : {}),
+      })); else resolve(blocks);
     });
     if (signal.aborted) abort();
     child.stdin.end(`${request}\n`);

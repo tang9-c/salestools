@@ -3,6 +3,8 @@ import {
   type AssessmentResultAudit,
 } from '../contracts/index.js';
 import type { RetryAttemptEvent } from '../orchestration/retry.js';
+import type { ImportEvent } from '../contacts/import-service.js';
+import { safeCode } from '../contacts/import-diagnostics.js';
 
 export interface LogSink {
   write(line: string): void;
@@ -49,6 +51,17 @@ export class JsonlLogger {
     private readonly sink: LogSink,
     private readonly now: () => Date = () => new Date(),
   ) {}
+
+  logContactImport(event: ImportEvent): void {
+    this.sink.write(`${JSON.stringify({ event: 'contact_import', timestamp: this.now().toISOString(), ...event })}\n`);
+  }
+
+  logContactCleanup(fileId: string, error?: unknown): void {
+    this.sink.write(`${JSON.stringify({ event: 'contact_import_cleanup', timestamp: this.now().toISOString(),
+      file_id: fileId, outcome: error === undefined ? 'completed' : 'failed',
+      ...(error === undefined ? {} : { code: safeCode(error instanceof Error ? error.message : undefined,
+        'IMPORT_CLEANUP_FAILED') }) })}\n`);
+  }
 
   logAssessmentDecision(event: AssessmentDecisionLog): void {
     const audit = AssessmentResultAuditSchema.parse(event.resultAudit);

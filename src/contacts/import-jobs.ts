@@ -3,7 +3,7 @@ interface Job {
   controller: AbortController;
   run: (signal: AbortSignal) => Promise<unknown>;
   persistReady: (value: unknown) => Promise<void>;
-  persistFailed?: (code: string) => Promise<void>;
+  persistFailed?: (code: string, error?: unknown) => Promise<void>;
   resolve: () => void;
   reject: (error: Error) => void;
   active: boolean;
@@ -24,6 +24,7 @@ export class ImportJobs {
     release: (fileId: string) => Promise<void>;
     reserve?: (actor: string) => Promise<string>;
     submit?: (fileId: string) => void;
+    onCleanup?: (fileId: string, error?: unknown) => void;
   }) {}
 
   reserve(actor: string): Promise<string> {
@@ -33,8 +34,13 @@ export class ImportJobs {
 
   release(fileId: string): Promise<void> { return this.options.release(fileId); }
 
+  private recordCleanup(fileId: string, error?: unknown): void {
+    try { this.options.onCleanup?.(fileId, error); }
+    catch { /* A broken log sink must not strand the queue or skip completion. */ }
+  }
+
   start<T>(fileId: string, run: (signal: AbortSignal) => Promise<T>,
-    persistReady: (value: T) => Promise<void>, persistFailed?: (code: string) => Promise<void>): Promise<void> {
+    persistReady: (value: T) => Promise<void>, persistFailed?: (code: string, error?: unknown) => Promise<void>): Promise<void> {
     if (this.stopped || this.jobs.has(fileId)) return Promise.reject(new Error('IMPORT_UNAVAILABLE'));
     try { this.options.submit?.(fileId); }
     catch (error) { return Promise.reject(error); }
@@ -95,15 +101,18 @@ export class ImportJobs {
       await job.persistReady(value);
     } catch (error) {
       const code = timedOut ? 'IMPORT_TIMEOUT' : job.controller.signal.aborted ? 'IMPORT_CANCELLED' : 'IMPORT_FAILED';
-      try { await job.persistFailed?.(code); }
+      try { await job.persistFailed?.(code, error); }
       catch { /* Preserve the original failure; Task 10 owns durable graph retry. */ }
       failure = new Error(code, { cause: error });
     } finally {
       clearTimeout(timeout);
       job.done = true;
       this.jobs.delete(job.fileId);
-      try { await this.options.release(job.fileId); }
-      catch (error) { failure ??= new Error('IMPORT_CLEANUP_FAILED', { cause: error }); }
+      try { await this.options.release(job.fileId); this.recordCleanup(job.fileId); }
+      catch (error) {
+        this.recordCleanup(job.fileId, error);
+        failure ??= new Error('IMPORT_CLEANUP_FAILED', { cause: error });
+      }
       this.active -= 1;
       this.pump();
       if (failure) job.reject(failure); else job.resolve();

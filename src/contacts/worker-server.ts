@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { parseLocalDocument } from './document-worker.js';
 import { spawnParser, type SandboxMode } from './parser-process.js';
+import { importFailure } from './import-diagnostics.js';
 
 const pythonRoot = fileURLToPath(new URL('../../python/', import.meta.url));
 const Request = z.object({ filePath: z.string(), fileType: z.enum(['pdf', 'png', 'jpg']),
@@ -26,7 +27,7 @@ function preflight(filePath: string, fileType: string, limits: Record<string, nu
   pythonBin: string, signal: AbortSignal, sandboxMode?: SandboxMode): Promise<void> {
   return new Promise((resolvePromise, reject) => {
     let failure: string | undefined;
-    const { child, kill, cleanup } = spawnParser({ pythonBin, projectDir: pythonRoot, filePath,
+    const { child, kill, cleanup, diagnostic } = spawnParser({ pythonBin, projectDir: pythonRoot, filePath,
       fileType, limits, sandboxMode }, 'preflight', '', () => stop('WORKER_TIMEOUT'));
     const stop = (code: string) => { failure ??= code; kill(); };
     const abort = () => stop('ABORTED');
@@ -41,10 +42,14 @@ function preflight(filePath: string, fileType: string, limits: Record<string, nu
     child.once('error', () => { failure ??= 'PREFLIGHT_FAILED'; });
     child.once('close', async code => {
       const cleanupError = await cleanup;
-      if (cleanupError) failure = cleanupError.message;
+      const rootCode = failure ?? (code !== 0
+        ? (/^[A-Z][A-Z0-9_]{0,63}$/.test(output.trim()) ? output.trim() : 'PREFLIGHT_FAILED') : undefined);
       signal.removeEventListener('abort', abort);
-      if (!failure && code === 0) resolvePromise();
-      else reject(new Error(failure ?? (/^[A-Z][A-Z0-9_]{0,63}$/.test(output.trim()) ? output.trim() : 'PREFLIGHT_FAILED')));
+      if (!rootCode && !cleanupError) resolvePromise();
+      else reject(Object.assign(new Error(rootCode ?? 'SCRATCH_CLEANUP_FAILED'), {
+        diagnostic: { ...diagnostic(), exit_code: code,
+          ...(cleanupError ? { cleanup_code: 'SCRATCH_CLEANUP_FAILED' } : {}) },
+      }));
     });
     child.stdin.end();
     if (signal.aborted) abort();
@@ -88,9 +93,9 @@ export function createWorkerServer(options: { uploadDirectory: string; pythonBin
       response.setHeader('Content-Type', 'application/json');
       response.end(JSON.stringify({ value }));
     })().catch(error => {
-      const code = error instanceof Error && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.message)
-        ? error.message : 'WORKER_FAILED';
-      if (!response.destroyed) response.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ code }));
+      const failure = importFailure('parse', error);
+      process.stderr.write(`${JSON.stringify({ event: 'contact_worker_failed', route: request.url === '/parse' ? 'parse' : 'preflight', ...failure })}\n`);
+      if (!response.destroyed) response.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ code: failure.code, diagnostic: failure.diagnostic }));
     }).finally(() => { active -= 1; });
   });
 }
