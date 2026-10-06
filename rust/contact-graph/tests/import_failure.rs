@@ -40,6 +40,7 @@ fn failure_metadata_cannot_bypass_raw_document_storage_guard() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
     for failure in [
+        json!({"stage":"persist","code":"PRIVATE_DOCUMENT_NAME","message":"任务结果保存失败"}),
         json!({"stage":"parse","code":"CONVERSION_FAILED","message":"private resume"}),
         json!({"stage":"parse","code":"CONVERSION_FAILED","message":"文档解析失败",
             "diagnostic":{"exceptions":[{"type":"RuntimeError","frames":[],"message":"private resume"}]}}),

@@ -8,6 +8,12 @@ import { callWorkerSocket } from '../src/contacts/worker-ipc.js';
 import { ImportJobs } from '../src/contacts/import-jobs.js';
 import { parseLocalDocument } from '../src/contacts/document-worker.js';
 import { fileURLToPath } from 'node:url';
+import { GraphClientError } from '../src/contacts/graph-client.js';
+
+it('identifies known Rust storage rejection while keeping the terminal write code', () => {
+  expect(importFailure('persist', new GraphClientError('VALIDATION_ERROR'), 'IMPORT_STATE_WRITE_FAILED'))
+    .toMatchObject({ code: 'IMPORT_STATE_WRITE_FAILED', diagnostic: { root_code: 'VALIDATION_ERROR' } });
+});
 
 it('exposes terminal write failure without replacing the parser cause or skipping cleanup', async () => {
   const original = new Error('CONVERSION_FAILED');
