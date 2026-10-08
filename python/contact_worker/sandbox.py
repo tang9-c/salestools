@@ -143,6 +143,7 @@ def enter(source: Path, scratch: Path, *, cpu_seconds=120, memory_bytes=3 * 1024
     os.environ.update(PATH='/usr/bin:/bin', HOME=str(scratch), TMPDIR=str(scratch),
                       HF_HOME='/opt/contact-models/hf', XDG_CACHE_HOME='/opt/contact-models/cache',
                       HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', PYTHONDONTWRITEBYTECODE='1',
+                      HF_DEACTIVATE_ASYNC_LOAD='1',
                       OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1',
                       TOKENIZERS_PARALLELISM='false', LANG='C.UTF-8')
     for kind, cap in ((resource.RLIMIT_CPU, cpu_seconds), (resource.RLIMIT_AS, memory_bytes),

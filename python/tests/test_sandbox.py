@@ -47,6 +47,7 @@ class SandboxTests(unittest.TestCase):
                     seccomp = stack.enter_context(patch.object(sandbox, '_seccomp'))
                     try: sandbox.enter(source, scratch)
                     except sandbox.SandboxError as error: self.fail(f'ABI {abi} rejected: {error}')
+                    self.assertEqual(os.environ.get('HF_DEACTIVATE_ASYNC_LOAD'), '1')
                 self.assertEqual(handled, [expected])
                 self.assertEqual(grants[:2], [4, scratch_rights])
                 self.assertTrue(all(rights & ~expected == 0 for rights in grants))
