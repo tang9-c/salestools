@@ -53,6 +53,11 @@ jobs:
             --read-only --tmpfs /tmp:rw,uid=1000,gid=1000,size=1g \
             --tmpfs /data:rw,uid=1000,gid=1000,size=64m \
             "$image" /opt/contact-worker/.venv/bin/python /usr/local/bin/contact-runtime-smoke.py
+          timeout 20m docker run --rm --network none --platform "linux/${{ matrix.arch }}" \
+            --init --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --memory 4g --cpus 2 --pids-limit 64 \
+            --tmpfs /tmp:rw,uid=1000,gid=1000,size=1g \
+            "$image" node /usr/local/bin/contact-container-smoke.mjs
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3

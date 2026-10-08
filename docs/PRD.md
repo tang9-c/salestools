@@ -133,11 +133,11 @@ Docling 负责读出 PDF／图片中的文字及块定位；LLM 负责跨块理�
 
 ## 8. 安全、部署与已知边界
 
-服务端使用每用户独立 Bearer Token，保存哈希、用户标识、启用状态和创建时间；管理员通过 CLI 创建、列出元数据和禁用 Token。任一有效 Token 知道报告 UUID 后可读取该报告，当前没有跨用户报告隔离、配额或限流。`/mcp` 校验 Host、配置允许的 HTTPS Origin 和 Token；无 Origin 的非浏览器客户端仍须带 Token。健康检查为 `/healthz`。
+服务端使用每用户独立 Bearer Token，保存哈希、用户标识、启用状态和创建时间；管理员通过 CLI 创建、列出元数据和禁用 Token。任一有效 Token 知道报告 UUID 后可读取该报告，企业评估没有跨用户报告隔离或配额。联系人导入仍校验任务归属；上传尝试和新导入分别按认证用户每 60 秒最多 5 次，同用户多个 Token/页面会话共用额度。已创建任务的幂等重试不计数，限流不删除已上传原件；HTTP 返回 429/等待秒数，MCP 返回明确工具错误。计数仅单实例内存保存，重启清零。`/mcp` 校验 Host、配置允许的 HTTPS Origin 和 Token；无 Origin 的非浏览器客户端仍须带 Token。健康检查为 `/healthz`。
 
 部署为单副本 Node.js 24/TypeScript 服务，SQLite 文件放在持久化挂载目录，一个数据库文件由一个服务实例拥有。`CONTACT_GRAPH_ENABLED` 默认为 `false`，须配置独立的 `CONTACT_GRAPH_SQLITE_PATH` 与 `CONTACT_GRAPH_BIN`。语义／混合检索另需独立的 `ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL`；不配置时关键词检索仍可用。生产凭据和上游地址通过环境变量注入，公网 HTTPS 由前置代理终止。报告仅持久化 Markdown、必要元数据、精简审计结果及可空的精简证据快照，不保存完整上游原始正文；`ask_company` 的补查和答案不持久化。
 
-上传功能分支的生产部署将服务与解析 broker 分为两个容器，服务通过 `CONTACT_WORKER_SOCKET` 请求解析。解析容器必须非 root、无网络、只读根、移除全部 capability、启用 no-new-privileges 和资源限额；Linux Landlock ABI≥3 与 libseccomp 不可用时明确失败，不降级为无隔离解析。解析器只能读取当前输入及必要运行时、离线模型和字体，不能读取兄弟上传、数据库或服务凭据；独立临时工作目录可写。容器总限额为 4 GiB 内存、2 CPU、64 PID，解析器地址空间 3 GiB、CPU 120 秒、同 UID 进程／线程上限 64；正常结束、错误、超时或取消均清理后代进程。构建与生产容器验证仅在远程 CI 执行，本项目禁止本地构建。
+上传部署将服务与 Docling broker 分为同版本的两个容器，服务通过 `CONTACT_WORKER_SOCKET` 请求解析。只维护普通容器运行方式，不依赖 Landlock、libseccomp 或应用安装的 seccomp。Worker 保持非 root、只读根、移除全部 capability、no-new-privileges、默认容器 seccomp 和资源限额，不接收上游密钥、不挂载数据库；Sealos 关闭 service-account Token 自动挂载。安全边界为容器，不承诺逐文件内容隔离或同 Pod 禁网；Compose 保留无网络配置。初始额度 4 GiB/2 CPU，Compose 64 PID，Sealos PID 上限由节点管理，均非已验证最低要求。解析器不再设置 AS/NPROC，保留 CPU 120 秒、128 FD、单文件 256 MiB、禁 core dump、环境白名单、离线模型和线程控制。预检/解析墙钟限制 30/120 秒，结束、错误、超时或取消后清理普通后代进程组，不承诺阻止恶意另建 session。Sealos 上传与解析 `/tmp` 各为 1 GiB 磁盘 emptyDir，socket 为 1 MiB 内存卷。构建与生产容器验证仅在远程 CI 执行，本项目禁止本地构建。
 
 上传页面使用单文件、最多一个导入任务的受限会话，固定有效期 2 小时；外部链接仅含有效期 60 秒、一次兑换的交接码。页面不接收长期 Token；App 凭据只在内存中，外部页使用受限 HttpOnly Cookie。App 刷新／关闭后旧内存会话不可恢复；外部页刷新可尝试 Cookie 恢复，过期、服务重启或退出后重开。真实 `import_id` 可用于有权用户在聊天查进度，本身不提供授权。来源 Token 被禁用时会话失效。
 
@@ -163,7 +163,7 @@ Docling 负责读出 PDF／图片中的文字及块定位；LLM 负责跨块理�
 
 联系人库的 [12 份合成文档与 20 个检索／问答案例评测](validation/contact-management-quality.md)已记录通过；这是固定样本结果，不保证所有真实简历和名片具有相同召回率或准确率。
 
-上传功能分支提交 `7bde09a26758412e871bcefa5e8f51f3561d8df2` 的[远程 CI 36724034868](https://github.com/tang9-c/salestools/actions/runs/36724034868) 两个 job 全绿：类型检查、Rust 测试、服务端／上传页面构建、Python 33 项及 30 个子测试（安全探针零跳过）、Vitest 1257 项，以及生产容器构建和真实内核、hardened PDF、资源限制、后代清理门禁。原失败的鉴权 HTTP 上传→MCP 导入→真实图谱闭环已通过；其中文档解析与图谱是真实组件，LLM 提取在该用例中使用测试替身，不能将其描述为真实模型全链路质量验收。
+历史上传功能提交 `7bde09a26758412e871bcefa5e8f51f3561d8df2` 的[远程 CI 36724034868](https://github.com/tang9-c/salestools/actions/runs/36724034868) 曾通过旧沙箱门禁和鉴权 HTTP→MCP→真实图谱闭环，其中模型使用替身。它不能作为本次普通容器版本或真实模型质量的验收。新版本验证见 [普通容器验证记录](validation/2026-10-08-contact-container-baseline.md)，远程门禁、发布与 Sealos 真实导入分别记录，不相互替代。
 
 ### 9.2 尚未完成的验收
 
