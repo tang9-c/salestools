@@ -165,6 +165,15 @@ function request(model: string, batch: readonly ParsedBlock[], prior: readonly P
 }
 const SkillsSupplement = z.object({ subject_candidate_id: z.literal('document:person'), subject_status: z.enum(['single', 'ambiguous', 'absent']), skills: z.array(z.unknown()).max(100) }).strict();
 const ProjectsSupplement = z.object({ projects: z.array(z.unknown()).max(100) }).strict();
+function parseModelJson(content: string): unknown {
+  const text = content.trim();
+  if (Buffer.byteLength(text, 'utf8') > 1_000_000) throw new DocumentExtractionError('DOCUMENT_OUTPUT_TOO_LARGE');
+  const fenced = text.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/iu);
+  return JSON.parse((fenced?.[1] ?? text).trim());
+}
+const recoverableRequest = (error: unknown): boolean => error instanceof ArkTransportError
+  && (['NETWORK_ERROR', 'TIMEOUT'].includes(error.code)
+    || (error.status !== undefined && [429, 500, 502, 503, 504].includes(error.status)));
 function projectsRequest(model: string, blocks: readonly ParsedBlock[]): string {
   const aliases = blockAliases(blocks);
   return JSON.stringify({ model, messages: [
@@ -385,6 +394,23 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
   });
   const review = (draft: Draft, path: string, value: unknown, reason: ReviewItem['reason'], raw: unknown) => {
     const refs = object(raw).evidence;
+    if (reason === 'quote_mismatch' && Array.isArray(refs)) {
+      // Persist only counts/lengths, never failed quotes or model-controlled IDs.
+      const counts = { missing_block: 0, empty_quote: 0, quote_not_found: 0, quote_too_long: 0, max_quote_length: 0 };
+      for (const rawRef of refs) {
+        const parsed = QuoteRef.safeParse(rawRef);
+        if (!parsed.success) continue;
+        const { block_id, quote } = parsed.data;
+        const block = blocks.get(block_id), length = [...quote].length;
+        counts.max_quote_length = Math.max(counts.max_quote_length, length);
+        if (!block) counts.missing_block++;
+        if (!quote.trim()) counts.empty_quote++;
+        else if (block && !quoteLocated(block, quote)) counts.quote_not_found++;
+        if (length > 500) counts.quote_too_long++;
+      }
+      const warning = `引文校验失败：${Object.entries(counts).map(([key, count]) => `${key}=${count}`).join(', ')}`;
+      if (!draft.warnings.includes(warning)) draft.warnings.push(warning);
+    }
     const ref = Array.isArray(refs) ? refs.map(r => QuoteRef.safeParse(r)).find(r => r.success && blocks.has(r.data.block_id) && quoteLocated(blocks.get(r.data.block_id)!, r.data.quote)) : undefined;
     if (ref?.success) reviewClues.push({ subjectId: draft.candidate_id, blockId: ref.data.block_id, quote: ref.data.quote });
     const proof = ref?.success ? { ...ref.data, field_path: path, value } : undefined;
@@ -702,19 +728,13 @@ export class DocumentExtractor {
         try {
           content = await requestArkJsonContent({ url: this.options.url, credential: this.options.credential,
             body, fetchFn: this.fetchFn, signal, context: 'Ark document' });
-          const text = content.trim();
-          if (Buffer.byteLength(text, 'utf8') > 1_000_000) throw new Error('oversized model output');
-          const fenced = text.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/iu);
-          raw = DocumentProfile.parse(JSON.parse((fenced?.[1] ?? text).trim()));
+          raw = DocumentProfile.parse(parseModelJson(content));
           break;
         } catch (error) {
           lastRequestError = error;
           if (signal.aborted) throw new DocumentExtractionError('ABORTED');
           if (content !== undefined) { invalidModel = true; content = undefined; continue; }
-          const recoverable = error instanceof ArkTransportError
-            && (['NETWORK_ERROR', 'TIMEOUT'].includes(error.code)
-              || (error.status !== undefined && [429, 500, 502, 503, 504].includes(error.status)));
-          if (!recoverable) break;
+          if (!recoverableRequest(error)) break;
         }
       }
       if (raw === undefined) {
@@ -754,9 +774,7 @@ export class DocumentExtractor {
             const content = await requestArkJsonContent({ url: this.options.url, credential: this.options.credential,
               body, fetchFn: this.fetchFn, signal, context: 'Ark document projects' });
             if (signal.aborted) throw new DocumentExtractionError('ABORTED');
-            if (Buffer.byteLength(content, 'utf8') > 1_000_000) throw new Error('oversized projects output');
-            const text = content.trim(), fenced = text.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/iu);
-            const supplemental = ProjectsSupplement.parse(JSON.parse((fenced?.[1] ?? text).trim()));
+            const supplemental = ProjectsSupplement.parse(parseModelJson(content));
             const originals = new Map([...blockAliases(blocks)].map(([id, alias]) => [alias, id]));
             const originalBlocks = new Map(blocks.map(block => [block.block_id, block]));
             const validProjects = supplemental.projects.filter(raw => {
@@ -798,14 +816,28 @@ export class DocumentExtractor {
         if (Buffer.byteLength(body, 'utf8') > maxBytes) {
           warnings.push('技能补充未执行：完整原文超出请求字节预算');
         } else {
-          attempts += 1;
+          let stage: 'request' | 'json' | 'schema' | 'subject' | 'map' | 'merge' = 'request';
           try {
-            const content = await requestArkJsonContent({ url: this.options.url, credential: this.options.credential,
-              body, fetchFn: this.fetchFn, signal, context: 'Ark document skills' });
+            let content: string;
+            for (let retry = 0; ; retry++) {
+              if (signal.aborted) throw new DocumentExtractionError('ABORTED');
+              attempts += 1;
+              try {
+                content = await requestArkJsonContent({ url: this.options.url, credential: this.options.credential,
+                  body, fetchFn: this.fetchFn, signal, context: 'Ark document skills' });
+                break;
+              } catch (error) {
+                if (signal.aborted || retry >= 1 || attempts >= maxCalls || !recoverableRequest(error)) throw error;
+              }
+            }
             if (signal.aborted) throw new DocumentExtractionError('ABORTED');
-            if (Buffer.byteLength(content, 'utf8') > 1_000_000) throw new Error('oversized skills output');
-            const supplemental = SkillsSupplement.parse(JSON.parse(content));
-            if (supplemental.subject_status !== 'single') throw new Error('ambiguous skill owner');
+            stage = 'json';
+            const json = parseModelJson(content);
+            stage = 'schema';
+            const supplemental = SkillsSupplement.parse(json);
+            stage = 'subject';
+            if (supplemental.subject_status !== 'single') throw new DocumentExtractionError('AMBIGUOUS_OWNER');
+            stage = 'map';
             const skills = supplemental.skills.filter(raw => object(raw).field_path === 'properties.skills');
             if (skills.length !== supplemental.skills.length) warnings.push('技能补充包含非技能字段，已忽略');
             if (!skills.length) warnings.push('技能补充为空，未确认技能覆盖完整');
@@ -820,6 +852,7 @@ export class DocumentExtractor {
               else {
                 const combined = [...(Array.isArray(person.properties.skills) ? person.properties.skills : []),
                   ...(Array.isArray(extra.properties.skills) ? extra.properties.skills : [])];
+                stage = 'merge';
                 const merged = ImportCandidateSchema.parse({ ...person,
                   properties: { ...person.properties, skills: combined.filter((value, index) => combined.findIndex(other => equal(value, other)) === index) },
                   evidence: [...person.evidence, ...extra.evidence.filter(proof => !person.evidence.some(previous =>
@@ -832,9 +865,15 @@ export class DocumentExtractor {
                 if (person.review_items.length + extra.review_items.length > 100) warnings.push('技能补充待核实项超过100项，已截断');
               }
             }
-          } catch {
+          } catch (error) {
             if (signal.aborted) throw new DocumentExtractionError('ABORTED');
-            warnings.push('技能补充失败或主体不明确，已保留主档案');
+            const code = error instanceof ArkTransportError ? error.code
+              : error instanceof z.ZodError ? 'VALIDATION_ERROR'
+                : error instanceof SyntaxError ? 'INVALID_JSON'
+                  : error instanceof DocumentExtractionError ? error.code : 'INTERNAL_ERROR';
+            const detail = error instanceof ArkTransportError && error.status !== undefined ? `, http_status=${error.status}`
+              : error instanceof z.ZodError ? `, validation_issue_count=${error.issues.length}` : '';
+            warnings.push(`技能补充失败：stage=${stage}, code=${code}${detail}，已保留主档案`);
           }
         }
       }

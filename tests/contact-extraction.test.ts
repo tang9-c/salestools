@@ -37,6 +37,19 @@ it('explicitly enables thinking on every contact-document model request within t
 });
 
 describe('DocumentProfile mapping', () => {
+  it.each([
+    ['missing block', 'missing', 'PRIVATE', 'missing_block=1, empty_quote=0, quote_not_found=0, quote_too_long=0, max_quote_length=7'],
+    ['changed quote', 'b1', 'PRIVATE', 'missing_block=0, empty_quote=0, quote_not_found=1, quote_too_long=0, max_quote_length=7'],
+    ['empty quote', 'b1', '', 'missing_block=0, empty_quote=1, quote_not_found=0, quote_too_long=0, max_quote_length=0'],
+    ['long quote', 'b1', '甲'.repeat(501), 'missing_block=0, empty_quote=0, quote_not_found=0, quote_too_long=1, max_quote_length=501'],
+  ])('preserves strict evidence rejection and safe diagnostics for %s', async (_name, block, quote, diagnostic) => {
+    const result = await run(profile({ person: [fact('properties.name', '本人', '本人'), fact('properties.skills', 'Python', quote, block)] }), '本人 ' + '甲'.repeat(501));
+    const person = owner(result.candidates);
+    expect(person.properties.skills).toEqual([]);
+    expect(person.review_items).toContainEqual(expect.objectContaining({ reason: 'quote_mismatch', value: 'Python' }));
+    expect(person.warnings.join(' ')).toContain(diagnostic);
+    expect(JSON.stringify(person.warnings)).not.toContain('PRIVATE');
+  });
   it('maps anonymous education, repeated employment, project clients and semantic skills without string-value gating', async () => {
     const result = await run(profile({ person: [fact('properties.skills', 'Python 自动化'), fact('properties.skills', 'Python 自动化')],
       education: [{ local_id: 'ed1', organization: org('大学甲'), attendance: link() }, { local_id: 'ed2', organization: org('大学乙'), attendance: link() }],
@@ -652,6 +665,63 @@ describe('bounded project supplement', () => {
 describe('bounded skills supplement', () => {
   const primary = profile({ person: [fact('properties.name', '本人', '本人')], education: [{ local_id: 'school', organization: org('学校', '本人'), attendance: link('本人') }] });
   const skillOutput = (overrides = {}) => ({ subject_candidate_id: 'document:person', subject_status: 'single', skills: [fact('properties.skills', 'Python', 'Python')], ...overrides });
+  it('accepts fenced JSON skills using the same parsing as primary extraction', async () => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(response(primary)).mockResolvedValueOnce(new Response(JSON.stringify({
+      choices: [{ message: { content: `\n\`\`\`json\n${JSON.stringify(skillOutput())}\n\`\`\`\n` } }],
+    })));
+    const result = await extractor(fetchFn, { skillSupplement: true }).extract([{ block_id: 'b1', text: '本人 Python' }], new AbortController().signal);
+    expect(owner(result.candidates).properties.skills).toEqual(['Python']);
+    expect(result.warnings).toEqual([]);
+  });
+  it.each(['network', 'http503'])('recovers skills after one transient %s failure', async failure => {
+    let calls = 0;
+    const fetchFn = vi.fn(async () => {
+      calls++;
+      if (calls === 1) return response(primary);
+      if (calls === 2) {
+        if (failure === 'network') throw new Error('PRIVATE upstream message');
+        return new Response('PRIVATE response', { status: 503 });
+      }
+      return response(skillOutput());
+    });
+    const result = await extractor(fetchFn, { skillSupplement: true }).extract([{ block_id: 'b1', text: '本人 Python' }], new AbortController().signal);
+    expect(owner(result.candidates).properties.skills).toEqual(['Python']);
+    expect(calls).toBe(3);
+    expect(result.warnings).toEqual([]);
+  });
+  it.each([
+    ['json', 'not JSON PRIVATE', 'json', 'INVALID_JSON'],
+    ['schema', JSON.stringify({ ...skillOutput(), subject_candidate_id: 'PRIVATE' }), 'schema', 'VALIDATION_ERROR'],
+    ['owner', JSON.stringify(skillOutput({ subject_status: 'ambiguous' })), 'subject', 'AMBIGUOUS_OWNER'],
+  ])('reports safe %s diagnostics without retrying content failures', async (_name, content, stage, code) => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(response(primary)).mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content } }] })));
+    const result = await extractor(fetchFn, { skillSupplement: true }).extract([{ block_id: 'b1', text: '本人 Python' }], new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(owner(result.candidates).properties.name).toBe('本人');
+    expect(result.warnings.join(' ')).toContain(`stage=${stage}, code=${code}`);
+    expect(JSON.stringify(result.warnings)).not.toContain('PRIVATE');
+  });
+  it.each([[2, 2], [3, 3], [16, 3]])('bounds transient retries with call budget %i to %i calls', async (maxModelCalls, expectedCalls) => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(response(primary)).mockImplementation(async () => new Response('PRIVATE', { status: 503 }));
+    const result = await extractor(fetchFn, { skillSupplement: true, maxModelCalls }).extract([{ block_id: 'b1', text: '本人 Python' }], new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(expectedCalls);
+    expect(owner(result.candidates).properties.name).toBe('本人');
+    expect(result.warnings.join(' ')).toContain('stage=request, code=REMOTE_HTTP_ERROR, http_status=503');
+    expect(JSON.stringify(result.warnings)).not.toContain('PRIVATE');
+  });
+  it('does not retry a permanent HTTP error or an aborted skills request', async () => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(response(primary)).mockImplementation(async () => new Response('PRIVATE', { status: 401 }));
+    const result = await extractor(fetchFn, { skillSupplement: true }).extract([{ block_id: 'b1', text: '本人 Python' }], new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(result.warnings.join(' ')).toContain('stage=request, code=REMOTE_HTTP_ERROR, http_status=401');
+    const controller = new AbortController();
+    const cancelledFetch = vi.fn().mockResolvedValueOnce(response(primary)).mockImplementation(async () => {
+      controller.abort();
+      throw new Error('PRIVATE');
+    });
+    await expect(extractor(cancelledFetch, { skillSupplement: true }).extract([{ block_id: 'b1', text: '本人 Python' }], controller.signal)).rejects.toMatchObject({ code: 'ABORTED' });
+    expect(cancelledFetch).toHaveBeenCalledTimes(2);
+  });
   it('sends the whole document then accepts only sourced skills without changing identities or relations', async () => {
     const bodies: any[] = [];
     const fetchFn = vi.fn(async (_url, init) => {
@@ -669,9 +739,9 @@ describe('bounded skills supplement', () => {
     expect(owner(result.candidates).evidence.find(e => e.field_path === 'properties.skills')?.page).toBe(3);
   });
   it.each([skillOutput({ subject_status: 'absent' }), skillOutput({ subject_candidate_id: 'other-person' }), skillOutput({ skills: [] }), null])('retains the primary profile and warns on unusable supplement %j', async supplement => {
-    const fetchFn = vi.fn().mockResolvedValueOnce(response(primary)).mockImplementationOnce(async () => { if (supplement === null) throw new Error('network'); return response(supplement); });
+    const fetchFn = vi.fn().mockResolvedValueOnce(response(primary)).mockImplementation(async () => { if (supplement === null) throw new Error('network'); return response(supplement); });
     const result = await extractor(fetchFn, { skillSupplement: true }).extract([{ block_id: 'b1', text: '本人 Python' }], new AbortController().signal);
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn).toHaveBeenCalledTimes(supplement === null ? 3 : 2);
     expect(owner(result.candidates).properties.name).toBe('本人');
     expect(owner(result.candidates).properties.skills).toEqual([]);
     expect(result.warnings.some(w => w.includes('技能补充'))).toBe(true);
