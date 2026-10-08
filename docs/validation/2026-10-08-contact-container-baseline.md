@@ -17,10 +17,17 @@
 - Skill 基线读取仍要求 Landlock；修改后独立读取正确识别普通容器边界、同 Pod 不禁网以及限流后原操作重试。
 - Sealos YAML 解析检查通过：双容器同镜像、上传/解析磁盘卷、socket 内存卷、service-account Token 自动挂载关闭；不是集群应用结果。
 
-## 待完成门禁
+## 远程门禁与本地合并
 
-- 远程 Linux 完整 Python/Vitest/Rust/页面/生产容器验证，记录 tested SHA 和运行链接。
-- 新镜像发布和双容器同步更新。
-- Sealos 真实文件上传、预览、确认入库及回读；本机没有集群访问配置，不能以本地结果替代。
+- Tested SHA：`2940135d01430b396ba086aa702d0a8404f07a63`；[远程运行 37728749522](https://github.com/tang9-c/salestools/actions/runs/37728749522) 的 `native-and-browser` 和 `production-container` 全部成功。
+- 远程类型检查、Rust 测试、服务端/页面构建通过；Python 28 项、Vitest 67 个文件/1284 项全通过。
+- 生产镜像构建及真实普通容器/PDF/CPU/期限/取消/深目录清理门禁通过。该镜像为 CI 验证镜像，不是 GHCR 发布。
+- 用户选择本地合并：`main` 快进到相同 tested SHA，合并后类型检查、2 项 Python 运行准备测试和 diff 检查再次通过。后续收尾提交仅更新这两份记录，不改业务代码。
+- 旧资源调整中与合并重叠的四个文件保存为 stash `cf28a7257a350abe8d7ac5a2be588f3457671ca7`，不自动回放已被新方案替代的旧沙箱代码；其他未提交内容原样保留。
+
+## 尚未执行
+
+- 推送 `main`、新镜像发布和双容器同步更新。
+- Sealos 真实文件上传、预览、确认入库及回读；本机没有集群访问配置，不能以本地或 CI 结果替代。
 
 内存/PID 验证为真实 cgroup 额度核对，不宣称恶意资源耗尽压测已通过。
