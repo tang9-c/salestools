@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { createWorkerServer } from '../src/contacts/worker-server.js';
 import { callWorkerSocket } from '../src/contacts/worker-ipc.js';
 import { parseLocalDocument } from '../src/contacts/document-worker.js';
+import { checkDocumentParse } from '../src/cli/contact-parse-check.js';
 
 const directories: string[] = [];
 afterEach(() => { for (const dir of directories.splice(0)) {
@@ -30,6 +31,23 @@ if pid==0:
 print(pid, file=open(os.path.join(os.path.dirname(__file__), 'pid'), 'w'), flush=True)
 while True: time.sleep(1)
 `;
+it('parse check reports counts without leaking document text or paths', async () => {
+  const {options} = fixture(`import sys,json
+request=json.loads(sys.stdin.readline())
+print(json.dumps(dict(version=1,request_id=request['request_id'],kind='block',block=dict(block_id='1',text='PRIVATE_RESUME_TEXT'))),flush=True)
+print(json.dumps(dict(version=1,request_id=request['request_id'],kind='done',block_count=1,warning_codes=[])),flush=True)
+`);
+  const result = await checkDocumentParse(options);
+  expect(result).toMatchObject({outcome:'completed', block_count:1});
+  expect(result.duration_ms).toBeGreaterThan(0);
+  expect(JSON.stringify(result)).not.toContain('PRIVATE_RESUME_TEXT');
+  expect(JSON.stringify(result)).not.toContain(options.filePath);
+});
+it('parse check preserves the wall timeout failure and exit diagnostic', async () => {
+  const {options} = fixture('import time\ntime.sleep(10)\n');
+  const result = await checkDocumentParse({...options, maxRuntimeMs:500});
+  expect(result).toMatchObject({outcome:'failed', failure:{code:'WORKER_TIMEOUT', diagnostic:{signal:'SIGKILL'}}});
+});
 async function waitPid(path: string) {
   for (let i=0; i<300; i++) {
     if (existsSync(path)) {

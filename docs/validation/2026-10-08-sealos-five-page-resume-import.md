@@ -102,3 +102,23 @@ kubectl exec salestools-0 -n ns-ufdahkjt -c contact-worker -- sh -c 'for f in me
 验证采用 TDD：新增实际子进程 `getrlimit` 检查，修改前默认模式读到 `[120,120]`，按预期失败；修改后 Python runtime 的 3 项测试通过，覆盖默认 300、继承 90 和显式 1 秒预算，以及既有环境清理、路径校验。进程监管的 8 项解释器测试亦通过，覆盖墙钟超时、取消和清理。
 
 未进行本地构建、提交、发布或远端重新导入。新代码需经远程 Linux/容器验证并发布后，用同一真实 PDF 复测；本次仅完成代码修复及本地解释器验证，不声称真实导入已恢复。
+
+## 修复复核与仅解析验证入口
+
+CPU 300 的改动已提交为 `c8e9e17`。它消除两核环境下 120 CPU 秒可能早于 120 秒墙钟期限耗尽的问题，但不能保证真实文档在墙钟期限内完成。不得把累计容器 CPU 用量作为单个子进程触限的直接证明，也不得把失败后的内存读数作为峰值。
+
+新增 `src/cli/contact-parse-check.ts`，直接复用生产 `parseLocalDocument`，保留默认 120 秒墙钟期限、CPU 300 和其他解析限制。不调用 Ark、不读写数据库、不输出文档正文/路径、不删除输入文件，只清理解析器自己的 scratch。结果包含安全错误诊断、块数、总耗时以及当前容器 cgroup v2 前后快照。耗时包括启动及清理；快照为容器累计值，有其他并发任务时不能归属于这一份文档。macOS 或未暴露 cgroup v2 时快照为空，不当成零资源消耗。
+
+镜像包含此命令后，在没有其他导入运行时，将授权文件放到 Worker 可读的上传目录，再在 **contact-worker 容器**中执行（替换文件路径）：
+
+```bash
+node /app/dist/cli/contact-parse-check.js /tmp/salestools-contact-uploads/实际目录/测试文件.pdf
+```
+
+命令不通过 MCP 上传，也不绕过解析器安全限制；输入测试文件需在验证结束后按实际路径移除。先核对镜像确实包含 `c8e9e17` 及该命令，再执行一次，避免在旧 CPU 120 镜像上重复测试。成功退出码为 0，解析失败为 1，命令用法错误为 2。
+
+后续判定：解析成功才继续完整导入；若为 `WORKER_TIMEOUT`，再单独决定有界延长实验，不自动提高生产墙钟期限；若仍是 `PROCESS_EXITED/SIGKILL`，结合前后计数及容器事件继续定位，不直接判定 OOM。本机没有 Kubernetes context，尚未执行新镜像上的远端验证。
+
+回归验证：新增成功统计不泄露正文/路径、超时诊断保留两项测试，先观察预期失败再实现；进程监管共 10 项通过，Python runtime 3 项通过，`npm run typecheck` 通过。未执行本地构建。
+
+本轮真实文件验证：使用本记录同一份 SHA-256 对应 PDF，通过 `npx tsx src/cli/contact-parse-check.ts <授权文件>` 在本机执行生产解析路径一次，退出码 0，`outcome=completed`、`duration_ms=56757`、`block_count=184`。没有模型调用、联系人入库或内容质量评分；输入文件未修改。macOS 无 cgroup v2，前后快照均为空。此结果证明当前代码在本机能解析该文件，不能替代 Linux/Sealos 性能及端到端验收。
