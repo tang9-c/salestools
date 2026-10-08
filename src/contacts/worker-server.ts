@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
-import { existsSync, realpathSync, statSync, unlinkSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { accessSync, constants, existsSync, realpathSync, statSync, unlinkSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { parseLocalDocument } from './document-worker.js';
@@ -59,6 +59,11 @@ function preflight(filePath: string, fileType: string, limits: Record<string, nu
 export function createWorkerServer(options: { uploadDirectory: string; pythonBin: string; sandboxMode?: SandboxMode }): Server {
   let active = 0;
   return createServer((request, response) => {
+    if (request.method === 'POST' && request.url === '/healthz') {
+      request.resume();
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ value: { ready: true } }));
+      return;
+    }
     if (active >= 2) { response.writeHead(503).end(JSON.stringify({ code: 'WORKER_BUSY' })); return; }
     active += 1;
     const abort = new AbortController();
@@ -100,16 +105,56 @@ export function createWorkerServer(options: { uploadDirectory: string; pythonBin
   });
 }
 
+export async function startWorker(options: { socket: string; uploadDirectory: string; pythonBin: string }): Promise<Server> {
+  try {
+    accessSync(options.uploadDirectory, constants.R_OK | constants.X_OK);
+    if (!statSync(options.uploadDirectory).isDirectory()) throw new Error();
+  } catch { throw new Error('WORKER_UPLOAD_DIR_UNREADABLE'); }
+  try { accessSync(dirname(options.socket), constants.W_OK | constants.X_OK); }
+  catch { throw new Error('WORKER_SOCKET_DIR_UNWRITABLE'); }
+  try { accessSync(options.pythonBin, constants.X_OK); }
+  catch { throw new Error('WORKER_PYTHON_UNAVAILABLE'); }
+  const fixture = '/usr/local/share/contact-sandbox/synthetic-resume.pdf';
+  const source = existsSync(fixture) ? fixture
+    : fileURLToPath(new URL('../../tests/fixtures/contact-documents/synthetic-resume.pdf', import.meta.url));
+  // Reuse hardened preflight before advertising readiness; this does not load Docling models.
+  await preflight(source, 'pdf', {}, options.pythonBin, new AbortController().signal);
+  if (existsSync(options.socket)) unlinkSync(options.socket);
+  const server = createWorkerServer(options);
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once('error', reject);
+    server.listen(options.socket, () => { server.removeListener('error', reject); resolvePromise(); });
+  }).catch(() => { throw new Error('WORKER_SOCKET_UNAVAILABLE'); });
+  return server;
+}
+
+const startupHints: Record<string, string> = {
+  WORKER_CONFIG_MISSING: '使用部署模板提供 Worker socket、上传目录和 Python 路径。',
+  WORKER_UPLOAD_DIR_UNREADABLE: '检查共享上传卷路径、只读挂载和 UID/GID 1000 的读取权限。',
+  WORKER_SOCKET_DIR_UNWRITABLE: '检查共享 socket 卷是否允许 UID/GID 1000 写入。',
+  WORKER_PYTHON_UNAVAILABLE: '检查两个容器是否使用同一完整版本镜像及其 Python 路径。',
+  WORKER_SOCKET_UNAVAILABLE: '检查 socket 挂载、目录权限和是否已有其他 Worker 占用。',
+  SANDBOX_UNAVAILABLE: '检查节点 Landlock ABI >= 1、libseccomp 和容器安全策略；不要关闭沙箱。',
+  PREFLIGHT_FAILED: '检查完整镜像和 Python 运行时；预检未通过，Worker 未就绪。',
+  WORKER_TIMEOUT: '启动预检超时，检查 Worker 的 CPU、内存及 PID 配置。',
+  WORKER_STARTUP_FAILED: '启动检查未通过，核对部署模板和 Worker 镜像。',
+};
+
+export function formatWorkerStartupFailure(error: unknown): string {
+  const code = error instanceof Error && Object.hasOwn(startupHints, error.message)
+    ? error.message : 'WORKER_STARTUP_FAILED';
+  return `${JSON.stringify({ event: 'contact_worker_startup_failed', code, message: startupHints[code] })}\n`;
+}
+
 async function main(): Promise<void> {
   const socket = process.env.CONTACT_WORKER_SOCKET;
   const uploadDirectory = process.env.CONTACT_UPLOAD_DIR;
   const pythonBin = process.env.CONTACT_PYTHON_BIN;
   if (!socket || !uploadDirectory || !pythonBin) throw new Error('WORKER_CONFIG_MISSING');
-  if (existsSync(socket)) unlinkSync(socket);
-  const server = createWorkerServer({ uploadDirectory, pythonBin });
-  server.listen(socket);
+  await startWorker({ socket, uploadDirectory, pythonBin });
+  process.stdout.write(`${JSON.stringify({ event: 'contact_worker_ready', sandbox_preflight: 'passed' })}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  void main().catch(() => { process.stderr.write('Worker startup failed\n'); process.exitCode = 1; });
+  void main().catch(error => { process.stderr.write(formatWorkerStartupFailure(error)); process.exitCode = 1; });
 }

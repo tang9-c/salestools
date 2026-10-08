@@ -1,0 +1,84 @@
+# Strategic merge patch for the existing salestools StatefulSet, not a new deployment.
+# Change this image once; both containers always receive the same version.
+spec:
+  template:
+    spec:
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: salestools
+          image: &salestools_image ghcr.io/tang9-c/salestools:REPLACE_WITH_RELEASED_VERSION
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: CONTACT_GRAPH_ENABLED
+              value: "true"
+            - name: CONTACT_WORKER_SOCKET
+              value: /run/contact-worker/worker.sock
+            # The app owns a child directory, never chmods the root-owned volume mount.
+            - name: TMPDIR
+              value: /tmp/salestools-contact-uploads
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: worker-socket
+              mountPath: /run/contact-worker
+            - name: contact-uploads
+              mountPath: /tmp/salestools-contact-uploads
+        - name: contact-worker
+          image: *salestools_image
+          command: [node, dist/contacts/worker-server.js]
+          env:
+            - name: CONTACT_WORKER_SOCKET
+              value: /run/contact-worker/worker.sock
+            - name: CONTACT_UPLOAD_DIR
+              value: /tmp/salestools-contact-uploads/salestools-contact-uploads
+            - name: CONTACT_PYTHON_BIN
+              value: /opt/contact-worker/.venv/bin/python
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: worker-socket
+              mountPath: /run/contact-worker
+            - name: contact-uploads
+              mountPath: /tmp/salestools-contact-uploads
+              readOnly: true
+            - name: worker-tmp
+              mountPath: /tmp
+          readinessProbe:
+            exec:
+              command: [node, -e, "const r=require('node:http').request({socketPath:process.env.CONTACT_WORKER_SOCKET,path:'/healthz',method:'POST'},s=>{s.resume();s.on('end',()=>process.exit(s.statusCode===200?0:1))});r.on('error',()=>process.exit(1));r.setTimeout(3000,()=>r.destroy());r.end('{}');"]
+            timeoutSeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: worker-socket
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: contact-uploads
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+        - name: worker-tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi

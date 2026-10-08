@@ -6,7 +6,7 @@ import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawnParser } from '/app/dist/contacts/parser-process.js';
-import { createWorkerServer } from '/app/dist/contacts/worker-server.js';
+import { startWorker } from '/app/dist/contacts/worker-server.js';
 import { callWorkerSocket } from '/app/dist/contacts/worker-ipc.js';
 
 assert.equal(process.platform, 'linux', 'Linux kernel required; this gate must never skip');
@@ -40,9 +40,9 @@ try {
   const source = join(directory, randomUUID());
   copyFileSync('/usr/local/share/contact-sandbox/synthetic-resume.pdf', source);
   const socket = join(directory, 'worker.sock');
-  const server = createWorkerServer({uploadDirectory: directory, pythonBin});
-  server.listen(socket); await new Promise(resolve => server.once('listening', resolve));
+  const server = await startWorker({socket, uploadDirectory: directory, pythonBin});
   try {
+    assert.deepEqual(await callWorkerSocket(socket, '/healthz', {}), {ready: true});
     const payload = {filePath: source, fileType: 'pdf', limits: {}, documentId: 'sandbox-smoke'};
     await callWorkerSocket(socket, '/preflight', payload);
     const blocks = await callWorkerSocket(socket, '/parse', payload);

@@ -159,6 +159,7 @@ jobs:
     timeout-minutes: 90
     env:
       COMPOSE_PROJECT_NAME: contact-upload-ci
+      SALESTOOLS_IMAGE: salestools-contact-validation:ci
     steps:
       - name: Set runner-local Compose environment path
         run: |

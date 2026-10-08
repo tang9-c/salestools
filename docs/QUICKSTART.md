@@ -25,11 +25,26 @@ MCP 注册不会替你部署服务端，也不会创建 Token。服务端地址�
 
 ## 解析 worker 的部署要求
 
-`compose.contact-upload.yaml` 将服务与解析 broker 分为两个容器。**构建只在远程 CI 执行**；部署时使用该流程验证过的同一 revision 镜像。服务端单独配置 HTTPS、`CONTACT_GRAPH_ENABLED=true`、独立图谱数据库及 `CONTACT_WORKER_SOCKET`。生产解析只能用 hardened 模式；`test-only` 仅供显式测试进程，不能用于部署或验收绕过。
+`compose.contact-upload.yaml` 将服务与解析 broker 分为两个容器，两者共享一个必填 `SALESTOOLS_IMAGE`。**构建只在远程 CI 执行**；部署时指定包含本次启动检查、已发布且验证过的完整镜像名，不分别填写两个版本。模板已固定 socket、临时卷、权限及联系人启用配置；管理员只需选择镜像版本并配置 `.env` 中的上游凭证、域名及所需的数据库设置。生产解析只能用 hardened 模式；`test-only` 不能用于部署或验收绕过。
 
-- Linux x86_64 或 aarch64，内核必须启用 Landlock 并支持 ABI ≥ 3（包含 REFER/TRUNCATE，通常需 Linux ≥ 6.2），安装 `libseccomp.so.2`，容器运行时允许安装追加 seccomp 过滤器；本 CI 生产烟测使用 cgroup v2 检查实际 CPU/内存/PID 限额。缺少能力时返回 `SANDBOX_UNAVAILABLE`，不降级解析。版本号不能代替实际探针。
+部署已有镜像时执行 `docker compose -f compose.contact-upload.yaml pull` 和 `docker compose -f compose.contact-upload.yaml up -d --no-build`，不要在部署机或本机运行 build。Worker 启动会检查上传目录可读、socket 目录可写、Python 可执行，并使用镜像内合成 PDF 执行现有 hardened 预检；通过后才监听 socket。健康检查改为实际请求 Worker，而不是只检查 socket 文件存在。预检不加载 Docling 模型、不证明任意简历都能解析，资源问题仍需真实导入验证。
+
+Sealos 已有 `salestools` StatefulSet 可使用 [最小补丁](../deploy/sealos-contact-upload.patch.yaml)，不是重新创建应用：发布包含本次启动检查的镜像后，只替换其中一处 `REPLACE_WITH_RELEASED_VERSION`，两个容器同步使用；不能直接使用旧 `v0.5.6`，其 Worker 没有新增健康接口。保留原有凭证、域名、Service 及 `/data` 持久卷。补丁固定临时卷、UID/GID、主服务的 TMPDIR 与 Worker 对应子目录，避免对 root 所有的挂载根目录 chmod。Worker 不应设置 `envFrom` 或复制主服务凭证；若现有 Worker 已有这些配置，须移除。
+
+在 Sealos 终端将补丁保存为 `sealos-contact-upload.patch.yaml` 后执行：
+
+```bash
+kubectl patch statefulset salestools -n ns-ufdahkjt --type=strategic --patch-file=sealos-contact-upload.patch.yaml
+kubectl rollout status statefulset/salestools -n ns-ufdahkjt --timeout=180s
+```
+
+补丁不删除 PVC，但滚动更新会中断当前处理任务并清空 Pod 临时原件，应用前先等正在处理的导入结束。Sealos 页面后续保存设置可能覆盖终端补丁，更新镜像后应核对两个容器及挂载。**同 Pod 容器共享网络，不能用 Kubernetes 容器字段设置 Compose 的 `network_mode: none`，PID 上限也由节点运行时管理；该补丁不宣称与 Compose 隔离完全等价。** 保留解析子进程的无网络沙箱，节点级隔离要求须由管理员核验，不能通过关闭过滤器解决。
+
+Worker 启动失败只输出固定错误码和提示，不回显任意异常消息、文件路径或凭证：目录问题检查共享卷和 UID 1000；`WORKER_PYTHON_UNAVAILABLE` 检查完整镜像；`SANDBOX_UNAVAILABLE` 检查 Landlock/libseccomp/安全策略；`WORKER_TIMEOUT` 检查资源限制。`contact_worker_ready` 只表示启动预检通过；主服务 `/healthz` 返回 200 不代表 Worker 或真实简历解析已通过。
+
+- Linux x86_64 或 aarch64，内核必须启用 Landlock 并支持 ABI ≥ 1，安装 `libseccomp.so.2`，容器运行时允许安装追加 seccomp 过滤器。ABI1/2 使用现有 seccomp 补偿，不退回无隔离模式；真实节点是否可用以预检结果为准，不以 Linux 版本号猜测。本 CI 生产烟测使用 cgroup v2 检查实际 CPU/内存/PID 限额。
 - 保持 worker 的 `network_mode: none`、只读根文件系统、非 root `node` 用户、`cap_drop: [ALL]`、`no-new-privileges`、`init: true`。不得用 privileged、增加 capability 或关闭过滤器让验证通过。
-- 保持 worker 聚合限制：4 GiB 内存、2 CPU、64 PID；单解析器还限制地址空间 3 GiB、CPU 120 秒、64 个进程／线程、128 FD、单文件 256 MiB、禁止 core dump。Linux 的 `RLIMIT_NPROC` 统计同一 UID 的线程，并非只统计解析器新建的进程。监督器将预检墙钟限制为 30 秒、解析限制为 120 秒，并在完成、错误、超时或取消后杀死整个子进程组。
+- Worker 的模板配置和当前 CI 验证条件是 4 GiB 内存、2 CPU、64 PID；这不是已经测出的最低配置，也不保证任意真实文件都成功，本轮不降低或放宽它们。Sealos 补丁固定 CPU/内存，节点 PID 上限另行核验。单解析器仍限制地址空间 3 GiB、CPU 120 秒、64 个进程／线程、128 FD、单文件 256 MiB、禁止 core dump。Linux 的 `RLIMIT_NPROC` 统计同一真实 UID 的线程，并非只统计解析器新建的进程。预检墙钟限制为 30 秒、解析限制为 120 秒，并在完成、错误、超时或取消后杀死整个子进程组。
 - 上传与 worker socket 使用独立 tmpfs：上传最多 1 GiB，只读挂载到 broker；socket 最多 1 MiB。worker `/tmp` 为 1 GiB 的 `nosuid,nodev,noexec` tmpfs。不要将上传目录改为 `/data`、持久卷或纳入备份。worker 不挂载服务端数据库卷、不接收模型服务密钥；基础镜像声明的 `/data` 可产生空匿名卷，不能把它替换为应用数据库卷。
 - broker 能访问上传挂载，但解析器在导入任何解析库前封闭权限：只读当前一个输入、镜像中的运行时/模型/字体，独立 scratch 可写；不能读兄弟上传、数据库、凭证或连接 socket/网络。关闭额外 FD，清空继承环境；拒绝非零 PID 的 `prlimit64`、异步信号 owner/信号选择，以及 `fcntl`/`ioctl` 开启异步通知，防止同 UID broker 被改资源限制或收到 SIGIO。自身资源限制通过 `pid=0` 保持可用。Landlock 不隐藏所有文件元数据；这里验证的是内容访问和操作权限，不承诺抵御内核漏洞。
 

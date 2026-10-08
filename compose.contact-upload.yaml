@@ -1,9 +1,11 @@
 services:
   salestools:
+    image: &salestools_image ${SALESTOOLS_IMAGE:?Set a released image containing worker startup checks}
     build: .
     env_file: ${SALESTOOLS_ENV_FILE:-.env}
     environment:
       NODE_ENV: production
+      CONTACT_GRAPH_ENABLED: "true"
       CONTACT_WORKER_SOCKET: /run/contact-worker/worker.sock
     ports:
       - "127.0.0.1:3000:3000"
@@ -16,6 +18,7 @@ services:
         condition: service_healthy
 
   contact-worker:
+    image: *salestools_image
     build: .
     command: ["node", "dist/contacts/worker-server.js"]
     user: node
@@ -39,10 +42,11 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     healthcheck:
-      test: ["CMD-SHELL", "test -S /run/contact-worker/worker.sock"]
+      test: ["CMD", "node", "-e", "const r=require('node:http').request({socketPath:process.env.CONTACT_WORKER_SOCKET,path:'/healthz',method:'POST'},s=>{s.resume();s.on('end',()=>process.exit(s.statusCode===200?0:1))});r.on('error',()=>process.exit(1));r.setTimeout(3000,()=>r.destroy());r.end('{}');"]
       interval: 5s
       timeout: 2s
       retries: 12
+      start_period: 40s
 
 volumes:
   salestools_data:
