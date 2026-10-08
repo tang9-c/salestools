@@ -10,11 +10,12 @@ import { startWorker } from '/app/dist/contacts/worker-server.js';
 import { callWorkerSocket } from '/app/dist/contacts/worker-ipc.js';
 
 assert.equal(process.platform, 'linux', 'Linux kernel required; this gate must never skip');
-assert.notEqual(process.getuid(), 0, 'Run unprivileged so process limits apply');
+assert.notEqual(process.getuid(), 0, 'Worker must run unprivileged');
 // Check the actual container, as well as Compose's declarative configuration.
 const status = readFileSync('/proc/self/status', 'utf8');
 assert.match(status, /^CapEff:\s+0+$/m, 'Capabilities must remain dropped');
 assert.match(status, /^NoNewPrivs:\s+1$/m, 'no-new-privileges must remain enabled');
+assert.match(status, /^Seccomp:\s+2$/m, 'Default container seccomp must remain enabled');
 const rootMount = readFileSync('/proc/mounts', 'utf8').split('\n').find(line => line.split(' ')[1] === '/');
 assert.ok(rootMount?.split(' ')[3].split(',').includes('ro'), 'Container root must remain read-only');
 assert.deepEqual(Object.keys(networkInterfaces()), ['lo'], 'Worker must have no network interface');
@@ -27,31 +28,31 @@ for (const name of ['ARK_CREDENTIAL', 'ARK_EMBEDDING_CREDENTIAL', 'QCC_SECRET_KE
   assert.equal(process.env[name], undefined, 'Worker must receive no service credentials');
 }
 const pythonBin = '/opt/contact-worker/.venv/bin/python';
-const result = spawnSync(pythonBin, ['/usr/local/bin/contact-sandbox-tests.py', '-v'], {
+const result = spawnSync(pythonBin, ['/usr/local/bin/contact-runtime-tests.py', '-v'], {
   env: { PATH: '/usr/bin:/bin', CONTACT_WORKER_PYTHON_ROOT: '/app/python', PYTHONPATH: '/app/python' },
   encoding: 'utf8', timeout: 60_000,
 });
 process.stdout.write(result.stdout ?? ''); process.stderr.write(result.stderr ?? '');
-assert.equal(result.status, 0, 'Real Landlock/seccomp/resource probes failed');
-assert.ok(!result.stderr.includes('skipped'), 'Kernel probes may not skip');
+assert.equal(result.status, 0, 'Ordinary process setup checks failed');
+assert.ok(!result.stderr.includes('skipped'), 'Runtime checks may not skip');
 
-const directory = mkdtempSync(join(tmpdir(), 'sandbox-smoke-'));
+const directory = mkdtempSync(join(tmpdir(), 'container-smoke-'));
 try {
   const source = join(directory, randomUUID());
-  copyFileSync('/usr/local/share/contact-sandbox/synthetic-resume.pdf', source);
+  copyFileSync('/usr/local/share/contact-runtime/synthetic-resume.pdf', source);
   const socket = join(directory, 'worker.sock');
   const server = await startWorker({socket, uploadDirectory: directory, pythonBin});
   try {
     assert.deepEqual(await callWorkerSocket(socket, '/healthz', {}), {ready: true});
-    const payload = {filePath: source, fileType: 'pdf', limits: {}, documentId: 'sandbox-smoke'};
+    const payload = {filePath: source, fileType: 'pdf', limits: {}, documentId: 'container-smoke'};
     await callWorkerSocket(socket, '/preflight', payload);
     const blocks = await callWorkerSocket(socket, '/parse', payload);
-    assert.ok(blocks.length > 0 && blocks.some(block => block.page === 1), 'Real hardened PDF failed');
+    assert.ok(blocks.length > 0 && blocks.some(block => block.page === 1), 'Real container PDF failed');
   } finally { await new Promise(resolve => server.close(resolve)); }
 
-  // Exercise the production supervisor with hostile code sealed by the same sandbox.
-  // The fixture is trusted test setup; no production endpoint selects arbitrary code.
-  for (const failure of ['cpu', 'memory', 'deadline', 'cancel', 'success', 'deep-tree']) {
+  // Ordinary descendants, not malicious session escape: container isolation is the boundary.
+  // Memory/PID ceilings are verified above in the actual container, not via per-UID rlimits.
+  for (const failure of ['cpu', 'deadline', 'cancel', 'success', 'deep-tree']) {
     const sourceMode = statSync(source).mode;
     const projectDir = join(directory, `probe-${failure}`);
     mkdirSync(join(projectDir, 'contact_worker'), {recursive: true});
@@ -59,15 +60,15 @@ try {
     const executable = join(projectDir, 'contact_worker', 'launcher.py');
     writeFileSync(executable, `import os,sys,time,importlib.util
 from pathlib import Path
-spec=importlib.util.spec_from_file_location('boundary','/app/python/contact_worker/sandbox.py')
+spec=importlib.util.spec_from_file_location('boundary','/app/python/contact_worker/runtime.py')
 boundary=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(boundary)
-boundary.enter(Path(sys.argv[3]),Path(sys.argv[4]),cpu_seconds=1,memory_bytes=128*1024**2)
+boundary.prepare(Path(sys.argv[2]),Path(sys.argv[3]),cpu_seconds=1)
 pid=os.fork()
 if pid==0:
     while True: time.sleep(1)
 print(pid,flush=True)
-${failure === 'deep-tree' ? "print(sys.argv[4],flush=True)\nos.symlink(sys.argv[3],'outside')\nfor _ in range(600):\n os.mkdir('abcdefgh');os.chdir('abcdefgh')\nopen('raw','w').write('private input')\nos.chmod('.',0)\nsys.exit(0)" : failure === 'cpu' ? 'while True: pass' : failure === 'memory' ? 'bytearray(512*1024**2)' : failure === 'success' ? 'sys.exit(0)' : 'while True: time.sleep(1)'}
+${failure === 'deep-tree' ? "print(sys.argv[3],flush=True)\nos.symlink(sys.argv[2],'outside')\nfor _ in range(600):\n os.mkdir('abcdefgh');os.chdir('abcdefgh')\nopen('raw','w').write('private input')\nos.chmod('.',0)\nsys.exit(0)" : failure === 'cpu' ? 'while True: pass' : failure === 'success' ? 'sys.exit(0)' : 'while True: time.sleep(1)'}
 `);
     let kill; let timedOut = false;
     const spawned = spawnParser({pythonBin, projectDir, filePath: source,
@@ -91,7 +92,6 @@ ${failure === 'deep-tree' ? "print(sys.argv[4],flush=True)\nos.symlink(sys.argv[
     if (failure === 'deadline') assert.ok(timedOut);
     else assert.ok(!timedOut, `${failure}: expected outcome was replaced by deadline`);
     if (failure === 'cpu') assert.equal(ended.signal, 'SIGKILL');
-    if (failure === 'memory') assert.notEqual(ended.code, 0);
     for (let i=0; i<100; i++) {
       try {
         // Zombies cannot execute and are reaped by the container init process.
@@ -103,4 +103,4 @@ ${failure === 'deep-tree' ? "print(sys.argv[4],flush=True)\nos.symlink(sys.argv[
     }
   }
 } finally { rmSync(directory, {recursive: true, force: true}); }
-console.log('contact sandbox smoke: real kernel denials, hardened PDF, and descendant teardown passed');
+console.log('contact container smoke: container controls, real PDF and ordinary descendant cleanup passed');

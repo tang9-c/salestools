@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ContactImportService } from '../src/contacts/import-service.js';
 import { ImportJobs } from '../src/contacts/import-jobs.js';
 import { ImportCandidateSchema } from '../src/contracts/index.js';
@@ -166,7 +166,14 @@ describe('reviewed contact imports', () => {
     const service = new ContactImportService({ graph, uploads, jobs,
       parse: async () => { parsed++; return []; },
       extract: async () => ({ candidates: [], warnings: [], processedBlockIds: [], unprocessedBlockIds: [] }) });
-    for (let n = 0; n < 1001; n++) await service.start({ file_id: `file-${n}`, operation_id: `start-${n}` }, 'reviewer');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      for (let n = 0; n < 1001; n++) {
+        clock += 60_000;
+        await service.start({ file_id: `file-${n}`, operation_id: `start-${n}` }, 'reviewer');
+      }
+    } finally { now.mockRestore(); }
     await eventually(() => expect(released).toBe(1001));
     available = false;
     expect(await service.start({ file_id: 'file-0', operation_id: 'start-0' }, 'reviewer'))

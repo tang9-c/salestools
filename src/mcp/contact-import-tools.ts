@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { ContactImportService } from '../contacts/import-service.js';
 import { ContactRelationTypeSchema } from '../contracts/contact-graph.js';
+import { ContactRateLimitError } from '../contacts/contact-rate-limit.js';
 
 const id = z.string().trim().min(1).max(200);
 const operationId = id;
@@ -43,7 +44,13 @@ export function registerContactImportTools(server: McpServer, imports: ContactIm
   server.registerTool('import_contacts', {
     description: '处理已上传的 file_id，生成候选预览；保留 operation_id 以便响应丢失后安全重试。此步骤不创建正式联系人。',
     inputSchema: z.object({ file_id: id, operation_id: operationId }).strict(),
-  }, async (input, context) => result(await imports.start(input, actor(context))));
+  }, async (input, context) => {
+    try { return result(await imports.start(input, actor(context))); }
+    catch (error) {
+      if (!(error instanceof ContactRateLimitError)) throw error;
+      return { ...result({ code: error.code, retry_after_seconds: error.retryAfterSeconds }), isError: true };
+    }
+  });
 
   server.registerTool('get_contact_import', {
     description: '读取自己的导入状态、分页候选及短引文，不返回完整 OCR 文本。',

@@ -9,7 +9,10 @@ import { parseLocalDocument } from '../src/contacts/document-worker.js';
 
 const directories: string[] = [];
 afterEach(() => { for (const dir of directories.splice(0)) {
-  if (existsSync(join(dir, 'pid'))) { try { process.kill(Number(readFileSync(join(dir, 'pid'), 'utf8')), 'SIGKILL'); } catch {} }
+  if (existsSync(join(dir, 'pid'))) {
+    const pid = Number(readFileSync(join(dir, 'pid'), 'utf8'));
+    if (Number.isSafeInteger(pid) && pid > 1) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+  }
   rmSync(dir, { recursive: true, force: true });
 } });
 function fixture(body: string) {
@@ -17,7 +20,7 @@ function fixture(body: string) {
   const pythonBin = join(dir, 'parser');
   writeFileSync(pythonBin, '#!' + new URL('../python/.venv/bin/python', import.meta.url).pathname + '\n' + body); chmodSync(pythonBin, 0o700);
   return { dir, options: { pythonBin, projectDir: dir, filePath: join(dir, 'input.pdf'),
-    fileType: 'pdf' as const, documentId: 'document', limits: {}, sandboxMode: 'test-only' as const } };
+    fileType: 'pdf' as const, documentId: 'document', limits: {}, } };
 }
 const sleeper = `import os,time,signal
 pid=os.fork()
@@ -28,8 +31,14 @@ print(pid, file=open(os.path.join(os.path.dirname(__file__), 'pid'), 'w'), flush
 while True: time.sleep(1)
 `;
 async function waitPid(path: string) {
-  for (let i=0; i<300 && !existsSync(path); i++) await new Promise(r=>setTimeout(r, 10));
-  return Number(readFileSync(path, 'utf8'));
+  for (let i=0; i<300; i++) {
+    if (existsSync(path)) {
+      const pid = Number(readFileSync(path, 'utf8'));
+      if (Number.isSafeInteger(pid) && pid > 1) return pid;
+    }
+    await new Promise(r=>setTimeout(r, 10));
+  }
+  throw new Error('fixture PID was not written');
 }
 async function expectGone(pid: number) {
   for (let i=0; i<100; i++) {
@@ -59,7 +68,7 @@ it('client disconnect cancels a parser and all descendants through the worker so
   const {dir, options} = fixture(sleeper);
   const filePath = join(dir, randomUUID()); writeFileSync(filePath, '%PDF-1.7');
   const socket = join(dir, 'worker.sock');
-  const server = createWorkerServer({uploadDirectory: dir, pythonBin: options.pythonBin, sandboxMode: 'test-only'});
+  const server = createWorkerServer({uploadDirectory: dir, pythonBin: options.pythonBin });
   server.listen(socket); await new Promise(resolve => server.once('listening', resolve));
   const abort = new AbortController();
   try {

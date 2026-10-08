@@ -40,7 +40,7 @@ description: Use when a user wants to find contacts across the Salestools librar
 
 用户点击“退出上传”关闭页面操作并请求撤销会话/回执；服务端未确认时如实告知。退出不会撤销已有写入或自动取消任务；用户请求取消时对原 `import_id` 调用 `cancel_contact_import`。原件临时目录在 `/data` 及备份之外，完成/失败/取消/到期时清理；字段及短证据会保存，完整原件/OCR 正文不写入图谱，提取文字已按告知发给模型。
 
-部署须保持 Linux Landlock ABI≥3、libseccomp、无网络、只读根、无 capability、no-new-privileges、非 root 与资源限额，单输入内容隔离失败不能退回无隔离运行。构建和生产镜像验证仅允许远程 CI，`npm run dev` 也会触发构建。真实 ChatGPT/Codex/手机相机仍待宿主验收；Chromium SDK iframe 测试不代表这些客户端已验证。详见 `docs/QUICKSTART.md` 的部署要求与验收清单。
+部署使用普通 Linux 容器，不依赖 Landlock 或应用安装的 seccomp。保持非 root、Worker 只读根、无 capability、no-new-privileges、默认容器 seccomp 与资源限额；Worker 不接收上游凭证或数据库挂载。安全边界是容器，不承诺逐文件隔离或 Sealos 同 Pod 禁网。两个容器必须同版本。上传尝试和新导入分别按用户每 60 秒最多 5 次，`CONTACT_RATE_LIMITED` 时按 `retry_after_seconds` 等待，用原 operation_id 重试，不盲目重传；已存在任务重放不计数。构建及生产镜像验证仅允许远程 CI，`npm run dev` 也会构建。真实 ChatGPT/Codex/手机相机仍需宿主验收，Chromium 模拟不能替代。详见 `docs/QUICKSTART.md`。
 
 ## 导入与写入边界
 

@@ -32,7 +32,7 @@ jobs:
       - name: Set runner-local model paths
         run: |
           set -euo pipefail
-          # Match the immutable model paths declared by the hardened parser.
+          # Match the offline model paths declared by the image.
           sudo install -d -m 755 -o "$(id -u)" -g "$(id -g)" /opt/contact-models
           printf 'HF_HOME=/opt/contact-models/hf\n' >> "$GITHUB_ENV"
           printf 'XDG_CACHE_HOME=/opt/contact-models/cache\n' >> "$GITHUB_ENV"
@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libclang-dev libseccomp2 python3 python3-venv libgomp1 libglib2.0-0 libgl1 fonts-dejavu-core
+          sudo apt-get install -y --no-install-recommends libclang-dev python3 python3-venv libgomp1 libglib2.0-0 libgl1 fonts-dejavu-core
           rustup toolchain install stable --profile minimal
           rustup default stable
           node --version
@@ -97,21 +97,20 @@ jobs:
           PYTHONPATH: python
         run: python/.venv/bin/python scripts/contact-runtime-smoke.py --ocr-only
 
-      - name: Run full Python suite with real Linux probes and no skips
+      - name: Run full Python suite with ordinary runtime checks and no skips
         env:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
         run: |
           set -euo pipefail
-          # RLIMIT_NPROC counts every thread with the same real UID, including runner services.
-          # The existing runner group can traverse its home; keep a separate real UID.
+          # Run tests under an unprivileged independent UID.
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid "$(id -gn)" contact-ci
           ci_report_dir=$(mktemp -d "$RUNNER_TEMP/contact-python.XXXXXX")
           sudo chown contact-ci "$ci_report_dir"
           mkdir -p "$HF_HOME" "$XDG_CACHE_HOME"
           sudo -u contact-ci id
           sudo -u contact-ci test -x "$GITHUB_WORKSPACE/python/.venv/bin/python"
-          sudo -u contact-ci test -r "$GITHUB_WORKSPACE/python/tests/test_sandbox.py"
+          sudo -u contact-ci test -r "$GITHUB_WORKSPACE/python/tests/test_runtime.py"
           sudo -u contact-ci test -r "$HF_HOME"
           sudo -u contact-ci test -r "$XDG_CACHE_HOME"
           sudo -u contact-ci -- env -i PATH=/usr/bin:/bin \
@@ -127,7 +126,7 @@ jobs:
           import os
           import xml.etree.ElementTree as ET
           report = ET.parse(os.environ['CONTACT_PYTHON_REPORT'])
-          assert not report.findall('.//skipped'), 'Linux Python gate must never skip security probes'
+          assert not report.findall('.//skipped'), 'Linux Python gate must never skip runtime checks'
           PY
 
       - name: Run full Vitest suite including native integration and Chromium SDK iframe
@@ -141,7 +140,7 @@ jobs:
           sudo chown contact-ci "$ci_vitest_home"
           # Grant only the installed Vitest's cache directory to the test UID.
           sudo install -d -m 755 -o contact-ci node_modules/.vite/vitest
-          # Reuse the independent real UID so runner services do not consume the parser's process limit.
+          # Reuse the unprivileged test UID.
           ci_node_bin=$(command -v node)
           sudo -u contact-ci -- env -i PATH="$(dirname "$ci_node_bin"):/usr/bin:/bin" \
             HOME="$ci_vitest_home" NODE_ENV=test \
@@ -153,7 +152,7 @@ jobs:
             "$ci_node_bin" node_modules/vitest/vitest.mjs \
             --run --maxWorkers=1 --minWorkers=1 --no-file-parallelism
 
-  production-sandbox:
+  production-container:
     needs: native-and-browser
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -206,10 +205,10 @@ jobs:
           assert all(name not in worker['environment'] for name in ('ARK_CREDENTIAL', 'ARK_EMBEDDING_CREDENTIAL', 'QCC_SECRET_KEY'))
           PY
 
-      - name: Run hardened kernel, PDF, resource and descendant cleanup gate
+      - name: Run ordinary container, PDF, resource and descendant cleanup gate
         run: |
           set -euo pipefail
-          timeout 20m docker compose -f compose.contact-upload.yaml run --rm --no-deps contact-worker node /usr/local/bin/contact-sandbox-smoke.mjs
+          timeout 20m docker compose -f compose.contact-upload.yaml run --rm --no-deps contact-worker node /usr/local/bin/contact-container-smoke.mjs
 
       - name: Remove synthetic worker volumes and empty CI environment
         if: always()

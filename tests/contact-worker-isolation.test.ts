@@ -28,7 +28,7 @@ it('runs preflight and parsing over the isolated worker socket', async () => {
   const uploadDirectory = join(directory, 'uploads');
   const socket = join(directory, 'worker.sock');
   const pythonBin = new URL('../python/.venv/bin/python', import.meta.url).pathname;
-  const server = createWorkerServer({ sandboxMode: 'test-only', uploadDirectory, pythonBin });
+  const server = createWorkerServer({ uploadDirectory, pythonBin });
   server.listen(socket);
   await new Promise(resolve => server.once('listening', resolve));
   const uploads = new UploadStore({ directory: uploadDirectory, maxPendingFiles: 2,
@@ -42,7 +42,7 @@ it('runs preflight and parsing over the isolated worker socket', async () => {
   await expect(callWorkerSocket(socket, '/preflight', { filePath: join(directory, 'other', id),
     fileType: 'pdf', limits: {} })).rejects.toThrow('INVALID_PATH');
   await uploads.preflight(file);
-  const blocks = await parseLocalDocument({ sandboxMode: 'test-only', pythonBin, projectDir: new URL('../python/', import.meta.url).pathname,
+  const blocks = await parseLocalDocument({ pythonBin, projectDir: new URL('../python/', import.meta.url).pathname,
     workerSocket: socket, filePath: file.tempPath, fileType: 'pdf', documentId: file.fileId,
     limits: { max_file_bytes: 20 * 1024 * 1024, max_pages: 50, max_page_pixels: 25_000_000 } },
   new AbortController().signal);

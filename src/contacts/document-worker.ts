@@ -1,4 +1,4 @@
-import { spawnParser, type SandboxMode } from './parser-process.js';
+import { spawnParser } from './parser-process.js';
 export { parserEnvironment } from './parser-process.js';
 import { isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -19,7 +19,7 @@ const Frame = z.discriminatedUnion('kind', [
 export interface ParseLocalDocumentOptions {
   pythonBin: string; projectDir: string; filePath: string;
   workerSocket?: string;
-  sandboxMode?: SandboxMode;
+
   maxRuntimeMs?: number;
   fileType: 'pdf' | 'png' | 'jpg'; documentId: string;
   limits: { max_file_bytes?: number; max_pages?: number; max_page_pixels?: number; max_temp_bytes?: number };

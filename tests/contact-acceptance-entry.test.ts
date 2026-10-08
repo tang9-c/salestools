@@ -6,17 +6,16 @@ import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-it.each([undefined, 'production', 'development'])('standalone acceptance opts into test parsing from NODE_ENV=%s', initial => {
+it.each([undefined, 'production', 'development'])('default parser validates paths independently of NODE_ENV=%s', initial => {
   const directory = mkdtempSync(join(tmpdir(), 'acceptance-entry-'));
   try {
-    // Skip every live sample and point dotenv at a nonexistent file. This exercises
-    // the real entry setup and parser guard without graph binaries, models or APIs.
+    // No live sample or API call: exercise the same entrypoint in every environment.
     const code = `
       import { parseLocalDocument } from './src/contacts/document-worker.ts';
       globalThis.fetch = () => { throw new Error('NETWORK_FORBIDDEN'); };
       const options = {pythonBin: ${JSON.stringify(join(root, 'python/.venv/bin/python'))},
         projectDir: ${JSON.stringify(join(root, 'python'))}, filePath: ${JSON.stringify(join(directory, 'missing.pdf'))},
-        fileType: 'pdf', documentId: 'test', limits: {}, sandboxMode: 'test-only'};
+        fileType: 'pdf', documentId: 'test', limits: {}, };
       const attempt = async () => {
         try { await parseLocalDocument(options, new AbortController().signal); return 'unexpected success'; }
         catch (error) { return error.message; }
@@ -31,6 +30,6 @@ it.each([undefined, 'production', 'development'])('standalone acceptance opts in
       env: {PATH: '/usr/bin:/bin', ...(initial ? {NODE_ENV: initial} : {}),
         ACCEPTANCE_SAMPLE: '0', ACCEPTANCE_ENV: join(directory, 'absent.env')},
     });
-    expect(JSON.parse(stdout)).toEqual({before: 'SANDBOX_UNAVAILABLE', after: 'INVALID_PATH', environment: 'test'});
+    expect(JSON.parse(stdout)).toEqual({before: 'INVALID_PATH', after: 'INVALID_PATH', environment: 'test'});
   } finally { rmSync(directory, {recursive: true, force: true}); }
 });

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import type { Readable } from 'node:stream';
 import { callWorkerSocket } from './worker-ipc.js';
 import { parserEnvironment } from './document-worker.js';
+import { ContactRateLimit } from './contact-rate-limit.js';
 
 export interface UploadedFile {
   fileId: string;
@@ -43,6 +44,7 @@ export class UploadStore {
   private readonly entries = new Map<string, Entry>();
   private totalBytes = 0;
   private readonly now: () => Date;
+  private readonly rateLimit: ContactRateLimit;
 
   constructor(private readonly options: {
     directory: string; maxPendingFiles: number; maxFileBytes: number; maxTempBytes: number;
@@ -50,6 +52,7 @@ export class UploadStore {
     now?: () => Date;
   }) {
     this.now = options.now ?? (() => new Date());
+    this.rateLimit = new ContactRateLimit(() => this.now().getTime());
     mkdirSync(options.directory, { recursive: true, mode: 0o700 });
     chmodSync(options.directory, 0o700);
   }
@@ -60,6 +63,7 @@ export class UploadStore {
   async reserve(actor: string): Promise<string> {
     // No await before insertion: concurrent HTTP handlers cannot overbook the process-local cap.
     if (!actor.trim()) throw new UploadError('UPLOAD_ACTOR_REQUIRED', 401);
+    this.rateLimit.consume(actor);
     if (this.entries.size >= this.options.maxPendingFiles) throw new UploadError('CAPACITY_FULL', 429);
     const id = randomUUID();
     this.entries.set(id, { actor, bytes: 0, submitted: false });

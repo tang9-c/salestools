@@ -91,6 +91,7 @@ function friendly(error: unknown): string {
     return '服务容量暂时已满，请稍后重试；入口容量不足时请在聊天中重新打开上传入口。';
   }
   const messages: Record<string, string> = {
+    CONTACT_RATE_LIMITED: '操作过于频繁，请等待一分钟后重试当前步骤；不要重复上传已接收的文件。',
     UNSUPPORTED_FILE: '文件格式不支持，请选择 PDF、JPEG 或 PNG 图片。',
     FILE_TOO_LARGE: '文件过大，请压缩文件或选择更小的 PDF／图片。',
     ENCRYPTED_PDF: 'PDF 已加密，请先解除密码后重新选择。',

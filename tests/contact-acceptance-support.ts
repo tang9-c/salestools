@@ -46,7 +46,7 @@ export async function acceptanceHarness(filePath: string, model: Pick<DocumentEx
   const jobs = new ImportJobs({ concurrency: 1, timeoutMs: 900_000, release: id => uploads.release(id) });
   let parsed: ParsedBlock[] = [];
   const service = new ContactImportService({ graph, uploads, jobs,
-    parse: async (file, signal) => parsed = await parseLocalDocument({ sandboxMode: 'test-only', pythonBin: join(root, 'python/.venv/bin/python'), projectDir: join(root, 'python'), filePath: file.tempPath, fileType: filePath.endsWith('.png') ? 'png' : 'pdf', documentId: file.fileId, limits: {} }, signal),
+    parse: async (file, signal) => parsed = await parseLocalDocument({  pythonBin: join(root, 'python/.venv/bin/python'), projectDir: join(root, 'python'), filePath: file.tempPath, fileType: filePath.endsWith('.png') ? 'png' : 'pdf', documentId: file.fileId, limits: {} }, signal),
     extract: (blocks, file, signal) => new DocumentExtractor({ ...model, fileName: 'acceptance-input' + (filePath.endsWith('.png') ? '.png' : '.pdf'), fileSha256: file.sha256, collectedAt: file.uploadedAt }).extract(blocks, signal),
   });
   const close = async () => {

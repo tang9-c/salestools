@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { parseLocalDocument } from './document-worker.js';
-import { spawnParser, type SandboxMode } from './parser-process.js';
+import { spawnParser } from './parser-process.js';
 import { importFailure } from './import-diagnostics.js';
 
 const pythonRoot = fileURLToPath(new URL('../../python/', import.meta.url));
@@ -24,11 +24,11 @@ function checkedPath(raw: string, directory: string): string {
 }
 
 function preflight(filePath: string, fileType: string, limits: Record<string, number>,
-  pythonBin: string, signal: AbortSignal, sandboxMode?: SandboxMode): Promise<void> {
+  pythonBin: string, signal: AbortSignal): Promise<void> {
   return new Promise((resolvePromise, reject) => {
     let failure: string | undefined;
     const { child, kill, cleanup, diagnostic } = spawnParser({ pythonBin, projectDir: pythonRoot, filePath,
-      fileType, limits, sandboxMode }, 'preflight', '', () => stop('WORKER_TIMEOUT'));
+      fileType, limits }, 'preflight', '', () => stop('WORKER_TIMEOUT'));
     const stop = (code: string) => { failure ??= code; kill(); };
     const abort = () => stop('ABORTED');
     signal.addEventListener('abort', abort, {once: true});
@@ -56,7 +56,7 @@ function preflight(filePath: string, fileType: string, limits: Record<string, nu
   });
 }
 
-export function createWorkerServer(options: { uploadDirectory: string; pythonBin: string; sandboxMode?: SandboxMode }): Server {
+export function createWorkerServer(options: { uploadDirectory: string; pythonBin: string }): Server {
   let active = 0;
   return createServer((request, response) => {
     if (request.method === 'POST' && request.url === '/healthz') {
@@ -88,12 +88,12 @@ export function createWorkerServer(options: { uploadDirectory: string; pythonBin
         max_page_pixels: Math.min(parsed.limits.max_page_pixels ?? 25_000_000, 25_000_000) };
       let value: unknown = null;
       if (request.url === '/preflight') {
-        await preflight(filePath, parsed.fileType, limits, options.pythonBin, abort.signal, options.sandboxMode);
+        await preflight(filePath, parsed.fileType, limits, options.pythonBin, abort.signal);
       } else {
         if (!parsed.documentId) throw new Error('INVALID_REQUEST');
         value = await parseLocalDocument({ filePath, fileType: parsed.fileType,
           documentId: parsed.documentId, limits,
-          pythonBin: options.pythonBin, projectDir: pythonRoot, sandboxMode: options.sandboxMode }, abort.signal);
+          pythonBin: options.pythonBin, projectDir: pythonRoot }, abort.signal);
       }
       response.setHeader('Content-Type', 'application/json');
       response.end(JSON.stringify({ value }));
@@ -114,10 +114,10 @@ export async function startWorker(options: { socket: string; uploadDirectory: st
   catch { throw new Error('WORKER_SOCKET_DIR_UNWRITABLE'); }
   try { accessSync(options.pythonBin, constants.X_OK); }
   catch { throw new Error('WORKER_PYTHON_UNAVAILABLE'); }
-  const fixture = '/usr/local/share/contact-sandbox/synthetic-resume.pdf';
+  const fixture = '/usr/local/share/contact-runtime/synthetic-resume.pdf';
   const source = existsSync(fixture) ? fixture
     : fileURLToPath(new URL('../../tests/fixtures/contact-documents/synthetic-resume.pdf', import.meta.url));
-  // Reuse hardened preflight before advertising readiness; this does not load Docling models.
+  // Reuse ordinary preflight before readiness; this does not load Docling models.
   await preflight(source, 'pdf', {}, options.pythonBin, new AbortController().signal);
   if (existsSync(options.socket)) unlinkSync(options.socket);
   const server = createWorkerServer(options);
@@ -134,7 +134,7 @@ const startupHints: Record<string, string> = {
   WORKER_SOCKET_DIR_UNWRITABLE: '检查共享 socket 卷是否允许 UID/GID 1000 写入。',
   WORKER_PYTHON_UNAVAILABLE: '检查两个容器是否使用同一完整版本镜像及其 Python 路径。',
   WORKER_SOCKET_UNAVAILABLE: '检查 socket 挂载、目录权限和是否已有其他 Worker 占用。',
-  SANDBOX_UNAVAILABLE: '检查节点 Landlock ABI >= 1、libseccomp 和容器安全策略；不要关闭沙箱。',
+  WORKER_INIT_FAILED: '检查完整镜像、Python 运行时和容器文件权限。',
   PREFLIGHT_FAILED: '检查完整镜像和 Python 运行时；预检未通过，Worker 未就绪。',
   WORKER_TIMEOUT: '启动预检超时，检查 Worker 的 CPU、内存及 PID 配置。',
   WORKER_STARTUP_FAILED: '启动检查未通过，核对部署模板和 Worker 镜像。',
@@ -152,7 +152,7 @@ async function main(): Promise<void> {
   const pythonBin = process.env.CONTACT_PYTHON_BIN;
   if (!socket || !uploadDirectory || !pythonBin) throw new Error('WORKER_CONFIG_MISSING');
   await startWorker({ socket, uploadDirectory, pythonBin });
-  process.stdout.write(`${JSON.stringify({ event: 'contact_worker_ready', sandbox_preflight: 'passed' })}\n`);
+  process.stdout.write(`${JSON.stringify({ event: 'contact_worker_ready', preflight: 'passed' })}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

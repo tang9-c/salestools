@@ -5,6 +5,7 @@ import type { ImportJobs } from './import-jobs.js';
 import type { UploadedFile, UploadStore } from './upload-store.js';
 import { normalizePhoneForSuggestion, suggestMatches, type MatchSuggestion } from './identity-match.js';
 import { importFailure, type ImportFailure, type ImportStage } from './import-diagnostics.js';
+import { ContactRateLimit } from './contact-rate-limit.js';
 
 export interface ImportEvent {
   import_id: string; file_id: string; stage: ImportStage;
@@ -211,6 +212,7 @@ function identityValues(candidate: ImportCandidate): { phones: string[]; emails:
 }
 
 export class ContactImportService {
+  private readonly rateLimit = new ContactRateLimit();
   constructor(private readonly options: {
     graph: GraphClient;
     uploads: UploadStore;
@@ -235,6 +237,7 @@ export class ContactImportService {
     });
     if (prior) return { import_id: prior.import_id };
     if (!file) throw new Error('UPLOADED_FILE_MISSING');
+    this.rateLimit.consume(actor);
     const result = await this.options.graph.request<JobWriteResult>('put_import_job', {
       operation_id: input.operation_id, actor, file_id: input.file_id,
       status: 'queued', data: { candidates: [] },

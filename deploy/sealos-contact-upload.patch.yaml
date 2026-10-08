@@ -3,6 +3,7 @@
 spec:
   template:
     spec:
+      automountServiceAccountToken: false
       securityContext:
         fsGroup: 1000
         fsGroupChangePolicy: OnRootMismatch
@@ -76,9 +77,9 @@ spec:
             sizeLimit: 1Mi
         - name: contact-uploads
           emptyDir:
-            medium: Memory
+            medium: ""
             sizeLimit: 1Gi
         - name: worker-tmp
           emptyDir:
-            medium: Memory
+            medium: ""
             sizeLimit: 1Gi

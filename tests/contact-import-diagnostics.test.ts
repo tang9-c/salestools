@@ -73,7 +73,7 @@ it('keeps later Python diagnostic metadata after oversized stderr noise and pipe
   const projectDir = fileURLToPath(new URL('./fixtures/contact-diagnostic-worker/', import.meta.url));
   await expect(parseLocalDocument({ pythonBin: '/usr/bin/python3', projectDir,
     filePath: join(projectDir, 'synthetic.pdf'), fileType: 'pdf', documentId: 'synthetic',
-    limits: {}, sandboxMode: 'test-only' }, new AbortController().signal)).rejects.toMatchObject({
+    limits: {}, }, new AbortController().signal)).rejects.toMatchObject({
     code: 'CONVERSION_FAILED', diagnostic: { exceptions: [{ type: 'PermissionError', errno: 13,
       frames: [{ module: 'parser.py', function: 'parse', line: 7 }] }] },
   });

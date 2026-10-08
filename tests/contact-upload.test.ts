@@ -63,7 +63,7 @@ async function setup(maxPendingFiles = 10, maxFileBytes = 20 * 1024 * 1024,
     maxTempBytes: 1024 * 1024 * 1024 });
   stores.push(store);
   const app = createHttpApp({ publicMcpHost: '127.0.0.1', allowedOriginUrls: new Set(['https://ok.example']),
-    allowedOriginHostnames: new Set(['ok.example']) }, token => token === 'good' ? { userId: 'owner' } as never : null,
+    allowedOriginHostnames: new Set(['ok.example']) }, token => ['good', 'another-token'].includes(token) ? { userId: 'owner' } as never : null,
   () => ({} as never), store);
   const server = app.listen(0, '127.0.0.1');
   servers.push(server);
@@ -109,11 +109,21 @@ it.each([
 
 it('reserves all ten slots before reading another body', async () => {
   const { store, upload, directory } = await setup();
-  await Promise.all(Array.from({ length: 10 }, () => store.reserve('reviewer')));
+  await Promise.all(Array.from({ length: 10 }, (_, index) => store.reserve(`reviewer-${index}`)));
   const response = await upload();
   expect(response.status).toBe(429);
   expect(await response.json()).toEqual({ code: 'CAPACITY_FULL' });
   expect(readdirSync(directory)).toEqual([]);
+});
+
+it('limits authenticated upload attempts even when rejected bodies release their slots', async () => {
+  const { upload, store } = await setup();
+  for (let n = 0; n < 5; n++) expect((await upload(Buffer.from('bad'))).status).toBe(415);
+  const response = await upload(pdf, { Authorization: 'Bearer another-token' });
+  expect(response.status).toBe(429);
+  expect(Number(response.headers.get('Retry-After'))).toBeGreaterThan(0);
+  expect(await response.json()).toMatchObject({ code: 'CONTACT_RATE_LIMITED', retry_after_seconds: expect.any(Number) });
+  expect(store.pendingCount).toBe(0);
 });
 
 it('rejects unauthorized requests, invalid content and a configured byte limit without artifacts', async () => {

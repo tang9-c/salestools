@@ -44,7 +44,7 @@ ENV NODE_ENV=production \
     HF_HOME=/opt/contact-models/hf \
     XDG_CACHE_HOME=/opt/contact-models/cache
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 libseccomp2 libgomp1 libglib2.0-0 libgl1 fonts-dejavu-core \
+    python3 libgomp1 libglib2.0-0 libgl1 fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -56,9 +56,9 @@ COPY --from=python-build /opt/contact-worker/.venv /opt/contact-worker/.venv
 COPY --from=python-build /opt/contact-models /opt/contact-models
 COPY --from=graph-build /build/rust/contact-graph/target/release/contact-graph /usr/local/bin/contact-graph
 COPY scripts/contact-runtime-smoke.py /usr/local/bin/contact-runtime-smoke.py
-COPY scripts/contact-sandbox-smoke.mjs /usr/local/bin/contact-sandbox-smoke.mjs
-COPY python/tests/test_sandbox.py /usr/local/bin/contact-sandbox-tests.py
-COPY tests/fixtures/contact-documents/synthetic-resume.pdf /usr/local/share/contact-sandbox/synthetic-resume.pdf
+COPY scripts/contact-container-smoke.mjs /usr/local/bin/contact-container-smoke.mjs
+COPY python/tests/test_runtime.py /usr/local/bin/contact-runtime-tests.py
+COPY tests/fixtures/contact-documents/synthetic-resume.pdf /usr/local/share/contact-runtime/synthetic-resume.pdf
 RUN mkdir -p /data /run/contact-worker /tmp/salestools-contact-uploads \
     && chown -R node:node /app /data /opt/contact-models /run/contact-worker /tmp/salestools-contact-uploads
 USER node

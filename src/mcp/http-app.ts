@@ -8,6 +8,7 @@ import type { AuthenticatedUser } from '../auth/token-service.js';
 import type { UploadSessions, UploadSession } from '../contacts/upload-session.js';
 import type { ContactImportService } from '../contacts/import-service.js';
 import { UploadError, type UploadStore, type UploadedFile } from '../contacts/upload-store.js';
+import { ContactRateLimitError } from '../contacts/contact-rate-limit.js';
 import { buildMcpServer, type McpServices } from './tools.js';
 
 export interface McpHttpConfig {
@@ -149,6 +150,11 @@ export function createHttpApp(
       try { id = await uploads.reserve(request.auth?.clientId ?? ''); }
       catch (error) {
         if (session) page!.sessions.finishUpload(session.sessionId, null);
+        if (error instanceof ContactRateLimitError) {
+          response.set('Retry-After', String(error.retryAfterSeconds)).status(429)
+            .json({ code: error.code, retry_after_seconds: error.retryAfterSeconds });
+          return;
+        }
         const problem = error instanceof UploadError ? error : new UploadError('UPLOAD_FAILED', 500);
         response.status(problem.status).json({ code: problem.code });
         return;
@@ -265,7 +271,12 @@ export function createHttpApp(
           operation_id: `upload-session:${session.sessionId}:start` }, session.actor);
         page.sessions.bindImport(session.sessionId, result.import_id);
         response.json(result);
-      })().catch(() => response.status(409).json({ code: 'IMPORT_START_FAILED' }));
+      })().catch(error => {
+        if (error instanceof ContactRateLimitError) {
+          response.set('Retry-After', String(error.retryAfterSeconds)).status(429)
+            .json({ code: error.code, retry_after_seconds: error.retryAfterSeconds });
+        } else response.status(409).json({ code: 'IMPORT_START_FAILED' });
+      });
     });
     app.get('/contact-upload/import', exactHostMiddleware, pageAuth, (request, response) => {
       void (async () => {
