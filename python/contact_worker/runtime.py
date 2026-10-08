@@ -4,7 +4,8 @@ from pathlib import Path
 import resource
 
 
-def prepare(source: Path, scratch: Path, *, cpu_seconds=120, max_file_bytes=256 * 1024**2):
+# Two cores can consume 240 CPU seconds within the 120-second wall deadline; allow headroom.
+def prepare(source: Path, scratch: Path, *, cpu_seconds=300, max_file_bytes=256 * 1024**2):
     if not source.is_absolute() or not scratch.is_absolute() or source.is_symlink() \
             or not source.is_file() or scratch.is_symlink() or not scratch.is_dir():
         raise RuntimeError('INVALID_PATH')
