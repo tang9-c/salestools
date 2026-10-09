@@ -4,7 +4,7 @@
 
 - 分支：`fix/contact-field-ownership`。
 - Worktree：`/Users/tang-codeing/code/salestools/.worktrees/contact-field-ownership`。
-- 基线 SHA：`e1986c3c0367e3025f9ea417d91fe4d52fd2dfb4`；改动尚未提交，没有可用于 CI 的 tested commit SHA。
+- 基线 SHA：`e1986c3c0367e3025f9ea417d91fe4d52fd2dfb4`；实现提交／CI tested SHA：`659730b7af416624f6f0ab8c6d3b5a1fdb806291`。
 - `git diff -- src rust tests | shasum -a 256`：`b2fb889cb8a6cbc427d8e9906c1fefb83a2af803acdaeef5c4f35c7edb2dc1c9`。此指纹仅包含实现／测试，不包含本记录及文档。
 - 计划：[字段归属修复](../superpowers/plans/2026-10-09-contact-field-ownership-fix.md)。
 - 仅合成资料，无真实简历、生产凭证或远端联系人写入；主目录无关改动未修改。
@@ -34,13 +34,19 @@ python3 /Users/tang-codeing/.codex/skills/.system/skill-creator/scripts/quick_va
 - 新增归属、匿名主体可选 details、教育预览缺失／不匹配证据、项目角色用例均观察过修复前失败、修复后通过。
 - 只读代码审查曾发现教育属性未实际持久化、可选 details 丢弃整个教育条目、教育自动选择缺证据预筛选；三项均修复并复核。测试改为精确检查关系 properties，不用全文字符串包含证明字段入库。
 
-## 尚未通过的验收
+## 远程验收
 
 一次本地误选了依赖 native 的 `tests/contact-claim-review.test.ts`：5 项以 `GRAPH_PROCESS_ERROR` 失败，因为新 worktree 没有匹配源码的 Rust 二进制。未执行任何本地构建，也没有运行旧二进制替代验证。这不是已证明的业务回归，但不能把相关测试标为通过。
 
-新增 Rust 关系／提交／审核测试及 `tests/contact-import-persistence.test.ts` 的 Node→Rust→SQLite→重启回读测试仍待远程 CI。覆盖同校不同教育详情、逐字段证据值不符时原子拒绝、机构非法待核实项跳过、目标被跳过仍保留候选来源且无伪造 ID、提交重放及人工校正教育关系。
+新增 Rust 关系／提交／审核测试及 `tests/contact-import-persistence.test.ts` 的 Node→Rust→SQLite→重启回读测试已在远程 CI 通过。覆盖同校不同教育详情、逐字段证据值不符时原子拒绝、机构非法待核实项跳过、目标被跳过仍保留候选来源且无伪造 ID、提交重放及人工校正教育关系。
 
-现有 `.github/workflows/contact-upload-validation.yml` 已执行匹配源码的 Rust 构建／测试和完整 Vitest，无需新增 workflow。必须先获得用户提交／推送授权，将本次修改放到远端分支，再 dispatch 该 workflow 并记录 tested SHA、run URL 和实际结果。没有远程 CI 结果前，不宣布全部验收完成，不合并或发布。
+用户授权合并 main 后，已提交并推送修复分支，运行现有 `.github/workflows/contact-upload-validation.yml`，未新增 workflow 或发布镜像。
+
+- [CI run 37911888542](https://github.com/tang9-c/salestools/actions/runs/37911888542)，tested SHA 如上。
+- `native-and-browser` 成功：类型检查、匹配源码的 Rust 编译／测试、服务端及上传页面构建、Python 29 项测试（另有 3 个子测试）、Vitest 67 个文件／1,310 项测试通过。
+- 原先本地无法运行的 `contact-claim-review.test.ts` 5 项及 `contact-import-persistence.test.ts` 2 项在 CI 均通过。
+- `production-container` 成功：生产镜像构建、Compose 隔离约束、普通容器 PDF／资源限制／后代进程清理 gate 均通过；整个 workflow 结论为 success。
+- 后续仅更新本验证记录与计划执行状态，不修改已通过 CI 的实现／测试。用户授权合并到本地 main；不推送 main、不发布镜像、不改动生产数据。
 
 ## 历史数据与后续边界
 
