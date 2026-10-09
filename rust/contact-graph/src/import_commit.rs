@@ -426,6 +426,28 @@ fn commit_relations(
                     }
                 }
             }
+            if choice.relation_type == "alumniOf" {
+                for (field, value) in choice
+                    .properties
+                    .as_object()
+                    .ok_or_else(|| validation("Education properties must be an object"))?
+                {
+                    let supported = suggestion["evidence"].as_array().is_some_and(|items| {
+                        items.iter().any(|item| {
+                            item["field_path"] == format!("properties.{field}")
+                                && item["value"] == *value
+                                && item["source_type"] == "file"
+                                && item["locator_status"] == "located"
+                                && item["quote"]
+                                    .as_str()
+                                    .is_some_and(|quote| !quote.trim().is_empty())
+                        })
+                    });
+                    if !supported {
+                        return Err(validation("Unnamed education needs located file evidence"));
+                    }
+                }
+            }
         }
         let (kind, source, target) =
             normalize_endpoints(&choice.relation_type, source_id, target_id)?;
@@ -439,6 +461,12 @@ fn commit_relations(
             proof.push(json!({"field_path":"$relation",
             "value":{"relation_type":kind,"source_id":source,"target_id":target},
             "source_type":"manual","collected_at":now,"locator_status":"not_applicable"}));
+            if kind == "alumniOf" {
+                for (field, value) in properties.as_object().unwrap() {
+                    proof.push(json!({"field_path":format!("properties.{field}"),"value":value,
+                        "source_type":"manual","collected_at":now,"locator_status":"not_applicable"}));
+                }
+            }
         }
         if !auto_selected && kind == "worksFor" {
             for (field, value) in properties["role"].as_object().unwrap() {
@@ -495,6 +523,14 @@ fn commit_relations(
                         path.strip_prefix("properties.role.")
                             .map(|field| properties["role"].get(field))
                             .or_else(|| {
+                                if kind == "alumniOf" {
+                                    path.strip_prefix("properties.")
+                                        .map(|field| properties.get(field))
+                                } else {
+                                    None
+                                }
+                            })
+                            .or_else(|| {
                                 path.strip_prefix("metadata.")
                                     .map(|field| selected_meta.get(field))
                             })
@@ -541,6 +577,18 @@ fn commit_relations(
                 return Err(validation(
                     "Auto-selected relation needs located file evidence",
                 ));
+            }
+            if kind == "alumniOf" {
+                for (field, value) in properties.as_object().unwrap() {
+                    if !proof.iter().filter(file_proof).any(|item| {
+                        item["field_path"] == format!("properties.{field}")
+                            && item["value"] == *value
+                    }) {
+                        return Err(validation(
+                            "Auto-selected education needs located file evidence",
+                        ));
+                    }
+                }
             }
             if let Some(role) = properties.get("role").and_then(Value::as_object) {
                 for (field, value) in role {
@@ -647,6 +695,19 @@ fn persist_claims(
                 } else {
                     owner
                 };
+                if kind == "field"
+                    && candidate["label"] == "Organization"
+                    && !crate::validation::allowed_entity_evidence_path(
+                        "Organization",
+                        item["field_path"].as_str().unwrap_or(""),
+                    )
+                {
+                    let warning = "机构待核实项包含非机构字段，已跳过".to_owned();
+                    if !warnings.contains(&warning) {
+                        warnings.push(warning);
+                    }
+                    continue;
+                }
                 let Some(subject_id) = landed.get(source_candidate) else {
                     continue;
                 };

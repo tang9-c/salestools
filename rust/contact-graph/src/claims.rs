@@ -323,6 +323,11 @@ impl Store {
                         }
                     }
                 }
+                if relation_type == "alumniOf" {
+                    for (key, value) in properties.as_object().unwrap() {
+                        evidence.push(manual(&format!("properties.{key}"), value, note, &now));
+                    }
+                }
                 for (key, value) in metadata.as_object().unwrap() {
                     if value != "unknown" {
                         evidence.push(manual(&format!("metadata.{key}"), value, note, &now));

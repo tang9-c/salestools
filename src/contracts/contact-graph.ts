@@ -192,6 +192,15 @@ const relationBase = {
   relation_id: text, source_id: text, target_id: text,
 };
 
+export const EducationPropertiesSchema = z.object({
+  major: text.optional(), educationLevel: text.optional(),
+  startDate: PartialDateSchema.optional(), endDate: PartialDateSchema.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.startDate && value.endDate && dateInterval(value.startDate)[0] > dateInterval(value.endDate)[1]) {
+    context.addIssue({ code: 'custom', path: ['endDate'], message: 'Education endDate precedes startDate' });
+  }
+});
+
 export const ContactRelationSchema = z.union([
   z.object({
     ...relationBase, relation_type: z.literal('worksFor'),
@@ -203,7 +212,11 @@ export const ContactRelationSchema = z.union([
     }
   }),
   z.object({
-    ...relationBase, relation_type: z.enum(['alumniOf', 'affiliation', 'memberOf', 'colleague', 'spouse', 'parent', 'children']),
+    ...relationBase, relation_type: z.literal('alumniOf'),
+    properties: EducationPropertiesSchema, metadata: RelationMetadataSchema,
+  }).strict(),
+  z.object({
+    ...relationBase, relation_type: z.enum(['affiliation', 'memberOf', 'colleague', 'spouse', 'parent', 'children']),
     properties: z.object({}).strict(), metadata: RelationMetadataSchema,
   }).strict(),
   z.object({
@@ -248,6 +261,7 @@ const propertyFields = new Set([
   'hasOccupation', 'hasCredential', 'contactPoint', 'faxNumber', 'image', 'disambiguatingDescription',
 ]);
 const evidenceField = z.string().refine(value => value === '$relation'
+  || /^properties\.(major|educationLevel|startDate|endDate)$/u.test(value)
   || /^properties\.role\.(roleName|startDate|endDate)$/u.test(value)
   || (value.startsWith('properties.') && propertyFields.has(value.slice('properties.'.length)))
   || /^extensions\.(nativePlace|hobbies|maritalStatus|instantMessaging)$/u.test(value)
@@ -268,11 +282,13 @@ export const ContactEvidenceSchema = z.object({
   confirmed_by: text.optional(), confirmed_at: UtcTimestampSchema.optional(),
 }).strict().superRefine((value, context) => {
   if (value.subject_kind === 'entity' && (value.field_path === '$relation'
+    || /^properties\.(major|educationLevel|startDate|endDate)$/u.test(value.field_path)
     || value.field_path.startsWith('properties.role.')
     || value.field_path.startsWith('metadata.'))) {
     context.addIssue({ code: 'custom', message: 'Relation evidence path requires a relation subject' });
   }
   if (value.subject_kind === 'relation' && value.field_path !== '$relation'
+    && !/^properties\.(major|educationLevel|startDate|endDate)$/u.test(value.field_path)
     && !value.field_path.startsWith('properties.role.')
     && !value.field_path.startsWith('metadata.')) {
     context.addIssue({ code: 'custom', message: 'Entity evidence path requires an entity subject' });

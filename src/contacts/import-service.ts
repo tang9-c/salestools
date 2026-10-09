@@ -56,6 +56,12 @@ function projectAnchor(candidate: ImportCandidate): string | null {
 }
 
 function hasLocatedRoleFields(relation: CandidateRelation): boolean {
+  if (relation.relation_type === 'alumniOf') {
+    return Object.entries(relation.properties).every(([field, value]) => relation.evidence.some(proof =>
+      proof.field_path === `properties.${field}` && proof.value === value && proof.source_type === 'file'
+      && proof.locator_status === 'located' && !!proof.file_sha256
+      && typeof value === 'string' && !!proof.quote?.trim()));
+  }
   const role = relation.properties.role;
   if (!role || typeof role !== 'object' || Array.isArray(role)) return relation.relation_type !== 'worksFor';
   return Object.entries(role).every(([field, value]) => field === '@type'

@@ -94,6 +94,30 @@ fn valid_role(raw: &Value) -> Result<Value, AppError> {
 
 pub(crate) fn relation_properties(kind: &str, raw: &Value) -> Result<Value, AppError> {
     let fields = object(raw, "properties")?;
+    if kind == "alumniOf" {
+        if fields
+            .keys()
+            .any(|key| !["major", "educationLevel", "startDate", "endDate"].contains(&key.as_str()))
+        {
+            return Err(invalid("Unknown education property"));
+        }
+        let mut output = Map::new();
+        for (key, value) in fields {
+            let value = text(value, key)?;
+            if key.ends_with("Date") {
+                partial_date(&value).map_err(invalid)?;
+            }
+            output.insert(key.clone(), json!(value));
+        }
+        if let (Some(start), Some(end)) = (output.get("startDate"), output.get("endDate")) {
+            let start = partial_date(start.as_str().unwrap()).map_err(invalid)?;
+            let end = partial_date(end.as_str().unwrap()).map_err(invalid)?;
+            if (start.0, start.1, start.2) > (end.0, end.3, end.4) {
+                return Err(invalid("Education endDate precedes startDate"));
+            }
+        }
+        return Ok(Value::Object(output));
+    }
     if kind == "worksFor" || (kind == "memberOf" && fields.contains_key("role")) {
         if fields.len() != 1 {
             return Err(invalid("Relation accepts only role"));
@@ -254,6 +278,11 @@ pub(crate) fn collect_relation_evidence(
                 return Err(invalid("Unknown role evidence path"));
             }
             value.clone()
+        } else if kind == "alumniOf" && path.starts_with("properties.") {
+            if properties.get(&path[11..]).is_none() {
+                return Err(invalid("Unknown education evidence path"));
+            }
+            value.clone()
         } else if let Some(key) = path.strip_prefix("metadata.") {
             if metadata.get(key).is_none() {
                 return Err(invalid("Unknown relation metadata evidence path"));
@@ -266,6 +295,8 @@ pub(crate) fn collect_relation_evidence(
             &expected
         } else if let Some(key) = path.strip_prefix("properties.role.") {
             &properties["role"][key]
+        } else if kind == "alumniOf" && path.starts_with("properties.") {
+            &properties[&path[11..]]
         } else {
             &metadata[path.strip_prefix("metadata.").unwrap()]
         };
@@ -339,6 +370,15 @@ pub(crate) fn collect_relation_evidence(
     }
     if !has_relation {
         return Err(invalid("Missing relation existence evidence"));
+    }
+    if kind == "alumniOf" {
+        for (key, value) in properties.as_object().unwrap() {
+            if !result.iter().any(|item| {
+                item["field_path"] == format!("properties.{key}") && item["value"] == *value
+            }) {
+                return Err(invalid(format!("Missing education evidence for {key}")));
+            }
+        }
     }
     if properties.get("role").is_some() {
         for (key, value) in properties["role"].as_object().unwrap() {
@@ -419,7 +459,10 @@ pub(crate) fn persist_relation(
     if !valid_endpoints {
         return Err(invalid("Invalid relation endpoint labels"));
     }
-    let existing: Option<String> = if kind == "worksFor" || properties.get("role").is_some() {
+    let existing: Option<String> = if kind == "worksFor"
+        || properties.get("role").is_some()
+        || kind == "alumniOf" && !properties.as_object().unwrap().is_empty()
+    {
         None
     } else {
         tx.query_row("SELECT ids.relation_id FROM relation_ids ids JOIN kg_relations r ON r.id=ids.kg_id JOIN relation_meta m USING(relation_id) WHERE r.rel_type=?1 AND r.source_id=?2 AND r.target_id=?3 AND json_extract(m.metadata_json,'$.archived_at') IS NULL LIMIT 1",
@@ -462,8 +505,8 @@ pub(crate) fn persist_relation(
         next
     } else {
         let mut relation = Relation::new(source_kg, target_kg, &kind, 1.0).map_err(internal)?;
-        if properties.get("role").is_some() {
-            relation.set_property("role", properties["role"].clone());
+        for (field, value) in properties.as_object().unwrap() {
+            relation.set_property(field, value.clone());
         }
         let kg_id = store.graph.insert_relation(&relation).map_err(internal)?;
         let mut meta = json!({"version":1,"created_at":input.now,"updated_at":input.now});

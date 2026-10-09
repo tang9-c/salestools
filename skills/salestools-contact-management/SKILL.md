@@ -53,6 +53,10 @@ description: Use when a user wants to find contacts across the Salestools librar
 
 ## 解释结果
 
+- 字段归属：Person 保存个人身份、联系方式和技能，爱好／婚姻情况／籍贯／即时通讯在 Person.extensions；学校／公司 Organization 只保存机构自身信息。专业、教育层次、就读起止时间在该人的 `alumniOf.properties.major/educationLevel/startDate/endDate`，不是学校属性；任职和项目参与角色／时间看各自关系。`educationLevel=本科` 不证明毕业或取得学位。
+- `skills=[]` 或可选经历字段提取失败，不作为拒绝保存有效联系人的理由；仍按预览的主体、证据和可提交状态操作。可疑教育／任职字段展示为 Person 上指向相应机构的关系待核实项，不展示成学校／公司事实。
+- `$experience` 是无法定位具体经历的待核实线索，不能直接用 `review_contact_claim(action=confirm)` 写成 Person 属性。先核对原文、具体经历与目标，再在明确授权下保存正确关系并处理旧线索。已有学校上的 `properties.major` 错误 claim 也不能直接确认或自动迁移；用户确认正确经历后写正确关系，再明确拒绝原错误 claim。只请求查看信息不授权这些写入。
+
 - 人物的 `jobTitle` 不是某家公司的任职证明。回答“现任公司”须看相应 `worksFor` 的 `employment_status=current`、证据及 `status_as_of`；没有结束日期不表示仍在职。
 - `alumniOf` 记录就读／校友关系，不自动证明毕业或学位；婚姻状态与 `spouse` 关系也不能互相推断。
 - `ask_contacts` 的 `answered/clarify/insufficient/failed` 按原义呈现，保留实际引文、来源及时间。它回答库内已有资料，不替用户进行新的公开网页尽调。

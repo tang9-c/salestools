@@ -18,6 +18,15 @@ function fixture(name: string): unknown {
 }
 
 describe('shared contact graph contract', () => {
+  it('keeps personal education details on alumniOf rather than the school', () => {
+    const base = { relation_id: 'r_education', source_id: 'p_1', target_id: 'o_1', relation_type: 'alumniOf',
+      metadata: { version: 1, created_at: '2026-10-09T00:00:00.000Z', updated_at: '2026-10-09T00:00:00.000Z' } };
+    expect(ContactRelationSchema.safeParse({ ...base, properties: { major: '软件工程', educationLevel: '本科', startDate: '2022', endDate: '2026' } }).success).toBe(true);
+    expect(ContactRelationSchema.safeParse({ ...base, properties: {} }).success).toBe(true);
+    expect(ContactRelationSchema.safeParse({ ...base, properties: { startDate: '2026', endDate: '2022' } }).success).toBe(false);
+    expect(ContactRelationSchema.safeParse({ ...base, properties: { degreeAwarded: true } }).success).toBe(false);
+    expect(OrganizationPropertiesSchema.safeParse({ name: '井冈山大学', major: '软件工程' }).success).toBe(false);
+  });
   it('accepts old parsed blocks and optional Docling layout labels', () => {
     expect(ParsedBlockSchema.parse({ block_id: 'b1', text: '教育背景' }).text).toBe('教育背景');
     expect(ParsedBlockSchema.parse({ block_id: 'b2', text: '海岚大学', layout_label: 'text' }).layout_label).toBe('text');

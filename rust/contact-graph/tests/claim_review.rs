@@ -54,6 +54,57 @@ fn detail(s: &Store, id: &str) -> Value {
 }
 
 #[test]
+fn corrected_education_claim_writes_relation_details_with_manual_evidence() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path().join("g.db")).unwrap();
+    let person = entity(&s, "Person", "本人");
+    let school = entity(&s, "Organization", "学校");
+    claim(
+        &s,
+        "education",
+        &person,
+        "alumniOf",
+        json!({"properties":{"major":"软件工程","startDate":"2026","endDate":"2022"}}),
+    );
+    let mut input = review("education", "confirm", 1);
+    input["target_id"] = json!(school);
+    input["corrected_value"] = json!({"properties":{"major":"软件工程","educationLevel":"本科","startDate":"2022","endDate":"2026"}});
+    let result = call(&s, "review_contact_claim", input);
+    assert_eq!(result["ok"], true, "{result}");
+    let saved = detail(&s, &person);
+    assert!(saved["relations"].as_array().unwrap().iter().any(|r| r["relation_type"] == "alumniOf"
+        && r["properties"] == json!({"major":"软件工程","educationLevel":"本科","startDate":"2022","endDate":"2026"})),"{saved}");
+    assert_eq!(status(&s, "education"), "confirmed");
+    let mut person_detail = detail(&s, &school);
+    assert!(person_detail["entity"]["properties"].get("major").is_none());
+    // Insert a bounded unresolved field using the actual claim table; it must
+    // never be promoted through the generic entity-field review path.
+    claim(
+        &s,
+        "unassigned",
+        &person,
+        "properties.major",
+        json!("未知专业"),
+    );
+    s.graph
+        .connection()
+        .execute(
+            "UPDATE contact_claims SET field_path='$experience' WHERE claim_id='unassigned'",
+            [],
+        )
+        .unwrap();
+    let result = call(
+        &s,
+        "review_contact_claim",
+        review("unassigned", "confirm", 2),
+    );
+    assert_eq!(result["ok"], false, "{result}");
+    assert_eq!(status(&s, "unassigned"), "unverified");
+    person_detail = detail(&s, &person);
+    assert!(person_detail["entity"]["properties"].get("major").is_none());
+}
+
+#[test]
 fn project_path_claims_can_be_reviewed_with_typed_targets() {
     let d = tempfile::tempdir().unwrap();
     let s = Store::open(d.path().join("g.db")).unwrap();

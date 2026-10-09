@@ -4,6 +4,10 @@
 
 ## 业务数据
 
+教育经历的 `alumniOf.properties` 支持可选 `major`、`educationLevel`、`startDate`、`endDate`；空对象仍有效，日期使用现有部分日期格式及顺序校验。非空教育详情按经历独立保存，不按同一 Person／学校端点覆盖。上述字段证据的 `subject_kind=relation`，路径分别为 `properties.major/educationLevel/startDate/endDate`，每项值须有匹配证据；这些路径不可作为实体证据写入。Organization 不接受这些个人经历字段。教育层次不证明毕业或取得学位。
+
+抽取 education 条目可带 `details:Fact[]`（省略时为 `[]`）；归属明确的错置机构字段先映射到同条经历，再校验。失败经历字段以 Person 上的关系待核实项保存。无法定位经历的 `$experience` 是不允许直接确认成实体属性的审核线索；沿用既有 review item 和 claim，不新增表或节点。旧机构非法字段 claim 仍可读取／拒绝，不自动确认或迁移。
+
 - 正式节点有 `Person`、`Organization` 与 Schema.org `Project`。`Project` 只保存有文件原文定位的 `name`、`description`（至少一项），不参加联系人身份匹配或人物向量索引；不同文件的同名项目不自动合并。`entity_id` 是应用生成的稳定字符串，不能用姓名或项目名推导。人物、组织的 `properties` 使用方案列出的字段白名单；Person 另有同级 `extensions`。`metadata` 存版本、UTC 时间和归档／合并状态，不混入 Schema.org 属性。
 - `Organization.name` 非空；`Person.name` 仅在原文或人工确认提供姓名时填写。无姓名简历也可自动保存为匿名 `Person`，前提是至少一项有来源证据的非姓名业务属性，或一条已选择、具备可定位文件证据的 `worksFor`／`alumniOf` 关系。空匿名档案被拒绝。输入允许省略可选单值；完整输出包含全部适用数组，未知值为 `[]`。数组按规范化完整值去重，电话保留原文，不猜测区号。匿名档案的显示文字由稳定 ID 派生，不写入 `name` 或向量内容；日后确认姓名时在原 ID 上补录姓名及证据。
 - 关系类型有 `worksFor`、`alumniOf`、`affiliation`、`memberOf`、`clientOrganization`、`colleague`、`spouse`、`parent`、`children`。`Person → Project memberOf` 表示有证据的项目参与，可用 `OrganizationRole` 记录本人在该项目的角色和日期；旧 `Person → Organization memberOf` 仍使用空属性。`Project → Organization clientOrganization` 表示项目客户，是本项目扩展词，**不是 Schema.org 原生关系**。项目客户不能由此推成 `Person → 客户 worksFor`。`children` 输入归一化为子女指向父母的 `parent`；`spouse` 和 `colleague` 以稳定 ID 排序后存一条、双向读取。`worksFor` 一段任职一条关系，不按两端实体去重。Rust 负责验证端点实际存在、类型、状态证据和版本。

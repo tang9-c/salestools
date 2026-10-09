@@ -46,6 +46,11 @@ fn relation(
         json!({"relation_type":kind,"source_id":source,"target_id":target})
     };
     let mut proofs = vec![evidence("$relation", normalized)];
+    if kind == "alumniOf" {
+        for (key, value) in properties.as_object().unwrap() {
+            proofs.push(evidence(&format!("properties.{key}"), value.clone()));
+        }
+    }
     if let Some(role) = properties.get("role") {
         if let Some(fields) = role.as_object() {
             for (key, value) in fields {
@@ -69,6 +74,76 @@ fn relation(
             "relation_type":kind,"properties":properties,"metadata":metadata,"evidence":proofs
         }),
     )
+}
+
+#[test]
+fn education_details_are_sourced_and_distinct_episodes_share_only_the_school() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let person = entity(&store, "Person", "本人", "education-person");
+    let school = entity(&store, "Organization", "学校", "education-school");
+    let first = relation(
+        &store,
+        "education-one",
+        &person,
+        &school,
+        "alumniOf",
+        json!({"major":"软件工程","educationLevel":"本科","startDate":"2022","endDate":"2026"}),
+        json!({}),
+    );
+    assert_eq!(first["ok"], true, "{first}");
+    let second = relation(
+        &store,
+        "education-two",
+        &person,
+        &school,
+        "alumniOf",
+        json!({"major":"计算机科学","startDate":"2027"}),
+        json!({}),
+    );
+    assert_eq!(second["ok"], true, "{second}");
+    assert_ne!(
+        first["result"]["relation_id"],
+        second["result"]["relation_id"]
+    );
+    let saved = request(&store, "get_contact", json!({"entity_id":person}));
+    assert_eq!(saved["ok"], true, "{saved}");
+    let relations = saved["result"]["relations"].as_array().unwrap();
+    let first_saved = relations
+        .iter()
+        .find(|r| r["relation_id"] == first["result"]["relation_id"])
+        .unwrap();
+    let second_saved = relations
+        .iter()
+        .find(|r| r["relation_id"] == second["result"]["relation_id"])
+        .unwrap();
+    assert_eq!(
+        first_saved["properties"],
+        json!({"major":"软件工程","educationLevel":"本科","startDate":"2022","endDate":"2026"})
+    );
+    assert_eq!(
+        second_saved["properties"],
+        json!({"major":"计算机科学","startDate":"2027"})
+    );
+    let wrong = request(
+        &store,
+        "save_relation",
+        json!({"operation_id":"bad-major","actor":"tester",
+        "source_id":person,"target_id":school,"relation_type":"alumniOf","properties":{"major":"软件工程"},"metadata":{},
+        "evidence":[evidence("$relation",json!({"source_id":person,"target_id":school,"relation_type":"alumniOf"})),
+                    evidence("properties.major",json!("其他专业"))]}),
+    );
+    assert_eq!(wrong["ok"], false, "{wrong}");
+    let reversed = relation(
+        &store,
+        "education-reversed",
+        &person,
+        &school,
+        "alumniOf",
+        json!({"startDate":"2026","endDate":"2022"}),
+        json!({}),
+    );
+    assert_eq!(reversed["ok"], false, "{reversed}");
 }
 
 #[test]

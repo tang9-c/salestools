@@ -37,6 +37,71 @@ it('explicitly enables thinking on every contact-document model request within t
 });
 
 describe('DocumentProfile mapping', () => {
+  it('routes misplaced school details to the specific education relation', async () => {
+    const result = await run(profile({ person: [fact('properties.name', '本人')], education: [
+      { local_id: 'ed1', organization: [...org('井冈山大学'), fact('properties.major', '软件工程')], attendance: link(),
+        details: [fact('properties.educationLevel', '本科'), fact('properties.startDate', '2022'), fact('properties.endDate', '2026.03')] },
+      { local_id: 'ed2', organization: org('井冈山大学'), attendance: link(), details: [fact('properties.major', '计算机科学'), fact('properties.startDate', '2027')] },
+    ] }));
+    const person = owner(result.candidates);
+    expect(person.can_commit).toBe(true);
+    expect(person.relation_suggestions.map(r => r.properties)).toEqual([
+      { major: '软件工程', educationLevel: '本科', startDate: '2022', endDate: '2026-03' },
+      { major: '计算机科学', startDate: '2027' },
+    ]);
+    const school = result.candidates.find(c => c.label === 'Organization')!;
+    expect(school.properties).not.toHaveProperty('major');
+    expect(school.review_items).toEqual([]);
+    expect(person.relation_suggestions[0].evidence).toContainEqual(expect.objectContaining({ field_path: 'properties.major', value: '软件工程', subject_kind: 'relation' }));
+  });
+
+  it('retains failed education fields with the school context without blocking the person', async () => {
+    const result = await run(profile({ person: [fact('properties.name', '本人')], education: [
+      { local_id: 'ed1', organization: [...org('学校'), fact('properties.major', '软件工程', '不存在')], attendance: link(),
+        details: [fact('properties.startDate', '2026'), fact('properties.endDate', '2022')] },
+    ] }));
+    const person = owner(result.candidates);
+    expect(person.can_commit).toBe(true);
+    expect(person.properties.skills).toEqual([]);
+    expect(person.review_items).toContainEqual(expect.objectContaining({ kind: 'relation', relation_type: 'alumniOf',
+      properties: expect.objectContaining({ major: '软件工程' }), target_candidate_id: result.candidates.find(c => c.label === 'Organization')!.candidate_id }));
+    expect(result.candidates.find(c => c.label === 'Organization')!.review_items).toEqual([]);
+    expect(person.relation_suggestions[0].properties).not.toHaveProperty('major');
+    expect(person.relation_suggestions[0].properties).not.toHaveProperty('endDate');
+  });
+
+  it('does not guess an education for personal fields without an experience container', async () => {
+    const result = await run(profile({ person: [fact('properties.name', '本人'), fact('properties.major', '软件工程')] }));
+    expect(owner(result.candidates).can_commit).toBe(true);
+    expect(owner(result.candidates).properties).not.toHaveProperty('major');
+    expect(owner(result.candidates).review_items).toContainEqual(expect.objectContaining({ field_path: '$experience',
+      value: expect.objectContaining({ original_field_path: 'properties.major', value: '软件工程' }) }));
+  });
+
+  it('routes misplaced employer role facts without polluting the organization', async () => {
+    const result = await run(profile({ person: [fact('properties.name', '本人')], employment: [
+      { local_id: 'job', organization: [...org('公司'), fact('properties.roleName', '开发者'), fact('properties.startDate', '2026.03')], employment: link(), role: [] },
+    ] }));
+    expect(owner(result.candidates).relation_suggestions[0].properties).toEqual({ role: { '@type': 'OrganizationRole', roleName: '开发者', startDate: '2026-03' } });
+    expect(result.candidates.find(c => c.label === 'Organization')!.review_items).toEqual([]);
+  });
+
+  it('keeps project participant fields on memberOf rather than the project', async () => {
+    const result = await run(profile({ person: [fact('properties.name', '本人')], projects: [
+      { local_id: 'project', project: [...org('项目'), fact('properties.roleName', '负责人')], participation: link(), role: [], clients: [] },
+    ] }));
+    expect(owner(result.candidates).relation_suggestions[0].properties).toEqual({ role: { '@type': 'OrganizationRole', roleName: '负责人' } });
+    expect(result.candidates.find(c => c.label === 'Project')!.review_items).toEqual([]);
+  });
+
+  it('keeps supported anonymous attendance when optional education details have an invalid shape', async () => {
+    const result = await run(profile({ education: [{ local_id: 'ed1', organization: org('学校'), attendance: link(), details: '软件工程' }] }));
+    const person = owner(result.candidates);
+    expect(person.can_commit).toBe(true);
+    expect(person.relation_suggestions[0]).toMatchObject({ relation_type: 'alumniOf', properties: {} });
+    expect(result.candidates.find(c => c.label === 'Organization')!.properties.name).toBe('学校');
+    expect(person.review_items).toContainEqual(expect.objectContaining({ field_path: '$experience', value: expect.objectContaining({ kind: 'education', local_id: 'ed1', value: '软件工程' }) }));
+  });
   it.each([
     ['missing block', 'missing', 'PRIVATE', 'missing_block=1, empty_quote=0, quote_not_found=0, quote_too_long=0, max_quote_length=7'],
     ['changed quote', 'b1', 'PRIVATE', 'missing_block=0, empty_quote=0, quote_not_found=1, quote_too_long=0, max_quote_length=7'],
@@ -132,7 +197,7 @@ describe('DocumentProfile mapping', () => {
     const result = await run(profile({ employment: [{ local_id: 'j', organization: org('机构'), employment: link(), role: [fact('properties.role.startDate', '2024-13'), fact('properties.role.roleName', '工程师')] }] }));
     const person = owner(result.candidates);
     expect(person.relation_suggestions[0].properties).toEqual({ role: { '@type': 'OrganizationRole', roleName: '工程师' } });
-    expect(person.review_items).toContainEqual(expect.objectContaining({ field_path: 'properties.role.startDate', reason: 'invalid_shape' }));
+    expect(person.review_items).toContainEqual(expect.objectContaining({ kind: 'relation', relation_type: 'worksFor', properties: { role: { '@type': 'OrganizationRole', roleName: '工程师', startDate: '2024-13' } }, reason: 'invalid_shape' }));
   });
   it('never invents experiences when the model only returns person fields', async () => {
     const result = await run(profile({ person: [fact('properties.name', '甲', '甲')] }), '甲 教育经历 大学 项目名称 ERP系统 客户 公司');
@@ -213,9 +278,9 @@ describe('DocumentProfile transport and context', () => {
     for (const [, init] of fetchFn.mock.calls) expect(Buffer.byteLength(String(init.body))).toBeLessThanOrEqual(12288);
   });
   it('retains partial processing under a batch cap and safely splits oversized blocks', async () => {
-    const fetchFn = vi.fn(async (_url, init) => { expect(Buffer.byteLength(String(init?.body))).toBeLessThanOrEqual(5000); return response(profile({ person: [fact('properties.name', '甲', '甲', 'small')] })); });
+    const fetchFn = vi.fn(async (_url, init) => { expect(Buffer.byteLength(String(init?.body))).toBeLessThanOrEqual(6000); return response(profile({ person: [fact('properties.name', '甲', '甲', 'small')] })); });
     const input = [{ block_id: 'small', text: '甲' }, { block_id: 'large', text: '中'.repeat(12000) }];
-    const result = await extractor(fetchFn, { requestMaxBytes: 5000, maxBatches: 1 }).extract(input, new AbortController().signal);
+    const result = await extractor(fetchFn, { requestMaxBytes: 6000, maxBatches: 1 }).extract(input, new AbortController().signal);
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(result.processedBlockIds).toContain('small');
     expect(result.unprocessedBlockIds).toContain('large');
@@ -333,7 +398,7 @@ it('does not drop a supported role when its sibling date interval is invalid', a
   const result = await run(profile({ employment: [{ local_id: 'job', organization: org('雇主'), employment: link(), role: [fact('properties.role.roleName', '工程师'), fact('properties.role.startDate', '2025'), fact('properties.role.endDate', '2020')] }] }));
   const person = owner(result.candidates);
   expect(person.relation_suggestions[0].properties).toEqual({ role: { '@type': 'OrganizationRole', roleName: '工程师', startDate: '2025' } });
-  expect(person.review_items).toContainEqual(expect.objectContaining({ field_path: 'properties.role.endDate', reason: 'invalid_shape' }));
+  expect(person.review_items).toContainEqual(expect.objectContaining({ kind: 'relation', relation_type: 'worksFor', properties: { role: { '@type': 'OrganizationRole', roleName: '工程师', startDate: '2025', endDate: '2020' } }, reason: 'invalid_shape' }));
 });
 it('rejects duplicate block IDs, invalid budgets, cancellation and oversized model output', async () => {
   const fetchFn = vi.fn(async () => response(profile()));
@@ -432,7 +497,7 @@ describe('review regressions: candidate identity and client accumulation', () =>
   it('preserves quote and page when a valid role date is downgraded for an inverted interval', async () => {
     const result = await run(profile({ employment: [{ local_id: 'job', organization: org('雇主'), employment: link(), role: [fact('properties.role.startDate', '2025'), fact('properties.role.endDate', '2020')] }] }));
     const person = owner(result.candidates);
-    expect(person.review_items).toContainEqual(expect.objectContaining({ field_path: 'properties.role.endDate', value: '2020', reason: 'invalid_shape', quote: '原文', page: 7 }));
+    expect(person.review_items).toContainEqual(expect.objectContaining({ kind: 'relation', properties: { role: { '@type': 'OrganizationRole', startDate: '2025', endDate: '2020' } }, reason: 'invalid_shape', quote: '原文', page: 7 }));
     expect(person.relation_suggestions[0].evidence.some(e => e.field_path === 'properties.role.endDate')).toBe(false);
   });
 });

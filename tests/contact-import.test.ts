@@ -25,7 +25,7 @@ async function eventually(assertion: () => void): Promise<void> {
 
 function harness(overrides: Partial<ConstructorParameters<typeof ContactImportService>[0]> = {}) {
   const state = { job: null as Record<string, unknown> | null, calls: [] as GraphOp[],
-    runCount: 0, released: 0, fileAvailable: true };
+    runCount: 0, released: 0, fileAvailable: true, lastCommit: null as Record<string, unknown> | null };
   const graph: GraphClient = {
     request: async <T>(op: GraphOp, payload: unknown): Promise<T> => {
       state.calls.push(op);
@@ -55,6 +55,7 @@ function harness(overrides: Partial<ConstructorParameters<typeof ContactImportSe
       }
       if (op === 'get_import_job') return state.job as T;
       if (op === 'commit_import') {
+        state.lastCommit = input;
         if (input.expected_version !== state.job?.version) throw new Error('VERSION_CONFLICT');
         state.job = { ...state.job, status: 'committed', version: Number(state.job?.version) + 1 };
         return { import_id: 'ci_1', status: 'committed', version: state.job.version } as T;
@@ -234,4 +235,22 @@ describe('reviewed contact imports', () => {
     await expect(service.get('ci_1', 'reviewer', -1, 20)).rejects.toThrow('pagination');
     await expect(service.get('ci_1', 'reviewer', 0, 51)).rejects.toThrow('pagination');
   });
+});
+
+it.each([false, true])('does not select an education relation with missing or mismatched optional evidence: %j', async wrong => {
+  const proof = (subject_kind: string, subject_id: string, field_path: string, value: unknown) => ({ evidence_id: field_path,
+    subject_kind, subject_id, field_path, value, source_type: 'file', file_name: 'resume.pdf', file_sha256: 'abc',
+    quote: '陈晓就读学校', locator_status: 'located', collected_at: '2026-10-09T00:00:00.000Z' });
+  const person = ImportCandidateSchema.parse({ ...candidate, evidence: [proof('entity', 'c_1', 'properties.name', '陈晓')],
+    relation_suggestions: [{ source_candidate_id: 'c_1', target_candidate_id: 'school', relation_type: 'alumniOf', properties: { major: '软件工程' },
+      evidence: [proof('relation', 'c_1:school', '$relation', { relation_type: 'alumniOf', source_id: 'c_1', target_id: 'school' }),
+        ...(wrong ? [proof('relation', 'c_1:school', 'properties.major', '其他专业')] : [])], uncertain: false }] });
+  const school = ImportCandidateSchema.parse({ candidate_id: 'school', label: 'Organization', properties: { name: '学校' },
+    evidence: [proof('entity', 'school', 'properties.name', '学校')], can_commit: true });
+  const { service, state } = harness({ extract: async () => ({ candidates: [person, school], warnings: [], processedBlockIds: ['b_1'], unprocessedBlockIds: [] }) });
+  await service.start({ file_id: file.fileId, operation_id: 'education-start' }, 'reviewer');
+  await eventually(() => expect(state.job?.status).toBe('ready_for_review'));
+  await service.commit({ import_id: 'ci_1', preview_version: Number(state.job!.version), operation_id: 'contact-import:ci_1', auto_create: true }, 'reviewer');
+  expect(state.lastCommit?.choices).toEqual([{ candidate_id: 'c_1', action: 'create' }, { candidate_id: 'school', action: 'create' }]);
+  expect(state.lastCommit?.relation_choices).toEqual([]);
 });

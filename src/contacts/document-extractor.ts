@@ -15,7 +15,7 @@ const DocumentProfile = z.object({
   subject_status: z.enum(['single', 'ambiguous', 'absent']), person: z.array(z.unknown()),
   education: z.array(z.unknown()), employment: z.array(z.unknown()), projects: z.array(z.unknown()), organization_clues: z.array(z.unknown()),
 }).strict();
-const Education = z.object({ local_id: z.string().trim().min(1).max(100), organization: z.array(z.unknown()), attendance: z.unknown() }).strict();
+const Education = z.object({ local_id: z.string().trim().min(1).max(100), organization: z.array(z.unknown()), attendance: z.unknown(), details: z.array(z.unknown()).default([]) }).strict();
 const Employment = z.object({ local_id: z.string().trim().min(1).max(100), organization: z.array(z.unknown()), employment: z.unknown(), role: z.array(z.unknown()) }).strict();
 const Client = z.object({ organization: z.array(z.unknown()), client: z.unknown() }).strict();
 const Project = z.object({ local_id: z.string().trim().min(1).max(100), project: z.array(z.unknown()), participation: z.unknown(), role: z.array(z.unknown()), clients: z.array(z.unknown()) }).strict();
@@ -139,6 +139,7 @@ Fact certainty != Link certainty: a printed organization name is uncertain:false
 {"organization":[{"field_path":"properties.name","value":"Example Network","evidence":[{"block_id":"b4","quote":"Example Network"}],"uncertain":false}],"association":{"evidence":[{"block_id":"b4","quote":"association unconfirmed"}],"uncertain":true}}
 Nested project example: {"local_id":"p1","project":[{"field_path":"properties.name","value":"Project A","evidence":[{"block_id":"b5","quote":"Project A"}],"uncertain":false}],"participation":{"evidence":[{"block_id":"b5","quote":"participated in Project A"}],"uncertain":false},"role":[],"clients":[{"organization":[{"field_path":"properties.name","value":"Client B","evidence":[{"block_id":"b6","quote":"Client B"}],"uncertain":false}],"client":{"evidence":[{"block_id":"b6","quote":"Client B"}],"uncertain":false}}]}.
 Allowed person properties: name,alternateName,description,telephone,email,address,url,sameAs,jobTitle,skills,givenName,familyName,additionalName,honorificPrefix,honorificSuffix,birthDate,deathDate,gender,nationality,birthPlace,homeLocation,workLocation,knowsAbout,knowsLanguage,award,hasOccupation,hasCredential,contactPoint,faxNumber,image,disambiguatingDescription; extensions: nativePlace,hobbies,maritalStatus,instantMessaging. Organization properties: name,alternateName,description,telephone,email,address,url,sameAs,legalName,identifier. Project properties: name,description. Paths need properties. or extensions. prefix.
+Education entries additionally carry details:Fact[] with paths properties.major, properties.educationLevel, properties.startDate, properties.endDate. These describe ONLY that person's education episode, never school properties. Organization facts describe ONLY the institution itself; personal skills, roles, education levels and dates never belong there. Employment and project participation roles belong in role, not organization/project. Education level does not prove graduation or an awarded degree. Unknown details=[].
 Reuse local_id for the SAME experience. Context summaries are not evidence; only single authorized source_quotes for that endpoint may be reused. Already extracted facts persist: only add new-block facts, do not restate complete prior experiences. Education implies attendance, not graduation. Finish JSON.`;
 
 type PriorClue = {
@@ -308,7 +309,8 @@ function resolveProfile(profile: Profile, resolve: (block: string, quote: string
         return { ...client, organization: facts(client.organization, clientIds), client: assessment(client.client, [id, ...clientIds]) };
       }) : entry.clients };
     const link = kind === 'education' ? 'attendance' : kind === 'employment' ? 'employment' : 'association';
-    return { ...entry, organization: facts(entry.organization, [id]), [link]: assessment(entry[link], ids), ...(kind === 'employment' ? { role: roles(entry.role, ids) } : {}) };
+    return { ...entry, organization: facts(entry.organization, [id]), [link]: assessment(entry[link], ids),
+      ...(kind === 'employment' ? { role: roles(entry.role, ids) } : kind === 'education' ? { details: facts(entry.details ?? [], ids) } : {}) };
   };
   return { ...profile, person: profile.person.flatMap(factItems).map(f => bind(f, [PERSON_ID])),
     education: profile.education.map((e, n) => mapEntry(e, 'education', n)),
@@ -416,9 +418,17 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
     const proof = ref?.success ? { ...ref.data, field_path: path, value } : undefined;
     reviewField(draft.review_items, draft.warnings, path, value, reason, proof, proof ? blocks.get(proof.block_id) : undefined);
   };
-  const fields = (draft: Draft, rawFacts: unknown[], forced?: ReviewItem['reason'], role = false): Record<string, unknown> => {
-    const properties = role ? {} as Record<string, unknown> : draft.properties;
+  const fields = (draft: Draft, rawFacts: unknown[], forced?: ReviewItem['reason'], role = false, education = false): Record<string, unknown> => {
+    const properties = role || education ? {} as Record<string, unknown> : draft.properties;
     rawFacts = rawFacts.map(raw => normalizeFact(raw, draft.label, role));
+    if (education) rawFacts = rawFacts.map(raw => typeof object(raw).value === 'string'
+      ? { ...object(raw), value: (object(raw).value as string).trim() } : raw);
+    if (role || education) rawFacts = rawFacts.map(raw => {
+      const fact = object(raw);
+      return typeof fact.field_path === 'string' && /\.(startDate|endDate)$/u.test(fact.field_path)
+        && typeof fact.value === 'string' && /^\d{4}\.\d{2}(?:\.\d{2})?$/u.test(fact.value)
+        ? { ...fact, value: fact.value.replaceAll('.', '-') } : raw;
+    });
     const scalarValues = new Map<string, unknown[]>();
     for (const raw of rawFacts) {
       const value = object(raw), path = value.field_path;
@@ -430,11 +440,19 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
     for (const raw of rawFacts) {
       const parsed = Fact.safeParse(raw), shell = object(raw);
       const path = typeof shell.field_path === 'string' ? shell.field_path : '$field';
+      if (!role && !education && (draft.label === 'Organization' && !/^properties\.(name|alternateName|description|telephone|email|address|url|sameAs|legalName|identifier)$/u.test(path)
+        || draft === person && /^properties\.(?:role\.)?(major|educationLevel|startDate|endDate|roleName)$/u.test(path))) {
+        review(person, '$experience', { kind: 'unassigned', original_field_path: path, value: shell.value,
+          ...(draft !== person && typeof draft.properties.name === 'string' ? { organization_name: draft.properties.name } : {}) }, 'invalid_shape', raw);
+        continue;
+      }
       if (!parsed.success) { review(draft, path, shell.value ?? raw, 'invalid_shape', raw); continue; }
       const fact = parsed.data, parts = path.split('.'), field = parts.at(-1)!;
       let valid = role ? parts.length === 3 && parts[0] === 'properties' && parts[1] === 'role'
         && ['roleName', 'startDate', 'endDate'].includes(field)
         && (field === 'roleName' ? typeof fact.value === 'string' && !!fact.value.trim() : PartialDateSchema.safeParse(fact.value).success)
+        : education ? parts.length === 2 && parts[0] === 'properties' && ['major', 'educationLevel', 'startDate', 'endDate'].includes(field)
+          && (field.endsWith('Date') ? PartialDateSchema.safeParse(fact.value).success : typeof fact.value === 'string' && !!fact.value.trim())
         : parts.length === 2 && (parts[0] === 'properties' || parts[0] === 'extensions' && draft.label === 'Person')
           && shapeValid(draft.label, parts[0] as 'properties' | 'extensions', field, fact.value);
       if (['telephone', 'faxNumber'].includes(field)) valid &&= typeof fact.value === 'string' && /^\+?[\d ()\-.]{5,40}$/u.test(fact.value) && fact.value.replace(/\D/gu, '').length >= 5;
@@ -448,32 +466,42 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
       const next = arrayFields.has(field) ? [...(Array.isArray(previous) ? previous : []), fact.value].filter((v, i, all) => all.findIndex(x => equal(v, x)) === i) : fact.value;
       target[field] = next;
       const schema = parts[0] === 'extensions' ? PersonExtensionsSchema : draft.label === 'Person' ? PersonCandidatePropertiesSchema : draft.label === 'Organization' ? OrganizationPropertiesSchema.partial({ name: true }) : ProjectCandidatePropertiesSchema;
-      if (!role && !schema.safeParse(target).success) {
+      if (!role && !education && !schema.safeParse(target).success) {
         if (previous === undefined) delete target[field]; else target[field] = previous;
         review(draft, path, fact.value, 'invalid_shape', raw); continue;
       }
-      const proofs = evidence(fact, draft, path, fact.value, role);
+      const proofs = evidence(fact, draft, path, fact.value, role || education);
       for (const proof of proofs) if (!draft.evidence.some(e => e.field_path === path && equal(e.value, proof.value) && e.quote === proof.quote && origin.get(e.evidence_id) === origin.get(proof.evidence_id))) draft.evidence.push(proof);
     }
-    if (role && typeof properties.startDate === 'string' && typeof properties.endDate === 'string'
+    if ((role || education) && typeof properties.startDate === 'string' && typeof properties.endDate === 'string'
       && properties.startDate.slice(0, properties.endDate.length) > properties.endDate.slice(0, properties.startDate.length)) {
       for (const raw of rawFacts) {
         const fact = object(raw);
-        if (fact.field_path === 'properties.role.endDate' && equal(fact.value, properties.endDate)) {
-          review(draft, 'properties.role.endDate', properties.endDate, 'invalid_shape', raw);
+        if (fact.field_path === (role ? 'properties.role.endDate' : 'properties.endDate') && equal(fact.value, properties.endDate)) {
+          review(draft, String(fact.field_path), properties.endDate, 'invalid_shape', raw);
         }
       }
       delete properties.endDate;
-      draft.evidence = draft.evidence.filter(e => e.field_path !== 'properties.role.endDate');
+      draft.evidence = draft.evidence.filter(e => e.field_path !== (role ? 'properties.role.endDate' : 'properties.endDate'));
     }
     return properties;
   };
   fields(person, profiles.filter(p => p.subject_status === 'single').flatMap(p => p.person), ambiguous ? 'ambiguous_owner' : undefined);
   fields(person, profiles.filter(p => p.subject_status !== 'single').flatMap(p => p.person), 'ambiguous_owner');
   const relation = (source: Draft, target: Draft, type: ImportCandidate['relation_suggestions'][number]['relation_type'], assessments: unknown[], roles: unknown[] = [], forced?: ReviewItem['reason'], clue = false) => {
-    const roleDraft: Draft = { ...source, evidence: [], review_items: source.review_items, warnings: source.warnings };
-    const role = fields(roleDraft, roles, forced, true);
-    const properties = type === 'worksFor' || type === 'memberOf' ? { role: { '@type': 'OrganizationRole', ...role } } : {};
+    const roleDraft: Draft = { ...source, evidence: [], review_items: [], warnings: source.warnings };
+    const role = fields(roleDraft, roles, forced, type !== 'alumniOf', type === 'alumniOf');
+    const properties = type === 'worksFor' || type === 'memberOf' ? { role: { '@type': 'OrganizationRole', ...role } } : type === 'alumniOf' ? role : {};
+    for (const item of roleDraft.review_items) {
+      if (item.kind !== 'field') continue;
+      const field = item.field_path.split('.').at(-1)!;
+      const pending = { ...role, [field]: item.value };
+      const reviewItem = { kind: 'relation' as const, source_candidate_id: source.candidate_id, target_candidate_id: target.candidate_id,
+        relation_type: type, properties: type === 'alumniOf' ? pending : { role: { '@type': 'OrganizationRole', ...pending } },
+        reason: item.reason, ...(item.quote ? { quote: item.quote } : {}), ...(item.page ? { page: item.page } : {}) };
+      if (ReviewItemSchema.safeParse(reviewItem).success && source.review_items.length < 100) source.review_items.push(reviewItem);
+      else source.warnings.push('经历待核实项超过保存限制，已跳过');
+    }
     // An empty continuation placeholder adds no contrary evidence. Keep it in
     // review without retracting an independently supported earlier assessment.
     if (assessments.some(raw => !reasonFor(raw))) {
@@ -524,7 +552,14 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
     for (const kind of ['education', 'employment', 'projects', 'organization_clues'] as const) {
       profile[kind].forEach((raw, n) => {
         const schema = kind === 'education' ? Education : kind === 'employment' ? Employment : kind === 'projects' ? Project : OrganizationClue;
-        const parsed = schema.safeParse(raw);
+        const shell = object(raw);
+        let entryInput = raw;
+        if (kind === 'education' && shell.details !== undefined && !Array.isArray(shell.details)) {
+          review(person, '$experience', { kind, local_id: shell.local_id, original_field_path: 'details', value: shell.details,
+            organization_name: Array.isArray(shell.organization) ? shell.organization.map(object).find(f => f.field_path === 'properties.name')?.value : undefined }, 'invalid_shape', raw);
+          entryInput = { ...shell, details: [] };
+        }
+        const parsed = schema.safeParse(entryInput);
         if (!parsed.success) { review(person, `$${kind}`, raw, 'invalid_shape', raw); return; }
         const entry = parsed.data as Record<string, unknown>, localId = String(entry.local_id ?? `${batch}:${n}`), key = keyFor(kind, localId);
         const duplicate = kind !== 'organization_clues' && (localIds.has(localId) || idKinds.has(localId) && idKinds.get(localId) !== kind);
@@ -540,15 +575,22 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
     const { kind, entries } = group;
     const target = create(kind === 'projects' ? 'Project' : 'Organization', entityId(key)); keys.set(key, target.candidate_id);
     const forced = group.conflict ? 'ambiguous_context' : undefined;
-    fields(target, entries.flatMap(e => e[kind === 'projects' ? 'project' : 'organization'] as unknown[]), forced);
+    const detailFields = kind === 'education' ? ['major', 'educationLevel', 'startDate', 'endDate']
+      : kind === 'employment' || kind === 'projects' ? ['roleName', 'startDate', 'endDate'] : [];
+    const misplaced = entries.flatMap(e => (e[kind === 'projects' ? 'project' : 'organization'] as unknown[]))
+      .filter(raw => /^properties\.[^.]+$/u.test(String(object(raw).field_path)) && detailFields.includes(String(object(raw).field_path).split('.').at(-1)!));
+    const institutionFacts = entries.flatMap(e => e[kind === 'projects' ? 'project' : 'organization'] as unknown[]).filter(raw => !misplaced.includes(raw));
+    fields(target, institutionFacts, forced);
     // A changed scalar within a reused local_id is an explicit experience conflict.
-    const scalarFacts = entries.flatMap(e => e[kind === 'projects' ? 'project' : 'organization'] as unknown[]).map(raw => object(normalizeFact(raw, target.label)));
+    const scalarFacts = institutionFacts.map(raw => object(normalizeFact(raw, target.label)));
     const conflicting = group.conflict || scalarFacts.some(fact => typeof fact.field_path === 'string'
       && !arrayFields.has(fact.field_path.split('.').at(-1)!)
       && scalarFacts.some(other => other.field_path === fact.field_path && !equal(other.value, fact.value)));
     const assessment = kind === 'education' ? 'attendance' : kind === 'employment' ? 'employment' : kind === 'projects' ? 'participation' : 'association';
     const type = kind === 'education' ? 'alumniOf' : kind === 'employment' ? 'worksFor' : kind === 'projects' ? 'memberOf' : 'affiliation';
-    relation(person, target, type, entries.map(e => e[assessment]), entries.flatMap(e => Array.isArray(e.role) ? e.role : []), group.ambiguousOwner ? 'ambiguous_owner' : conflicting ? 'ambiguous_context' : undefined, kind === 'organization_clues');
+    const details = entries.flatMap(e => Array.isArray(e[kind === 'education' ? 'details' : 'role']) ? e[kind === 'education' ? 'details' : 'role'] as unknown[] : []);
+    relation(person, target, type, entries.map(e => e[assessment]), [...details, ...misplaced.map(raw => kind === 'employment' || kind === 'projects'
+      ? { ...object(raw), field_path: String(object(raw).field_path).replace('properties.', 'properties.role.') } : raw)], group.ambiguousOwner ? 'ambiguous_owner' : conflicting ? 'ambiguous_context' : undefined, kind === 'organization_clues');
     if (kind !== 'organization_clues') pending.push({ local_id: group.localId, kind, source_candidate_id: PERSON_ID, target_candidate_id: target.candidate_id });
     if (kind === 'projects') {
       for (const entry of entries) {

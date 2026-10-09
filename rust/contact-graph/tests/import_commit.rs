@@ -37,6 +37,119 @@ fn count(store: &Store, table: &str) -> i64 {
 }
 
 #[test]
+fn auto_selected_education_requires_each_field_quote_and_rolls_back_on_mismatch() {
+    for wrong_major in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let file_proof = |path: &str, value: Value| {
+            json!({"field_path":path,"value":value,"source_type":"file",
+            "file_name":"resume.pdf","file_sha256":"abc","quote":"本人学校软件工程","locator_status":"located","collected_at":"2026-10-09T00:00:00Z"})
+        };
+        let mut person = candidate("person", "本人");
+        person["relation_suggestions"] = json!([{"source_candidate_id":"person","target_candidate_id":"school","relation_type":"alumniOf",
+            "properties":{"major":"软件工程"},"uncertain":false,"evidence":[
+                file_proof("$relation",json!({"relation_type":"alumniOf","source_id":"person","target_id":"school"})),
+                file_proof("properties.major",json!(if wrong_major {"错误专业"} else {"软件工程"}))]}]);
+        let school = json!({"candidate_id":"school","label":"Organization","properties":{"name":"学校"},
+            "evidence":[proof("properties.name",json!("学校"))],"can_commit":true,"relation_suggestions":[],"warnings":[]});
+        let import_id = ready(&store, vec![person, school]);
+        let input = json!({"operation_id":format!("contact-import:{import_id}"),"actor":"reviewer","import_id":import_id,"expected_version":2,
+            "auto_selected_relations":true,"choices":[{"candidate_id":"person","action":"create"},{"candidate_id":"school","action":"create"}],
+            "relation_choices":[{"source_candidate_id":"person","target_candidate_id":"school","relation_type":"alumniOf","properties":{"major":"软件工程"}}]});
+        let result = store.commit_import(&input);
+        assert_eq!(result.is_ok(), !wrong_major, "{result:?}");
+        assert_eq!(count(&store, "entity_ids"), if wrong_major { 0 } else { 2 });
+        if !wrong_major {
+            let stored: String = store
+                .graph
+                .connection()
+                .query_row(
+                    "SELECT record_json FROM evidence WHERE field_path='properties.major'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(stored.contains("软件工程"), "{stored}");
+            let saved_properties: String = store
+                .graph
+                .connection()
+                .query_row(
+                    "SELECT properties FROM kg_relations WHERE rel_type='alumniOf'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&saved_properties).unwrap(),
+                json!({"major":"软件工程"})
+            );
+        }
+    }
+}
+
+#[test]
+fn optional_education_claims_do_not_pollute_the_school_or_block_commit() {
+    for create_school in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let mut person = candidate("person", "本人");
+        person["review_items"] = json!([{"kind":"relation","source_candidate_id":"person","target_candidate_id":"school",
+        "relation_type":"alumniOf","properties":{"major":"软件工程","startDate":"2026","endDate":"2022"},"reason":"invalid_shape"},
+        {"kind":"field","field_path":"$experience","value":{"kind":"unassigned","original_field_path":"properties.major","value":"未知专业"},"reason":"invalid_shape"}]);
+        let school = json!({"candidate_id":"school","label":"Organization","properties":{"name":"学校"},
+        "evidence":[proof("properties.name",json!("学校"))],"can_commit":true,"warnings":[],"relation_suggestions":[],
+        "review_items":[{"kind":"field","field_path":"properties.major","value":"软件工程","reason":"invalid_shape"}]});
+        let import_id = ready(&store, vec![person, school]);
+        let input = json!({"operation_id":format!("contact-import:{import_id}"),"actor":"reviewer","import_id":import_id,"expected_version":2,
+        "choices":[{"candidate_id":"person","action":"create"},{"candidate_id":"school","action":if create_school {"create"} else {"skip"}}],"relation_choices":[]});
+        let result = store.commit_import(&input).unwrap();
+        assert!(result.to_string().contains("机构待核实项"), "{result}");
+        assert_eq!(
+            count(&store, "entity_ids"),
+            if create_school { 2 } else { 1 }
+        );
+        assert_eq!(count(&store, "contact_claims"), 2);
+        let invalid: i64 = store
+            .graph
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM contact_claims WHERE field_path='properties.major'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(invalid, 0);
+        let saved: String = store
+            .graph
+            .connection()
+            .query_row(
+                "SELECT value_json FROM contact_claims WHERE kind='relation'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(saved.contains("学校"), "{saved}");
+        let target: Option<String> = store
+            .graph
+            .connection()
+            .query_row(
+                "SELECT target_id FROM contact_claims WHERE kind='relation'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(target.is_some(), create_school);
+        assert_eq!(
+            serde_json::from_str::<Value>(&saved).unwrap()["target_candidate_id"],
+            "school"
+        );
+        let replay = store.commit_import(&input).unwrap();
+        assert_eq!(replay["replayed"], true);
+        assert_eq!(count(&store, "contact_claims"), 2);
+    }
+}
+
+#[test]
 fn auto_selected_relation_keeps_only_located_file_provenance() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
