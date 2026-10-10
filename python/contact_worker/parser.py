@@ -93,9 +93,11 @@ def preflight(path: Path, file_type: str, limits: dict[str, int] | None = None) 
 
 def convert_local(path: Path) -> Any:
     phase("dependencies_loading")
-    from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.datamodel.base_models import InputFormat, ConversionStatus
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, NativePdfPipelineOptions
     from docling.document_converter import DocumentConverter, ImageFormatOption, PdfFormatOption
+
+    from docling.pipeline.native_pdf_pipeline import NativePdfPipeline
 
     phase("dependencies_loaded")
     options = PdfPipelineOptions()
@@ -105,12 +107,31 @@ def convert_local(path: Path) -> Any:
     options.generate_picture_images = False
     phase("converter_initializing")
     converter = DocumentConverter(format_options={
-        InputFormat.PDF: PdfFormatOption(pipeline_options=options),
+        InputFormat.PDF: PdfFormatOption(
+            pipeline_cls=NativePdfPipeline,
+            pipeline_options=NativePdfPipelineOptions(
+                parser_threads=1, generate_page_images=False, generate_picture_images=False)),
         InputFormat.IMAGE: ImageFormatOption(pipeline_options=options),
     })
     phase("converter_initialized")
     phase("conversion_started")
-    document = converter.convert(str(path)).document
+    result = converter.convert(str(path))
+    if result.status != ConversionStatus.SUCCESS:
+        raise ParseError("CONVERSION_FAILED")
+    document = result.document
+    # Upload paths are UUIDs with no extension; inspect the already validated signature.
+    with path.open("rb") as source:
+        is_pdf = source.read(5) == b"%PDF-"
+    if is_pdf:
+        expected_pages = set(range(1, len(PdfReader(str(path)).pages) + 1))
+        if set(document.pages) != expected_pages:
+            raise ParseError("CONVERSION_FAILED")
+        text_pages = {prov.page_no for item, _ in document.iterate_items()
+                      if isinstance(getattr(item, "text", None), str) and item.text.strip()
+                      for prov in getattr(item, "prov", [])}
+        # Native extraction cannot establish coverage of a page without text.
+        if not expected_pages.issubset(text_pages):
+            raise ParseError("PDF_TEXT_UNAVAILABLE")
     phase("conversion_completed")
     return document
 

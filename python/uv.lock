@@ -232,7 +232,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "docling", specifier = ">=2.105.0,<3.0.0" },
+    { name = "docling", specifier = ">=2.130.0,<3.0.0" },
     { name = "pillow", specifier = ">=11.0.0,<13.0.0" },
     { name = "pypdf", specifier = ">=6.0.0,<7.0.0" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = "==2.14.0" },

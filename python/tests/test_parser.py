@@ -32,6 +32,7 @@ def test_real_docling_text_pdf_retains_second_page():
     assert any(block.get("page") == 1 and "Lin Xiang" in block["text"] for block in blocks)
     assert any(block.get("page") == 2 and "Alpha Studio" in block["text"] for block in blocks)
     assert all(block.get("source_ref", "").startswith("#/") for block in blocks)
+    assert all(block.get("layout_label") == "text" for block in blocks)
 
 
 def test_missing_provenance_omits_page():

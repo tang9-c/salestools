@@ -101,3 +101,9 @@ it('retains the model HTTP status without response bodies or credentials', () =>
     diagnostic: { root_code: 'REMOTE_HTTP_ERROR', http_status: 401 } });
   expect(JSON.stringify(importFailure('extract', error))).not.toContain('secret response');
 });
+
+
+it('preserves the native PDF no-text failure code', () => {
+  expect(importFailure('parse', new Error('PDF_TEXT_UNAVAILABLE')))
+    .toMatchObject({ stage: 'parse', code: 'PDF_TEXT_UNAVAILABLE' });
+});
