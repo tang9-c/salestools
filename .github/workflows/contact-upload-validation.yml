@@ -132,6 +132,7 @@ jobs:
       - name: Run full Vitest suite including native integration and Chromium SDK iframe
         env:
           NODE_ENV: test
+          CONTACT_UPLOAD_BUNDLE_REQUIRED: "1"
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
         run: |
@@ -144,6 +145,7 @@ jobs:
           ci_node_bin=$(command -v node)
           sudo -u contact-ci -- env -i PATH="$(dirname "$ci_node_bin"):/usr/bin:/bin" \
             HOME="$ci_vitest_home" NODE_ENV=test \
+            CONTACT_UPLOAD_BUNDLE_REQUIRED=1 \
             CONTACT_UPLOAD_CHROMIUM="$CONTACT_UPLOAD_CHROMIUM" \
             HF_HOME="$HF_HOME" XDG_CACHE_HOME="$XDG_CACHE_HOME" \
             HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \

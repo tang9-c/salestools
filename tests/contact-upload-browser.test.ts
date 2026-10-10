@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { stripTypeScriptTypes } from 'node:module';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -30,7 +31,7 @@ const preview = (overrides: Record<string, unknown> = {}) => ({
   offset: 0, limit: 50, ...overrides,
 });
 type Harness = { page: Page; ui: Page | Frame; commits: unknown[]; logs: string[]; requests: Array<{ path: string; method: string; auth?: string; cookie?: string; origin?: string }> };
-type Options = { app?: boolean; realSdk?: boolean; holdSession?: boolean; data?: ReturnType<typeof preview>;
+type Options = { app?: boolean; realSdk?: boolean; holdSession?: boolean; bundle?: boolean; data?: ReturnType<typeof preview>;
   response?: (route: Route, h: Harness) => Promise<boolean> };
 async function json(route: Route, data: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(data) });
@@ -65,6 +66,16 @@ async function open(options: Options = {}): Promise<Harness> {
   await page.route('**/*', async route => {
     const request = route.request(); const url = new URL(request.url());
     if (request.isNavigationRequest()) {
+      if (options.bundle) {
+        // CI must use the real artifact, not the interpreter adapter above.
+        const artifact = await readFile('web/dist/contact-upload.html', 'utf8');
+        const script = /<script>([\s\S]*?)<\/script>/u.exec(artifact)?.[1];
+        if (!script) throw new Error('Built upload page has no inline script');
+        const hash = createHash('sha256').update(script).digest('base64');
+        await route.fulfill({ contentType: 'text/html', body: artifact, headers: {
+          'Content-Security-Policy': `default-src 'none'; script-src 'sha256-${hash}'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; form-action 'none'; base-uri 'none'; frame-ancestors 'none'`,
+        } }); return;
+      }
       if (options.realSdk && request.frame() === page.mainFrame()) {
         await route.fulfill({ contentType: 'text/html', body: '<!doctype html><iframe name="upload-app" src="/embedded-ui" style="width:100%;height:1000px"></iframe>' }); return;
       }
@@ -182,6 +193,16 @@ beforeAll(async () => {
 });
 afterEach(async () => { await Promise.all(pages.splice(0).map(page => page.close())); });
 afterAll(async () => { await browser?.close(); });
+
+it.runIf(process.env.CONTACT_UPLOAD_BUNDLE_REQUIRED === '1')('starts the actual CI-built upload page under its script CSP and loads the preview', async () => {
+  const h = await open({ bundle: true });
+  expect(await h.page.locator('body').getAttribute('data-state')).toBe('review');
+  expect(await h.page.locator('#commit').isEnabled()).toBe(true);
+  expect(await h.page.locator('#status').count()).toBe(1);
+  expect(h.requests.some(request => request.path === '/contact-upload/import' && request.method === 'POST')).toBe(true);
+  expect(h.requests.some(request => request.path === '/contact-upload/import' && request.method === 'GET')).toBe(true);
+  expect(h.logs).toEqual([]);
+});
 
 it('shows the file/model/shared-library disclosure before the user selects a file', async () => {
   const { page } = await open({ app: true });
