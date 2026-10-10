@@ -13,6 +13,8 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, Callable
 
+from .diagnostics import phase
+
 from PIL import Image, UnidentifiedImageError
 from pypdf import PdfReader
 
@@ -90,20 +92,27 @@ def preflight(path: Path, file_type: str, limits: dict[str, int] | None = None) 
 
 
 def convert_local(path: Path) -> Any:
+    phase("dependencies_loading")
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, ImageFormatOption, PdfFormatOption
 
+    phase("dependencies_loaded")
     options = PdfPipelineOptions()
     options.do_ocr = True
     options.images_scale = 1.0
     options.generate_page_images = False
     options.generate_picture_images = False
+    phase("converter_initializing")
     converter = DocumentConverter(format_options={
         InputFormat.PDF: PdfFormatOption(pipeline_options=options),
         InputFormat.IMAGE: ImageFormatOption(pipeline_options=options),
     })
-    return converter.convert(str(path)).document
+    phase("converter_initialized")
+    phase("conversion_started")
+    document = converter.convert(str(path)).document
+    phase("conversion_completed")
+    return document
 
 
 def _scratch_bytes(path: Path) -> int:
@@ -224,7 +233,9 @@ def parse(path: str | Path, file_type: str, document_id: str,
           converter: Callable[[Path], Any] | None = None,
           request_id: str = "") -> list[dict[str, Any]]:
     local_path = Path(path)
+    phase("preflight_started")
     preflight(local_path, file_type, limits)
+    phase("preflight_completed")
     bounds = _limits(limits)
     try:
         with tempfile.TemporaryDirectory(prefix="contact-worker-", dir=os.environ.get("TMPDIR")) as scratch:
@@ -251,6 +262,7 @@ def parse(path: str | Path, file_type: str, document_id: str,
         raise ParseError("CONVERSION_FAILED") from error
     except Exception as error:
         raise ParseError("CONVERSION_FAILED") from error
+    phase("blocks_started")
     items = (item for item, _ in document.iterate_items()) if hasattr(document, "iterate_items") else iter(
         list(getattr(document, "texts", [])) + list(getattr(document, "tables", [])))
     blocks: list[dict[str, Any]] = []
@@ -279,4 +291,5 @@ def parse(path: str | Path, file_type: str, document_id: str,
             if isinstance(label, str) and label.strip():
                 block["layout_label"] = label
             blocks.extend(split_block(block, request_id))
+    phase("blocks_completed")
     return blocks

@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { importFailure, safeDiagnostic } from '../src/contacts/import-diagnostics.js';
 import { callWorkerSocket } from '../src/contacts/worker-ipc.js';
 import { ImportJobs } from '../src/contacts/import-jobs.js';
@@ -71,12 +71,18 @@ it('reports cleanup failure separately without replacing the original conversion
 
 it('keeps later Python diagnostic metadata after oversized stderr noise and pipe closure', async () => {
   const projectDir = fileURLToPath(new URL('./fixtures/contact-diagnostic-worker/', import.meta.url));
-  await expect(parseLocalDocument({ pythonBin: '/usr/bin/python3', projectDir,
-    filePath: join(projectDir, 'synthetic.pdf'), fileType: 'pdf', documentId: 'synthetic',
-    limits: {}, }, new AbortController().signal)).rejects.toMatchObject({
-    code: 'CONVERSION_FAILED', diagnostic: { exceptions: [{ type: 'PermissionError', errno: 13,
-      frames: [{ module: 'parser.py', function: 'parse', line: 7 }] }] },
-  });
+  const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  try {
+    await expect(parseLocalDocument({ pythonBin: '/usr/bin/python3', projectDir,
+      filePath: join(projectDir, 'synthetic.pdf'), fileType: 'pdf', documentId: 'synthetic',
+      limits: {}, }, new AbortController().signal)).rejects.toMatchObject({
+      code: 'CONVERSION_FAILED', diagnostic: { exceptions: [{ type: 'PermissionError', errno: 13,
+        frames: [{ module: 'parser.py', function: 'parse', line: 7 }] }] },
+    });
+    const logs = output.mock.calls.map(call => String(call[0])).join('');
+    expect(logs).toContain('"phase":"conversion_started"');
+    expect(logs).not.toContain('secret-document');
+  } finally { output.mockRestore(); }
 });
 
 it('logging failures cannot strand the queue or prevent cleanup', async () => {

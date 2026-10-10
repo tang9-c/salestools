@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { safeDiagnostic, type Diagnostic } from './import-diagnostics.js';
+import { memorySnapshot, parserPhase } from './worker-telemetry.js';
+import { basename } from 'node:path';
 
 // System tools use physical tree traversal with directory-relative operations, so a
 // malicious tree may exceed PATH_MAX without growing JS paths or following symlinks.
@@ -46,6 +48,26 @@ onTimeout: () => void): { child: ChildProcessWithoutNullStreams; kill: () => voi
       cwd: scratch, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true,
     });
   } catch (error) { rmSync(scratch, {recursive: true, force: true}); throw error; }
+  const started = Date.now();
+  let phase = 'process_started';
+  // Correlate with contact_import.file_id without logging arbitrary paths or names.
+  const name = basename(options.filePath);
+  const fileId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name) ? name : undefined;
+  const report = (event: string, extra: Record<string, unknown> = {}) => {
+    try {
+      process.stderr.write(`${JSON.stringify({ event, timestamp: new Date().toISOString(),
+        operation, file_id: fileId, pid: child.pid, phase, elapsed_ms: Date.now() - started,
+        broker_rss_bytes: process.memoryUsage().rss, ...memorySnapshot(child.pid), ...extra })}\n`);
+    } catch { /* Observability must not interrupt processing or cleanup. */ }
+  };
+  report('contact_parser_started');
+  const sampling = setInterval(() => report('contact_parser_memory'), 5000);
+  sampling.unref();
+  child.once('error', () => { clearInterval(sampling); report('contact_parser_spawn_failed'); });
+  child.once('exit', (code, signal) => {
+    clearInterval(sampling);
+    report('contact_parser_exited', { exit_code: code, signal });
+  });
   let groupStopped = false;
   const kill = () => {
     if (groupStopped) return;
@@ -60,7 +82,7 @@ onTimeout: () => void): { child: ChildProcessWithoutNullStreams; kill: () => voi
   // exit fires even if a descendant holds a pipe open; kill descendants before waiting for close.
   child.once('exit', kill);
   const cleanup = new Promise<Error | undefined>(resolve => child.once('close', () => {
-    clearTimeout(timer); kill();
+    clearTimeout(timer); clearInterval(sampling); kill();
     void removeScratch(scratch).then(resolve);
   }));
   let metadata: Diagnostic | undefined;
@@ -77,6 +99,8 @@ onTimeout: () => void): { child: ChildProcessWithoutNullStreams; kill: () => voi
       if (index === parts.length - 1) break;
       const line = pending; pending = '';
       if (droppingLine) { droppingLine = false; continue; }
+      const nextPhase = parserPhase(line);
+      if (nextPhase) { phase = nextPhase; report('contact_parser_phase'); continue; }
       if (!line.startsWith('CONTACT_DIAGNOSTIC ')) continue;
       try { metadata = safeDiagnostic(JSON.parse(line.slice('CONTACT_DIAGNOSTIC '.length))) ?? metadata; }
       catch { /* Discard arbitrary stderr, including parser/library messages. */ }

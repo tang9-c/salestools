@@ -37,3 +37,17 @@ def emit(error, stream=None):
     stream = sys.stderr if stream is None else stream
     stream.write('CONTACT_DIAGNOSTIC ' + json.dumps(diagnostic(error), separators=(',', ':')) + '\n')
     stream.flush()
+
+
+def phase(name):
+    """Fixed phase markers survive conversion stderr redirection; no document data."""
+    allowed = {"preflight_started", "preflight_completed", "dependencies_loading",
+               "dependencies_loaded", "converter_initializing", "converter_initialized",
+               "conversion_started", "conversion_completed", "blocks_started", "blocks_completed"}
+    if name not in allowed:
+        return
+    try:
+        sys.__stderr__.write("CONTACT_PHASE " + name + "\n")
+        sys.__stderr__.flush()
+    except Exception:
+        pass  # Diagnostics cannot change parser results.

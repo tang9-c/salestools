@@ -1,10 +1,25 @@
 import io
 import json
 import unittest
-from contact_worker.diagnostics import emit
+from contact_worker.diagnostics import emit, phase
+from unittest.mock import patch
+from contextlib import redirect_stderr
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_phase_survives_redirection_and_rejects_private_values(self):
+        stream = io.StringIO()
+        suppressed = io.StringIO()
+        with patch('sys.__stderr__', stream), redirect_stderr(suppressed):
+            phase('conversion_started')
+            phase('private-resume.pdf')
+        self.assertEqual(stream.getvalue(), 'CONTACT_PHASE conversion_started\n')
+        self.assertEqual(suppressed.getvalue(), '')
+
+    def test_phase_sink_failure_does_not_fail_parser(self):
+        with patch('sys.__stderr__', None):
+            phase('conversion_started')
+
     def test_cleanup_error_does_not_hide_original_conversion_error(self):
         try:
             try:
