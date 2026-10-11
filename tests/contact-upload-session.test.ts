@@ -4,10 +4,12 @@ import { UploadSessions } from '../src/contacts/upload-session.js';
 describe('upload sessions', () => {
   it('handoffs do not consume active quota until exchanged', () => {
     const sessions = new UploadSessions(() => true);
-    sessions.create('alice', 'source');
+    const first = sessions.create('alice', 'source');
     const handoff = sessions.createHandoff('alice', 'source');
     expect(() => sessions.create('alice', 'source')).not.toThrow();
-    expect(sessions.exchange(handoff.code)).toBeNull();
+    expect(() => sessions.exchange(handoff.code)).toThrow('UPLOAD_SESSION_CAPACITY');
+    sessions.exit(first.sessionId, first.bearer);
+    expect(sessions.exchange(handoff.code)).not.toBeNull();
     expect(sessions.exchange(handoff.code)).toBeNull();
   });
 

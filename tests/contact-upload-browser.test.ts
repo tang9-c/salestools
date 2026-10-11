@@ -334,6 +334,25 @@ it('handles unsupported files with safe selection retry and capacity with a reop
   expect(await h.page.locator('#file').isEnabled()).toBe(true);
 });
 
+it('shows session capacity without calling it expired and preserves the handoff until successful exchange', async () => {
+  let full = true;
+  const h = await open({ response: async route => {
+    if (new URL(route.request().url()).pathname !== '/contact-upload/exchange') return false;
+    await json(route, full ? { code: 'UPLOAD_SESSION_CAPACITY' } : { ok: true }, full ? 429 : 200);
+    return true;
+  } });
+  await h.page.goto(origin + '/contact-upload#code=capacity_test_code');
+  await h.page.reload();
+  await expect.poll(() => h.page.locator('#status').textContent()).toContain('两个活跃上传会话');
+  expect(await h.page.locator('#status').textContent()).not.toContain('已失效');
+  expect(await h.page.locator('#file').isEnabled()).toBe(false);
+  expect(new URL(h.page.url()).hash).toBe('#code=capacity_test_code');
+  full = false;
+  await h.page.reload();
+  await expect.poll(() => h.page.locator('#review').isVisible()).toBe(true);
+  expect(new URL(h.page.url()).hash).toBe('');
+});
+
 it('keeps an import number when extraction fails and can safely retry preview reads', async () => {
   let fail = true;
   const h = await open({ app: true, response: async route => {

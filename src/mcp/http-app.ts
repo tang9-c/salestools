@@ -243,8 +243,19 @@ export function createHttpApp(
       response.set('Cache-Control', 'no-store');
       if (!sameOrigin(request)) { response.status(403).end(); return; }
       const code = typeof request.body?.code === 'string' ? request.body.code : '';
-      const exchanged = page.sessions.exchange(code);
-      if (!exchanged) { response.status(401).json({ code: 'HANDOFF_INVALID' }); return; }
+      const failure = (status: number, code: 'HANDOFF_INVALID' | 'UPLOAD_SESSION_CAPACITY' | 'UPLOAD_SESSION_UNAVAILABLE') => {
+        try { process.stderr.write(`${JSON.stringify({ event: 'contact_upload_exchange', timestamp: new Date().toISOString(), outcome: 'failed', code, http_status: status })}\n`); }
+        catch { /* Logging must not affect session handling. */ }
+        response.status(status).json({ code });
+      };
+      let exchanged;
+      try { exchanged = page.sessions.exchange(code); }
+      catch (error) {
+        if (error instanceof Error && error.message === 'UPLOAD_SESSION_CAPACITY') failure(429, 'UPLOAD_SESSION_CAPACITY');
+        else failure(503, 'UPLOAD_SESSION_UNAVAILABLE');
+        return;
+      }
+      if (!exchanged) { failure(401, 'HANDOFF_INVALID'); return; }
       response.cookie(cookieName, `${exchanged.sessionId}.${exchanged.bearer}`, {
         secure: !localHost,
         httpOnly: true, sameSite: 'strict', path: '/', maxAge: 2 * 60 * 60_000,

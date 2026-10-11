@@ -73,10 +73,19 @@ export class UploadSessions {
   exchange(code: string): { sessionId: string; bearer: string } | null {
     const key = hash(code).toString('hex');
     const handoff = this.codes.get(key);
-    this.codes.delete(key);
-    if (!handoff || this.now() >= handoff.expiresAt) return null;
-    try { return this.create(handoff.actor, handoff.sourceTokenHash); }
-    catch { return null; }
+    if (!handoff || this.now() >= handoff.expiresAt) { this.codes.delete(key); return null; }
+    try {
+      const session = this.create(handoff.actor, handoff.sourceTokenHash);
+      this.codes.delete(key);
+      return session;
+    } catch (error) {
+      // Capacity is temporary, not an invalid secret. Preserve the original TTL
+      // so the same code can be retried after an existing session is closed.
+      if (error instanceof Error && error.message === 'UPLOAD_SESSION_CAPACITY') throw error;
+      this.codes.delete(key);
+      if (error instanceof Error && error.message === 'UPLOAD_SESSION_UNAUTHORIZED') return null;
+      throw error;
+    }
   }
 
   authorize(sessionId: string, bearer: string): UploadSession | null {

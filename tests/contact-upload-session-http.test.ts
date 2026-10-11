@@ -81,6 +81,28 @@ async function ready(h: Awaited<ReturnType<typeof setup>>) {
   expect((await fetch(`${h.base}/contact-upload/import`, { method: 'POST', headers: h.headers })).status).toBe(200);
 }
 
+it('returns explicit capacity error without consuming the handoff or exposing credentials', async () => {
+  const h = await setup();
+  h.sessions.create('alice', 'source');
+  const handoff = h.sessions.createHandoff('alice', 'source');
+  const log = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  try {
+    const exchange = () => fetch(`${h.base}/contact-upload/exchange`, { method: 'POST',
+      headers: { Origin: h.base, 'Content-Type': 'application/json' }, body: JSON.stringify(handoff) });
+    const blocked = await exchange();
+    expect(blocked.status).toBe(429);
+    expect(await blocked.json()).toEqual({ code: 'UPLOAD_SESSION_CAPACITY' });
+    expect(blocked.headers.get('set-cookie')).toBeNull();
+    const logs = log.mock.calls.map(c => String(c[0])).join('');
+    expect(logs).toContain('UPLOAD_SESSION_CAPACITY');
+    expect(logs).not.toContain(handoff.code);
+    expect(logs).not.toContain(h.session.bearer);
+    h.sessions.exit(h.session.sessionId, h.session.bearer);
+    expect((await exchange()).status).toBe(200);
+    expect((await exchange()).status).toBe(401);
+  } finally { log.mockRestore(); }
+});
+
 function confirm(h: Awaited<ReturnType<typeof setup>>, preview_version = 3, headers = h.headers) {
   return fetch(`${h.base}/contact-upload/commit`, { method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ preview_version }) });
