@@ -13,6 +13,37 @@ const run = (data: unknown, text = '原文', overrides = {}) => extractor(vi.fn(
 const owner = (candidates: ImportCandidate[]) => candidates.find(c => c.label === 'Person')!;
 const org = (name: string, quote = '原文', block_id = 'b1') => [fact('properties.name', name, quote, block_id)];
 
+it('normalizes explicit skill aliases while preserving every sourced quote and distinct technology', async () => {
+  const result = await run(profile({ person: [fact('properties.name', '本人', '本人'),
+    fact('properties.skills', 'K8s', '部署K8s集群'),
+    fact('properties.skills', 'Kubernetes', '维护Kubernetes'),
+    fact('properties.skills', 'python', 'python脚本'),
+    fact('properties.skills', 'Python', 'Python自动化'),
+    fact('properties.skills', 'MySQL', 'MySQL'), fact('properties.skills', 'MongoDB', 'MongoDB'),
+  ] }), '本人部署K8s集群，维护Kubernetes，python脚本，Python自动化，MySQL和MongoDB');
+  const person = owner(result.candidates);
+  expect(person.properties.skills).toEqual(['Kubernetes', 'Python', 'MySQL', 'MongoDB']);
+  expect(person.evidence.filter(e => e.field_path === 'properties.skills').map(e => e.quote))
+    .toEqual(['部署K8s集群', '维护Kubernetes', 'python脚本', 'Python自动化', 'MySQL', 'MongoDB']);
+  expect(person.evidence.filter(e => e.field_path === 'properties.skills').map(e => e.value))
+    .toEqual(['Kubernetes', 'Kubernetes', 'Python', 'Python', 'MySQL', 'MongoDB']);
+});
+
+it('deduplicates primary and supplemental skill aliases without accepting failed quotes', async () => {
+  const fetchFn = vi.fn().mockResolvedValueOnce(response(profile({ person: [
+    fact('properties.name', '本人', '本人'), fact('properties.skills', 'K8s', 'K8s'),
+  ] }))).mockResolvedValueOnce(response({ subject_candidate_id: 'document:person', subject_status: 'single', skills: [
+    fact('properties.skills', 'Kubernetes', 'Kubernetes'), fact('properties.skills', 'Python', '不存在的原文'),
+  ] }));
+  const result = await extractor(fetchFn, { skillSupplement: true }).extract(
+    [{ block_id: 'b1', text: '本人使用K8s和Kubernetes' }], new AbortController().signal);
+  const person = owner(result.candidates);
+  expect(person.properties.skills).toEqual(['Kubernetes']);
+  expect(person.evidence.filter(e => e.field_path === 'properties.skills')).toHaveLength(2);
+  expect(person.review_items).toContainEqual(expect.objectContaining({ value: 'Python', reason: 'quote_mismatch' }));
+  expect(person.can_commit).toBe(true);
+});
+
 it('explicitly enables thinking on every contact-document model request within the byte budget', async () => {
   const bodies: any[] = [];
   const fetchFn = vi.fn(async (_url, init) => {

@@ -198,7 +198,27 @@ fn merge_candidate_field(base: &mut Value, key: &str, candidate: &Value) {
         }
         if let Some(existing) = base.get_mut(key).and_then(Value::as_array_mut) {
             for item in incoming {
-                if !existing.contains(item) {
+                let duplicate = existing.iter().any(|old| {
+                    if key == "skills" {
+                        match (old.as_str(), item.as_str()) {
+                            (Some(a), Some(b)) => {
+                                let skill_key = |name: &str| {
+                                    let name = name.trim().to_ascii_lowercase();
+                                    if name == "k8s" {
+                                        "kubernetes".to_owned()
+                                    } else {
+                                        name
+                                    }
+                                };
+                                skill_key(a) == skill_key(b)
+                            }
+                            _ => old == item,
+                        }
+                    } else {
+                        old == item
+                    }
+                });
+                if !duplicate {
                     existing.push(item.clone());
                 }
             }

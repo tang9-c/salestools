@@ -764,6 +764,52 @@ fn merge_unions_existing_and_candidate_contact_values() {
 }
 
 #[test]
+fn merge_skill_aliases_keeps_both_sources_without_appending_duplicate_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let existing = store
+        .save_contact(&json!({"operation_id":"existing","actor":"reviewer",
+        "label":"Person","set_properties":{"name":"本人","skills":["K8s","Python","MySQL"]},
+        "evidence":[proof("properties.name",json!("本人")),proof("properties.skills",json!("K8s")),
+            proof("properties.skills",json!("Python")),proof("properties.skills",json!("MySQL"))]}))
+        .unwrap();
+    let target_id = existing["entity_id"].as_str().unwrap();
+    let mut preview = candidate("a", "本人");
+    preview["properties"]["skills"] = json!(["Kubernetes", "python", "MongoDB"]);
+    for skill in ["Kubernetes", "python", "MongoDB"] {
+        preview["evidence"]
+            .as_array_mut()
+            .unwrap()
+            .push(proof("properties.skills", json!(skill)));
+    }
+    let import_id = ready(&store, vec![preview]);
+    let input = json!({"operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+        "import_id":import_id,"expected_version":2,"choices":[{"candidate_id":"a","action":"merge",
+        "target_id":target_id,"expected_target_version":1,"keep_name":true}]});
+    store.commit_import(&input).unwrap();
+    let saved = store
+        .get_contact(&json!({"entity_id":target_id,"evidence_limit":50}))
+        .unwrap();
+    assert_eq!(
+        saved["entity"]["properties"]["skills"],
+        json!(["K8s", "Python", "MySQL", "MongoDB"])
+    );
+    let evidence = saved["evidence"].as_array().unwrap();
+    for skill in ["K8s", "Kubernetes", "Python", "python", "MySQL", "MongoDB"] {
+        assert!(evidence
+            .iter()
+            .any(|e| e["field_path"] == "properties.skills" && e["value"] == skill));
+    }
+    let replay = store.commit_import(&input).unwrap();
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(
+        store.get_contact(&json!({"entity_id":target_id})).unwrap()["entity"]["properties"]
+            ["skills"],
+        json!(["K8s", "Python", "MySQL", "MongoDB"])
+    );
+}
+
+#[test]
 fn corrected_name_preserves_verified_old_name() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
