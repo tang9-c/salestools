@@ -12,6 +12,13 @@ const detail = (id: string, relations: unknown[] = [], claims: unknown[] = []) =
   relations, unverified_claims: claims,
 });
 describe('one-hop contact graph', () => {
+  it('does not use internal IDs as unnamed node titles while preserving distinct identities', () => {
+    const ids = ['p_00112233445566778899aabbccddeeff', 'p_ffeeddccbbaa99887766554433221100'];
+    const graph = toGraph({ ...page, items: ids.map(entity_id => ({ entity_id, label: 'Person',
+      display_name: `未具名候选 · ${entity_id.slice(-8)}` })) });
+    expect(graph.nodes.map(n => n.id)).toEqual(ids);
+    expect(graph.nodes.map(n => n.title)).toEqual(['未具名人物', '未具名人物']);
+  });
   it('never creates employment from search names, titles or project matches', () => {
     expect(toGraph(page).edges).toEqual([]);
     expect(toGraph(page).nodes.map(n => n.id)).toEqual(['p1', 'p2']);

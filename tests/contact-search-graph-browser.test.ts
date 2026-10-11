@@ -117,6 +117,45 @@ afterEach(async () => { await Promise.all(pages.splice(0).map(p => p.close())); 
 afterAll(async () => { await browser?.close(); });
 async function completed(ui: Frame) { await expect.poll(() => ui.locator('#progress').textContent()).toContain('加载完成'); }
 
+it('shows endpoint names, distinct jobs and Chinese evidence labels instead of internal identifiers', async () => {
+  const personId = 'p_b3512f79cccd43eab17f3902724c50bb';
+  const relations = ['运维工程师', '质量工程师'].map((role, i) => ({ ...edge(i), source_id: personId,
+    properties: { role: { roleName: role } } }));
+  const h = await open(call => {
+    const d = detail(String(call.arguments.entity_id), call.arguments.entity_id === 'o1' ? relations : []);
+    if (call.arguments.entity_id === personId) d.entity.properties.name = '金政文';
+    if (call.arguments.evidence_limit === 10) d.evidence = [{ subject_kind: 'relation', subject_id: 'r0',
+      field_path: 'properties.role.roleName', quote: '岗位依据', source_type: 'manual' }] as never[];
+    return result(d);
+  });
+  await completed(h.ui);
+  await h.ui.locator('#node-list button').filter({ hasText: '云杉智造' }).click();
+  await expect.poll(() => h.ui.locator('#detail').innerText()).toContain('岗位依据');
+  const visible = await h.ui.locator('#detail').innerText();
+  expect(visible).toContain('金政文 → 云杉智造');
+  expect(visible).toContain('运维工程师'); expect(visible).toContain('质量工程师');
+  expect(visible).toContain('当前任职未知');
+  expect(visible).toContain('职位'); expect(visible).toContain('关系'); expect(visible).toContain('证据');
+  expect(visible).not.toContain(personId); expect(visible).not.toContain('o1');
+  expect(visible).not.toContain('properties.'); expect(visible).not.toContain('relations');
+  expect(await h.ui.locator('#detail .record').count()).toBe(3);
+});
+
+it('uses unnamed labels without exposing ID suffixes when endpoint names are unavailable', async () => {
+  const personId = 'p_00112233445566778899aabbccddeeff';
+  const h = await open(call => {
+    if (call.arguments.entity_id === personId) throw new Error('unavailable endpoint');
+    return result(detail('o1', [{ ...edge(1), source_id: personId }]));
+  });
+  await expect.poll(() => h.ui.locator('#progress').innerText()).toContain('部分失败');
+  await h.ui.locator('#node-list button').filter({ hasText: '云杉智造' }).click();
+  await expect.poll(() => h.ui.locator('#detail').innerText()).toContain('任职于');
+  const visible = await h.ui.locator('body').innerText();
+  expect(visible).not.toContain(personId); expect(visible).not.toContain('ccddeeff');
+  expect(visible).not.toContain(' / name');
+  expect(await h.ui.locator('#detail').innerText()).toContain('云杉智造');
+});
+
 it('automatically reads all root pages, names incoming endpoints and never traverses their relations', async () => {
   const h = await open(call => {
     if (call.arguments.entity_id === 'o1') return result(detail('o1',
@@ -321,9 +360,9 @@ it('keeps detail collection offsets independent and never removes graph edges wh
   });
   await completed(h.ui); await h.ui.locator('#node-list button').filter({ hasText: '云杉智造' }).click();
   await expect.poll(() => h.ui.locator('#detail').innerText()).toContain('证据页0');
-  await h.ui.locator('#detail .pager').filter({ hasText: 'evidence' }).getByRole('button', { name: '下一页' }).click();
+  await h.ui.locator('#detail .pager').filter({ hasText: '证据' }).getByRole('button', { name: '下一页' }).click();
   await expect.poll(() => h.ui.locator('#detail').innerText()).toContain('证据页2');
-  await h.ui.locator('#detail .pager').filter({ hasText: 'relations' }).getByRole('button', { name: '下一页' }).click();
+  await h.ui.locator('#detail .pager').filter({ hasText: '关系' }).getByRole('button', { name: '下一页' }).click();
   await expect.poll(() => h.calls.at(-1)?.arguments.relation_offset).toBe(7);
   expect(h.calls.at(-1)?.arguments.evidence_offset).toBe(2);
   expect(h.calls.at(-1)?.arguments.claim_offset).toBe(0);

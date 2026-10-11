@@ -17,6 +17,13 @@ export function records(value: unknown): Record<string, unknown>[] {
 function label(value: unknown): GraphNode['label'] {
   return value === 'Person' || value === 'Organization' || value === 'Project' ? value : 'Unknown';
 }
+export function displayTitle(entity: Record<string, unknown>, item?: SearchPage['items'][number]): string {
+  const props = object(entity.properties);
+  const name = [props.name, props.legalName, item?.name, item?.display_name]
+    .find(value => typeof value === 'string' && value.trim() && !/^未具名候选\s*·/.test(value));
+  if (typeof name === 'string') return name;
+  return { Person: '未具名人物', Organization: '未具名机构', Project: '未具名项目', Unknown: '名称未提供' }[label(entity.label ?? item?.label)];
+}
 export function toGraph(page: SearchPage, details: ContactDetail[] = [], includeUnverified = false): GraphState {
   const nodes = new Map<string, GraphNode>();
   const edges = new Map<string, GraphEdge>();
@@ -28,10 +35,8 @@ export function toGraph(page: SearchPage, details: ContactDetail[] = [], include
   }
   function addNode(id: string, item?: SearchPage['items'][number]): void {
     const entity = known.get(id) ?? {};
-    const props = object(entity.properties);
-    const title = props.name ?? props.legalName ?? item?.display_name ?? item?.name;
     nodes.set(id, { id, label: label(entity.label ?? item?.label), matched: roots.has(id),
-      title: typeof title === 'string' && title ? title : `未加载档案 · ${id.slice(-8)}` });
+      title: displayTitle(entity, item) });
   }
   for (const item of page.items) addNode(item.entity_id, item);
   for (const d of details) {

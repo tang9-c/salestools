@@ -1,6 +1,6 @@
 import { App } from '@modelcontextprotocol/ext-apps';
 import { parseJSONRPCMessage, type Transport, type JSONRPCMessage } from '@modelcontextprotocol/client';
-import { object, records, toGraph, professionalRelations, type SearchInput, type SearchPage,
+import { object, records, toGraph, displayTitle, professionalRelations, type SearchInput, type SearchPage,
   type ContactDetail, type GraphEdge } from './contact-search-graph-model.js';
 
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -97,6 +97,13 @@ function button(parent: Element, title: string, action: () => void, disabled = f
   const b = text(parent, 'button', title) as HTMLButtonElement; b.disabled = disabled; b.onclick = action; return b;
 }
 const labels: Record<string, string> = { worksFor: '任职于', alumniOf: '就读 / 校友', memberOf: '参与', clientOrganization: '项目客户', affiliation: '关联' };
+const nodeLabels = { Person: '人物', Organization: '机构', Project: '项目', Unknown: '关联节点' };
+const collectionLabels = { evidence: '证据', relations: '关系', unverified_claims: '待核实线索', name: '名称' };
+function fieldLabel(path: unknown): string {
+  const key = readable(path).replace(/^properties\./, '').replace(/\[\d+\]$/, '');
+  return ({ name: '名称', legalName: '法定名称', jobTitle: '职位', skills: '技能',
+    'role.roleName': '职位', role: '角色', startDate: '开始时间', endDate: '结束时间' } as Record<string, string>)[key] ?? '字段依据';
+}
 function relationText(edge: GraphEdge): string {
   const meta = object(edge.record.metadata), props = object(edge.record.properties);
   const role = readable(object(props.role).roleName);
@@ -120,11 +127,17 @@ function render() {
     }
   }
   summary.textContent = `匹配 ${page.total} 个节点 · 本页 ${page.items.length} 个 · 关联补充 ${state.nodes.filter(n => !n.matched).length} 个`;
-  el('conditions').textContent = input ? `搜索条件：${Object.entries(input).map(([k, v]) => `${k}=${String(v)}`).join(' · ') || '默认关键词搜索'}${page.warnings.length ? ` · 警告：${page.warnings.join('、')}` : ''}` : '原查询参数尚未收到';
+  const conditionLabels: Record<string, string> = { query: '关键词', name: '姓名', organization_id: '机构', job_title: '职位', skill: '技能', include_unverified: '包含待核实线索', mode: '搜索方式', offset: '起始位置', limit: '每页条数' };
+  el('conditions').textContent = input ? `搜索条件：${Object.entries(input).map(([k, v]) => {
+    const value = k === 'organization_id' ? state.nodes.find(n => n.id === v)?.title ?? '已选择机构'
+      : k === 'mode' ? ({ keyword: '关键词', semantic: '语义', hybrid: '混合' } as Record<string, string>)[String(v)]
+      : typeof v === 'boolean' ? v ? '是' : '否' : String(v);
+    return `${conditionLabels[k]}：${value}`;
+  }).join(' · ') || '默认关键词搜索'}${page.warnings.length ? ' · 搜索结果存在限制，请核对文字查询结果' : ''}` : '原查询参数尚未收到';
   const active = loads.filter(l => l.collection !== 'unverified_claims' || input?.include_unverified);
   const failures = active.filter(l => l.failed);
   const finished = page.items.filter(i => active.filter(l => l.id === i.entity_id && l.collection !== 'name').every(l => l.done)).length;
-  let status = waitingResult || searching || pendingSearch ? '正在等待搜索结果；当前显示上一查询结果' : !page.items.length ? '本次库内查询未找到匹配记录' : failures.length ? `部分失败：${failures.map(l => `${l.id.slice(-8)} / ${l.collection} · ${l.message ?? '读取失败'}`).join('、')}`
+  let status = waitingResult || searching || pendingSearch ? '正在等待搜索结果；当前显示上一查询结果' : !page.items.length ? '本次库内查询未找到匹配记录' : failures.length ? `部分失败：${failures.map(l => `${state.nodes.find(n => n.id === l.id)?.title ?? '关联节点'} / ${collectionLabels[l.collection]} · ${l.message ?? '读取失败'}`).join('、')}`
     : active.every(l => l.done) ? `一跳关系加载完成${state.edges.length ? '' : ' · 未返回职业范围内的直接关联'}` : paused ? '已停止加载；关系尚未完整，可继续加载' : '一跳关系加载中';
   status += ` · 命中节点 ${finished}/${page.items.length}`;
   if (!input) status += ' · 原查询参数尚未收到，待核实线索未加载';
@@ -163,14 +176,15 @@ function render() {
     g.append(svg('rect', { width: '250', height: '60', rx: '8', fill: node.label === 'Person' ? '#e9f4ef' : node.label === 'Organization' ? '#eff1e2' : '#edf0f5', stroke: '#bacdc3' }));
     const t = svg('text', { x: '12', y: '25', fill: '#153b35', 'font-size': '14' }); t.textContent = node.title.length > 16 ? `${node.title.slice(0, 16)}…` : node.title;
     const full = svg('title'); full.textContent = node.title; t.append(full); g.append(t);
-    const hint = svg('text', { x: '12', y: '46', fill: '#5a716a', 'font-size': '11' }); hint.textContent = `${node.label} · ${node.matched ? '搜索命中' : '关联补充'}`; g.append(hint);
+    const hint = svg('text', { x: '12', y: '46', fill: '#5a716a', 'font-size': '11' }); hint.textContent = `${nodeLabels[node.label]} · ${node.matched ? '搜索命中' : '关联补充'}`; g.append(hint);
     g.addEventListener('click', () => selectNode(node.id)); graph.append(g);
     const li = document.createElement('li'); const b = button(li, node.title, () => selectNode(node.id));
     const rootLoads = active.filter(l => l.id === node.id && l.collection !== 'name');
     const loadState = rootLoads.some(l => l.failed) ? '部分失败' : rootLoads.every(l => l.done) ? '加载完成' : paused ? '已停止' : '加载中';
-    text(b, 'small', `${node.label} · ${node.matched ? `搜索命中 · ${loadState}` : '关联补充'}`); list.append(li);
+    text(b, 'small', `${nodeLabels[node.label]} · ${node.matched ? `搜索命中 · ${loadState}` : '关联补充'}`); list.append(li);
   }
   applyView();
+  if (selected && selection) renderDetail();
 }
 function rootsFor(edge: GraphEdge): string {
   const root = page?.items.find(i => i.entity_id === edge.source || i.entity_id === edge.target);
@@ -191,14 +205,18 @@ function source(parent: Element, record: Record<string, unknown>) {
 function renderDetail() {
   if (!selected || !selection) return;
   panel.replaceChildren(); const entity = object(selected.entity), props = object(entity.properties);
-  text(panel, 'h3', props.name ?? props.legalName ?? entity.entity_id);
+  const names = new Map(toGraph(page ?? { items: [], total: 0, mode_used: 'keyword', warnings: [] },
+    [...materials, selected], input?.include_unverified === true).nodes.map(n => [n.id, n.title]));
+  names.set(selection.id, displayTitle(entity, page?.items.find(i => i.entity_id === selection!.id)));
+  const name = (id: string) => names.get(id) ?? '名称未提供';
+  text(panel, 'h3', name(selection.id));
   for (const key of ['jobTitle', 'skills']) if (readable(props[key])) text(panel, 'p', `${key === 'jobTitle' ? '职位' : '技能'}：${readable(props[key])}`);
   const edges = toGraph({ items: [{ entity_id: selection.id }], total: 1, mode_used: 'keyword', warnings: [] }, [selected], input?.include_unverified === true).edges;
   const allowed = new Set(edges.filter(e => e.status === 'recorded').map(e => e.record.relation_id));
   if (selectedEdge?.status === 'recorded') allowed.add(selectedEdge.record.relation_id);
   if (selectedEdge) text(panel, 'p', relationText(selectedEdge));
   for (const edge of edges) {
-    const box = text(panel, 'div', '', 'record'); text(box, 'p', `${edge.source} → ${edge.target} · ${relationText(edge)}`);
+    const box = text(panel, 'div', '', 'record'); text(box, 'p', `${name(edge.source)} → ${name(edge.target)} · ${relationText(edge)}`);
     if (edge.status === 'unverified') { text(box, 'p', edge.record.reason); source(box, object(edge.record.source)); }
   }
   const evidence = records(selected.evidence).filter(e => selectedEdge
@@ -207,19 +225,19 @@ function renderDetail() {
       || e.subject_kind === 'relation' && allowed.has(e.subject_id));
   if (selectedEdge?.status === 'unverified') { text(panel, 'p', selectedEdge.record.reason); source(panel, object(selectedEdge.record.source)); }
   if (selectedEdge?.status === 'recorded' && !evidence.length) text(panel, 'p', '当前证据页未包含该关系的证据');
-  for (const e of evidence) { const box = text(panel, 'div', '', 'record'); text(box, 'p', e.field_path); source(box, e); }
+  for (const e of evidence) { const box = text(panel, 'div', '', 'record'); text(box, 'p', fieldLabel(e.field_path)); source(box, e); }
   for (const c of records(selected.conflicts)) if (c.subject_kind === 'entity' && c.subject_id === selection.id && safeField(c.field_path)) {
-    const box = text(panel, 'div', '字段冲突', 'record'); text(box, 'p', `${readable(c.field_path)}：${readable(c.value)}`); source(box, c);
+    const box = text(panel, 'div', '字段冲突', 'record'); text(box, 'p', `${fieldLabel(c.field_path)}：${readable(c.value)}`); source(box, c);
   }
   if (input?.include_unverified) for (const c of records(selected.unverified_claims)) {
     if (c.subject_id !== selection.id || c.status !== 'unverified' || !(c.kind === 'relation' && professionalRelations.has(String(c.relation_type)) || c.kind === 'field' && safeField(c.field_path))) continue;
     if (edges.some(e => e.id === `claim:${c.claim_id}`)) continue;
-    const box = text(panel, 'div', '待核实线索', 'record'); text(box, 'p', `${readable(c.field_path ?? c.relation_type)}：${readable(c.value)} · ${readable(c.reason)}`); source(box, object(c.source));
+    const box = text(panel, 'div', '待核实线索', 'record'); text(box, 'p', `${c.kind === 'relation' ? labels[String(c.relation_type)] : fieldLabel(c.field_path)}：${readable(c.value)} · ${readable(c.reason)}`); source(box, object(c.source));
   }
   for (const collection of ['evidence', 'relations', 'unverified_claims'] as const) {
     if (collection === 'unverified_claims' && !input?.include_unverified) continue;
     const p = object(object(selected.pagination)[collection]);
-    const row = text(panel, 'div', '', 'pager'); text(row, 'span', `${collection} ${selection.offsets[collection]}/${readable(p.total)}`);
+    const row = text(panel, 'div', '', 'pager'); text(row, 'span', `${collectionLabels[collection]} ${selection.offsets[collection]}/${readable(p.total)}`);
     const change = (offset: number) => { if (!selection) return; pendingDetail = { ...selection, offsets: { ...selection.offsets, [collection]: offset } }; detailVersion++; void pump(); };
     button(row, '上一页', () => change(Math.max(0, selection!.offsets[collection] - limit[collection])), selection.offsets[collection] === 0);
     button(row, '下一页', () => { try { const next = nextOffset(selected!, collection, selection!.offsets[collection]); if (next !== null) change(next); } catch { notice.textContent = '分页游标异常，不能继续读取。'; } }, p.next_offset == null);
