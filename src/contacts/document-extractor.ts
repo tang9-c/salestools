@@ -117,6 +117,7 @@ export interface DocumentExtractorOptions {
   url: string; model: string; credential: string; fileName: string; fileSha256: string;
   collectedAt?: string; fetchFn?: typeof fetch; requestMaxBytes?: number;
   maxBatches?: number; maxModelCalls?: number; skillSupplement?: boolean; projectSupplement?: boolean;
+  fileId?: string;
 }
 export interface DocumentExtractionResult {
   candidates: ImportCandidate[]; warnings: string[];
@@ -277,6 +278,33 @@ function linkShape(raw: unknown): unknown {
   return { evidence, uncertain: true };
 }
 
+// Repair only observed container variants before resolving evidence aliases.
+// No dates are inferred from quotes; missing values remain review items.
+function experienceShape(raw: unknown, kind: string): Record<string, unknown> {
+  const entry = { ...object(raw) };
+  if (kind === 'education' && Array.isArray(entry.facts) && (entry.details === undefined || Array.isArray(entry.details))) {
+    entry.details = [...(entry.details as unknown[] ?? []), ...entry.facts];
+    delete entry.facts;
+  }
+  if (kind === 'employment') {
+    const nested = { ...object(entry.employment) };
+    const role = entry.role === undefined ? [] : entry.role;
+    if (!Array.isArray(role)) return entry;
+    const moved: unknown[] = [];
+    if (Array.isArray(nested.role)) { moved.push(...nested.role); delete nested.role; }
+    for (const field of ['startDate', 'endDate']) {
+      if (nested[field] !== undefined && typeof nested[field] === 'object' && nested[field] !== null) {
+        moved.push({ ...object(nested[field]), field_path: `properties.role.${field}` });
+        delete nested[field];
+      }
+    }
+    entry.role = [...role, ...moved];
+    if (Object.keys(nested).length === 0) entry.employment = { evidence: [], uncertain: true };
+    else entry.employment = nested;
+  }
+  return entry;
+}
+
 // Resolve aliases and scope old quotes before accumulating facts. Never join old quotes.
 function resolveProfile(profile: Profile, resolve: (block: string, quote: string, subjects: string[]) => string,
   keys: Map<string, string>, batch: number, previous: ImportCandidate[]): Profile {
@@ -295,7 +323,7 @@ function resolveProfile(profile: Profile, resolve: (block: string, quote: string
     return fact.field_path === 'properties.jobTitle' ? { ...fact, field_path: 'properties.role.roleName' } : item;
   }) : raw, ids);
   const mapEntry = (raw: unknown, kind: string, index: number) => {
-    const entry = object(raw);
+    const entry = experienceShape(raw, kind);
     const key = keyFor(kind, String(entry.local_id ?? `${batch}:${index}`));
     const id = keys.get(key) ?? entityId(key);
     const ids = [PERSON_ID, id];
@@ -686,6 +714,27 @@ export class DocumentExtractor {
     this.fetchFn = options.fetchFn ?? fetch;
   }
 
+  private log(event: string, fields: Record<string, unknown>): void {
+    try {
+      process.stderr.write(`${JSON.stringify({ event, timestamp: new Date().toISOString(),
+        ...(this.options.fileId && /^[0-9a-f-]{36}$/i.test(this.options.fileId) ? { file_id: this.options.fileId } : {}), ...fields })}\n`);
+    } catch { /* Logging must not break extraction. */ }
+  }
+
+  private async modelCall(body: string, signal: AbortSignal, purpose: 'profile' | 'projects' | 'skills', call: number): Promise<string> {
+    const start = Date.now();
+    try {
+      const content = await requestArkJsonContent({ url: this.options.url, credential: this.options.credential,
+        body, fetchFn: this.fetchFn, signal, context: `Ark document ${purpose}` });
+      this.log('contact_extract_call', { purpose, call, outcome: 'completed', duration_ms: Date.now() - start });
+      return content;
+    } catch (error) {
+      this.log('contact_extract_call', { purpose, call, outcome: 'failed', duration_ms: Date.now() - start,
+        code: signal.aborted ? 'ABORTED' : 'MODEL_REQUEST_FAILED' });
+      throw error;
+    }
+  }
+
   async extract(input: readonly ParsedBlock[], signal: AbortSignal): Promise<DocumentExtractionResult> {
     if (signal.aborted) throw new DocumentExtractionError('ABORTED');
     const blocks = input.map(block => ParsedBlockSchema.parse(block));
@@ -768,12 +817,16 @@ export class DocumentExtractor {
       for (let retry = 0; retry < 2 && attempts < maxCalls; retry += 1) {
         attempts += 1;
         try {
-          content = await requestArkJsonContent({ url: this.options.url, credential: this.options.credential,
-            body, fetchFn: this.fetchFn, signal, context: 'Ark document' });
+          content = await this.modelCall(body, signal, 'profile', attempts);
           raw = DocumentProfile.parse(parseModelJson(content));
           break;
         } catch (error) {
           lastRequestError = error;
+          if (content !== undefined) this.log('contact_extract_validation', {
+            purpose: 'profile', call: attempts, path: '$profile',
+            reason: error instanceof SyntaxError ? 'invalid_json' : 'invalid_shape',
+            issue_count: error instanceof z.ZodError ? error.issues.length : 1,
+          });
           if (signal.aborted) throw new DocumentExtractionError('ABORTED');
           if (content !== undefined) { invalidModel = true; content = undefined; continue; }
           if (!recoverableRequest(error)) break;
@@ -813,8 +866,7 @@ export class DocumentExtractor {
         } else {
           attempts += 1;
           try {
-            const content = await requestArkJsonContent({ url: this.options.url, credential: this.options.credential,
-              body, fetchFn: this.fetchFn, signal, context: 'Ark document projects' });
+            const content = await this.modelCall(body, signal, 'projects', attempts);
             if (signal.aborted) throw new DocumentExtractionError('ABORTED');
             const supplemental = ProjectsSupplement.parse(parseModelJson(content));
             const originals = new Map([...blockAliases(blocks)].map(([id, alias]) => [alias, id]));
@@ -865,8 +917,7 @@ export class DocumentExtractor {
               if (signal.aborted) throw new DocumentExtractionError('ABORTED');
               attempts += 1;
               try {
-                content = await requestArkJsonContent({ url: this.options.url, credential: this.options.credential,
-                  body, fetchFn: this.fetchFn, signal, context: 'Ark document skills' });
+                content = await this.modelCall(body, signal, 'skills', attempts);
                 break;
               } catch (error) {
                 if (signal.aborted || retry >= 1 || attempts >= maxCalls || !recoverableRequest(error)) throw error;
@@ -937,6 +988,22 @@ export class DocumentExtractor {
     }
     if (blocks.length === 0) warnings.push('文件没有可抽取文本');
     else if (candidates.length === 0 && warnings.length === 0) warnings.push('未提取到联系人候选');
+    const allowedPaths = new Set(['$education', '$employment', '$projects', '$experience', '$client',
+      'properties.name', 'properties.age', 'properties.workExperienceYears', 'properties.skills',
+      'properties.major', 'properties.educationLevel', 'properties.startDate', 'properties.endDate',
+      'properties.role.startDate', 'properties.role.endDate', 'properties.role.roleName']);
+    const failures = new Map<string, { path: string; reason: string; count: number }>();
+    for (const candidate of candidates) for (const item of candidate.review_items) {
+      const path = item.kind === 'field' && allowedPaths.has(item.field_path) ? item.field_path : item.kind === 'relation' ? '$relation' : 'other';
+      const key = `${path}:${item.reason}`;
+      const current = failures.get(key) ?? { path, reason: item.reason, count: 0 };
+      current.count++; failures.set(key, current);
+    }
+    this.log('contact_extract_summary', { model_calls: attempts, candidate_count: candidates.length,
+      organization_count: candidates.filter(c => c.label === 'Organization').length,
+      project_count: candidates.filter(c => c.label === 'Project').length,
+      processed_block_count: processedBlockIds.length, unprocessed_block_count: unprocessedBlockIds.length,
+      validation_failures: [...failures.values()] });
     return { candidates, warnings, processedBlockIds, unprocessedBlockIds };
   }
 }

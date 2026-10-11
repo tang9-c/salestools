@@ -37,6 +37,71 @@ it('explicitly enables thinking on every contact-document model request within t
 });
 
 describe('DocumentProfile mapping', () => {
+  it('accepts known nested employment roles and education facts without moving personal details onto organizations', async () => {
+    const result = await run(profile({ person: [fact('properties.name', '本人')],
+      employment: [{ local_id: 'job', organization: org('公司'), employment: {
+        ...link(), role: [fact('properties.role.roleName', '开发工程师')],
+        startDate: { value: '2022', ...link() }, endDate: { ...link() },
+      } }], education: [{ local_id: 'school', organization: org('学校'), attendance: link(),
+        facts: [fact('properties.major', '软件工程')], details: [fact('properties.educationLevel', '大专')] }],
+    }));
+    expect(result.candidates.filter(c => c.label === 'Organization').map(c => c.properties.name)).toEqual(['学校', '公司']);
+    const person = owner(result.candidates);
+    expect(person.relation_suggestions.find(r => r.relation_type === 'worksFor')?.properties).toMatchObject({ role: { roleName: '开发工程师', startDate: '2022' } });
+    expect(person.relation_suggestions.find(r => r.relation_type === 'alumniOf')?.properties).toMatchObject({ major: '软件工程', educationLevel: '大专' });
+    expect(person.review_items.some(r => JSON.stringify(r).includes('endDate'))).toBe(true);
+    expect(result.candidates.filter(c => c.label === 'Organization').every(c => !('major' in c.properties) && !('role' in c.properties))).toBe(true);
+  });
+
+  it('preserves organizations but keeps missing employment link evidence unverified', async () => {
+    const result = await run(profile({ person: [fact('properties.name', '本人')], employment: [
+      { local_id: 'job', organization: org('公司'), employment: { role: [fact('properties.role.roleName', '开发工程师')] } },
+    ] }));
+    expect(result.candidates.some(c => c.label === 'Organization' && c.properties.name === '公司')).toBe(true);
+    expect(owner(result.candidates).relation_suggestions).toEqual([]);
+    expect(owner(result.candidates).review_items.some(r => r.kind === 'relation' && r.relation_type === 'worksFor')).toBe(true);
+  });
+
+  it('logs model duration and bounded validation paths without source values or secrets', async () => {
+    const log = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await run(profile({ person: [fact('properties.name', '隐私姓名'), fact('properties.secret_private_text', '隐私电话'), fact('properties.age', '27岁')] }), '原文', { credential: 'private-credential' });
+      const lines = log.mock.calls.map(c => String(c[0])).join('');
+      expect(lines).toContain('contact_extract_call');
+      expect(lines).toContain('duration_ms');
+      expect(lines).toContain('contact_extract_summary');
+      expect(lines).toContain('invalid_shape');
+      for (const secret of ['隐私姓名', '隐私电话', 'secret_private_text', 'private-credential', '27岁', '原文']) expect(lines).not.toContain(secret);
+    } finally { log.mockRestore(); }
+  });
+
+  it('does not turn relocated roles with false quotes into verified relation facts', async () => {
+    const result = await run(profile({ person: [fact('properties.name', '本人')], employment: [
+      { local_id: 'job', organization: org('公司'), employment: { ...link(), role: [fact('properties.role.roleName', '经理', '不存在')] } },
+    ] }));
+    const person = owner(result.candidates);
+    expect(person.relation_suggestions[0].properties.role).not.toHaveProperty('roleName');
+    expect(person.review_items.some(r => r.reason === 'quote_mismatch')).toBe(true);
+  });
+
+  it('still rejects unknown experience keys instead of silently accepting arbitrary model fields', async () => {
+    const result = await run(profile({ person: [fact('properties.name', '本人')], education: [
+      { local_id: 'ed', organization: org('学校'), attendance: link(), facts: [], unexpected: 'arbitrary' },
+    ] }));
+    expect(result.candidates.filter(c => c.label === 'Organization')).toEqual([]);
+    expect(owner(result.candidates).review_items).toContainEqual(expect.objectContaining({ field_path: '$education', reason: 'invalid_shape' }));
+  });
+
+  it('logs failed requests without leaking transport exception messages', async () => {
+    const log = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await expect(extractor(async () => { throw new Error('secret-private-error'); }).extract(
+        [{ block_id: 'b1', text: '原文' }], new AbortController().signal)).rejects.toThrow();
+      const lines = log.mock.calls.map(c => String(c[0])).join('');
+      expect(lines).toContain('"outcome":"failed"');
+      expect(lines).not.toContain('secret-private-error');
+    } finally { log.mockRestore(); }
+  });
   it('routes misplaced school details to the specific education relation', async () => {
     const result = await run(profile({ person: [fact('properties.name', '本人')], education: [
       { local_id: 'ed1', organization: [...org('井冈山大学'), fact('properties.major', '软件工程')], attendance: link(),
