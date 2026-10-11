@@ -52,6 +52,8 @@ codex mcp add salestools \
 
 ## 共享联系人图谱（可选）
 
+启用图谱后，`search_contacts` 附带只读“联系人图谱”MCP App。支持的宿主展开 App 后，会逐步显示当前搜索页所有命中节点的全部一跳职业关系（含入向与出向），自动读完关系分页并补齐端点名称；不递归展开补充节点。点击查看详情和来源，加载可停止、继续或重试。只有原查询显式包含 `include_unverified:true` 时才绘制待核实虚线；接口仅覆盖命中主体自身的 claim，不包括反向 claim 查询。正式边不等于人工核实，未知任职不显示为现任。JSON 返回保持不变；无 App 支持时继续在聊天读取结果。没有图谱备用网页查询入口。
+
 `CONTACT_GRAPH_ENABLED` 默认 `false`。开启后，服务使用独立的 `/data/contact-graph.sqlite` 保存 `Person`、`Organization`、字段证据和关系；原有 `discover_contacts` 仍按企业关键词搜索公开网页，不等同于 `search_contacts` 查询共享图谱。镜像内已包含锁定依赖的 Docling OCR worker 与 Rust `contact-graph` worker；同一 `/data` 卷应保留主库和图谱库。
 
 开启时设置 `CONTACT_GRAPH_ENABLED=true`，并保持 `CONTACT_GRAPH_SQLITE_PATH` 与 `SQLITE_PATH` 不同。若容器的 `--env-file` 基于 `.env.example`，必须把其中的相对路径和占位路径改为 `SQLITE_PATH=/data/salestools.sqlite`、`CONTACT_GRAPH_SQLITE_PATH=/data/contact-graph.sqlite`、`CONTACT_GRAPH_BIN=/usr/local/bin/contact-graph`、`CONTACT_PYTHON_BIN=/opt/contact-worker/.venv/bin/python`；环境文件会覆盖镜像默认值。本地源码运行则先执行 `cargo build --locked --release --manifest-path rust/contact-graph/Cargo.toml` 和 `uv sync --project python --locked`，再在 `.env` 中填写绝对路径。语义检索可选，需要分别设置 `ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL`；它们与用于抽取/问答的方舟配置相互独立，未配置时仍可使用关键词检索。

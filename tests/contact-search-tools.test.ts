@@ -8,6 +8,29 @@ import type { ContactSearch } from '../src/contacts/contact-search.js';
 import { registerContactSearchTools } from '../src/mcp/contact-search-tools.js';
 
 describe('search_contacts MCP registration', () => {
+  it('attaches a read-only App resource without changing search JSON or opening another App for detail', async () => {
+    const output = { items: [], total: 0, mode_used: 'keyword' as const, warnings: [] };
+    const server = new McpServer({ name: 'graph-app-test', version: '1' });
+    registerContactSearchTools(server, { search: async () => output } as unknown as ContactSearch,
+      undefined, { html: async () => '<html>联系人图谱</html>' });
+    registerContactTools(server, new ContactLibraryService({ request: async () => null } as unknown as GraphClient));
+    const client = new Client({ name: 'client', version: '1' });
+    const [left, right] = InMemoryTransport.createLinkedPair();
+    await server.connect(right); await client.connect(left);
+    try {
+      const tools = (await client.listTools()).tools;
+      expect(tools.find(t => t.name === 'search_contacts')?._meta).toMatchObject({
+        ui: { resourceUri: 'ui://salestools/contact-search-graph.html', visibility: ['model', 'app'] },
+      });
+      expect(tools.find(t => t.name === 'get_contact')?._meta).toMatchObject({ ui: { visibility: ['model', 'app'] } });
+      expect(tools.find(t => t.name === 'get_contact')?._meta?.ui).not.toHaveProperty('resourceUri');
+      const result = await client.callTool({ name: 'search_contacts', arguments: {} });
+      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(output) }]);
+      expect(result.structuredContent).toEqual(output);
+      const resource = await client.readResource({ uri: 'ui://salestools/contact-search-graph.html' });
+      expect(resource.contents[0]).toMatchObject({ mimeType: 'text/html;profile=mcp-app', text: '<html>联系人图谱</html>' });
+    } finally { await client.close(); await server.close(); }
+  });
   it('exposes bounded graph search and rejects unexpected parameters', async () => {
     const search = vi.fn(async () => ({ items: [{ entity_id: 'p1', label: 'Person', name: '陈晓' }],
       total: 1, mode_used: 'keyword' as const, warnings: [] }));

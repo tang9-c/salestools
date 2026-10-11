@@ -89,7 +89,7 @@ jobs:
           cargo build --locked --manifest-path rust/contact-graph/Cargo.toml
           cargo test --locked --manifest-path rust/contact-graph/Cargo.toml
 
-      - name: Build server and self-contained upload App bundle on runner
+      - name: Build server and both self-contained MCP App bundles on runner
         run: npm run build
 
       - name: Prepare synthetic OCR model resources
@@ -129,7 +129,7 @@ jobs:
           assert not report.findall('.//skipped'), 'Linux Python gate must never skip runtime checks'
           PY
 
-      - name: Run full Vitest suite including native integration and Chromium SDK iframe
+      - name: Run full Vitest suite including native integration and both Chromium SDK Apps
         env:
           NODE_ENV: test
           CONTACT_UPLOAD_BUNDLE_REQUIRED: "1"

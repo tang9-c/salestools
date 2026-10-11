@@ -5,12 +5,19 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { Script } from 'node:vm';
 import { spawnParser } from '/app/dist/contacts/parser-process.js';
 import { startWorker } from '/app/dist/contacts/worker-server.js';
 import { callWorkerSocket } from '/app/dist/contacts/worker-ipc.js';
 
 assert.equal(process.platform, 'linux', 'Linux kernel required; this gate must never skip');
 assert.notEqual(process.getuid(), 0, 'Worker must run unprivileged');
+for (const name of ['contact-upload', 'contact-search-graph']) {
+  const html = readFileSync(`/app/web/dist/${name}.html`, 'utf8');
+  const script = /<script>([\s\S]*?)<\/script>/u.exec(html)?.[1];
+  assert.ok(script, `Production image must contain the self-contained ${name} App`);
+  new Script(script, { filename: `${name}.js` });
+}
 // Check the actual container, as well as Compose's declarative configuration.
 const status = readFileSync('/proc/self/status', 'utf8');
 assert.match(status, /^CapEff:\s+0+$/m, 'Capabilities must remain dropped');

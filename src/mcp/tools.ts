@@ -135,6 +135,7 @@ export interface McpServices {
   contactLibrary?: ContactLibraryService;
   contactImport?: ContactImportService;
   contactSearch?: ContactSearch;
+  contactSearchApp?: { html: () => Promise<string> };
   vectorIndexer?: VectorIndexer;
   contactAnswer?: ContactAnswerService;
 }
@@ -287,7 +288,7 @@ export function buildMcpServer(services: McpServices): McpServer {
 
   if (services.contactLibrary) registerContactTools(server, services.contactLibrary);
   if (services.contactImport) registerContactImportTools(server, services.contactImport);
-  if (services.contactSearch) registerContactSearchTools(server, services.contactSearch, services.vectorIndexer);
+  if (services.contactSearch) registerContactSearchTools(server, services.contactSearch, services.vectorIndexer, services.contactSearchApp);
   if (services.contactAnswer) registerContactAnswerTools(server, services.contactAnswer);
 
   server.registerTool('get_company_profile', {

@@ -311,6 +311,7 @@ export function createApplication(
     contactLibrary,
     contactImport,
     contactSearch,
+    contactSearchApp: contactSearch ? { html: () => readFile(new URL('../web/dist/contact-search-graph.html', import.meta.url), 'utf8') } : undefined,
     contactAnswer,
     vectorIndexer,
     getCompanyProfile: input => activity.track(() => profileService.get(input.query, input.regionHint)),
