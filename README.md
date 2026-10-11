@@ -43,14 +43,16 @@ codex mcp add salestools \
 ## 五个 MCP 工具
 
 - `get_company_profile`：默认用于“看一下”“了解基本情况”或意图不明确的请求；只查询基础画像。
-- `get_contacts`：按企业关键词和可选地域，从公开网页中同步查找企业负责人、研发/技术、数字化/IT、采购和质量负责人；最多返回 3 家企业、每家 10 人。
+- `discover_contacts`：按企业关键词和可选地域，从公开网页中同步查找企业负责人、研发/技术、数字化/IT、采购和质量负责人；最多返回 3 家企业、每家 10 人。
 - `submit_assessment`：仅在用户确认法定名称和统一社会信用代码，并明确要求正式销售评估后调用。
 - `get_assessment_status`：轮询 `processing`、`completed` 或 `failed`。
 - `get_assessment_report`：读取完成后的 Markdown 报告，或返回当前处理/失败状态。
 
+公开网页发现工具已由 `get_contacts` 改名为 `discover_contacts`，不保留旧工具别名。升级后请重新加载 MCP 工具列表，并更新脚本中的调用名称；输入、输出、缓存和快照同步行为不变。图谱搜索仍使用 `search_contacts`，单个档案读取仍使用 `get_contact`。
+
 ## 共享联系人图谱（可选）
 
-`CONTACT_GRAPH_ENABLED` 默认 `false`。开启后，服务使用独立的 `/data/contact-graph.sqlite` 保存 `Person`、`Organization`、字段证据和关系；原有 `get_contacts` 仍按企业关键词搜索公开网页，不等同于 `search_contacts` 查询共享图谱。镜像内已包含锁定依赖的 Docling OCR worker 与 Rust `contact-graph` worker；同一 `/data` 卷应保留主库和图谱库。
+`CONTACT_GRAPH_ENABLED` 默认 `false`。开启后，服务使用独立的 `/data/contact-graph.sqlite` 保存 `Person`、`Organization`、字段证据和关系；原有 `discover_contacts` 仍按企业关键词搜索公开网页，不等同于 `search_contacts` 查询共享图谱。镜像内已包含锁定依赖的 Docling OCR worker 与 Rust `contact-graph` worker；同一 `/data` 卷应保留主库和图谱库。
 
 开启时设置 `CONTACT_GRAPH_ENABLED=true`，并保持 `CONTACT_GRAPH_SQLITE_PATH` 与 `SQLITE_PATH` 不同。若容器的 `--env-file` 基于 `.env.example`，必须把其中的相对路径和占位路径改为 `SQLITE_PATH=/data/salestools.sqlite`、`CONTACT_GRAPH_SQLITE_PATH=/data/contact-graph.sqlite`、`CONTACT_GRAPH_BIN=/usr/local/bin/contact-graph`、`CONTACT_PYTHON_BIN=/opt/contact-worker/.venv/bin/python`；环境文件会覆盖镜像默认值。本地源码运行则先执行 `cargo build --locked --release --manifest-path rust/contact-graph/Cargo.toml` 和 `uv sync --project python --locked`，再在 `.env` 中填写绝对路径。语义检索可选，需要分别设置 `ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL`；它们与用于抽取/问答的方舟配置相互独立，未配置时仍可使用关键词检索。
 
@@ -69,7 +71,7 @@ npm run contacts:sync -- --backup /data/salestools-before-contact-sync.sqlite
 
 基础画像和正式报告默认各复用 30 天，由 `PROFILE_CACHE_TTL_DAYS`、`ASSESSMENT_CACHE_TTL_DAYS` 调整。`force_refresh=true` 忽略已完成报告缓存，但不会复制正在处理的任务。`cache_hit` 只出现在画像和提交结果；状态与报告结果不包含缓存字段。
 
-`get_contacts` 固定执行两类豆包宽查询：一类覆盖企业官网、官方新闻、公众号和会议嘉宾，另一类覆盖招投标、专利以及研发、技术、信息化、采购和质量负责人。结果只保留页面明确出现的姓名、职位、原始 URL 和发布日期；不返回或推测邮箱、电话等直接联系方式。无明确职位的专利发明人或招投标联系人不会返回。候选来源由服务端根据页面内容、域名和豆包返回的发布者元数据作启发式筛选，而不是信任模型分类；官方新闻还要求域名和发布者同时命中服务端允许列表。由于该工具不调用企查查或其他权威主体库，该筛选可能误判，也不构成官网域名所有权或法人主体认证。
+`discover_contacts` 固定执行两类豆包宽查询：一类覆盖企业官网、官方新闻、公众号和会议嘉宾，另一类覆盖招投标、专利以及研发、技术、信息化、采购和质量负责人。结果只保留页面明确出现的姓名、职位、原始 URL 和发布日期；不返回或推测邮箱、电话等直接联系方式。无明确职位的专利发明人或招投标联系人不会返回。候选来源由服务端根据页面内容、域名和豆包返回的发布者元数据作启发式筛选，而不是信任模型分类；官方新闻还要求域名和发布者同时命中服务端允许列表。由于该工具不调用企查查或其他权威主体库，该筛选可能误判，也不构成官网域名所有权或法人主体认证。
 
 联系人查询按 NFKC、空白和英文大小写规范化后的企业关键词与地域建立全局缓存；同一缓存键 30 天内不会重复调用豆包或方舟，不同地域相互隔离，企业简称、全称和别名不会自动归并。每次正常查询结果（包括空结果或部分搜索失败结果）都会永久追加为快照。`contacts` 返回最新快照中的当前候选联系人，`historical_contacts` 返回旧快照曾出现但最新快照未出现的任职证据；历史证据不代表已离职或已经卸任。过期刷新失败且存在旧快照时会返回旧快照并在 `warnings` 中提示；没有旧快照、全部搜索失败或方舟抽取失败时返回工具错误。部分搜索失败，或部分页面、正文因方舟输入容量限制未进入抽取时，会返回已有结果并在 `warnings` 中说明。
 

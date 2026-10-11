@@ -83,7 +83,7 @@ function actor(context: { http?: { authInfo?: { clientId?: string } } }): string
 
 export function registerContactTools(server: McpServer, library: ContactLibraryService): void {
   server.registerTool('get_contact', {
-    description: '分页读取共享联系人档案、字段证据、冲突及当前关系；按 pagination.evidence、pagination.relations、pagination.unverified_claims 的 next_offset 分别翻页；待核实线索使用独立 claim_offset/claim_limit，不是正式事实。与公开网页搜索 get_contacts 区分。',
+    description: '分页读取共享联系人档案、字段证据、冲突及当前关系；按 pagination.evidence、pagination.relations、pagination.unverified_claims 的 next_offset 分别翻页；待核实线索使用独立 claim_offset/claim_limit，不是正式事实。与公开网页搜索 discover_contacts 区分。',
     inputSchema: getInput,
   }, async ({ entity_id, ...page }) => {
     const contact = await library.get(entity_id, page);

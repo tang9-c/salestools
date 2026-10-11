@@ -174,21 +174,21 @@ describe('MCP tool schemas', () => {
     const byName = new Map(listed.tools.map(tool => [tool.name, tool]));
 
     expect([...byName.keys()].sort()).toEqual([
-      'ask_company', 'get_assessment_report', 'get_assessment_status', 'get_company_profile', 'get_contacts', 'submit_assessment',
+      'ask_company', 'discover_contacts', 'get_assessment_report', 'get_assessment_status', 'get_company_profile', 'submit_assessment',
     ]);
     expect(byName.get('get_company_profile')?.description).toMatch(/default|默认|ambiguous|模糊/i);
     expect(byName.get('submit_assessment')?.description).toMatch(/explicit|明确|formal|正式/i);
     expect(byName.get('submit_assessment')?.description).toMatch(/confirm|确认/i);
     expect(byName.get('submit_assessment')?.description).toContain('legal_name');
     expect(byName.get('submit_assessment')?.description).toContain('credit_code');
-    expect(byName.get('get_contacts')?.description).toMatch(/公开|public/i);
-    expect(byName.get('get_contacts')?.description).toMatch(/不.*邮箱|without.*email/i);
+    expect(byName.get('discover_contacts')?.description).toMatch(/公开|public/i);
+    expect(byName.get('discover_contacts')?.description).toMatch(/不.*邮箱|without.*email/i);
 
     const profileOutput = JSON.stringify(byName.get('get_company_profile')?.outputSchema);
     const submitOutput = JSON.stringify(byName.get('submit_assessment')?.outputSchema);
     const statusOutput = JSON.stringify(byName.get('get_assessment_status')?.outputSchema);
     const reportOutput = JSON.stringify(byName.get('get_assessment_report')?.outputSchema);
-    const contactsOutput = JSON.stringify(byName.get('get_contacts')?.outputSchema);
+    const contactsOutput = JSON.stringify(byName.get('discover_contacts')?.outputSchema);
     expect(profileOutput).toContain('cache_hit');
     expect(submitOutput).toContain('cache_hit');
     expect(submitOutput).toContain('cached_at');
@@ -237,7 +237,7 @@ describe('MCP tool schemas', () => {
       ['submit_assessment', { legal_name: '测试制造有限公司', credit_code: '91310000TEST000001' }, expectedSubmit],
       ['get_assessment_status', { assessment_id: assessmentId }, expectedStatus],
       ['get_assessment_report', { assessment_id: assessmentId }, expectedReport],
-      ['get_contacts', { query: '测试制造', region_hint: '上海' }, expectedContacts],
+      ['discover_contacts', { query: '测试制造', region_hint: '上海' }, expectedContacts],
       ['ask_company', { legal_name: '测试制造有限公司', credit_code: '91310000TEST000001', question: 'SolidWorks 招聘说明什么？', assessment_id: assessmentId }, expectedCompanyAnswer],
     ] as const;
 

@@ -110,7 +110,7 @@ CLI 逐个上传并输出 JSON：`accepted` 列出已接收的本地路径和 `f
 
 核对后调用 `review_contact_claim`，提供 `claim_id`、`action:"confirm"` 或 `"reject"`、稳定的 `operation_id`、当前人物的 `expected_entity_version`。确认必须附 1–500 字符的 `confirmation_note`；必要时提供 `corrected_value`，未关联机构的关系还须提供已创建机构的 `target_id`。确认会生成手工审核证据，不冒充原文件引文；拒绝仅改变线索状态。每次审核后重新读取版本，重试同一次操作时保留原参数与 `operation_id`。两段任职须分别审核并保留独立关系。同一文件仍出现多个可提交人物片段时，先核对身份再用 `merge_contacts` 明确选择保留字段；待核实线索会随人物合并转到保留的档案，随后仍需逐条审核。
 
-图谱中查人使用 `search_contacts`（姓名、关键词、组织、职位、技能，可分页）；查看完整档案和证据使用 `get_contact`；问配偶、亲子或任职等问题使用 `ask_contacts`，同名或证据不足会要求澄清或拒答。`get_contacts` 保持原有公开网页搜索与快照语义，不是共享图谱查询。语义/混合检索只有在服务端另配 `ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL` 后可用；未配置时选 `mode=keyword`。失败索引可用 `retry_contact_index` 指定 `entity_id` 和稳定的 `operation_id` 重试。
+图谱中查人使用 `search_contacts`（姓名、关键词、组织、职位、技能，可分页）；查看完整档案和证据使用 `get_contact`；问配偶、亲子或任职等问题使用 `ask_contacts`，同名或证据不足会要求澄清或拒答。`discover_contacts` 保持原有公开网页搜索与快照语义，不是共享图谱查询。语义/混合检索只有在服务端另配 `ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL` 后可用；未配置时选 `mode=keyword`。失败索引可用 `retry_contact_index` 指定 `entity_id` 和稳定的 `operation_id` 重试。
 
 发布前的质量评测会上传 12 份虚构样本并创建联系人，因此只在使用**一次性数据库**的隔离测试服务上运行。给评测进程设置 `CONTACT_EVAL_MCP_URL`（以 `/mcp` 结尾）、`CONTACT_EVAL_UPLOAD_URL`（同源、以 `/contact-files` 结尾）和 `CONTACT_EVAL_TOKEN`，并提供 `CONTACT_EVAL_DEPLOY_REVISION`、`CONTACT_EVAL_DOCLING_VERSION`、`CONTACT_EVAL_OCR_VERSION` 以记录版本；模型元数据读取 `ARK_API_URL`、`ARK_MODEL`、`ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`，也可使用对应的 `CONTACT_EVAL_*` 覆盖项。运行 `npm run contacts:evaluate`，查看 `docs/validation/contact-management-quality.md`；退出码 0 表示全部门槛通过，1 表示已验证失败，2 表示配置不完整。评测端无需读取或打印模型凭据；服务端的模型凭据请只保存在其本地环境中。
 
@@ -153,7 +153,7 @@ codex mcp add salestools \
 
 ```text
 get_company_profile
-get_contacts
+discover_contacts
 submit_assessment
 get_assessment_status
 get_assessment_report
@@ -190,7 +190,7 @@ Codex 应调用 `get_company_profile`，输入等价于：
 
 > 请使用 salestools 查询这家企业公开网页中的关键岗位人员，地域提示为“深圳”，并列出当前联系人和历史联系人。
 
-Codex 应调用 `get_contacts`，输入等价于：
+Codex 应调用 `discover_contacts`，输入等价于：
 
 ```json
 {
@@ -275,7 +275,7 @@ Codex 注册 MCP
       ↓
 get_company_profile：确认企业主体
       ↓ 人工确认 legal_name + credit_code
-get_contacts：准备关键岗位线索
+discover_contacts：准备关键岗位线索
       ↓ 明确要求正式评估
 submit_assessment：提交异步任务
       ↓ status = processing
@@ -344,7 +344,7 @@ test -n "$SALESTOOLS_MCP_TOKEN" && echo 'Token 已设置'
 | 工具 | 什么时候使用 | 关键输入 |
 | --- | --- | --- |
 | `get_company_profile` | 初步了解企业或确认主体 | `query`、可选 `region_hint` |
-| `get_contacts` | 查公开关键岗位姓名和职位 | `query`、可选 `region_hint` |
+| `discover_contacts` | 查公开关键岗位姓名和职位 | `query`、可选 `region_hint` |
 | `submit_assessment` | 主体确认后启动正式评估 | `legal_name`、`credit_code`、可选 `force_refresh` |
 | `get_assessment_status` | 查询异步任务是否完成 | `assessment_id` |
 | `get_assessment_report` | 读取完成报告或失败状态 | `assessment_id` |

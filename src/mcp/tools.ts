@@ -325,8 +325,8 @@ export function buildMcpServer(services: McpServices): McpServer {
     assessmentId: assessment_id,
   }))));
 
-  server.registerTool('get_contacts', {
-    description: '查询公开网页中的当前关键岗位职业身份和历史任职证据；历史证据不代表已离职，不返回邮箱或电话，也不保证法人主体已确认。',
+  server.registerTool('discover_contacts', {
+    description: '从公开网页发现企业关键岗位人员和历史任职证据；不是 search_contacts 的共享图谱搜索或 get_contact 的档案读取。历史证据不代表已离职，不返回邮箱或电话，也不保证法人主体已确认。',
     inputSchema: GetContactsInputSchema,
     outputSchema: GetContactsOutputSchema,
   }, async input => toolResult(contactsOutput(await services.getContacts({

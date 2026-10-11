@@ -160,7 +160,7 @@ it('travels through authenticated HTTP upload, MCP and the real graph without ex
     }] });
     const detail = await call(second, 'get_contact', { entity_id: importedId });
     expect(detail).toMatchObject({ entity: { properties: { telephone: [phone] } } });
-    const oldContacts = await call(second, 'get_contacts', { query: 'Alpha Studio' });
+    const oldContacts = await call(second, 'discover_contacts', { query: 'Alpha Studio' });
     expect(oldContacts.companies).toEqual(expect.arrayContaining([expect.objectContaining({
       contacts: [expect.objectContaining({ name: 'Lin Xiang' })],
     })]));

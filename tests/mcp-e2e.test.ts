@@ -237,7 +237,7 @@ describe('MCP HTTP simulated end-to-end', () => {
     expect(profile).toMatchObject({ source_status: 'completed', cache_hit: false });
     expect(profile).toHaveProperty('cache_hit');
 
-    const contacts = await call(firstClient, 'get_contacts', { query: '测试机器人', region_hint: '上海' });
+    const contacts = await call(firstClient, 'discover_contacts', { query: '测试机器人', region_hint: '上海' });
     expect(contacts).toEqual({
       companies: [{
         company_name: LEGAL_NAME,
@@ -272,7 +272,7 @@ describe('MCP HTTP simulated end-to-end', () => {
     const secondClient = await connect(endpoint, secondToken, 'e2e-user-b');
     clients.push(secondClient);
     expect(secondClient.getProtocolEra()).toBe('modern');
-    const sharedContacts = await call(secondClient, 'get_contacts', {
+    const sharedContacts = await call(secondClient, 'discover_contacts', {
       query: ' 测试机器人 ', region_hint: '上海',
     });
     expect(sharedContacts).toEqual(contacts);
@@ -337,7 +337,7 @@ describe('MCP HTTP simulated end-to-end', () => {
         'cache-before-restart',
       );
       clients.push(firstClient);
-      const first = await call(firstClient, 'get_contacts', {
+      const first = await call(firstClient, 'discover_contacts', {
         query: '测试机器人', region_hint: '上海',
       });
       await firstClient.close();
@@ -362,7 +362,7 @@ describe('MCP HTTP simulated end-to-end', () => {
         'cache-after-restart',
       );
       clients.push(secondClient);
-      const second = await call(secondClient, 'get_contacts', {
+      const second = await call(secondClient, 'discover_contacts', {
         query: ' 测试机器人 ', region_hint: '上海',
       });
 

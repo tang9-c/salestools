@@ -18,7 +18,7 @@ description: Use when a user wants to look up a Chinese company, ask a specific 
 | 正式评估、客户体检、产品机会、销售切入点 | 先调用 `get_company_profile` 校验并保存主体，再确认后调用 `submit_assessment` |
 | 查看进度 | 使用已有 `assessment_id` 调用 `get_assessment_status` |
 | 查看报告 | 调用 `get_assessment_report`；若仍在处理，只报告当前状态 |
-| 查负责人、研发、技术、IT、采购或质量岗位 | 调用 `get_contacts`；说明结果来自公开网页，不等于法人主体认证 |
+| 查负责人、研发、技术、IT、采购或质量岗位 | 调用 `discover_contacts`；说明结果来自公开网页，不等于法人主体认证 |
 
 若所需 Salestools 工具不可用，明确说明 MCP 尚未连接或当前客户端未提供这些工具，不模拟结果。
 
