@@ -31,6 +31,7 @@ let receiptVersion: number | null = null;
 let busy = false;
 let generation = 0;
 let retryAction: Retry = null;
+const externalSessionKey = 'contact-upload-session';
 
 // The SDK's default postMessage transport logs full packets, including session
 // credentials. Keep its public Transport contract and schema validation without logs.
@@ -87,7 +88,7 @@ class ApiError extends Error {
 function friendly(error: unknown): string {
   if (!(error instanceof ApiError)) return '连接中断，请检查网络后重试。';
   if (error.httpStatus === 401 || error.httpStatus === 403) return '上传会话已失效、退出或被撤销，请在聊天中重新打开上传入口。';
-  if (error.code === 'UPLOAD_SESSION_CAPACITY') return '已有两个活跃上传会话，请在其他上传页面点击“退出上传”，再重新打开入口。仅关闭标签页可能不会释放会话。';
+  if (error.code === 'UPLOAD_SESSION_CAPACITY') return '服务上传会话容量暂时已满，请稍后在聊天中重新打开上传入口。';
   if (['CAPACITY_FULL', 'TEMP_CAPACITY_FULL', 'UPLOAD_SESSION_CAPACITY', 'UPLOAD_HANDOFF_CAPACITY'].includes(error.code)) {
     return '服务容量暂时已满，请稍后重试；入口容量不足时请在聊天中重新打开上传入口。';
   }
@@ -115,6 +116,7 @@ async function api(path: string, options: RequestInit = {}, credential = session
   if (!credential) throw new ApiError('UPLOAD_SESSION_UNAUTHORIZED', 401);
   const headers = new Headers(options.headers);
   if (credential.bearer) headers.set('Authorization', `Bearer ${credential.sessionId}.${credential.bearer}`);
+  else if (credential.sessionId) headers.set('X-Upload-Session', credential.sessionId);
   const response = await fetch(`${credential.base_url}${path}`, {
     ...options, headers, credentials: credential.bearer ? 'omit' : 'same-origin',
   });
@@ -242,9 +244,14 @@ async function start(): Promise<void> {
     session = { sessionId: '', bearer: '', base_url: location.origin };
     recovery.textContent = '尚未确认的外部页面可在 Cookie 会话有效期间刷新并继续原任务；会话失效后请回到聊天使用任务编号。';
     if (match) {
-      await api('/contact-upload/exchange', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: match[1] }) });
+      const exchanged = await (await api('/contact-upload/exchange', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: match[1] }) })).json() as { session_id?: string };
+      if (!exchanged.session_id || !/^[A-Za-z0-9_-]{43}$/.test(exchanged.session_id)) throw new ApiError('UPLOAD_SESSION_UNAUTHORIZED', 401);
+      // Store only the selector; authentication remains in the per-session HttpOnly cookie.
+      sessionStorage.setItem(externalSessionKey, exchanged.session_id);
       history.replaceState(null, '', location.pathname);
     }
+    session.sessionId = sessionStorage.getItem(externalSessionKey) ?? '';
+    if (!/^[A-Za-z0-9_-]{43}$/.test(session.sessionId)) throw new ApiError('UPLOAD_SESSION_UNAUTHORIZED', 401);
     exit.disabled = false;
     const ticket = generation;
     try { await startImport(ticket); return; }
@@ -378,6 +385,7 @@ async function leave(): Promise<void> {
   selectFiles(false); commit.disabled = true; exit.disabled = true; offerRetry(null);
   say('正在退出上传会话…', 'failed');
   const pending = api('/contact-upload/exit', { method: 'POST' });
+  if (!session.bearer) sessionStorage.removeItem(externalSessionKey);
   session = null; receiptVersion = null;
   try { await pending; say('已退出上传会话。', 'failed'); }
   catch { say('已关闭本页操作；服务端退出未确认，请回到聊天查询任务。', 'failed'); }

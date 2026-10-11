@@ -81,9 +81,51 @@ async function ready(h: Awaited<ReturnType<typeof setup>>) {
   expect((await fetch(`${h.base}/contact-upload/import`, { method: 'POST', headers: h.headers })).status).toBe(200);
 }
 
+it('binds two external pages to distinct HttpOnly cookies and exits only the selected page', async () => {
+  const h = await setup();
+  const exchange = async (actor: string) => {
+    const response = await fetch(`${h.base}/contact-upload/exchange`, { method: 'POST',
+      headers: { Origin: h.base, 'Content-Type': 'application/json' },
+      body: JSON.stringify(h.sessions.createHandoff(actor, 'source')) });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('set-cookie')).toContain('HttpOnly');
+    const body = await response.json() as { session_id: string };
+    expect(body.session_id).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(Object.keys(body).sort()).toEqual(['ok', 'session_id']);
+    const cookie = response.headers.get('set-cookie')!.split(';')[0];
+    expect(cookie.split('=')[0]).toBe(`contact-upload-dev-${body.session_id}`);
+    return { id: body.session_id, cookie };
+  };
+  const a = await exchange('alice');
+  const b = await exchange('bob');
+  const cookies = `${a.cookie}; ${b.cookie}`;
+  const request = (id: string, path = '/contact-upload/import', method = 'POST', cookie = cookies) =>
+    fetch(h.base + path, { method, headers: { Cookie: cookie, Origin: h.base, 'X-Upload-Session': id } });
+  // Both pages send the same browser cookie jar; the selector must bind each request.
+  for (const entry of [a, b]) {
+    expect((await request(entry.id)).status).toBe(409);
+    const session = h.sessions.authorize(entry.id, decodeURIComponent(entry.cookie.split('=')[1]).split('.')[1])!;
+    expect(session.actor).toBe(entry === a ? 'alice' : 'bob');
+    h.sessions.claimUpload(entry.id);
+    h.sessions.finishUpload(entry.id, entry === a ? 'file_a' : 'file_b');
+    h.sessions.bindImport(entry.id, entry === a ? 'import_a' : 'import_b');
+  }
+  expect(await (await request(a.id)).json()).toEqual({ import_id: 'import_a' });
+  expect(await (await request(b.id)).json()).toEqual({ import_id: 'import_b' });
+  expect((await request('', '/contact-upload/import')).status).toBe(401);
+  expect((await request(a.id, '/contact-upload/import', 'POST', b.cookie)).status).toBe(401);
+  expect((await request(a.id, '/contact-upload/import', 'POST', `contact-upload-dev-${a.id}=${decodeURIComponent(b.cookie.split('=')[1])}`)).status).toBe(401);
+  const exit = await request(a.id, '/contact-upload/exit');
+  expect(exit.status).toBe(200);
+  expect(exit.headers.get('set-cookie')).toContain(`contact-upload-dev-${a.id}=`);
+  expect(exit.headers.get('set-cookie')).toContain('Max-Age=0');
+  expect((await request(a.id)).status).toBe(401);
+  expect(await (await request(b.id)).json()).toEqual({ import_id: 'import_b' });
+});
+
 it('returns explicit capacity error without consuming the handoff or exposing credentials', async () => {
   const h = await setup();
-  h.sessions.create('alice', 'source');
+  for (let n = 1; n < 1000; n++) h.sessions.create(`actor_${n}`, 'source');
   const handoff = h.sessions.createHandoff('alice', 'source');
   const log = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   try {
@@ -143,8 +185,8 @@ it('serializes concurrent confirmations and keeps lost-response cookie retries o
   const gate = new Promise<void>(resolve => { release = resolve; });
   h.commit.mockImplementationOnce(async () => { await gate;
     return { status: 'committed', version: 4, candidates: [], results: [] }; });
-  const cookie = `contact-upload-dev=${h.session.sessionId}.${h.session.bearer}`;
-  const headers = { Cookie: cookie, Origin: h.base } as unknown as typeof h.headers;
+  const cookie = `contact-upload-dev-${h.session.sessionId}=${h.session.sessionId}.${h.session.bearer}`;
+  const headers = { Cookie: cookie, Origin: h.base, 'X-Upload-Session': h.session.sessionId } as unknown as typeof h.headers;
   const first = confirm(h, 3, headers);
   await vi.waitFor(() => expect(h.commit).toHaveBeenCalledTimes(1));
   const second = confirm(h, 3, headers);
@@ -154,7 +196,7 @@ it('serializes concurrent confirmations and keeps lost-response cookie retries o
   expect(results.map(result => result.status)).toEqual([200, 200]);
   expect(h.commit).toHaveBeenCalledTimes(1);
   expect(results[0].headers.get('set-cookie')).toBeNull();
-  expect((await confirm(h, 3, { Cookie: cookie, Origin: 'https://evil.example' } as unknown as typeof h.headers)).status).toBe(403);
+  expect((await confirm(h, 3, { ...headers, Origin: 'https://evil.example' } as unknown as typeof h.headers)).status).toBe(403);
   expect((await confirm(h, 3, headers)).status).toBe(200);
   const exit = await fetch(`${h.base}/contact-upload/exit`, { method: 'POST', headers });
   expect(exit.status).toBe(200);
@@ -164,12 +206,12 @@ it('serializes concurrent confirmations and keeps lost-response cookie retries o
 
 it('exits a Cookie session only from the exact origin', async () => {
   const h = await setup();
-  const cookie = `contact-upload-dev=${h.session.sessionId}.${h.session.bearer}`;
+  const cookie = `contact-upload-dev-${h.session.sessionId}=${h.session.sessionId}.${h.session.bearer}`;
   expect((await fetch(`${h.base}/contact-upload/exit`, { method: 'POST',
-    headers: { Cookie: cookie, Origin: 'https://evil.example' } })).status).toBe(403);
+    headers: { Cookie: cookie, Origin: 'https://evil.example', 'X-Upload-Session': h.session.sessionId } })).status).toBe(403);
   expect(h.sessions.authorize(h.session.sessionId, h.session.bearer)).not.toBeNull();
   expect((await fetch(`${h.base}/contact-upload/exit`, { method: 'POST',
-    headers: { Cookie: cookie, Origin: h.base } })).status).toBe(200);
+    headers: { Cookie: cookie, Origin: h.base, 'X-Upload-Session': h.session.sessionId } })).status).toBe(200);
   expect((await h.upload()).status).toBe(401);
 });
 
@@ -442,10 +484,10 @@ it.each(['expired', 'disabled', 'revoked', 'wrong-secret', 'invalid'] as const)(
 
 it('keeps denied Cookie errors private from cross-origin credential requests', async () => {
   const h = await setup();
-  const cookie = `contact-upload-dev=${h.session.sessionId}.${h.session.bearer}`;
+  const cookie = `contact-upload-dev-${h.session.sessionId}=${h.session.sessionId}.${h.session.bearer}`;
   for (const path of ['/contact-files', '/contact-upload/import', '/contact-upload/commit', '/contact-upload/exit']) {
     const response = await fetch(`${h.base}${path}`, { method: 'POST', headers: {
-      Cookie: cookie, Origin: 'https://evil.example' } });
+      Cookie: cookie, Origin: 'https://evil.example', 'X-Upload-Session': h.session.sessionId } });
     expect(response.status).toBe(403);
     expect(response.headers.get('access-control-allow-origin')).toBeNull();
     expect(response.headers.get('access-control-allow-credentials')).toBeNull();
@@ -473,11 +515,12 @@ it('exchanges a same-origin handoff once and denies cross-origin cookie mutation
     headers: { Origin: h.base, 'Content-Type': 'application/json' }, body: JSON.stringify(handoff) });
   expect(response.status).toBe(200);
   const cookie = response.headers.get('set-cookie')!.split(';')[0];
+  const exchanged = await response.json() as { session_id: string };
   expect(response.headers.get('set-cookie')).toContain('HttpOnly');
   expect((await fetch(`${h.base}/contact-upload/exchange`, { method: 'POST',
     headers: { Origin: h.base, 'Content-Type': 'application/json' }, body: JSON.stringify(handoff) })).status).toBe(401);
   expect((await fetch(`${h.base}/contact-upload/import`, { method: 'POST',
-    headers: { Cookie: cookie, Origin: 'https://evil.example' } })).status).toBe(403);
+    headers: { Cookie: cookie, Origin: 'https://evil.example', 'X-Upload-Session': exchanged.session_id } })).status).toBe(403);
 });
 
 

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { stripTypeScriptTypes } from 'node:module';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { chromium, type Browser, type Page, type Frame, type Route } from 'playwright-core';
+import { chromium, type Browser, type BrowserContext, type Page, type Frame, type Route } from 'playwright-core';
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest';
 
 // Executes the original UI with interpreter type erasure in memory: no bundler or build output.
@@ -30,14 +30,18 @@ const preview = (overrides: Record<string, unknown> = {}) => ({
   coverage_available: true, confirmation: { allowed: true, reasons: [] },
   offset: 0, limit: 50, ...overrides,
 });
-type Harness = { page: Page; ui: Page | Frame; commits: unknown[]; logs: string[]; requests: Array<{ path: string; method: string; auth?: string; cookie?: string; origin?: string }> };
+type Harness = { page: Page; ui: Page | Frame; commits: unknown[]; logs: string[]; requests: Array<{ path: string; method: string; auth?: string; cookie?: string; origin?: string; sessionId?: string }> };
 type Options = { app?: boolean; realSdk?: boolean; holdSession?: boolean; bundle?: boolean; data?: ReturnType<typeof preview>;
+  context?: BrowserContext; externalSessionId?: string;
   response?: (route: Route, h: Harness) => Promise<boolean> };
 async function json(route: Route, data: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(data) });
 }
 async function open(options: Options = {}): Promise<Harness> {
-  const page = await browser.newPage(); pages.push(page);
+  const page = options.context ? await options.context.newPage() : await browser.newPage(); pages.push(page);
+  if (!options.app) await page.addInitScript(id => {
+    if (!sessionStorage.getItem('contact-upload-session')) sessionStorage.setItem('contact-upload-session', id);
+  }, options.externalSessionId ?? 'a'.repeat(43));
   await page.context().addCookies([{ name: 'test-upload-cookie', value: 'restricted_cookie', url: origin, httpOnly: true, sameSite: 'Strict' }]);
   const h: Harness = { page, ui: page, commits: [], requests: [], logs: [] };
   page.on('pageerror', error => h.logs.push(error.message));
@@ -146,11 +150,12 @@ async function open(options: Options = {}): Promise<Harness> {
       }` }); return;
     }
     h.requests.push({ path: url.pathname + url.search, method: request.method(), auth: request.headers().authorization,
-      cookie: request.headers().cookie, origin: request.headers().origin });
+      cookie: request.headers().cookie, origin: request.headers().origin, sessionId: request.headers()['x-upload-session'] });
     if (url.pathname === '/contact-upload/commit') h.commits.push(request.postDataJSON());
     if (await options.response?.(route, h)) return;
     if (url.pathname === '/contact-files') { await json(route, { file_id: 'f_1' }); return; }
     if (url.pathname === '/contact-upload/exit') { await json(route, { ok: true }); return; }
+    if (url.pathname === '/contact-upload/exchange') { await json(route, { ok: true, session_id: 'b'.repeat(43) }); return; }
     if (url.pathname === '/contact-upload/commit') { await json(route, { import_id: 'ci_browser', status: 'committed', version: 4 }); return; }
     if (url.pathname === '/contact-upload/import') {
       await json(route, request.method() === 'POST' ? { import_id: 'ci_browser' } : options.data ?? preview()); return;
@@ -338,12 +343,13 @@ it('shows session capacity without calling it expired and preserves the handoff 
   let full = true;
   const h = await open({ response: async route => {
     if (new URL(route.request().url()).pathname !== '/contact-upload/exchange') return false;
-    await json(route, full ? { code: 'UPLOAD_SESSION_CAPACITY' } : { ok: true }, full ? 429 : 200);
+    await json(route, full ? { code: 'UPLOAD_SESSION_CAPACITY' } : { ok: true, session_id: 'b'.repeat(43) }, full ? 429 : 200);
     return true;
   } });
   await h.page.goto(origin + '/contact-upload#code=capacity_test_code');
   await h.page.reload();
-  await expect.poll(() => h.page.locator('#status').textContent()).toContain('两个活跃上传会话');
+  await expect.poll(() => h.page.locator('#status').textContent()).toContain('服务上传会话容量暂时已满');
+  expect(await h.page.locator('#status').textContent()).not.toContain('其他上传页面');
   expect(await h.page.locator('#status').textContent()).not.toContain('已失效');
   expect(await h.page.locator('#file').isEnabled()).toBe(false);
   expect(new URL(h.page.url()).hash).toBe('#code=capacity_test_code');
@@ -351,6 +357,46 @@ it('shows session capacity without calling it expired and preserves the handoff 
   await h.page.reload();
   await expect.poll(() => h.page.locator('#review').isVisible()).toBe(true);
   expect(new URL(h.page.url()).hash).toBe('');
+});
+
+it('selects the exchanged external session on every request and retains only its non-secret id on reload', async () => {
+  const h = await open();
+  await h.page.goto(origin + '/contact-upload#code=fresh_page_code');
+  await h.page.reload();
+  await expect.poll(() => h.page.locator('#review').isVisible()).toBe(true);
+  expect(new URL(h.page.url()).hash).toBe('');
+  expect(await h.page.evaluate(() => sessionStorage.getItem('contact-upload-session'))).toBe('b'.repeat(43));
+  await h.page.reload();
+  await ready(h.page);
+  const requests = h.requests.filter(r => r.path === '/contact-upload/import').slice(-2);
+  expect(requests.map(r => r.sessionId)).toEqual(['b'.repeat(43), 'b'.repeat(43)]);
+  expect(requests.every(r => r.auth === undefined)).toBe(true);
+  await h.page.locator('#exit').click();
+  await expect.poll(() => h.page.locator('#status').textContent()).toContain('已退出');
+  expect(h.requests.find(r => r.path === '/contact-upload/exit')?.sessionId).toBe('b'.repeat(43));
+  expect(await h.page.evaluate(() => sessionStorage.getItem('contact-upload-session'))).toBeNull();
+  expect(await h.page.evaluate(() => localStorage.length)).toBe(0);
+});
+
+it('keeps two external tabs in one browser context on their own session selectors', async () => {
+  const context = await browser.newContext();
+  try {
+    const a = await open({ context });
+    const b = await open({ context, externalSessionId: 'c'.repeat(43) });
+    await a.page.reload();
+    await ready(a.page);
+    expect(a.requests.filter(r => r.path === '/contact-upload/import').slice(-2).map(r => r.sessionId))
+      .toEqual(['a'.repeat(43), 'a'.repeat(43)]);
+    expect(b.requests.filter(r => r.path === '/contact-upload/import').map(r => r.sessionId))
+      .toEqual(['c'.repeat(43), 'c'.repeat(43)]);
+    await a.page.locator('#exit').click();
+    await expect.poll(() => a.page.locator('#status').textContent()).toContain('已退出');
+    await b.page.reload();
+    await ready(b.page);
+    expect(await b.page.evaluate(() => sessionStorage.getItem('contact-upload-session'))).toBe('c'.repeat(43));
+    expect(b.requests.filter(r => r.path === '/contact-upload/import').slice(-2).map(r => r.sessionId))
+      .toEqual(['c'.repeat(43), 'c'.repeat(43)]);
+  } finally { await context.close(); }
 });
 
 it('keeps an import number when extraction fails and can safely retry preview reads', async () => {

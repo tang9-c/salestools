@@ -46,8 +46,7 @@ export class UploadSessions {
     if (!actor.trim() || !sourceTokenHash || !this.sourceEnabled(sourceTokenHash, actor)) {
       throw new Error('UPLOAD_SESSION_UNAUTHORIZED');
     }
-    const active = [...this.sessions.values()].filter(entry => entry.actor === actor).length;
-    if (active >= 2) throw new Error('UPLOAD_SESSION_CAPACITY');
+    if (this.sessions.size >= 1000) throw new Error('UPLOAD_SESSION_CAPACITY');
     const sessionId = secret();
     const bearer = secret();
     this.sessions.set(sessionId, {

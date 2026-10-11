@@ -2,15 +2,34 @@ import { describe, expect, it } from 'vitest';
 import { UploadSessions } from '../src/contacts/upload-session.js';
 
 describe('upload sessions', () => {
+  it('allows more than two sessions for one actor without revoking existing sessions', () => {
+    const sessions = new UploadSessions(() => true);
+    const first = sessions.create('alice', 'source');
+    sessions.create('alice', 'source');
+    const third = sessions.exchange(sessions.createHandoff('alice', 'source').code)!;
+    expect(sessions.authorize(third.sessionId, third.bearer)?.actor).toBe('alice');
+    expect(sessions.authorize(first.sessionId, first.bearer)?.actor).toBe('alice');
+  });
+
   it('handoffs do not consume active quota until exchanged', () => {
     const sessions = new UploadSessions(() => true);
     const first = sessions.create('alice', 'source');
+    for (let n = 1; n < 999; n++) sessions.create(`actor_${n}`, 'source');
     const handoff = sessions.createHandoff('alice', 'source');
     expect(() => sessions.create('alice', 'source')).not.toThrow();
     expect(() => sessions.exchange(handoff.code)).toThrow('UPLOAD_SESSION_CAPACITY');
     sessions.exit(first.sessionId, first.bearer);
     expect(sessions.exchange(handoff.code)).not.toBeNull();
     expect(sessions.exchange(handoff.code)).toBeNull();
+  });
+
+  it('reclaims expired sessions before enforcing the global capacity', () => {
+    let now = 0;
+    const sessions = new UploadSessions(() => true, () => now);
+    for (let n = 0; n < 1000; n++) sessions.create(`actor_${n}`, 'source');
+    expect(() => sessions.create('bob', 'source')).toThrow('UPLOAD_SESSION_CAPACITY');
+    now = 2 * 60 * 60_000;
+    expect(() => sessions.create('bob', 'source')).not.toThrow();
   });
 
   it('bounds handoff storage, cleans expired codes, and starts the two-hour session TTL at exchange', () => {
@@ -49,7 +68,8 @@ describe('upload sessions', () => {
   it('successful completion revokes mutable capabilities and releases quota, retaining only a fixed receipt', () => {
     const sessions = new UploadSessions(() => true);
     const first = sessions.create('alice', 'source');
-    sessions.create('alice', 'source');
+    for (let n = 1; n < 1000; n++) sessions.create(`actor_${n}`, 'source');
+    expect(() => sessions.create('alice', 'source')).toThrow('UPLOAD_SESSION_CAPACITY');
     sessions.claimUpload(first.sessionId);
     sessions.finishUpload(first.sessionId, 'file_1');
     sessions.bindImport(first.sessionId, 'import_1');

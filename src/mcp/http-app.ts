@@ -92,11 +92,13 @@ export function createHttpApp(
   };
   const pageCredential = (request: Parameters<RequestHandler>[0]) => {
     const bearer = request.get('Authorization')?.match(/^Bearer ([^\s]+)$/i)?.[1];
+    const selected = request.get('X-Upload-Session') ?? '';
+    const selectedCookie = `${cookieName}-${selected}`;
     const cookie = request.get('Cookie')?.split(';').map(value => value.trim())
-      .find(value => value.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
+      .find(value => /^[A-Za-z0-9_-]{43}$/.test(selected) && value.startsWith(`${selectedCookie}=`))?.slice(selectedCookie.length + 1);
     const credential = bearer ?? cookie;
     const dot = credential?.indexOf('.') ?? -1;
-    return { bearer, cookie, sessionId: dot > 0 ? credential!.slice(0, dot) : '',
+    return { bearer, cookie, sessionId: dot > 0 && (bearer || credential!.slice(0, dot) === selected) ? credential!.slice(0, dot) : '',
       secret: dot > 0 ? credential!.slice(dot + 1) : '' };
   };
   const pageAuth: RequestHandler = (request, response, next) => {
@@ -256,10 +258,10 @@ export function createHttpApp(
         return;
       }
       if (!exchanged) { failure(401, 'HANDOFF_INVALID'); return; }
-      response.cookie(cookieName, `${exchanged.sessionId}.${exchanged.bearer}`, {
+      response.cookie(`${cookieName}-${exchanged.sessionId}`, `${exchanged.sessionId}.${exchanged.bearer}`, {
         secure: !localHost,
         httpOnly: true, sameSite: 'strict', path: '/', maxAge: 2 * 60 * 60_000,
-      }).json({ ok: true });
+      }).json({ ok: true, session_id: exchanged.sessionId });
     });
     const json = express.json({ limit: '1kb' });
     app.post('/contact-upload/exit', exactHostMiddleware, (request, response) => {
@@ -270,8 +272,9 @@ export function createHttpApp(
         response.status(401).json({ code: 'UPLOAD_SESSION_UNAUTHORIZED' }); return;
       }
       if (credential.bearer) response.set('Access-Control-Allow-Origin', '*');
-      response.cookie(cookieName, '', { secure: !localHost, httpOnly: true, sameSite: 'strict', path: '/', maxAge: 0 })
-        .json({ ok: true });
+      if (!credential.bearer) response.cookie(`${cookieName}-${credential.sessionId}`, '', {
+        secure: !localHost, httpOnly: true, sameSite: 'strict', path: '/', maxAge: 0 });
+      response.json({ ok: true });
     });
     app.post('/contact-upload/import', exactHostMiddleware, pageAuth, json, (request, response) => {
       void (async () => {
