@@ -14,4 +14,4 @@
 
 CI：https://github.com/tang9-c/salestools/actions/runs/38100575058，tested SHA 为 1db8ca840846fdee821d7e03bb4882db15b0627e，最终结果 success。
 
-1319 项 Vitest、37 项 Python 测试及 3 项 Python subtests 全部通过，Rust 测试及生产容器门禁通过。contact-recall-acceptance 的 6 项测试通过，包括真实双栏 PDF 入库、回读、搜索及两条学校名称引文的持久化。后续仅补充本文档，不更改已验证代码。本分支尚未合并或发布镜像。
+1319 项 Vitest、37 项 Python 测试及 3 项 Python subtests 全部通过，Rust 测试及生产容器门禁通过。contact-recall-acceptance 的 6 项测试通过，包括真实双栏 PDF 入库、回读、搜索及两条学校名称引文的持久化。后续仅补充本文档，不更改已验证代码。修复已合并至 main（739002b），镜像发布使用新的 v0.5.15 标签，不覆盖失败的 v0.5.14 标签。
