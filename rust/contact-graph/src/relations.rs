@@ -236,6 +236,7 @@ pub(crate) fn collect_relation_evidence(
                 "locator_status",
                 "file_name",
                 "file_sha256",
+                "text_sha256",
                 "source_url",
                 "quote",
                 "page",
@@ -315,6 +316,21 @@ pub(crate) fn collect_relation_evidence(
             .ok_or_else(|| invalid("Missing locator_status"))?;
         let source_valid = match source_type {
             "manual" => locator == "not_applicable",
+            "text" => {
+                locator == "located"
+                    && fields
+                        .get("text_sha256")
+                        .and_then(Value::as_str)
+                        .is_some_and(|hash| {
+                            hash.len() == 64
+                                && hash
+                                    .bytes()
+                                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                        })
+                    && !fields.contains_key("page")
+                    && !fields.contains_key("file_name")
+                    && !fields.contains_key("file_sha256")
+            }
             "file" => {
                 ["located", "unavailable"].contains(&locator)
                     && fields.get("file_name").and_then(Value::as_str).is_some()

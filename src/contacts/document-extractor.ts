@@ -125,6 +125,7 @@ export interface DocumentExtractorOptions {
   collectedAt?: string; fetchFn?: typeof fetch; requestMaxBytes?: number;
   maxBatches?: number; maxModelCalls?: number; skillSupplement?: boolean; projectSupplement?: boolean;
   fileId?: string;
+  sourceType?: 'file' | 'text';
 }
 export interface DocumentExtractionResult {
   candidates: ImportCandidate[]; warnings: string[];
@@ -139,8 +140,8 @@ const SYSTEM_PROMPT = `Extract ONE DocumentProfile as complete JSON. Input comma
 Shape: {subject_status:"single"|"ambiguous"|"absent",person:Fact[],education:[{local_id,organization:Fact[],attendance:Link}],employment:[{local_id,organization:Fact[],employment:Link,role:Fact[]}],projects:[{local_id,project:Fact[],participation:Link,role:Fact[],clients:[{organization:Fact[],client:Link}]}],organization_clues:[{organization:Fact[],association:Link}]}.
 Fact={field_path,value,evidence:[{block_id,quote}],uncertain:boolean}. Link={evidence:[{block_id,quote}],uncertain:boolean}, no field_path/value. Use actual block IDs and short exact quotes; never join quotes. Unknown=[]; uncertain=true.
 Extract ALL contacts and distinct technology/tool/method names as skills, ONE per Fact. Skills: short names only (K8s=>Kubernetes); duties/proficiency stay in quotes or sourced descriptions, not extra skills. No invented facts. One owner=>single; companies aren't people. Read across blocks/pages/columns.
-Exclude 证明人/推荐人/reference contacts AND their employers from all owner facts/clients/clues. Continuations without names are single, not ambiguous. Multiple actual owners=>ambiguous; only others=>absent. No filename names.
-Employers != clients/partners. Separate each employment episode with cited startDate/endDate. Never use historical or desired 求职意向 roles as current jobTitle. Attendance != graduation/degree. Card with only person+company and no explicit employment statement=>organization_clues with uncertain association; never employment. Explicit project participation/clients need no shared sentence.
+Exclude 证明人/推荐人/references AND their employers from owner facts/clients/clues. Nameless continuations=>single. Multiple owners=>ambiguous; only others=>absent. No filename names.
+Card: >1 company/person=>ONLY uncertain organization_clues, NEVER employment. Exactly one clearly associated name+company+title=>employment uncertain:false with cited roleName; no 任职于 needed. No title/unclear layout=>uncertain clues. Cite name/company/title, not a test disclaimer; synthetic labels neither prove nor negate the card's stated role. No inferred dates/current status. Employers!=clients. Cite printed employment dates; historical/desired 求职意向 roles aren't current jobTitle. Attendance!=graduation. Project/client links need no shared sentence.
 Fact certainty != Link certainty: a printed organization name is uncertain:false even if association is unconfirmed; then only Link.uncertain=true. Formatting examples (not source facts):
 {"field_path":"properties.skills","value":"Linux","evidence":[{"block_id":"b2","quote":"maintained Linux hosts"}],"uncertain":false}
 {"field_path":"properties.role.startDate","value":"2020","evidence":[{"block_id":"b3","quote":"2020-2022"}],"uncertain":false}. {"field_path":"properties.role.endDate","value":"2022","evidence":[{"block_id":"b3","quote":"2020-2022"}],"uncertain":false}. Put BOTH date Facts in role for a printed range; roleName path=properties.role.roleName. Dates YYYY[-MM[-DD]], preserve source precision, never add months/days. Before final JSON, check every printed employment date range has both date Facts.
@@ -426,8 +427,11 @@ function mapProfiles(profiles: Profile[], blocks: Map<string, ParsedBlock>, opti
     const block = blocks.get(ref.block_id)!;
     const evidence_id = randomUUID(); origin.set(evidence_id, ref.block_id);
     return { evidence_id, subject_kind: relation ? 'relation' : 'entity', subject_id: draft.candidate_id,
-      field_path: path, value: value as {}, source_type: 'file', file_name: options.fileName, file_sha256: options.fileSha256,
-      quote: ref.quote, ...(block.page === undefined ? {} : { page: block.page }), locator_status: 'located', collected_at: options.collectedAt ?? new Date().toISOString() };
+      field_path: path, value: value as {},
+      ...(options.sourceType === 'text' ? { source_type: 'text' as const, text_sha256: options.fileSha256 }
+        : { source_type: 'file' as const, file_name: options.fileName, file_sha256: options.fileSha256 }),
+      quote: ref.quote, ...(options.sourceType === 'text' || block.page === undefined ? {} : { page: block.page }),
+      locator_status: 'located', collected_at: options.collectedAt ?? new Date().toISOString() };
   });
   const review = (draft: Draft, path: string, value: unknown, reason: ReviewItem['reason'], raw: unknown) => {
     const refs = object(raw).evidence;

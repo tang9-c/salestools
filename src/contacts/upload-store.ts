@@ -15,7 +15,8 @@ export interface UploadedFile {
   actor: string;
   fileName: string;
   sha256: string;
-  mime: 'application/pdf' | 'image/jpeg' | 'image/png';
+  mime: 'application/pdf' | 'image/jpeg' | 'image/png' | 'text/plain';
+  originalText?: string;
   tempPath: string;
   uploadedAt: string;
 }
@@ -59,6 +60,27 @@ export class UploadStore {
 
   get pendingCount(): number { return this.entries.size; }
   get(fileId: string): UploadedFile | null { return this.entries.get(fileId)?.file ?? null; }
+
+  // Share admission/cleanup accounting, without creating a file for pasted text.
+  registerText(fileId: string, actor: string, text: string): UploadedFile {
+    if (!actor.trim()) throw new UploadError('UPLOAD_ACTOR_REQUIRED', 401);
+    if (!text.trim() || text.length > 20_000) throw new UploadError('INVALID_CONTACT_TEXT', 400);
+    const existing = this.get(fileId);
+    if (existing) {
+      if (existing.actor !== actor || existing.originalText !== text) throw new UploadError('OPERATION_CONFLICT', 409);
+      return existing;
+    }
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (bytes > this.options.maxFileBytes) throw new UploadError('FILE_TOO_LARGE', 413);
+    if (this.entries.size >= this.options.maxPendingFiles) throw new UploadError('CAPACITY_FULL', 429);
+    if (this.totalBytes + bytes > this.options.maxTempBytes) throw new UploadError('TEMP_CAPACITY_FULL', 429);
+    const file: UploadedFile = { fileId, actor, fileName: '用户提供的文字',
+      mime: 'text/plain', tempPath: '', originalText: text,
+      sha256: createHash('sha256').update(text).digest('hex'), uploadedAt: this.now().toISOString() };
+    this.entries.set(fileId, { actor, file, bytes, submitted: false });
+    this.totalBytes += bytes;
+    return file;
+  }
 
   async reserve(actor: string): Promise<string> {
     // No await before insertion: concurrent HTTP handlers cannot overbook the process-local cap.
@@ -200,6 +222,7 @@ export class UploadStore {
     this.entries.delete(fileId);
     if (entry.timer) clearTimeout(entry.timer);
     this.totalBytes -= entry.bytes;
+    if (entry.file?.mime === 'text/plain') return;
     await unlink(join(this.options.directory, fileId)).catch(error => {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     });

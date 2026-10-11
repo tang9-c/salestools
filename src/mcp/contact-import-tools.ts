@@ -41,6 +41,17 @@ function actor(context: { http?: { authInfo?: { clientId?: string } } }): string
 }
 
 export function registerContactImportTools(server: McpServer, imports: ContactImportService): void {
+  server.registerTool('import_contacts_text', {
+    description: '从用户提供的文字提取联系人候选，保存原文与引文；跳过上传及文档解析，不直接入库。先用 get_contact_import 核对，再经用户确认调用 commit_contact_import。保留 operation_id 可安全重试；文字会发送给服务配置的模型。',
+    inputSchema: z.object({ text: z.string().min(1).max(20_000).refine(value => !!value.trim()),
+      operation_id: operationId }).strict(),
+  }, async (input, context) => {
+    try { return result(await imports.startText(input, actor(context))); }
+    catch (error) {
+      if (!(error instanceof ContactRateLimitError)) throw error;
+      return { ...result({ code: error.code, retry_after_seconds: error.retryAfterSeconds }), isError: true };
+    }
+  });
   server.registerTool('import_contacts', {
     description: '处理已上传的 file_id，生成候选预览；保留 operation_id 以便响应丢失后安全重试。此步骤不创建正式联系人。',
     inputSchema: z.object({ file_id: id, operation_id: operationId }).strict(),
@@ -53,14 +64,14 @@ export function registerContactImportTools(server: McpServer, imports: ContactIm
   });
 
   server.registerTool('get_contact_import', {
-    description: '读取自己的导入状态、分页候选及短引文，不返回完整 OCR 文本。',
+    description: '读取自己的导入状态、分页候选及短引文，不返回完整 OCR 或输入原文。',
     inputSchema: z.object({ import_id: id, offset: z.int().nonnegative().default(0),
       limit: z.int().min(1).max(50).default(20) }).strict(),
   }, async (input, context) => result(await imports.get(input.import_id, actor(context),
     input.offset, input.limit) ?? { found: false }));
 
   server.registerTool('commit_contact_import', {
-    description: 'auto_create 自动创建单一主体、证据充分的组织与项目；明确的雇主、学校、项目参与和客户关系写为文件来源正式边，弱建议保留为待核实线索。也可逐个传 choices 手工提交。operation_id 固定为 contact-import:<import_id>。',
+    description: 'auto_create 自动创建单一主体、证据充分的组织与项目；明确的雇主、学校、项目参与和客户关系写为文件或用户文字来源正式边，弱建议保留为待核实线索。也可逐个传 choices 手工提交。operation_id 固定为 contact-import:<import_id>。',
     inputSchema: z.object({ import_id: id, preview_version: z.int().positive(),
       operation_id: operationId, choices: z.array(choice).max(800).optional(),
       auto_create: z.boolean().optional(),

@@ -6,6 +6,7 @@ import type { UploadedFile, UploadStore } from './upload-store.js';
 import { normalizePhoneForSuggestion, suggestMatches, type MatchSuggestion } from './identity-match.js';
 import { importFailure, type ImportFailure, type ImportStage } from './import-diagnostics.js';
 import { ContactRateLimit } from './contact-rate-limit.js';
+import { createHash } from 'node:crypto';
 
 export interface ImportEvent {
   import_id: string; file_id: string; stage: ImportStage;
@@ -14,6 +15,12 @@ export interface ImportEvent {
 }
 
 type CandidateRelation = ImportCandidate['relation_suggestions'][number];
+
+function locatedSource(proof: ImportCandidate['evidence'][number]): boolean {
+  return proof.locator_status === 'located' && !!proof.quote?.trim()
+    && ((proof.source_type === 'file' && !!proof.file_sha256)
+      || (proof.source_type === 'text' && !!proof.text_sha256));
+}
 
 function validSelectedProperties(relation: CandidateRelation): boolean {
   const now = new Date().toISOString();
@@ -27,21 +34,18 @@ function validSelectedProperties(relation: CandidateRelation): boolean {
 
 function locatedRelationProof(relation: CandidateRelation) {
   return relation.evidence.filter(proof => proof.field_path === '$relation'
-    && proof.source_type === 'file' && proof.locator_status === 'located'
+    && locatedSource(proof)
     && proof.value && typeof proof.value === 'object'
     && !Array.isArray(proof.value)
     && (proof.value as Record<string, unknown>).relation_type === relation.relation_type
     && (proof.value as Record<string, unknown>).source_id === relation.source_candidate_id
-    && (proof.value as Record<string, unknown>).target_id === relation.target_candidate_id
-    && !!proof.file_sha256 && !!proof.quote?.trim());
+    && (proof.value as Record<string, unknown>).target_id === relation.target_candidate_id);
 }
 
 function hasLocatedName(candidate: ImportCandidate): boolean {
   if (candidate.label !== 'Organization') return false;
   return candidate.evidence.some(proof => proof.field_path === 'properties.name'
-    && proof.value === candidate.properties.name && proof.source_type === 'file'
-    && proof.locator_status === 'located' && !!proof.file_sha256
-    && !!proof.quote?.trim());
+    && proof.value === candidate.properties.name && locatedSource(proof));
 }
 
 function projectAnchor(candidate: ImportCandidate): string | null {
@@ -50,25 +54,20 @@ function projectAnchor(candidate: ImportCandidate): string | null {
   const value = candidate.properties[field];
   if (!value) return null;
   return candidate.evidence.some(proof => proof.field_path === `properties.${field}`
-    && proof.value === value && proof.source_type === 'file'
-    && proof.locator_status === 'located' && !!proof.file_sha256
-    && !!proof.quote?.trim()) ? value : null;
+    && proof.value === value && locatedSource(proof)) ? value : null;
 }
 
 function hasLocatedRoleFields(relation: CandidateRelation): boolean {
   if (relation.relation_type === 'alumniOf') {
     return Object.entries(relation.properties).every(([field, value]) => relation.evidence.some(proof =>
-      proof.field_path === `properties.${field}` && proof.value === value && proof.source_type === 'file'
-      && proof.locator_status === 'located' && !!proof.file_sha256
-      && typeof value === 'string' && !!proof.quote?.trim()));
+      proof.field_path === `properties.${field}` && proof.value === value && locatedSource(proof)
+      && typeof value === 'string'));
   }
   const role = relation.properties.role;
   if (!role || typeof role !== 'object' || Array.isArray(role)) return relation.relation_type !== 'worksFor';
   return Object.entries(role).every(([field, value]) => field === '@type'
     || relation.evidence.some(proof => proof.field_path === `properties.role.${field}`
-      && proof.value === value && proof.source_type === 'file'
-      && proof.locator_status === 'located' && !!proof.file_sha256
-      && typeof value === 'string' && !!proof.quote?.trim()));
+      && proof.value === value && locatedSource(proof) && typeof value === 'string'));
 }
 
 function isAutoSelectableInstitutionRelation(relation: CandidateRelation, owner: ImportCandidate,
@@ -234,6 +233,20 @@ export class ContactImportService {
     catch { /* Logging failure cannot prevent durable task completion. */ }
   }
 
+  async startText(input: { text: string; operation_id: string }, actor: string): Promise<{ import_id: string }> {
+    if (!actor.trim()) throw new Error('Authenticated client is required');
+    if (!input.text.trim() || input.text.length > 20_000 || !input.operation_id.trim()
+      || input.operation_id.length > 200) throw new Error('INVALID_CONTACT_TEXT');
+    const fileId = `text_${createHash('sha256').update(JSON.stringify([actor, input.operation_id, input.text])).digest('hex')}`;
+    const prior = await this.options.graph.request<JobWriteResult | null>('get_import_start', {
+      operation_id: input.operation_id, actor, file_id: fileId,
+    });
+    if (prior) return { import_id: prior.import_id };
+    this.options.uploads.registerText(fileId, actor, input.text);
+    try { return await this.start({ file_id: fileId, operation_id: input.operation_id }, actor); }
+    catch (error) { await this.options.uploads.release(fileId); throw error; }
+  }
+
   async start(input: { file_id: string; operation_id: string }, actor: string): Promise<{ import_id: string }> {
     if (!actor.trim()) throw new Error('Authenticated client is required');
     const file = this.options.uploads.get(input.file_id);
@@ -246,7 +259,7 @@ export class ContactImportService {
     this.rateLimit.consume(actor);
     const result = await this.options.graph.request<JobWriteResult>('put_import_job', {
       operation_id: input.operation_id, actor, file_id: input.file_id,
-      status: 'queued', data: { candidates: [] },
+      status: 'queued', data: { candidates: [], ...(file.mime === 'text/plain' ? { source: this.source(file) } : {}) },
     });
     if (result.replayed) return { import_id: result.import_id };
     const importId = result.import_id;
@@ -268,9 +281,13 @@ export class ContactImportService {
       async signal => {
         await this.transition(importId, file.fileId, 1, 'processing',
           { candidates: [], source: this.source(file) });
-        begin('parse');
-        const blocks = await this.options.parse(file, signal);
-        completed(blocks.length);
+        let blocks: ParsedBlock[];
+        if (file.mime === 'text/plain') blocks = [{ block_id: 'text:1', text: file.originalText! }];
+        else {
+          begin('parse');
+          blocks = await this.options.parse(file, signal);
+          completed(blocks.length);
+        }
         begin('extract');
         const extracted = await this.options.extract(blocks, file, signal);
         completed(extracted.candidates.length);
@@ -337,7 +354,7 @@ export class ContactImportService {
       && value.every(id => typeof id === 'string' && !!id.trim());
     return {
       import_id: job.import_id, status: job.status, version: job.version,
-      source: job.data.source ?? null, warnings,
+      source: this.previewSource(job.data.source), warnings,
       failure: job.data.failure ?? null,
       processed_block_ids: job.data.processed_block_ids ?? [],
       unprocessed_block_ids: job.data.unprocessed_block_ids ?? [],
@@ -554,7 +571,15 @@ export class ContactImportService {
   }
 
   private source(file: UploadedFile): Record<string, unknown> {
+    if (file.mime === 'text/plain') return { source_type: 'text', text_sha256: file.sha256,
+      original_text: file.originalText, collected_at: file.uploadedAt };
     return { file_name: file.fileName, file_sha256: file.sha256, uploaded_at: file.uploadedAt };
+  }
+
+  private previewSource(source: unknown): unknown {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return source ?? null;
+    const { original_text: _originalText, ...identity } = source as Record<string, unknown>;
+    return identity;
   }
 
   private getRaw(importId: string): Promise<ImportJob | null> {

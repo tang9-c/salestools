@@ -13,6 +13,16 @@ const run = (data: unknown, text = '原文', overrides = {}) => extractor(vi.fn(
 const owner = (candidates: ImportCandidate[]) => candidates.find(c => c.label === 'Person')!;
 const org = (name: string, quote = '原文', block_id = 'b1') => [fact('properties.name', name, quote, block_id)];
 
+it('locates pasted-text evidence without inventing a file or page', async () => {
+  const result = await extractor(async () => response(profile({ person: [fact('properties.name', '林知远', '林知远')] })),
+    { sourceType: 'text' }).extract([{ block_id: 'b1', text: '林知远' }], new AbortController().signal);
+  const proof = owner(result.candidates).evidence[0];
+  expect(proof).toMatchObject({ source_type: 'text', text_sha256: 'a'.repeat(64), quote: '林知远', locator_status: 'located' });
+  expect(proof).not.toHaveProperty('file_name');
+  expect(proof).not.toHaveProperty('file_sha256');
+  expect(proof).not.toHaveProperty('page');
+});
+
 it('normalizes explicit skill aliases while preserving every sourced quote and distinct technology', async () => {
   const result = await run(profile({ person: [fact('properties.name', '本人', '本人'),
     fact('properties.skills', 'K8s', '部署K8s集群'),
@@ -68,6 +78,33 @@ it('explicitly enables thinking on every contact-document model request within t
 });
 
 describe('DocumentProfile mapping', () => {
+  it('accepts sourced business-card employment and title without inventing employment dates', async () => {
+    const result = await extractor(vi.fn(async () => response(profile({
+      person: [fact('properties.name', '林知远', '林知远', 'name')],
+      employment: [{ local_id: 'card', organization: org('测试公司', '测试公司', 'company'),
+        employment: { evidence: [ref('林知远', 'name'), ref('测试公司', 'company'), ref('研发经理', 'title')], uncertain: false },
+        role: [fact('properties.role.roleName', '研发经理', '研发经理', 'title')] }],
+    })))).extract([{ block_id: 'company', text: '测试公司', page: 1 },
+      { block_id: 'name', text: '林知远', page: 1 }, { block_id: 'title', text: '研发经理', page: 1 }], new AbortController().signal);
+    const person = owner(result.candidates);
+    const relation = person.relation_suggestions[0];
+    expect(relation).toMatchObject({ relation_type: 'worksFor', uncertain: false,
+      properties: { role: { '@type': 'OrganizationRole', roleName: '研发经理' } } });
+    expect(relation.properties.role).not.toHaveProperty('startDate');
+    expect(relation.properties.role).not.toHaveProperty('endDate');
+    expect(relation.evidence.map(e => e.quote)).toEqual(['林知远', '测试公司', '研发经理', '研发经理']);
+    expect(person.review_items).toEqual([]);
+  });
+
+  it.each(['single', 'ambiguous'])('does not promote ambiguous card attribution to employment: %s', async subject_status => {
+    const result = await run(profile({ subject_status, person: [fact('properties.name', '本人')],
+      organization_clues: [{ organization: org('公司'), association: link('原文', 'b1', true) }],
+    }));
+    expect(owner(result.candidates).relation_suggestions).toEqual([]);
+    expect(owner(result.candidates).review_items.some(r => r.kind === 'relation'
+      && r.relation_type === 'affiliation')).toBe(true);
+  });
+
   it('accepts known nested employment roles and education facts without moving personal details onto organizations', async () => {
     const result = await run(profile({ person: [fact('properties.name', '本人')],
       employment: [{ local_id: 'job', organization: org('公司'), employment: {

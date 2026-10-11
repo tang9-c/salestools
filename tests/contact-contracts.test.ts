@@ -18,6 +18,16 @@ function fixture(name: string): unknown {
 }
 
 describe('shared contact graph contract', () => {
+  it('requires a located quote and content hash for pasted-text evidence', () => {
+    const proof = { evidence_id: 'ev_text', subject_kind: 'entity', subject_id: 'p_1',
+      field_path: 'properties.name', value: '林知远', source_type: 'text', text_sha256: 'a'.repeat(64),
+      quote: '林知远', locator_status: 'located', collected_at: '2026-10-11T00:00:00.000Z' };
+    expect(ContactEvidenceSchema.safeParse(proof).success).toBe(true);
+    expect(ContactEvidenceSchema.safeParse({ ...proof, text_sha256: undefined }).success).toBe(false);
+    expect(ContactEvidenceSchema.safeParse({ ...proof, quote: undefined }).success).toBe(false);
+    expect(ContactEvidenceSchema.safeParse({ ...proof, locator_status: 'not_applicable' }).success).toBe(false);
+    expect(ContactEvidenceSchema.safeParse({ ...proof, page: 1 }).success).toBe(false);
+  });
   it('keeps personal education details on alumniOf rather than the school', () => {
     const base = { relation_id: 'r_education', source_id: 'p_1', target_id: 'o_1', relation_type: 'alumniOf',
       metadata: { version: 1, created_at: '2026-10-09T00:00:00.000Z', updated_at: '2026-10-09T00:00:00.000Z' } };

@@ -274,8 +274,9 @@ export const ContactEvidenceSchema = z.object({
   field_path: evidenceField,
   value: z.unknown().refine(value => value !== undefined && value !== null),
   value_path: text.optional(),
-  source_type: z.enum(['file', 'web', 'manual']),
+  source_type: z.enum(['file', 'web', 'manual', 'text']),
   file_name: text.optional(), file_sha256: text.optional(), source_url: httpUrl.optional(),
+  text_sha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   quote: text.optional(), page: z.int().positive().optional(),
   locator_status: z.enum(['located', 'unavailable', 'not_applicable']),
   collected_at: UtcTimestampSchema,
@@ -301,6 +302,11 @@ export const ContactEvidenceSchema = z.object({
   }
   if (value.source_type === 'manual' && value.locator_status !== 'not_applicable') {
     context.addIssue({ code: 'custom', message: 'Manual evidence has no document locator' });
+  }
+  if (value.source_type === 'text' && (!value.text_sha256 || !value.quote?.trim()
+    || [...value.quote].length > 500 || value.locator_status !== 'located'
+    || value.page !== undefined || value.file_name !== undefined || value.file_sha256 !== undefined)) {
+    context.addIssue({ code: 'custom', message: 'Text evidence requires a content hash and located quote, without file/page metadata' });
   }
 });
 

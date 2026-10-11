@@ -407,14 +407,18 @@ pub fn normalize_extensions(raw: &Value, create: bool) -> Result<Value, String> 
     Ok(Value::Object(output))
 }
 
-// Public writes may add manual/web evidence, but cannot assert that a file was
-// parsed or its quote located. Only the internal import preview supplies new file
+// Public writes may add manual/web evidence, but cannot assert that a document
+// or pasted-text quote was located. Only the internal import preview supplies new
 // proofs; previously persisted proofs are read directly from the database.
 pub(crate) fn reject_caller_file_evidence(evidence: &[Value]) -> Result<(), String> {
-    if evidence.iter().any(|item| item["source_type"] == "file") {
-        return Err("New file evidence must come from the document import pipeline".into());
+    if evidence.iter().any(is_import_source) {
+        return Err("New file or text evidence must come from the contact import pipeline".into());
     }
     Ok(())
+}
+
+pub(crate) fn is_import_source(record: &Value) -> bool {
+    record["source_type"] == "file" || record["source_type"] == "text"
 }
 
 pub fn ensure_value_evidence(
@@ -436,9 +440,9 @@ pub fn ensure_value_evidence(
     fn supports_value(record: &Value, value: &Value) -> bool {
         match record.get("source_type").and_then(Value::as_str) {
             Some("manual") => record["locator_status"] == "not_applicable",
-            // File quote location is checked by Node against the parsed document.
+            // Quote location is checked by Node against parsed/pasted blocks.
             // Rust validates provenance and value binding; it does not hold that text.
-            Some("file") => {
+            Some("file" | "text") => {
                 record["locator_status"] == "located"
                     && record
                         .get("quote")

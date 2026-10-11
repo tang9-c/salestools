@@ -586,6 +586,32 @@ it.each([false, true, 'relation-only'])('auto-commits cross-block schools and su
   expect(await h.service.commit(input, 'reviewer')).toMatchObject({ replayed: true, results: committed.results });
 });
 
+it('commits clear business-card employment with unknown current status', async () => {
+  const quote = '测试公司 林知远 研发经理';
+  const extraction = await extractProfile({ subject_status: 'single',
+    person: [fact('properties.name', '林知远', 'card', '林知远')],
+    education: [], projects: [], organization_clues: [], employment: [{ local_id: 'card',
+      organization: [fact('properties.name', '测试公司', 'card', '测试公司')],
+      employment: link('card', quote), role: [fact('properties.role.roleName', '研发经理', 'card', '研发经理')] }],
+  }, [{ block_id: 'card', text: quote, page: 1 }], 'synthetic-card.png');
+  const h = await harness('business-card', extraction.candidates);
+  h.file.fileName = 'synthetic-card.png';
+  const started = await h.service.start({ file_id: h.file.fileId, operation_id: 'start' }, 'reviewer');
+  const preview = await waitForStatus(h.service, started.import_id, 'ready_for_review');
+  const committed = await h.service.commit({ import_id: started.import_id, preview_version: preview.version as number,
+    operation_id: `contact-import:${started.import_id}`, auto_create: true }, 'reviewer') as {
+      results: Array<{ candidate_id: string; entity_id: string }>;
+    };
+  const id = committed.results.find(item => item.candidate_id === 'document:person')!.entity_id;
+  const saved = await h.graph.request<{ relations: Array<{ relation_id: string; properties: object; metadata: object }> }>('get_contact', { entity_id: id });
+  expect(saved.relations).toHaveLength(1);
+  expect(saved.relations[0]).toMatchObject({ properties: { role: { '@type': 'OrganizationRole', roleName: '研发经理' } },
+    metadata: { employment_status: 'unknown' } });
+  expect(saved.relations[0].properties).toEqual({ role: { '@type': 'OrganizationRole', roleName: '研发经理' } });
+  expect((await new ContactSearch(h.graph).search({ query: '测试公司' })).items)
+    .toContainEqual(expect.objectContaining({ entity_id: id }));
+});
+
 it('preserves two employment episodes with summarized role fields', async () => {
   const extraction = await extractProfile({ subject_status: 'single', person: [fact('properties.name', 'Riley Moss', 'p', 'Riley Moss')],
     education: [], projects: [], organization_clues: [],

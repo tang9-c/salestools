@@ -74,6 +74,7 @@ fn reject_raw_content(value: &Value) -> Result<(), AppError> {
                     "page_image",
                     "file_bytes",
                     "block_text",
+                    "original_text",
                 ]
                 .contains(&key.as_str())
                 {
@@ -328,7 +329,7 @@ fn has_selected_located_institution_relation(
                                         == json!({"relation_type":relation.relation_type,
                                 "source_id":relation.source_candidate_id,
                                 "target_id":relation.target_candidate_id})
-                                    && proof["source_type"] == "file"
+                                    && crate::validation::is_import_source(proof)
                                     && proof["locator_status"] == "located"
                                     && proof["quote"]
                                         .as_str()
@@ -408,7 +409,7 @@ fn commit_relations(
             let located = suggestion["evidence"].as_array().is_some_and(|items| {
                 items.iter().any(|item| {
                     item["field_path"] == "$relation"
-                        && item["source_type"] == "file"
+                        && crate::validation::is_import_source(item)
                         && item["locator_status"] == "located"
                         && item["quote"]
                             .as_str()
@@ -432,7 +433,7 @@ fn commit_relations(
                         items.iter().any(|item| {
                             item["field_path"] == format!("properties.role.{field}")
                                 && item["value"] == *value
-                                && item["source_type"] == "file"
+                                && crate::validation::is_import_source(item)
                                 && item["locator_status"] == "located"
                                 && item["quote"].as_str().is_some_and(|quote| {
                                     value.is_string() && !quote.trim().is_empty()
@@ -456,7 +457,7 @@ fn commit_relations(
                         items.iter().any(|item| {
                             item["field_path"] == format!("properties.{field}")
                                 && item["value"] == *value
-                                && item["source_type"] == "file"
+                                && crate::validation::is_import_source(item)
                                 && item["locator_status"] == "located"
                                 && item["quote"]
                                     .as_str()
@@ -524,7 +525,7 @@ fn commit_relations(
                     let candidate_value = json!({"relation_type":choice.relation_type,
                         "source_id":choice.source_candidate_id,"target_id":choice.target_candidate_id});
                     let quote = item.get("quote").and_then(Value::as_str);
-                    if item.get("source_type").and_then(Value::as_str) == Some("file")
+                    if crate::validation::is_import_source(item)
                         && item.get("locator_status").and_then(Value::as_str) == Some("located")
                         && item.get("value") == Some(&candidate_value)
                         && quote.is_some_and(|quote| {
@@ -558,7 +559,7 @@ fn commit_relations(
                     .flatten();
                 let quote_matches = match (item.get("quote").and_then(Value::as_str), selected) {
                     (Some(quote), Some(Value::String(value))) => {
-                        if item["source_type"] == "file" {
+                        if crate::validation::is_import_source(item) {
                             !quote.trim().is_empty()
                         } else {
                             quote.contains(value)
@@ -574,8 +575,7 @@ fn commit_relations(
                     && selected == item.get("value")
                     && quote_matches
                     && located
-                    && (!auto_selected
-                        || item.get("source_type").and_then(Value::as_str) == Some("file"))
+                    && (!auto_selected || crate::validation::is_import_source(item))
                 {
                     proof.push(unbind_preview_evidence(item));
                 }
@@ -583,11 +583,15 @@ fn commit_relations(
         }
         if auto_selected {
             let file_proof = |item: &&Value| {
-                item["source_type"] == "file"
+                crate::validation::is_import_source(item)
                     && item["locator_status"] == "located"
-                    && item["file_sha256"]
-                        .as_str()
-                        .is_some_and(|hash| !hash.is_empty())
+                    && (if item["source_type"] == "text" {
+                        &item["text_sha256"]
+                    } else {
+                        &item["file_sha256"]
+                    })
+                    .as_str()
+                    .is_some_and(|hash| !hash.is_empty())
             };
             if !proof
                 .iter()
@@ -784,13 +788,20 @@ fn persist_claims(
                 } else {
                     item
                 };
-                for key in ["page", "quote", "file_sha256", "file_name"] {
+                for key in [
+                    "page",
+                    "quote",
+                    "file_sha256",
+                    "file_name",
+                    "source_type",
+                    "text_sha256",
+                ] {
                     if let Some(value) = proof.get(key) {
                         source[key] = value.clone();
                     }
                 }
                 // Review items carry excerpts, while the import job owns file identity.
-                for key in ["file_sha256", "file_name"] {
+                for key in ["file_sha256", "file_name", "source_type", "text_sha256"] {
                     if let Some(value) = file_source.get(key) {
                         source[key] = value.clone();
                     }

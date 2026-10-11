@@ -93,6 +93,8 @@ npm run contacts:upload -- ./简历.pdf ./名片.png
 
 CLI 逐个上传并输出 JSON：`accepted` 列出已接收的本地路径和 `file_id`，`unuploaded` 列出失败文件及尚未尝试的文件。容量满额时以非零状态结束；请记录已接收的 `file_id`，待服务端释放名额后自行重试 `unuploaded` 中的路径。上传不会自动发起联系人抽取、等待名额或续传。Token 只从 `CONTACT_UPLOAD_TOKEN` 环境变量读取，不要作为命令行参数传入。
 
+直接粘贴文字时，调用 `import_contacts_text({text:"林知远，云杉测试科技有限公司研发经理，邮箱 lin@example.com。",operation_id:"自己生成并保持不变的操作编号"})`。最多 20,000 个 UTF-16 代码单元，不需要文件或上传会话，也不调用 Docling；输入会发送给服务配置的模型。返回 `import_id` 后，仍通过 `get_contact_import` 查看候选，由用户确认后调用 `commit_contact_import`。原文保存在导入任务中，字段和关系标记为用户文字来源并保留短引文；不等于外部核实。需要修改输入文字时使用新操作编号；相同请求重试不重复抽取。
+
 上传成功后，在启用了 `CONTACT_GRAPH_ENABLED=true` 的服务中，使用返回的 `file_id` 调用 `import_contacts`，并自定一个以后重试仍保持不变的 `operation_id`。再用 `get_contact_import` 查看状态、候选和短证据。单主体简历到达 `ready_for_review` 后，可调用 `commit_contact_import({import_id,preview_version,operation_id:"contact-import:<import_id>",auto_create:true})`：服务创建一个有证据、可提交的主体 `Person`，以及有定位证据的组织、项目节点；明确的任职、就读、项目参与和项目客户关系会以文件证据自动入图，弱建议保存为 `unverified` 线索。项目客户不会被当作雇主。证明人、推荐人或紧急联系人不作为主体抽取或自动建档；多个仍可提交、无法判定主体的人物或没有可提交主体时，自动模式拒绝且不部分写入。需要合并、跳过或修正字段时仍可使用 `choices` 和 `relation_choices` 手工提交，但同一文件不能选择创建两个 `Person`。系统不会因号码相同而自动合并；响应丢失时用相同提交请求重试。不准备提交时可用 `cancel_contact_import`。
 
 导入结果应同时报告已保存的档案／关系、待核实线索和未处理范围（`processed_block_ids`、`unprocessed_block_ids` 及警告）。Docling 负责读出正文，LLM 负责跨块归属和语义归纳；来源引文能定位并不代表已经人工核实。没有姓名的有效简历可保存匿名档案，随后用 `save_contact` 在原 ID 补姓名。求职意向不作现任，在读不代表毕业。

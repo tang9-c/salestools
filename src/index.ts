@@ -175,6 +175,7 @@ export function createApplication(
       url: config.arkApiUrl, model: config.arkModel, credential: config.arkCredential,
       fileName: file.fileName, fileSha256: file.sha256, collectedAt: file.uploadedAt,
       fileId: file.fileId,
+      sourceType: file.mime === 'text/plain' ? 'text' : 'file',
       requestMaxBytes: config.contactExtractRequestMaxBytes,
       maxBatches: config.contactExtractMaxBatches,
       maxModelCalls: config.contactExtractMaxModelCalls,

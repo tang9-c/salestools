@@ -109,6 +109,7 @@ pub(crate) fn collect_evidence(
         "locator_status",
         "file_name",
         "file_sha256",
+        "text_sha256",
         "source_url",
         "quote",
         "page",
@@ -175,6 +176,26 @@ pub(crate) fn collect_evidence(
         }
         match source {
             "manual" if locator == "not_applicable" => {}
+            "text"
+                if locator == "located"
+                    && fields
+                        .get("text_sha256")
+                        .and_then(Value::as_str)
+                        .is_some_and(|hash| {
+                            hash.len() == 64
+                                && hash
+                                    .bytes()
+                                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                        })
+                    && fields
+                        .get("quote")
+                        .and_then(Value::as_str)
+                        .is_some_and(|quote| {
+                            !quote.trim().is_empty() && quote.chars().count() <= 500
+                        })
+                    && !fields.contains_key("page")
+                    && !fields.contains_key("file_name")
+                    && !fields.contains_key("file_sha256") => {}
             "file"
                 if fields.get("file_name").and_then(Value::as_str).is_some()
                     && fields.get("file_sha256").and_then(Value::as_str).is_some()
@@ -365,6 +386,53 @@ fn valid_import_data(value: &Value) -> Result<(), AppError> {
     if let Some(failure) = data.get("failure") {
         valid_import_failure(failure)?;
     }
+    // Original pasted text is allowed only in the server-owned import source,
+    // never in candidate fields, diagnostics, or public mutation payloads.
+    let source = &value["source"];
+    let text = source.get("original_text").and_then(Value::as_str);
+    if source["source_type"] == "text" || source.get("original_text").is_some() {
+        let original = text
+            .filter(|text| !text.trim().is_empty() && text.encode_utf16().count() <= 20_000)
+            .ok_or_else(|| AppError::validation("Invalid original contact text"))?;
+        let hash = format!("{:x}", Sha256::digest(original.as_bytes()));
+        if source["source_type"] != "text" || source["text_sha256"] != hash {
+            return Err(AppError::validation("Contact text source hash mismatch"));
+        }
+    }
+    fn validate_text_quotes(value: &Value, source: &Value) -> Result<(), AppError> {
+        match value {
+            Value::Object(fields) => {
+                if fields.get("source_type").is_some_and(|kind| kind == "text") {
+                    let quote = fields.get("quote").and_then(Value::as_str);
+                    if source["source_type"] != "text"
+                        || fields.get("text_sha256") != source.get("text_sha256")
+                        || !quote.is_some_and(|q| {
+                            !q.trim().is_empty()
+                                && q.chars().count() <= 500
+                                && source["original_text"]
+                                    .as_str()
+                                    .is_some_and(|text| text.contains(q))
+                        })
+                    {
+                        return Err(AppError::validation(
+                            "Contact text evidence is not located in its original source",
+                        ));
+                    }
+                }
+                for item in fields.values() {
+                    validate_text_quotes(item, source)?;
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    validate_text_quotes(item, source)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    validate_text_quotes(&value["candidates"], source)?;
     fn check(value: &Value) -> Result<(), AppError> {
         match value {
             Value::Object(fields) => {
@@ -377,6 +445,7 @@ fn valid_import_data(value: &Value) -> Result<(), AppError> {
                         "page_image",
                         "file_bytes",
                         "block_text",
+                        "original_text",
                     ]
                     .contains(&key.as_str())
                     {
@@ -403,7 +472,14 @@ fn valid_import_data(value: &Value) -> Result<(), AppError> {
         }
         Ok(())
     }
-    check(value)
+    let mut without_original = value.clone();
+    if let Some(source) = without_original
+        .get_mut("source")
+        .and_then(Value::as_object_mut)
+    {
+        source.remove("original_text");
+    }
+    check(&without_original)
 }
 
 pub struct Store {
@@ -921,7 +997,9 @@ impl Store {
     /// Replay only the original queued start, without writing or exposing the preview.
     pub fn get_import_start(&self, raw: &Value) -> Result<Value, AppError> {
         let required = |field: &str| -> Result<&str, AppError> {
-            raw.get(field).and_then(Value::as_str).filter(|value| !value.trim().is_empty())
+            raw.get(field)
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| AppError::validation(format!("{} is required", field)))
         };
         let operation_id = required("operation_id")?;
@@ -932,22 +1010,56 @@ impl Store {
             [operation_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ).optional().map_err(AppError::internal)?;
         if let Some((original_actor, op, original_hash, result_json)) = prior {
-            let original_start = json!({"operation_id":operation_id,"actor":actor,"file_id":file_id,
-                "status":"queued","data":{"candidates":[]}});
-            if original_actor != actor || op != "put_import_job" || original_hash != canonical_hash(&original_start)? {
-                return Err(AppError { code: "OPERATION_CONFLICT",
-                    message: "Operation ID was used for different content or actor".into() });
+            if original_actor != actor || op != "put_import_job" {
+                return Err(AppError {
+                    code: "OPERATION_CONFLICT",
+                    message: "Operation ID was used for different content or actor".into(),
+                });
             }
             let result: Value = serde_json::from_str(&result_json).map_err(AppError::internal)?;
-            return Ok(json!({"import_id":result["import_id"],"status":result["status"],
-                "version":result["version"],"replayed":true}));
+            let mut original_start = json!({"operation_id":operation_id,"actor":actor,"file_id":file_id,
+                "status":"queued","data":{"candidates":[]}});
+            // Text source is retained from admission and participates in replay.
+            if file_id.starts_with("text_") {
+                let job = self.get_import_job(&json!({"import_id":result["import_id"]}))?;
+                if job["file_id"] != file_id || job["actor"] != actor {
+                    return Err(AppError {
+                        code: "OPERATION_CONFLICT",
+                        message: "Text import source mismatch".into(),
+                    });
+                }
+                original_start["data"]["source"] = job["data"]["source"].clone();
+            }
+            if original_hash != canonical_hash(&original_start)? {
+                return Err(AppError {
+                    code: "OPERATION_CONFLICT",
+                    message: "Operation ID was used for different content or actor".into(),
+                });
+            }
+            return Ok(
+                json!({"import_id":result["import_id"],"status":result["status"],
+                "version":result["version"],"replayed":true}),
+            );
         }
-        let file_actor: Option<String> = self.graph.connection().query_row(
-            "SELECT actor FROM import_jobs WHERE file_id=?1", [file_id], |row| row.get(0),
-        ).optional().map_err(AppError::internal)?;
+        let file_actor: Option<String> = self
+            .graph
+            .connection()
+            .query_row(
+                "SELECT actor FROM import_jobs WHERE file_id=?1",
+                [file_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(AppError::internal)?;
         if let Some(original_actor) = file_actor {
-            return Err(AppError { code: if original_actor == actor { "FILE_ALREADY_USED" } else { "IMPORT_ACCESS_DENIED" },
-                message: "Uploaded file has already been submitted".into() });
+            return Err(AppError {
+                code: if original_actor == actor {
+                    "FILE_ALREADY_USED"
+                } else {
+                    "IMPORT_ACCESS_DENIED"
+                },
+                message: "Uploaded file has already been submitted".into(),
+            });
         }
         Ok(Value::Null)
     }

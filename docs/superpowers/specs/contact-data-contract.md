@@ -4,6 +4,8 @@
 
 ## 业务数据
 
+文字导入是文件导入链路的附加入口：`import_contacts_text(text,operation_id)` 跳过上传与 Docling，复用已有任务、提取、候选预览、确认和取消流程。`source_type=text` 的证据必须带 `text_sha256`、`locator_status=located` 和最多 500 字符的非空短引文，不包含文件名、文件 SHA 或页码。原文仅存于服务端导入任务的 `source.original_text`，最多 20,000 个 UTF-16 代码单元，`source.text_sha256` 校验其完整性；任务预览不返回完整原文，普通日志不记录原文。字段、关系和待核实线索均可保留文字来源，满足既有主体及引文条件时可自动选择正式关系；仍不等于人工核实或确认当前在职。文件原件／OCR 原文不存库的原有边界不变。公开写入工具不得自行声明新文件或文字的已定位证据。
+
 教育经历的 `alumniOf.properties` 支持可选 `major`、`educationLevel`、`startDate`、`endDate`；空对象仍有效，日期使用现有部分日期格式及顺序校验。非空教育详情按经历独立保存，不按同一 Person／学校端点覆盖。上述字段证据的 `subject_kind=relation`，路径分别为 `properties.major/educationLevel/startDate/endDate`，每项值须有匹配证据；这些路径不可作为实体证据写入。Organization 不接受这些个人经历字段。教育层次不证明毕业或取得学位。
 
 抽取 education 条目可带 `details:Fact[]`（省略时为 `[]`）；归属明确的错置机构字段先映射到同条经历，再校验。失败经历字段以 Person 上的关系待核实项保存。无法定位经历的 `$experience` 是不允许直接确认成实体属性的审核线索；沿用既有 review item 和 claim，不新增表或节点。旧机构非法字段 claim 仍可读取／拒绝，不自动确认或迁移。
