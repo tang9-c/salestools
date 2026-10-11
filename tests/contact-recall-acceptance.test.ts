@@ -8,13 +8,22 @@ const stub = (card = false) => ({ url: 'https://model.example/chat', model: 'fix
 it.each(['layout-single-column.pdf', 'layout-two-column.pdf'])('commits real Docling %s through profile mapping and SQLite', async filename => {
   const h = await acceptanceHarness(join(root, 'tests/fixtures/contact-documents', filename), stub());
   try {
-    expect(h.preview.status).toBe('ready_for_review');
+    expect(h.preview.status, JSON.stringify(h.preview.failure)).toBe('ready_for_review');
     expect(h.candidates.filter(c => c.label === 'Person')).toHaveLength(1);
     expect(h.candidates.some(c => c.properties.name === 'Elm Example Company')).toBe(false);
     const result = await h.commit();
     const id = result.results.find(r => r.candidate_id === 'document:person')!.entity_id;
     const get = () => h.graph.request<Detail>('get_contact', { entity_id: id });
     const saved = await get();
+    if (filename === 'layout-two-column.pdf') {
+      const school = h.candidates.find(c => c.properties.name === 'Birch Example University')!;
+      const schoolId = result.results.find(r => r.candidate_id === school.candidate_id)!.entity_id;
+      const schoolDetail = await h.graph.request<Detail>('get_contact', { entity_id: schoolId });
+      expect(schoolDetail.evidence).toEqual(expect.arrayContaining([
+        expect.objectContaining({ value: 'Birch Example University', quote: 'Birch Example' }),
+        expect.objectContaining({ value: 'Birch Example University', quote: 'University, since 2024.' }),
+      ]));
+    }
     expect(saved.entity.properties).toMatchObject({ name: 'Riley Example', telephone: ['+15550100999', '+15550100888'], email: ['riley@example.test', 'riley.work@example.test'], skills: ['Python', 'Linux operations'] });
     expect(saved.entity.properties.jobTitle).toBeUndefined();
     expect(saved.entity.properties.hasCredential).toEqual([]);

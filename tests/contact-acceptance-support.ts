@@ -15,8 +15,16 @@ export type Detail = { entity: { entity_id: string; label: string; metadata: { v
 // Only invented fixture facts. Locators are resolved against real Docling output.
 export function fixtureProfile(blocks: ParsedBlock[], card = false) {
   const ref = (quote: string) => { const b = blocks.find(b => b.text.includes(quote)); if (!b) throw new Error(`Fixture quote missing: ${quote}`); return { block_id: b.block_id, quote }; };
-  const fact = (field_path: string, value: unknown, quote: string, uncertain = false) => ({ field_path, value, evidence: [ref(quote)], uncertain });
-  const link = (quote: string, uncertain = false) => ({ evidence: [ref(quote)], uncertain });
+  // Native PDF line items split these two fixture names. Keep separate exact
+  // quotes from their original blocks rather than inventing a joined quote.
+  const splitQuotes: Record<string, string[]> = {
+    'Birch Example University': ['Birch Example', 'University, since 2024.'],
+    'Spruce Example Network': ['Spruce Example', 'Network (unconfirmed).'],
+  };
+  const refs = (quote: string) => blocks.some(b => b.text.includes(quote))
+    ? [ref(quote)] : (splitQuotes[quote] ?? [quote]).map(ref);
+  const fact = (field_path: string, value: unknown, quote: string, uncertain = false) => ({ field_path, value, evidence: refs(quote), uncertain });
+  const link = (quote: string, uncertain = false) => ({ evidence: refs(quote), uncertain });
   const org = (name: string) => [fact('properties.name', name, name)];
   if (card) return { subject_status: 'single', person: [fact('properties.name', 'Robin Vale', 'Robin Vale')], education: [], employment: [], projects: [], organization_clues: [{ organization: org('Sample Studio'), association: link('Sample Studio', true) }] };
   return { subject_status: 'single', person: [fact('properties.name', 'Riley Example', 'Riley Example'),
