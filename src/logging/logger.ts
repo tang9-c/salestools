@@ -1,3 +1,4 @@
+import type { AdminAudit } from '../admin/token-router.js';
 import {
   AssessmentResultAuditSchema,
   type AssessmentResultAudit,
@@ -51,6 +52,13 @@ export class JsonlLogger {
     private readonly sink: LogSink,
     private readonly now: () => Date = () => new Date(),
   ) {}
+
+  logAdminTokenOperation(event: AdminAudit): void {
+    this.sink.write(`${JSON.stringify({ event: 'admin_token_operation', timestamp: this.now().toISOString(),
+      actor: 'token-admin', requestId: event.requestId, action: event.action, userId: event.userId,
+      outcome: event.outcome, httpStatus: event.httpStatus, disabled: event.disabled,
+      attempts: event.attempts })}\n`);
+  }
 
   logContactImport(event: ImportEvent): void {
     this.sink.write(`${JSON.stringify({ event: 'contact_import', timestamp: this.now().toISOString(), ...event })}\n`);

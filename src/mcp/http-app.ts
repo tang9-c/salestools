@@ -2,7 +2,7 @@ import type {} from '@modelcontextprotocol/express';
 import { createHash } from 'node:crypto';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, type AuthInfo } from '@modelcontextprotocol/server';
-import express, { type ErrorRequestHandler, type Express, type RequestHandler } from 'express';
+import express, { type ErrorRequestHandler, type Express, type RequestHandler, type Router } from 'express';
 import Busboy from 'busboy';
 import type { AuthenticatedUser } from '../auth/token-service.js';
 import type { UploadSessions, UploadSession } from '../contacts/upload-session.js';
@@ -33,6 +33,7 @@ export function createHttpApp(
   servicesFor: (userId: string, token: string) => McpServices,
   uploads?: UploadStore,
   page?: ContactUploadPage,
+  adminRouter?: Router,
 ): McpHttpApp {
   const handler = createMcpHandler(({ authInfo }) => {
     if (!authInfo?.clientId) throw new Error('Authenticated caller is required');
@@ -77,6 +78,8 @@ export function createHttpApp(
     request.auth = authInfo;
     next();
   };
+
+  app.use('/admin', adminRouter ?? ((_request, response) => { response.set('Cache-Control', 'no-store').status(404).end(); }));
 
   app.get('/healthz', (_request, response) => {
     response.json({ status: 'ok' });
