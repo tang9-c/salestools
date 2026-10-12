@@ -53,4 +53,28 @@ CREATE TABLE IF NOT EXISTS assessments (
 
 CREATE UNIQUE INDEX IF NOT EXISTS one_processing_per_company
 ON assessments(cache_key) WHERE status = 'processing';
+
+CREATE TABLE IF NOT EXISTS company_links (
+  organization_id TEXT PRIMARY KEY,
+  credit_code TEXT,
+  state TEXT NOT NULL CHECK(state IN ('confirmed','revoked')),
+  version INTEGER NOT NULL CHECK(version > 0),
+  identity_hash TEXT NOT NULL,
+  organization_version INTEGER NOT NULL,
+  note TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS company_links_credit_code ON company_links(credit_code);
+
+CREATE TABLE IF NOT EXISTS company_link_operations (
+  actor TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  request_json TEXT NOT NULL,
+  before_json TEXT,
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(actor, operation_id)
+);
 `;
