@@ -391,6 +391,30 @@ fn client_project_members_are_reachable_only_from_customer_organization() {
         .collect();
     assert_eq!(kinds.len(), 2, "{page}");
     assert!(kinds.contains(&"clientOrganization") && kinds.contains(&"memberOf"));
+    let recent = request(
+        &store,
+        "company_recent_records",
+        json!({"organization_ids":[customer],
+        "since":"2026-09-01T00:00:00Z","limit":20}),
+    );
+    assert_eq!(recent["ok"], true, "{recent}");
+    let updates = recent["result"]["items"].as_array().unwrap();
+    let client_id = customer_edge["result"]["relation_id"].as_str().unwrap();
+    let participation_id = participation["result"]["relation_id"].as_str().unwrap();
+    assert_eq!(
+        updates
+            .iter()
+            .find(|r| r["kind"] == "relation" && r["id"] == client_id)
+            .unwrap()["entity_id"],
+        project
+    );
+    assert_eq!(
+        updates
+            .iter()
+            .find(|r| r["kind"] == "relation" && r["id"] == participation_id)
+            .unwrap()["entity_id"],
+        member
+    );
     let unrelated_page = request(
         &store,
         "company_relations",

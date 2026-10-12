@@ -363,7 +363,7 @@ safe_records AS (
   WHERE json_extract(m.metadata_json,'$.archived_at') IS NULL
     AND json_extract(m.metadata_json,'$.merged_into') IS NULL
   UNION ALL
-  SELECT 'relation',r.relation_id,NULL,json_extract(r.metadata_json,'$.updated_at'),r.rel_type
+  SELECT 'relation',r.relation_id,r.source_id,json_extract(r.metadata_json,'$.updated_at'),r.rel_type
   FROM live_relations r
   UNION ALL
   SELECT 'evidence',ev.evidence_id,ev.subject_id,
@@ -378,7 +378,7 @@ safe_records AS (
          ('properties.name','properties.jobTitle','properties.hasOccupation','properties.skills'))
      OR (e.entity_type='Project' AND ev.field_path IN ('properties.name','properties.description'))
   UNION ALL
-  SELECT 'evidence',ev.evidence_id,NULL,
+  SELECT 'evidence',ev.evidence_id,r.source_id,
          json_extract(ev.record_json,'$.collected_at'),'职业关系依据'
   FROM live_relations r
   JOIN evidence ev ON ev.subject_kind='relation' AND ev.subject_id=r.relation_id
@@ -405,7 +405,7 @@ ORDER BY julianday(recorded_at) DESC,kind,id LIMIT ?3 OFFSET ?4"#
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                 ))
@@ -421,9 +421,7 @@ ORDER BY julianday(recorded_at) DESC,kind,id LIMIT ?3 OFFSET ?4"#
         }
         let (kind, id, entity_id, recorded_at, label) = row.map_err(AppError::internal)?;
         let mut record = json!({"kind":kind,"id":id,"recorded_at":recorded_at,"label":label});
-        if let Some(entity_id) = entity_id {
-            record["entity_id"] = json!(entity_id);
-        }
+        record["entity_id"] = json!(entity_id);
         items.push(record);
     }
     let next = more.then_some(offset.saturating_add(items.len()));
