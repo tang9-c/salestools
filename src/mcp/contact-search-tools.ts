@@ -34,6 +34,8 @@ export function registerContactSearchTools(
   if (app) {
     const uri = 'ui://salestools/contact-search-graph.html';
     registerAppTool(server, 'search_contacts', { ...config,
+      title: '搜索联系人 · 查看关系图谱',
+      description: `${config.description} 支持 MCP App 的聊天可展开“联系人图谱”，查看搜索命中节点及直接关联；未显示界面时仍可读取文字结果，不应声称图谱已展示。`,
       _meta: { ui: { resourceUri: uri, visibility: ['model', 'app'] } },
     }, async input => result(await search.search(input)));
     registerAppResource(server, '联系人图谱', uri, { mimeType: RESOURCE_MIME_TYPE }, async () => ({ contents: [{

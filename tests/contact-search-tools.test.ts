@@ -19,15 +19,21 @@ describe('search_contacts MCP registration', () => {
     await server.connect(right); await client.connect(left);
     try {
       const tools = (await client.listTools()).tools;
+      const searchTool = tools.find(t => t.name === 'search_contacts');
+      expect(searchTool?.title).toEqual(expect.stringMatching(/联系人.*图谱/));
+      expect(searchTool?.description).toContain('展开');
+      expect(searchTool?.description).toContain('文字');
       expect(tools.find(t => t.name === 'search_contacts')?._meta).toMatchObject({
         ui: { resourceUri: 'ui://salestools/contact-search-graph.html', visibility: ['model', 'app'] },
       });
+      expect(searchTool?._meta?.['ui/resourceUri']).toBe('ui://salestools/contact-search-graph.html');
       expect(tools.find(t => t.name === 'get_contact')?._meta).toMatchObject({ ui: { visibility: ['model', 'app'] } });
       expect(tools.find(t => t.name === 'get_contact')?._meta?.ui).not.toHaveProperty('resourceUri');
       const result = await client.callTool({ name: 'search_contacts', arguments: {} });
       expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(output) }]);
       expect(result.structuredContent).toEqual(output);
-      const resource = await client.readResource({ uri: 'ui://salestools/contact-search-graph.html' });
+      const resourceUri = (searchTool?._meta?.ui as { resourceUri: string }).resourceUri;
+      const resource = await client.readResource({ uri: resourceUri });
       expect(resource.contents[0]).toMatchObject({ mimeType: 'text/html;profile=mcp-app', text: '<html>联系人图谱</html>' });
     } finally { await client.close(); await server.close(); }
   });

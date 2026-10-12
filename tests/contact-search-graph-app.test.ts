@@ -26,7 +26,12 @@ it('serves the graph resource through authenticated HTTP MCP without tokens or n
     expect((await fetch(`${url}/contact-search-graph`)).status).toBe(404);
     await client.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`),
       { requestInit: { headers: { Authorization: 'Bearer fixture-personal-secret' } } }));
-    const resource = await client.readResource({ uri: 'ui://salestools/contact-search-graph.html' });
+    const tool = (await client.listTools()).tools.find(t => t.name === 'search_contacts');
+    expect(tool?.title).toEqual(expect.stringMatching(/联系人.*图谱/));
+    const resourceUri = (tool?._meta?.ui as { resourceUri: string }).resourceUri;
+    expect(resourceUri).toBe('ui://salestools/contact-search-graph.html');
+    expect(tool?._meta?.['ui/resourceUri']).toBe(resourceUri);
+    const resource = await client.readResource({ uri: resourceUri });
     expect(resource.contents[0]).toMatchObject({ text: html });
     expect(resource.contents[0]._meta).toMatchObject({ ui: { csp: { connectDomains: [], resourceDomains: [] } } });
     expect(JSON.stringify(resource)).not.toContain('fixture-personal-secret');
