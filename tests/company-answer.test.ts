@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CompanyAnswerClient } from '../src/upstream/ark/company-answer.js';
+import { validateContextRefs } from '../src/companies/company-evidence.js';
+import type { ContextMaterial } from '../src/companies/company-context-types.js';
 import type { SnapshotItem } from '../src/contracts/index.js';
 
 const at = '2026-09-24T00:00:00.000Z';
@@ -68,7 +70,39 @@ describe('CompanyAnswerClient', () => {
     expect(answer.includedEvidenceIds).toContain('web-1');
     expect(answer.includedEvidenceIds).not.toContain('web-10');
     expect(requestBody).not.toContain('UNSEEN_CROSS_SOURCE_FACT');
+    expect(requestBody).not.toContain('库内 context');
     expect(answer.claims).toEqual([{ category: 'supported', text: '岗位要求 SolidWorks', evidenceIds: ['web-1'] }]);
+  });
+
+  it.each([false, true])('keeps public themes and an atomic context path with longClient=%s', async (longClient) => {
+    let requestBody = '';
+    const context: ContextMaterial[] = [
+      { citation: { ref: 'contact:client', source_type: 'contact', subject_id: 'project',
+        quote: longClient ? '项目客户证据'.repeat(1000) : '项目客户为测试公司' },
+        statement: '项目服务测试公司', source_key: 'file:one', predicate: 'clientOrganization', object: '测试公司' },
+      { citation: { ref: 'contact:member', source_type: 'contact', subject_id: 'person', quote: '测试人是项目成员' },
+        statement: '测试人参与项目', source_key: 'file:two', predicate: 'memberOf', object: '项目', required_context_refs: ['contact:client'] },
+    ];
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      requestBody = String(init?.body);
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"claims":[]}' } }] }));
+    });
+    const client = new CompanyAnswerClient({ url: 'https://ark.example.cn/chat/completions', model: 'test-model',
+      credential: 'secret', requestMaxBytes: 6_144, fetchFn });
+    const result = await client.answer({ legalName: '测试公司有限公司', question: '招聘、产品发布和客户项目参与人', facts: [],
+      items: [{ ...item(1), source: 'qcc', title: '测试公司招聘' }, { ...item(2), title: '测试公司产品发布' }], context });
+    expect(Buffer.byteLength(requestBody, 'utf8')).toBeLessThanOrEqual(6_144);
+    const parsed = JSON.parse(requestBody);
+    expect(parsed.messages[0].content).toContain('人物经客户项目关联企业需同时引用成员与客户依据');
+    const payload = JSON.parse(parsed.messages[1].content);
+    expect(payload.items.map((value: SnapshotItem) => value.evidenceId)).toEqual(['web-1', 'web-2']);
+    const expected = longClient ? [] : ['contact:client', 'contact:member'];
+    expect(payload.context.map((value: ContextMaterial) => value.citation.ref)).toEqual(expected);
+    expect(result.includedContextRefs).toEqual(expected);
+    if (!longClient) {
+      expect(validateContextRefs(expected, context)).toHaveLength(2);
+      expect(() => validateContextRefs(['contact:member'], context)).toThrow();
+    }
   });
 
   it('rejects invalid Ark claims instead of rendering them', async () => {
