@@ -277,3 +277,24 @@ it('filters original facts to the actual model citations and rejects fabricated 
   const invalid=await runtime.ask.ask(input);
   expect(invalid.status).toBe('failed');expect(invalid.context_citations).toBeUndefined();
 });
+
+it('does not confirm a name when a verified later page contains its conflict', async () => {
+  const nameProof = { evidence_id: 'name-first', subject_kind: 'entity', subject_id: 'p1',
+    field_path: 'properties.name', value: '陈晓', quote: '姓名陈晓', source_type: 'manual',
+    locator_status: 'not_applicable', collected_at: time };
+  const conflict = { ...nameProof, evidence_id: 'name-dispute', value: '陈明', quote: '姓名陈明' };
+  const request = vi.fn(async (_op: GraphOp, payload: unknown) => {
+    const later = (payload as { evidence_offset?: number }).evidence_offset === 1;
+    return { ...detail('p1', '陈晓', [], [later ? conflict : nameProof]),
+      conflicts: later ? [conflict] : [],
+      pagination: { evidence: { total: 2, next_offset: later ? null : 1 },
+        relations: { total: 0, next_offset: null } } };
+  });
+  const graph = { request, close: vi.fn(async () => undefined) } as unknown as GraphClient;
+  const ask = new ContactAnswerService({ graph, resolvePeople: async () => [] });
+  const result = await ask.ask({ question: '姓名是什么？', entity_id: 'p1' });
+  expect(result.status).toBe('insufficient');
+  expect(result.facts).toEqual([]);
+  expect(result.citations).toEqual([]);
+  expect(request).toHaveBeenCalledTimes(2);
+});
