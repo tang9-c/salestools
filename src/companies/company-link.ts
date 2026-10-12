@@ -34,10 +34,12 @@ function codeEvidence(org: OrganizationIdentity, code: string): boolean {
 }
 
 function nameEvidence(org: OrganizationIdentity, name: string): boolean {
-  return (org.legal_name !== null && normalize(org.legal_name) === name
-    && matchesEvidence(org, 'properties.legalName', org.legal_name))
-    || (org.name !== null && normalize(org.name) === name
-      && matchesEvidence(org, 'properties.name', org.name));
+  if (normalize(org.legal_name)) {
+    return normalize(org.legal_name) === name
+      && matchesEvidence(org, 'properties.legalName', org.legal_name);
+  }
+  return org.name !== null && normalize(org.name) === name
+    && matchesEvidence(org, 'properties.name', org.name);
 }
 
 function legalNames(profile: StoredCompanyProfile): string[] {
@@ -57,9 +59,6 @@ export function resolveCompanyLink(org: OrganizationIdentity, saved: CompanyLink
   const rawCodes = org.identifiers.filter(x => creditIds.has(x.propertyID) && validCreditCode(x.value));
   const distinctCodes = [...new Set(rawCodes.map(x => x.value))];
   if (distinctCodes.length > 1) return { ...base, state: 'conflict', warnings: ['多个有效信用代码'] };
-  const disputed = org.conflicts.some(x => x.field_path === 'properties.identifier'
-    || x.field_path === 'properties.name' || x.field_path === 'properties.legalName');
-  if (disputed) return { ...base, state: 'conflict', warnings: ['身份字段存在证据冲突'] };
   const byCode = new Map(profiles.map(x => [x.identity.creditCode, x]));
   if (saved?.state === 'confirmed') {
     if (!saved.credit_code || !byCode.has(saved.credit_code)
@@ -96,11 +95,11 @@ export class CompanyLinkService {
     }
     const replay = this.deps.links.replay(input, actor);
     if (replay) return replay;
-    const page = await this.deps.graph.request<{ items: OrganizationIdentity[]; total: number;
+    const page = await this.deps.graph.request<{ items: OrganizationIdentity[]; total: number | null;
       next_offset: number | null; complete: boolean }>('company_organizations', {
         entity_ids: [input.organization_id], credit_codes: [], normalized_names: [], offset: 0, limit: 1,
       });
-    if (!page.complete || page.next_offset !== null || page.total !== 1 || page.items.length !== 1
+    if (!page.complete || page.next_offset !== null || page.items.length !== 1
       || page.items[0].entity_id !== input.organization_id) throw new Error('ORGANIZATION_UNAVAILABLE');
     const org = page.items[0];
     if (org.archived || !org.identity_complete) throw new Error('ORGANIZATION_UNAVAILABLE');

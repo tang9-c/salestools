@@ -33,6 +33,11 @@ it('summarizes completed reports without returning report bodies or mixing compa
     expect(summaries.get(code2)).toMatchObject({ count: 1, latest: { assessment_id: 'b1' } });
     expect(summaries.get('missing')).toEqual({ count: 0, latest: null });
     expect(JSON.stringify(summaries.get(CODE))).not.toContain('PRIVATE BODY');
-    expect(repo.listCompleted(CODE,0,1)).toMatchObject({ total: 2, items: [{ assessment_id: 'a2' }], next_offset: 1 });
+    expect(Object.keys(summaries.get(CODE)?.latest ?? {}).sort()).toEqual([
+      'assessment_id', 'generated_at', 'collected_at', 'overall_opportunity', 'recommended_product'].sort());
+    const page = repo.listCompleted(CODE,0,1);
+    expect(page).toMatchObject({ total: 2, items: [{ assessment_id: 'a2' }], next_offset: 1 });
+    expect(Object.keys(page.items[0]).sort()).toEqual([
+      'assessment_id', 'generated_at', 'collected_at', 'overall_opportunity', 'recommended_product'].sort());
   } finally { db.close(); }
 });

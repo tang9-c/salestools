@@ -22,3 +22,10 @@
 ## 顾虑
 
 - 图谱协议实现仍由 Task 2 同步完善；本任务未做真实 native 端到端验证。真实宿主验收及远程 CI gate 由后续整体流程完成。
+
+## Fix round 1（Task 3 审查）
+
+- 红：先补符合 native `total: null` 的写入回执测试，以及当前法定名矛盾、曾用名、别名单独相同、多有效代码、单条冲突证据排除的表驱动用例。运行本任务两文件，12 用例中 4 失败：法定名矛盾被错误确认、冲突证据遮蔽其他证据、`total: null` 被误拒。
+- 修复：写入只校验完整单页、唯一匹配的 `entity_id` 和无后续游标；自动确认在存在当前法定名时只认该法定名及对应证据，缺失法定名时才用展示名；冲突证据按 `evidence_id` 单条排除，不一概拦下全部证据。
+- 绿：`node node_modules/vitest/vitest.mjs run tests/company-link.test.ts tests/company-context-repositories.test.ts tests/company-link-repository.test.ts`，3 文件 19 用例通过；`npm run typecheck` 通过。报告摘要和分页目录均增加精确字段白名单断言。
+- 自审：回放仍先于图谱读取；保存后的回执路径未变。单条冲突证据被排除后，如无其他当前值证据，最多进入 candidate，不自动挂报告。未执行本地构建/native/full-suite。真实 native 端到端仍依赖远程 CI。
