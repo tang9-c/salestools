@@ -12,11 +12,13 @@ export interface MatchSuggestion {
   candidateId: string;
   candidateName: string;
   existingName: string;
-  reasons: Array<{ kind: 'self_phone' | 'email' | 'instant_messaging' | 'name_with_organization'; value: string }>;
+  reasons: Array<{ kind: 'self_phone' | 'email' | 'instant_messaging' | 'same_name' | 'name_with_organization'; value: string }>;
   candidateSourceDate?: string;
   existingUpdatedAt: string;
   candidateSources: MatchSource[];
   existingSources: MatchSource[];
+  existingJobTitle?: string;
+  fieldDifferences?: { fieldPath: string; existingValue: unknown; candidateValue: unknown }[];
 }
 
 export interface MatchSource {
@@ -27,7 +29,7 @@ export interface MatchSource {
 }
 
 export interface MatchContext {
-  candidateOrganizations?: readonly string[];
+  candidateOrganizations?: readonly { id: string; name: string }[];
   existingOrganizationsById?: Readonly<Record<string, readonly string[]>>;
   existingEvidenceById?: Readonly<Record<string, readonly ContactEvidence[]>>;
 }
@@ -84,21 +86,33 @@ export function suggestMatches(
     }
     if (candidate.properties.name && entity.properties.name && candidate.properties.name.normalize('NFKC').trim().toLowerCase()
       === entity.properties.name.normalize('NFKC').trim().toLowerCase()) {
-      const candidateOrgs = new Set((context.candidateOrganizations ?? []).map(value => value.normalize('NFKC').trim().toLowerCase()));
+      const candidateOrgs = new Map((context.candidateOrganizations ?? []).map(value => [value.id, value.name]));
       for (const org of context.existingOrganizationsById?.[entity.entity_id] ?? []) {
-        if (candidateOrgs.has(org.normalize('NFKC').trim().toLowerCase())) {
-          reasons.push({ kind: 'name_with_organization', value: org });
+        if (candidateOrgs.has(org)) {
+          reasons.push({ kind: 'name_with_organization', value: candidateOrgs.get(org)! });
         }
+      }
+      if (!reasons.some(reason => reason.kind === 'name_with_organization')) {
+        reasons.push({ kind: 'same_name', value: candidate.properties.name });
       }
     }
     if (reasons.length === 0) continue;
+    const fieldDifferences = (['properties', 'extensions'] as const).flatMap(section =>
+      Object.entries(candidate[section]).flatMap(([key, value]) => {
+        const old = (entity[section] as Record<string, unknown>)[key];
+        return !Array.isArray(value) && value != null && value !== '' && old != null && old !== ''
+          && JSON.stringify(old) !== JSON.stringify(value)
+          ? [{ fieldPath: `${section}.${key}`, existingValue: old, candidateValue: value }] : [];
+      }));
     const dates = candidate.evidence.map(item => item.collected_at).sort();
     results.push({ entityId: entity.entity_id, candidateId: candidate.candidate_id,
       candidateName: candidate.properties.name ?? '', existingName: entity.properties.name ?? '',
       reasons, ...(dates[0] ? { candidateSourceDate: dates[0] } : {}),
       existingUpdatedAt: entity.metadata.updated_at,
       candidateSources: sources(candidate.evidence),
-      existingSources: sources(context.existingEvidenceById?.[entity.entity_id] ?? []) });
+      existingSources: sources(context.existingEvidenceById?.[entity.entity_id] ?? []),
+      ...(entity.properties.jobTitle ? { existingJobTitle: entity.properties.jobTitle } : {}),
+      fieldDifferences });
   }
   return results.sort((a, b) => b.reasons.length - a.reasons.length || a.entityId.localeCompare(b.entityId));
 }

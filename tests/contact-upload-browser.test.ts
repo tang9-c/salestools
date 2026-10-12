@@ -178,6 +178,20 @@ async function upload(page: Page | Frame, input = '#file', name = 'card.pdf') {
 }
 async function ready(page: Page | Frame) { await expect.poll(() => page.locator('#commit').isEnabled()).toBe(true); }
 
+it('defers review without committing or cancelling and can resume the same preview', async () => {
+  const h = await open();
+  await ready(h.ui);
+  await h.ui.getByRole('button', { name: '暂不决定', exact: true }).click();
+  expect(await h.ui.locator('#commit').isEnabled()).toBe(false);
+  expect(await body(h.ui)).toContain('尚未入库');
+  expect(await body(h.ui)).toContain('ci_browser');
+  expect(h.commits).toEqual([]);
+  expect(h.requests.some(r => r.method !== 'GET' && /cancel|commit/.test(r.path))).toBe(false);
+  await h.ui.getByRole('button', { name: '继续核对', exact: true }).click();
+  await ready(h.ui);
+  expect(h.commits).toEqual([]);
+});
+
 beforeAll(async () => {
   html = (await readFile(new URL('../web/contact-upload.html', import.meta.url), 'utf8'))
     .replace('<!--SCRIPT-->', '<script type="module" src="/test-ui.js"></script>');

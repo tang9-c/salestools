@@ -37,6 +37,82 @@ fn count(store: &Store, table: &str) -> i64 {
 }
 
 #[test]
+fn import_merge_preserves_scalar_conflicts_and_appends_arrays_unless_explicitly_replaced() {
+    for replace in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let old = store.save_contact(&json!({"operation_id":"target","actor":"reviewer","label":"Person",
+            "set_properties":{"name":"陈晓","jobTitle":"工程师","skills":["Kubernetes"]},
+            "evidence":[proof("properties.name",json!("陈晓")),proof("properties.jobTitle",json!("工程师")),
+                proof("properties.skills",json!("Kubernetes"))]})).unwrap();
+        let id = old["entity_id"].as_str().unwrap();
+        let mut incoming = candidate("c1", "陈晓");
+        incoming["properties"]["jobTitle"] = json!("经理");
+        incoming["properties"]["skills"] = json!(["K8s", "Python"]);
+        incoming["evidence"].as_array_mut().unwrap().extend([
+            proof("properties.jobTitle", json!("经理")),
+            proof("properties.skills", json!("K8s")),
+            proof("properties.skills", json!("Python")),
+        ]);
+        let import_id = ready(&store, vec![incoming]);
+        let mut choice = json!({"candidate_id":"c1","action":"merge","target_id":id,"expected_target_version":1});
+        if replace {
+            choice["set_properties"] = json!({"jobTitle":"经理"});
+        }
+        store
+            .commit_import(
+                &json!({"operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+            "import_id":import_id,"expected_version":2,"choices":[choice]}),
+            )
+            .unwrap();
+        let saved = store.get_contact(&json!({"entity_id":id})).unwrap();
+        assert_eq!(
+            saved["entity"]["properties"]["jobTitle"],
+            if replace { "经理" } else { "工程师" }
+        );
+        assert_eq!(
+            saved["entity"]["properties"]["skills"],
+            json!(["Kubernetes", "Python"])
+        );
+        assert_eq!(count(&store, "entity_ids"), 1);
+        let quotes: i64 = store.graph.connection().query_row(
+            "SELECT count(*) FROM evidence WHERE subject_id=?1 AND field_path='properties.jobTitle'",[id],|r|r.get(0)).unwrap();
+        assert_eq!(quotes, 2);
+    }
+}
+
+#[test]
+fn import_merge_fills_missing_fields_but_never_clears_old_values_with_empty_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let old = store.save_contact(&json!({"operation_id":"target","actor":"reviewer","label":"Person",
+        "set_properties":{"name":"陈晓","jobTitle":"工程师"},
+        "evidence":[proof("properties.name",json!("陈晓")),proof("properties.jobTitle",json!("工程师"))]})).unwrap();
+    let id = old["entity_id"].as_str().unwrap();
+    let mut incoming = candidate("c1", "陈晓");
+    incoming["properties"]["jobTitle"] = json!("");
+    incoming["properties"]["email"] = json!(["chen@example.com"]);
+    incoming["evidence"]
+        .as_array_mut()
+        .unwrap()
+        .push(proof("properties.email", json!("chen@example.com")));
+    let import_id = ready(&store, vec![incoming]);
+    store
+        .commit_import(
+            &json!({"operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+        "import_id":import_id,"expected_version":2,"choices":[{"candidate_id":"c1","action":"merge",
+            "target_id":id,"expected_target_version":1}]}),
+        )
+        .unwrap();
+    let saved = store.get_contact(&json!({"entity_id":id})).unwrap();
+    assert_eq!(saved["entity"]["properties"]["jobTitle"], "工程师");
+    assert_eq!(
+        saved["entity"]["properties"]["email"],
+        json!(["chen@example.com"])
+    );
+}
+
+#[test]
 fn auto_selected_education_requires_each_field_quote_and_rolls_back_on_mismatch() {
     for wrong_major in [false, true] {
         let dir = tempfile::tempdir().unwrap();

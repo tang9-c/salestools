@@ -19,6 +19,8 @@ const taskId = document.querySelector<HTMLElement>('#task-id')!;
 const fileName = document.querySelector<HTMLElement>('#file-name')!;
 const recovery = document.querySelector<HTMLElement>('#recovery')!;
 const commit = document.querySelector<HTMLButtonElement>('#commit')!;
+const defer = document.querySelector<HTMLButtonElement>('#defer')!;
+const resume = document.querySelector<HTMLButtonElement>('#resume')!;
 const retry = document.querySelector<HTMLButtonElement>('#retry')!;
 const exit = document.querySelector<HTMLButtonElement>('#exit')!;
 const fileInput = document.querySelector<HTMLInputElement>('#file')!;
@@ -75,6 +77,7 @@ function loseSession(message: string): void {
   receiptVersion = null;
   selectFiles(false);
   commit.disabled = true;
+  defer.hidden = resume.hidden = true;
   exit.disabled = true;
   offerRetry(null);
   say(message, 'failed');
@@ -144,7 +147,7 @@ const names: Record<string, string> = {
   invalid_shape: '信息格式待核对', ambiguous_owner: '所属人物不明确', structured_heading: '仅根据章节标题推测',
   missing_direct_statement: '缺少直接陈述', worksFor: '任职于', alumniOf: '毕业于', memberOf: '参与',
   located: '已定位原文', unavailable: '无法定位原文', not_applicable: '无需原文定位',
-  self_phone: '本人电话相同', email_match: '邮箱相同', instant_messaging: '即时通信账号相同', name_with_organization: '姓名与机构相同',
+  self_phone: '本人电话相同', email_match: '邮箱相同', instant_messaging: '即时通信账号相同', same_name: '姓名相同，身份待核对', name_with_organization: '姓名与同一机构相同，可能重复',
   file: '文件', web: '网页', manual: '人工资料',
 };
 function label(key: string): string { const simple = key.replace(/^(properties|extensions|metadata)\./u, ''); return names[simple] ?? simple; }
@@ -201,11 +204,16 @@ function render(first: Preview): void {
     for (const reason of suggestion.reasons ?? []) line(previewBox, 'p', `匹配线索：${reason.kind === 'email' ? '邮箱相同' : label(reason.kind)}：${reason.value}`);
     if (suggestion.existingUpdatedAt) line(previewBox, 'p', `已有联系人更新时间：${suggestion.existingUpdatedAt}`);
     if (suggestion.candidateSourceDate) line(previewBox, 'p', `候选资料采集时间：${suggestion.candidateSourceDate}`);
+    if (suggestion.existingJobTitle) line(previewBox, 'p', `已有职位：${suggestion.existingJobTitle}`);
+    for (const difference of suggestion.fieldDifferences ?? []) {
+      line(previewBox, 'p', `字段差异：${label(difference.fieldPath.replace(/^(properties|extensions)\./, ''))}；已有：${valueText(difference.existingValue)}；新资料：${valueText(difference.candidateValue)}。合并默认保留已有值，替换需明确确认。`);
+    }
     for (const [heading, sources] of [['候选资料来源', suggestion.candidateSources], ['已有资料来源', suggestion.existingSources]] as const) {
       for (const source of sources ?? []) line(previewBox, 'p', `${heading}：${label(source.sourceType)}；${source.fileName ?? source.sourceUrl ?? '未标注名称'}；采集时间：${source.collectedAt}`);
     }
   }
   for (const reason of first.confirmation?.reasons ?? []) line(previewBox, 'p', `需要人工核对：${reason}`);
+  if (first.match_suggestions.length) line(previewBox, 'p', '请在聊天中选择：合并到已有联系人、新建独立联系人或跳过本次候选。信息不足时可暂不决定；匹配线索不代表已确认同一人。');
   review.hidden = false;
 }
 async function loadPreview(ticket: number, reconfirm = false): Promise<void> {
@@ -224,6 +232,8 @@ async function loadPreview(ticket: number, reconfirm = false): Promise<void> {
   version = first.version;
   receiptVersion = null;
   render(first);
+  defer.hidden = first.status !== 'ready_for_review';
+  resume.hidden = true;
   commit.disabled = first.confirmation?.allowed !== true;
   manual.textContent = first.status === 'committed' ? '联系人已写入共享联系人库。'
     : commit.disabled ? '请使用任务编号在聊天中人工核对，确认导入暂不可用。'
@@ -340,6 +350,7 @@ async function confirm(previewVersion: number): Promise<void> {
     remember(result.import_id);
     receiptVersion = null;
     manual.textContent = '联系人已写入共享联系人库。';
+    defer.hidden = resume.hidden = true;
     say('导入完成。', 'committed');
   } catch (error) {
     if (!current(ticket)) return;
@@ -399,5 +410,21 @@ cameraInput.addEventListener('change', () => { if (cameraInput.files?.[0]) void 
 commit.addEventListener('click', () => { if (!commit.disabled) void confirm(version); });
 retry.addEventListener('click', () => { if (!retry.disabled) void retryCurrent(); });
 exit.addEventListener('click', () => { void leave(); });
+defer.addEventListener('click', () => {
+  if (busy || !session || document.body.dataset.state !== 'review') return;
+  commit.disabled = true;
+  defer.hidden = true;
+  resume.hidden = false;
+  offerRetry(null);
+  manual.textContent = '暂不决定，尚未入库。保留任务编号，可在聊天中继续核对；预览按现有保留规则处理，上传会话仍可能到期。';
+});
+resume.addEventListener('click', () => {
+  if (busy || !session || resume.hidden) return;
+  busy = true;
+  const ticket = generation;
+  resume.hidden = true;
+  void loadPreview(ticket, true).catch(error => { if (current(ticket)) failure(error, 'preview'); })
+    .finally(() => { busy = false; });
+});
 const startupGeneration = generation;
 void start().catch(error => { if (startupGeneration === generation) failure(error); });

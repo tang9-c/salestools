@@ -1,6 +1,6 @@
 import { ContactEntitySchema, ContactEvidenceSchema, ContactRelationSchema, ImportCandidateSchema, ReviewItemSchema,
   type ImportCandidate, type ParsedBlock } from '../contracts/index.js';
-import type { GraphClient } from './graph-client.js';
+import { readCompleteContact, type GraphClient } from './graph-client.js';
 import type { ImportJobs } from './import-jobs.js';
 import type { UploadedFile, UploadStore } from './upload-store.js';
 import { normalizePhoneForSuggestion, suggestMatches, type MatchSuggestion } from './identity-match.js';
@@ -344,7 +344,7 @@ export class ContactImportService {
     };
     if (job.status === 'ready_for_review') {
       try {
-        matches = await this.matchSuggestions(page);
+        matches = await this.matchSuggestions(page, candidates);
         if (matches.truncated) warnings.push('身份匹配结果已截断，可能遗漏已有联系人');
       } catch {
         warnings.push('身份匹配查询失败，请人工核对已有联系人');
@@ -434,7 +434,7 @@ export class ContactImportService {
       confirmation: { allowed: reasons.length === 0, reasons } };
   }
 
-  private async matchSuggestions(rawCandidates: unknown[]): Promise<{
+  private async matchSuggestions(rawCandidates: unknown[], allCandidates: unknown[]): Promise<{
     suggestions: MatchSuggestion[]; truncated: boolean;
   }> {
     const candidates = rawCandidates.flatMap(raw => {
@@ -444,9 +444,45 @@ export class ContactImportService {
     const idsByCandidate = new Map<string, string[]>();
     const allIds = new Set<string>();
     let truncated = false;
+    const normalize = (value: string) => value.normalize('NFKC').trim().toLowerCase();
+    const organizationIds = new Map<string, { id: string; name: string }[]>();
+    const drafts = allCandidates.flatMap(raw => {
+      const parsed = ImportCandidateSchema.safeParse(raw);
+      return parsed.success ? [parsed.data] : [];
+    });
+    const employers = new Map<string, { id: string; name: string }[]>();
     for (const candidate of candidates) {
+      if (candidate.label !== 'Person') continue;
       const values = identityValues(candidate);
       const found = new Set<string>();
+      const search = async (name: string) => {
+        const result = await this.options.graph.request<{ items: { entity_id: string; label?: string; name?: string }[]; total: number }>(
+          'search_keyword', { name, offset: 0, limit: 50 });
+        if (result.total > result.items.length) truncated = true;
+        return result.items;
+      };
+      if (candidate.properties.name?.trim()) {
+        for (const item of await search(candidate.properties.name)) {
+          if (item.label === 'Person') found.add(item.entity_id);
+        }
+      }
+      const companies: { id: string; name: string }[] = [];
+      for (const relation of candidate.relation_suggestions) {
+        if (relation.relation_type !== 'worksFor' || relation.uncertain
+          || relation.source_candidate_id !== candidate.candidate_id) continue;
+        const company = drafts.find(draft => draft.candidate_id === relation.target_candidate_id && draft.label === 'Organization');
+        const name = company?.properties.name;
+        if (!name?.trim()) continue;
+        const key = normalize(name);
+        if (!organizationIds.has(key)) {
+          const matches = (await search(name)).filter(item => item.label === 'Organization'
+            && typeof item.name === 'string' && normalize(item.name) === key);
+          // An ambiguous name cannot identify an employer node.
+          organizationIds.set(key, matches.length === 1 ? [{ id: matches[0].entity_id, name }] : []);
+        }
+        companies.push(...organizationIds.get(key)!);
+      }
+      employers.set(candidate.candidate_id, companies);
       const count = Math.max(values.phones.length, values.emails.length, values.accounts.length);
       for (let offset = 0; offset < count; offset += 20) {
         const result = await this.options.graph.request<{ entity_ids: string[]; truncated: boolean }>(
@@ -457,34 +493,41 @@ export class ContactImportService {
           });
         if (result.truncated) truncated = true;
         for (const id of result.entity_ids) {
-          if (!allIds.has(id) && allIds.size >= 50) {
-            truncated = true;
-            continue;
-          }
           found.add(id);
-          allIds.add(id);
         }
       }
-      idsByCandidate.set(candidate.candidate_id, [...found]);
+      const kept: string[] = [];
+      for (const id of found) {
+        if (!allIds.has(id) && allIds.size >= 50) { truncated = true; continue; }
+        allIds.add(id); kept.push(id);
+      }
+      idsByCandidate.set(candidate.candidate_id, kept);
     }
     const existing = new Map<string, ReturnType<typeof ContactEntitySchema.parse>>();
     const evidence = new Map<string, ReturnType<typeof ContactEvidenceSchema.parse>[]>();
+    const organizations: Record<string, string[]> = {};
     for (const id of allIds) {
-      const loaded = await this.options.graph.request<{ entity: unknown; evidence: unknown[] } | null>(
-        'get_contact', { entity_id: id });
-      if (!loaded) continue;
+      const loaded = await readCompleteContact(this.options.graph, id);
+      if (!loaded) throw new Error('IDENTITY_PROFILE_UNAVAILABLE');
       const entity = ContactEntitySchema.safeParse(loaded.entity);
-      if (!entity.success) continue;
+      if (!entity.success) throw new Error('IDENTITY_PROFILE_INVALID');
       existing.set(id, entity.data);
-      evidence.set(id, loaded.evidence.flatMap(raw => {
+      evidence.set(id, (Array.isArray(loaded.evidence) ? loaded.evidence : []).flatMap(raw => {
         const parsed = ContactEvidenceSchema.safeParse(raw);
         return parsed.success ? [parsed.data] : [];
       }));
+      organizations[id] = (Array.isArray(loaded.relations) ? loaded.relations : []).flatMap(raw => {
+        const parsed = ContactRelationSchema.safeParse(raw);
+        return parsed.success && parsed.data.relation_type === 'worksFor' && parsed.data.source_id === id
+          && !parsed.data.metadata.archived_at ? [parsed.data.target_id] : [];
+      });
     }
     const suggestions = candidates.flatMap(candidate => {
       const ids = idsByCandidate.get(candidate.candidate_id) ?? [];
       const related = ids.flatMap(id => existing.has(id) ? [existing.get(id)!] : []);
       return suggestMatches(candidate, related, {
+        candidateOrganizations: employers.get(candidate.candidate_id),
+        existingOrganizationsById: organizations,
         existingEvidenceById: Object.fromEntries(ids.map(id => [id, evidence.get(id) ?? []])),
       });
     });
@@ -514,6 +557,15 @@ export class ContactImportService {
       if (job.actor !== actor) throw new Error('IMPORT_ACCESS_DENIED');
       if (input.require_confirmation && job.version !== input.preview_version) throw new Error('PREVIEW_VERSION_CHANGED');
       if (!['ready_for_review', 'committed'].includes(job.status)) throw new Error('IMPORT_NOT_READY');
+      if (job.status === 'ready_for_review' && !input.require_confirmation) {
+        const preview = await this.getUploadPreview(input.import_id, actor);
+        beforeWrite?.();
+        if ((Array.isArray(preview?.match_suggestions) && preview.match_suggestions.length > 0) || preview?.match_suggestions_truncated
+          || (Array.isArray(preview?.warnings) && preview.warnings.some(warning => typeof warning === 'string'
+            && (warning.includes('匹配查询失败') || warning.includes('截断'))))) {
+          throw new Error('MANUAL_REVIEW_REQUIRED');
+        }
+      }
       const candidates = (Array.isArray(job.data.candidates) ? job.data.candidates : [])
         .map(raw => ImportCandidateSchema.parse(raw));
       ({ choices, relationChoices } = autoCreateSelection(candidates));

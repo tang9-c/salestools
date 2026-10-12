@@ -13,6 +13,15 @@ const existing = (name: string, telephone: string[], contactPoint: object[] = []
 });
 
 describe('identity suggestions', () => {
+  it('shows conflicting single values for review without changing either profile', () => {
+    const incoming = candidate('陈晓', []), old = existing('陈晓', []);
+    if (incoming.label !== 'Person' || old.label !== 'Person') throw new Error('Expected person fixture');
+    incoming.properties.jobTitle = '经理'; old.properties.jobTitle = '工程师';
+    const matches = suggestMatches(incoming, [old]);
+    expect(matches[0].fieldDifferences).toEqual([{ fieldPath: 'properties.jobTitle',
+      existingValue: '工程师', candidateValue: '经理' }]);
+    expect(old.properties.jobTitle).toBe('工程师');
+  });
   it('suggests possible rename on exact known-self phone without auto-merging or percentages', () => {
     const matches = suggestMatches(candidate('陈新', ['+86 (138) 0013-8000']), [existing('陈旧', ['+8613800138000'])]);
     expect(matches).toHaveLength(1);
@@ -28,8 +37,9 @@ describe('identity suggestions', () => {
     expect(normalizePhoneForSuggestion('+86 (138) 0013-8000')).toBe('+8613800138000');
   });
 
-  it('keeps same names separate without corroborating evidence', () => {
-    expect(suggestMatches(candidate('陈晓', []), [existing('陈晓', [])])).toEqual([]);
+  it('suggests same names for review without treating them as the same person', () => {
+    expect(suggestMatches(candidate('陈晓', []), [existing('陈晓', [])])[0].reasons)
+      .toEqual([{ kind: 'same_name', value: '陈晓' }]);
   });
 
   it('uses name plus explicit shared organization as advice only', () => {
@@ -38,11 +48,17 @@ describe('identity suggestions', () => {
       file_sha256: 'a'.repeat(64), quote: '陈晓', page: 1, locator_status: 'located',
       collected_at: '2026-08-01T00:00:00.000Z' });
     const matches = suggestMatches(candidate('陈晓', []), [existing('陈晓', [])], {
-      candidateOrganizations: ['星辰科技'], existingOrganizationsById: { p1: ['星辰科技'] },
+      candidateOrganizations: [{ id: 'o1', name: '星辰科技' }], existingOrganizationsById: { p1: ['o1'] },
       existingEvidenceById: { p1: [evidence] },
     });
     expect(matches[0].reasons).toEqual([{ kind: 'name_with_organization', value: '星辰科技' }]);
     expect(matches[0].existingUpdatedAt).toBe('2026-09-20T00:00:00.000Z');
     expect(matches[0].existingSources).toEqual([{ sourceType: 'file', fileName: 'older.pdf', collectedAt: '2026-08-01T00:00:00.000Z' }]);
+  });
+  it('does not treat equally named but different organization nodes as the same employer', () => {
+    const matches = suggestMatches(candidate('陈晓', []), [existing('陈晓', [])], {
+      candidateOrganizations: [{ id: 'o1', name: '星辰科技' }], existingOrganizationsById: { p1: ['o2'] },
+    });
+    expect(matches[0].reasons).toEqual([{ kind: 'same_name', value: '陈晓' }]);
   });
 });

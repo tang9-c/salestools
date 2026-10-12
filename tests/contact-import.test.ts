@@ -54,6 +54,7 @@ function harness(overrides: Partial<ConstructorParameters<typeof ContactImportSe
         return { import_id: 'ci_1', version: Number(state.job?.version), replayed: false } as T;
       }
       if (op === 'get_import_job') return state.job as T;
+      if (op === 'search_keyword') return { items: [], total: 0 } as T;
       if (op === 'commit_import') {
         state.lastCommit = input;
         if (input.expected_version !== state.job?.version) throw new Error('VERSION_CONFLICT');
@@ -78,6 +79,57 @@ function harness(overrides: Partial<ConstructorParameters<typeof ContactImportSe
   const service = newService();
   return { state, service, jobs, newService, graph };
 }
+
+it('finds same-name people without contact details and compares confirmed employer node IDs', async () => {
+  const h = harness();
+  const employer = ImportCandidateSchema.parse({ candidate_id: 'company', label: 'Organization',
+    properties: { name: '星辰科技' }, evidence: [], relation_suggestions: [], warnings: [], can_commit: true });
+  const person = ImportCandidateSchema.parse({ ...candidate, relation_suggestions: [{
+    source_candidate_id: 'c_1', target_candidate_id: 'company', relation_type: 'worksFor',
+    properties: {}, evidence: [], uncertain: false,
+  }] });
+  h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'ready_for_review', version: 3,
+    data: { candidates: [person, employer], warnings: [], processed_block_ids: [], unprocessed_block_ids: [] } };
+  const request = h.graph.request;
+  h.graph.request = async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+    const input = payload as Record<string, unknown>;
+    if (op === 'search_keyword') return (input.name === '陈晓'
+      ? { items: [{ entity_id: 'p1', label: 'Person', name: '陈晓' }], total: 1 }
+      : { items: [{ entity_id: 'o1', label: 'Organization', name: '星辰科技' }], total: 1 }) as T;
+    if (op === 'get_contact') return { entity: { entity_id: 'p1', label: 'Person', properties: { name: '陈晓' },
+      extensions: { hobbies: [], instantMessaging: [] }, metadata: { version: 1,
+        created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z' } }, evidence: [],
+      relations: [{ relation_id: 'r1', source_id: 'p1', target_id: 'o1', relation_type: 'worksFor', properties: { role: { '@type': 'OrganizationRole', roleName: '工程师' } },
+        metadata: { version: 1, created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z' } }] } as T;
+    return request<T>(op, payload);
+  };
+  // The organization is on another candidate page but must still participate in identity review.
+  const preview = await h.service.get('ci_1', 'reviewer', 0, 1);
+  expect(preview?.match_suggestions).toMatchObject([{ entityId: 'p1',
+    reasons: [{ kind: 'name_with_organization', value: '星辰科技' }] }]);
+  expect(h.state.job.status).toBe('ready_for_review');
+  await expect(h.service.commit({ import_id: 'ci_1', preview_version: 3,
+    operation_id: 'contact-import:ci_1', auto_create: true }, 'reviewer')).rejects.toThrow('MANUAL_REVIEW_REQUIRED');
+  expect(h.state.job.status).toBe('ready_for_review');
+  expect(h.state.lastCommit).toBeNull();
+});
+
+it('does not treat an unreadable same-name profile as proof that no duplicate exists', async () => {
+  const h = harness();
+  h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'ready_for_review', version: 3,
+    data: { candidates: [candidate], warnings: [], processed_block_ids: [], unprocessed_block_ids: [] } };
+  const request = h.graph.request;
+  h.graph.request = async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+    if (op === 'search_keyword') return { items: [{ entity_id: 'p1', label: 'Person', name: '陈晓' }], total: 1 } as T;
+    if (op === 'get_contact') return { entity: { entity_id: 'p1' }, evidence: [], relations: [] } as T;
+    return request<T>(op, payload);
+  };
+  const preview = await h.service.get('ci_1', 'reviewer');
+  expect(preview?.warnings).toContain('身份匹配查询失败，请人工核对已有联系人');
+  await expect(h.service.commit({ import_id: 'ci_1', preview_version: 3,
+    operation_id: 'contact-import:ci_1', auto_create: true }, 'reviewer')).rejects.toThrow('MANUAL_REVIEW_REQUIRED');
+  expect(h.state.lastCommit).toBeNull();
+});
 
 describe('reviewed contact imports', () => {
   it('logs terminal storage failure separately from the original parser failure without private text', async () => {

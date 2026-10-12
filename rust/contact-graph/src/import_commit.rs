@@ -193,6 +193,13 @@ fn apply_properties(
 }
 
 fn merge_candidate_field(base: &mut Value, key: &str, candidate: &Value) {
+    if candidate.is_null()
+        || candidate
+            .as_str()
+            .is_some_and(|value| value.trim().is_empty())
+    {
+        return;
+    }
     if let Value::Array(incoming) = candidate {
         if incoming.is_empty() {
             return;
@@ -226,7 +233,11 @@ fn merge_candidate_field(base: &mut Value, key: &str, candidate: &Value) {
             return;
         }
     }
-    base[key] = candidate.clone();
+    if base.get(key).is_none_or(|old| {
+        old.is_null() || old.as_str().is_some_and(|value| value.trim().is_empty())
+    }) {
+        base[key] = candidate.clone();
+    }
 }
 
 fn apply_extensions(
@@ -1110,7 +1121,9 @@ impl Store {
                         serde_json::to_value(entity.properties).map_err(AppError::internal)?;
                     let old_name = properties["name"].clone();
                     for (key, value) in object(candidate_properties)? {
-                        if key != "name" || choice.keep_name == Some(false) {
+                        if key == "name" && choice.keep_name == Some(false) {
+                            properties[key] = value.clone();
+                        } else {
                             merge_candidate_field(&mut properties, key, value);
                         }
                     }

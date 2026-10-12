@@ -64,14 +64,14 @@ export function registerContactImportTools(server: McpServer, imports: ContactIm
   });
 
   server.registerTool('get_contact_import', {
-    description: '读取自己的导入状态、分页候选及短引文，不返回完整 OCR 或输入原文。',
+    description: '读取自己的导入状态、分页候选、可能重复的联系人及短引文，不返回完整 OCR 或输入原文。同名、同公司或联系方式匹配仅供人工核对，不能自动合并。信息不足时暂不决定：保留 import_id，不调用提交或取消，之后可继续读取预览。',
     inputSchema: z.object({ import_id: id, offset: z.int().nonnegative().default(0),
       limit: z.int().min(1).max(50).default(20) }).strict(),
   }, async (input, context) => result(await imports.get(input.import_id, actor(context),
     input.offset, input.limit) ?? { found: false }));
 
   server.registerTool('commit_contact_import', {
-    description: 'auto_create 自动创建单一主体、证据充分的组织与项目；明确的雇主、学校、项目参与和客户关系写为文件或用户文字来源正式边，弱建议保留为待核实线索。也可逐个传 choices 手工提交。operation_id 固定为 contact-import:<import_id>。',
+    description: '经用户确认入库。发现可能重复时先比较已有资料，再明确选择 merge 合并、create 新建独立联系人或 skip 跳过；暂不决定时不要提交。merge 默认保留已有单值、补充空字段并追加去重数组；明确替换字段使用 set_properties/set_extensions。auto_create 仅用于已核对无重复的单一主体及证据充分的组织与项目。正式关系需用户确认，不能据同名同公司自动合并。operation_id 固定为 contact-import:<import_id>。',
     inputSchema: z.object({ import_id: id, preview_version: z.int().positive(),
       operation_id: operationId, choices: z.array(choice).max(800).optional(),
       auto_create: z.boolean().optional(),
