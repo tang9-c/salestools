@@ -145,6 +145,23 @@ impl Store {
         if status != "unverified" {
             return Err(AppError::validation("Claim has already been reviewed"));
         }
+        if kind == "relation" && relation_type.as_deref() == Some("possible_duplicate") {
+            if input.action == "confirm" {
+                return Err(AppError::validation(
+                    "Possible duplicate must be handled with merge_contacts",
+                ));
+            }
+            input
+                .confirmation_note
+                .as_deref()
+                .map(str::trim)
+                .filter(|note| !note.is_empty() && note.chars().count() <= 500)
+                .ok_or_else(|| {
+                    AppError::validation(
+                        "Possible duplicate rejection requires a 1–500 character confirmation_note",
+                    )
+                })?;
+        }
         let now = now_utc();
         let mut entity = self.graph.get_entity(kg_id).map_err(AppError::internal)?;
         let mut result = json!({"claim_id":input.claim_id,"entity_id":subject,"version":input.expected_entity_version+1,"replayed":false});

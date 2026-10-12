@@ -25,6 +25,18 @@ struct CommitInput {
     relation_choices: Vec<RelationChoice>,
     #[serde(default)]
     auto_selected_relations: bool,
+    #[serde(default)]
+    duplicate_matches: Vec<DuplicateMatch>,
+    #[serde(default)]
+    duplicate_match_incomplete: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DuplicateMatch {
+    candidate_id: String,
+    target_id: String,
+    reasons: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -939,6 +951,194 @@ fn persist_claims(
     Ok(warnings)
 }
 
+fn bound_duplicate_value(value: &mut Value) -> Result<(), AppError> {
+    for key in ["subject_name", "target_name"] {
+        if let Some(text) = value[key].as_str() {
+            let mut bounded = text.to_owned();
+            while value.to_string().len() > 2048 && !bounded.is_empty() {
+                bounded.pop();
+                value[key] = json!(bounded);
+                value["truncated"] = json!(true);
+            }
+        }
+    }
+    if value.to_string().len() > 2048 {
+        return Err(validation("Duplicate value exceeds 2048 bytes"));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)] // Derived claims and provenance share the existing import transaction.
+fn persist_duplicate_matches(
+    store: &Store,
+    tx: &rusqlite::Transaction<'_>,
+    candidates: &[Value],
+    landed: &HashMap<String, String>,
+    input: &CommitInput,
+    file_source: &Value,
+    now: &str,
+) -> Result<Vec<Value>, AppError> {
+    let mut targets = HashSet::new();
+    let mut discoveries = Vec::new();
+    for matched in &input.duplicate_matches {
+        targets.insert(&matched.target_id);
+        if targets.len() > 50 {
+            return Err(validation("Duplicate matching exceeds 50 targets"));
+        }
+        let candidate = candidates
+            .iter()
+            .find(|value| value["candidate_id"] == matched.candidate_id)
+            .filter(|value| value["label"] == "Person")
+            .ok_or_else(|| validation("Duplicate matching requires a Person candidate"))?;
+        let subject = landed
+            .get(&matched.candidate_id)
+            .ok_or_else(|| validation("Duplicate matching requires a landed candidate"))?;
+        let mut reasons = matched.reasons.clone();
+        reasons.sort();
+        reasons.dedup();
+        if reasons.is_empty()
+            || reasons.len() > 5
+            || reasons.iter().any(|reason| {
+                ![
+                    "same_name",
+                    "name_with_organization",
+                    "self_phone",
+                    "email",
+                    "instant_messaging",
+                ]
+                .contains(&reason.as_str())
+            })
+        {
+            return Err(validation("Invalid duplicate matching reasons"));
+        }
+        let mut target = matched.target_id.clone();
+        let mut visited = HashSet::new();
+        let mut target_name = String::new();
+        loop {
+            if !visited.insert(target.clone()) {
+                return Err(validation("Duplicate target merge chain contains a cycle"));
+            }
+            let row: Option<(i64,String)> = tx.query_row(
+                "SELECT i.kg_id,m.metadata_json FROM entity_ids i JOIN entity_meta m USING(entity_id) WHERE i.entity_id=?1",
+                [&target], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(AppError::internal)?;
+            let (kg_id, metadata_json) =
+                row.ok_or_else(|| validation("Duplicate target does not exist"))?;
+            let entity = store.graph.get_entity(kg_id).map_err(AppError::internal)?;
+            if entity.entity_type != "Person" {
+                return Err(validation("Duplicate target must be a Person"));
+            }
+            if target == matched.target_id {
+                let properties =
+                    serde_json::to_value(entity.properties).map_err(AppError::internal)?;
+                target_name = properties["name"].as_str().unwrap_or("").to_owned();
+            }
+            let metadata: Value =
+                serde_json::from_str(&metadata_json).map_err(AppError::internal)?;
+            if !metadata.is_object() {
+                return Err(validation("Invalid duplicate target metadata"));
+            }
+            match metadata.get("merged_into") {
+                None => break,
+                Some(value) => {
+                    target = value
+                        .as_str()
+                        .filter(|id| !id.trim().is_empty())
+                        .ok_or_else(|| validation("Invalid duplicate target merge chain"))?
+                        .to_owned()
+                }
+            }
+        }
+        if subject == &target {
+            continue;
+        }
+        let mut source = json!({"import_id":input.import_id,"candidate_id":matched.candidate_id});
+        for key in [
+            "source_type",
+            "file_name",
+            "file_sha256",
+            "text_sha256",
+            "collected_at",
+            "uploaded_at",
+        ] {
+            if let Some(value) = file_source.get(key).filter(|value| value.is_string()) {
+                source[key] = value.clone();
+            }
+        }
+        if target != matched.target_id {
+            source["matched_target_id"] = json!(matched.target_id);
+        }
+        // Keep the provenance keys, shortening only copied metadata with an explicit marker.
+        source["truncated"] = json!(false);
+        for key in [
+            "file_name",
+            "source_type",
+            "collected_at",
+            "uploaded_at",
+            "file_sha256",
+            "text_sha256",
+        ] {
+            if let Some(text) = source[key].as_str() {
+                let mut bounded = text.to_owned();
+                while source.to_string().len() > 2048 && !bounded.is_empty() {
+                    bounded.pop();
+                    source[key] = json!(bounded);
+                    source["truncated"] = json!(true);
+                }
+            }
+        }
+        if source.to_string().len() > 2048 {
+            return Err(validation("Duplicate source exceeds 2048 bytes"));
+        }
+        let mut value = json!({"reasons":reasons,"subject_name":candidate["properties"]["name"].as_str().unwrap_or(""),"target_name":target_name});
+        bound_duplicate_value(&mut value)?;
+        let prior: Option<(String,String,String)> = tx.query_row(
+            "SELECT claim_id,status,value_json FROM contact_claims WHERE kind='relation' AND relation_type='possible_duplicate'
+             AND ((subject_id=?1 AND target_id=?2) OR (subject_id=?2 AND target_id=?1))
+             ORDER BY CASE WHEN status='unverified' THEN 1 ELSE 0 END,created_at,claim_id LIMIT 1",
+            params![subject,target],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(AppError::internal)?;
+        let claim_id = if let Some((id, status, encoded)) = prior {
+            if status == "unverified" {
+                let mut old: Value = serde_json::from_str(&encoded).map_err(AppError::internal)?;
+                let mut combined: Vec<String> = old["reasons"]
+                    .as_array()
+                    .ok_or_else(|| validation("Invalid stored duplicate reasons"))?
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| validation("Invalid stored duplicate reason"))
+                    })
+                    .collect::<Result<_, _>>()?;
+                combined.extend(reasons.clone());
+                combined.sort();
+                combined.dedup();
+                old["reasons"] = json!(combined);
+                bound_duplicate_value(&mut old)?;
+                tx.execute(
+                    "UPDATE contact_claims SET value_json=?1,updated_at=?2 WHERE claim_id=?3",
+                    params![old.to_string(), now, id],
+                )
+                .map_err(AppError::internal)?;
+            }
+            id
+        } else {
+            let id = format!(
+                "claim_{}",
+                canonical_hash(
+                    &json!({"import_id":input.import_id,"candidate_id":matched.candidate_id,"subject_id":subject,"target_id":target,"relation_type":"possible_duplicate"})
+                )?
+            );
+            tx.execute("INSERT INTO contact_claims(claim_id,subject_id,kind,relation_type,target_id,value_json,source_json,status,reason,import_id,candidate_id,created_at,updated_at)
+                VALUES(?1,?2,'relation','possible_duplicate',?3,?4,?5,'unverified','possible_duplicate',?6,?7,?8,?8)",
+                params![id,subject,target,value.to_string(),source.to_string(),input.import_id,matched.candidate_id,now]).map_err(AppError::internal)?;
+            id
+        };
+        discoveries.push(json!({"claim_id":claim_id,"candidate_id":matched.candidate_id,"subject_id":subject,"target_id":target,
+            "matched_target_id":matched.target_id,"reasons":reasons,"source":source}));
+    }
+    Ok(discoveries)
+}
+
 impl Store {
     pub fn commit_import(&self, raw: &Value) -> Result<Value, AppError> {
         reject_raw_content(raw)?;
@@ -957,7 +1157,13 @@ impl Store {
         for choice in &input.choices {
             crate::validation::reject_caller_file_evidence(&choice.evidence).map_err(validation)?;
         }
-        let hash = canonical_hash(raw)?;
+        let mut request_identity = raw.clone();
+        let identity = request_identity
+            .as_object_mut()
+            .ok_or_else(|| validation("Expected an object"))?;
+        identity.remove("duplicate_matches");
+        identity.remove("duplicate_match_incomplete");
+        let hash = canonical_hash(&request_identity)?;
         let conn = self.graph.connection();
         let prior: Option<(String, String, String, String)> = conn.query_row(
             "SELECT actor,op,request_hash,result_json FROM operation_results WHERE operation_id=?1",
@@ -1267,11 +1473,34 @@ impl Store {
             &input.actor,
             &now,
         )?;
-        let warnings = persist_claims(&tx, candidates, &landed, &input, &data["source"], &now)?;
+        let mut warnings: Vec<Value> = data["warnings"].as_array().cloned().unwrap_or_default();
+        for warning in persist_claims(&tx, candidates, &landed, &input, &data["source"], &now)? {
+            let warning = json!(warning);
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
+        let duplicate_discoveries = persist_duplicate_matches(
+            self,
+            &tx,
+            candidates,
+            &landed,
+            &input,
+            &data["source"],
+            &now,
+        )?;
+        if input.duplicate_match_incomplete {
+            let warning = json!("本次入库的重复核对未完整完成，已保存资料及已获得的线索。");
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
+        let mut committed_data = data.clone();
+        committed_data["warnings"] = json!(warnings);
         let new_version = version + 1;
         tx.execute(
-            "UPDATE import_jobs SET status='committed',version=?1 WHERE import_id=?2",
-            params![new_version, input.import_id],
+            "UPDATE import_jobs SET status='committed',version=?1,data_json=?2 WHERE import_id=?3",
+            params![new_version, committed_data.to_string(), input.import_id],
         )
         .map_err(AppError::internal)?;
         let result = json!({"import_id":input.import_id,"status":"committed","version":new_version,
@@ -1279,7 +1508,7 @@ impl Store {
         tx.execute("INSERT INTO operation_results(operation_id,actor,op,request_hash,result_json) VALUES(?1,?2,'commit_import',?3,?4)",
             params![input.operation_id,input.actor,hash,result.to_string()]).map_err(AppError::internal)?;
         tx.execute("INSERT INTO audit_log(operation_id,actor,op,subject_id,changed_at,change_json) VALUES(?1,?2,'commit_import',?3,?4,?5)",
-            params![input.operation_id,input.actor,input.import_id,now,json!({"results":results,"relations":relations}).to_string()]).map_err(AppError::internal)?;
+            params![input.operation_id,input.actor,input.import_id,now,json!({"results":results,"relations":relations,"warnings":warnings,"duplicate_discoveries":duplicate_discoveries}).to_string()]).map_err(AppError::internal)?;
         tx.commit().map_err(AppError::internal)?;
         Ok(result)
     }

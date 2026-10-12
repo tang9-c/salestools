@@ -339,14 +339,16 @@ export class ContactImportService {
     const candidates = Array.isArray(job.data.candidates) ? job.data.candidates : [];
     const page = candidates.slice(offset, offset + limit);
     const warnings = Array.isArray(job.data.warnings) ? [...job.data.warnings] : [];
-    let matches: { suggestions: MatchSuggestion[]; truncated: boolean } = {
-      suggestions: [], truncated: false,
+    let matches: { suggestions: MatchSuggestion[]; truncated: boolean; incomplete: boolean } = {
+      suggestions: [], truncated: false, incomplete: false,
     };
     if (job.status === 'ready_for_review') {
       try {
         matches = await this.matchSuggestions(page, candidates);
         if (matches.truncated) warnings.push('身份匹配结果已截断，可能遗漏已有联系人');
+        if (matches.incomplete) warnings.push('身份匹配查询失败，请人工核对已有联系人');
       } catch {
+        matches.incomplete = true;
         warnings.push('身份匹配查询失败，请人工核对已有联系人');
       }
     }
@@ -362,6 +364,7 @@ export class ContactImportService {
       total_candidates: candidates.length,
       candidates: page, match_suggestions: matches.suggestions,
       match_suggestions_truncated: matches.truncated,
+      match_suggestions_incomplete: matches.incomplete,
       offset, limit,
     };
   }
@@ -412,12 +415,6 @@ export class ContactImportService {
     const candidates = pages.flatMap(page => Array.isArray(page.candidates) ? page.candidates : []);
     const warnings = [...new Set(pages.flatMap(page => Array.isArray(page.warnings) ? page.warnings : []))];
     const matches = pages.flatMap(page => Array.isArray(page.match_suggestions) ? page.match_suggestions : []);
-    if (pages.some(page => page.match_suggestions_truncated !== false
-      || !Array.isArray(page.match_suggestions) || !Array.isArray(page.warnings))
-      || warnings.some(warning => typeof warning === 'string' && (warning.includes('匹配查询失败') || warning.includes('截断')))) {
-      reasons.push('身份匹配未完整完成。');
-    }
-    if (matches.length) reasons.push('存在可能重复的联系人，请在聊天中比较资料。');
     if (first.status !== 'ready_for_review') reasons.push('任务尚未达到可确认状态。');
     else {
       try { autoCreateSelection(candidates.map(raw => ImportCandidateSchema.parse(raw))); }
@@ -428,6 +425,7 @@ export class ContactImportService {
     }
     return { ...first, import_id: importId, candidates, warnings, match_suggestions: matches,
       match_suggestions_truncated: pages.some(page => page.match_suggestions_truncated === true),
+      match_suggestions_incomplete: pages.some(page => page.match_suggestions_incomplete === true),
       processed_block_ids: [...new Set(pages.flatMap(page => Array.isArray(page.processed_block_ids) ? page.processed_block_ids : []))],
       unprocessed_block_ids: [...new Set(pages.flatMap(page => Array.isArray(page.unprocessed_block_ids) ? page.unprocessed_block_ids : []))],
       coverage_available: pages.every(page => page.coverage_available === true),
@@ -435,7 +433,7 @@ export class ContactImportService {
   }
 
   private async matchSuggestions(rawCandidates: unknown[], allCandidates: unknown[]): Promise<{
-    suggestions: MatchSuggestion[]; truncated: boolean;
+    suggestions: MatchSuggestion[]; truncated: boolean; incomplete: boolean;
   }> {
     const candidates = rawCandidates.flatMap(raw => {
       const parsed = ImportCandidateSchema.safeParse(raw);
@@ -444,6 +442,12 @@ export class ContactImportService {
     const idsByCandidate = new Map<string, string[]>();
     const allIds = new Set<string>();
     let truncated = false;
+    let incomplete = false;
+    const attempt = async <T>(action: () => Promise<T>, fallback: T): Promise<T> => {
+      try { return await action(); } catch { incomplete = true; return fallback; }
+    };
+    const names = new Map<string, string>();
+    const identityReasons = new Map<string, Map<string, Set<MatchSuggestion['reasons'][number]['kind']>>>();
     const normalize = (value: string) => value.normalize('NFKC').trim().toLowerCase();
     const organizationIds = new Map<string, { id: string; name: string }[]>();
     const drafts = allCandidates.flatMap(raw => {
@@ -456,14 +460,17 @@ export class ContactImportService {
       const values = identityValues(candidate);
       const found = new Set<string>();
       const search = async (name: string) => {
-        const result = await this.options.graph.request<{ items: { entity_id: string; label?: string; name?: string }[]; total: number }>(
-          'search_keyword', { name, offset: 0, limit: 50 });
+        const result = await attempt(() => this.options.graph.request<{ items: { entity_id: string; label?: string; name?: string }[]; total: number }>(
+          'search_keyword', { name, offset: 0, limit: 50 }), { items: [], total: 0 });
         if (result.total > result.items.length) truncated = true;
         return result.items;
       };
       if (candidate.properties.name?.trim()) {
         for (const item of await search(candidate.properties.name)) {
-          if (item.label === 'Person') found.add(item.entity_id);
+          if (item.label === 'Person') {
+            found.add(item.entity_id);
+            if (typeof item.name === 'string') names.set(item.entity_id, item.name);
+          }
         }
       }
       const companies: { id: string; name: string }[] = [];
@@ -483,17 +490,23 @@ export class ContactImportService {
         companies.push(...organizationIds.get(key)!);
       }
       employers.set(candidate.candidate_id, companies);
-      const count = Math.max(values.phones.length, values.emails.length, values.accounts.length);
-      for (let offset = 0; offset < count; offset += 20) {
-        const result = await this.options.graph.request<{ entity_ids: string[]; truncated: boolean }>(
-          'find_identity_candidates', {
-            phones: values.phones.slice(offset, offset + 20),
-            emails: values.emails.slice(offset, offset + 20),
-            accounts: values.accounts.slice(offset, offset + 20),
-          });
-        if (result.truncated) truncated = true;
-        for (const id of result.entity_ids) {
-          found.add(id);
+      const reasonsByTarget = new Map<string, Set<MatchSuggestion['reasons'][number]['kind']>>();
+      identityReasons.set(candidate.candidate_id, reasonsByTarget);
+      // Separate kinds so an ID match remains attributable even if profile reads fail.
+      for (const [key, reason] of [['phones', 'self_phone'], ['emails', 'email'], ['accounts', 'instant_messaging']] as const) {
+        for (let offset = 0; offset < values[key].length; offset += 20) {
+          const result = await attempt(() => this.options.graph.request<{ entity_ids: string[]; truncated: boolean }>(
+            'find_identity_candidates', {
+              phones: [], emails: [], accounts: [],
+              [key]: values[key].slice(offset, offset + 20),
+            }), { entity_ids: [], truncated: false });
+          if (result.truncated) truncated = true;
+          for (const id of result.entity_ids) {
+            found.add(id);
+            const reasons = reasonsByTarget.get(id) ?? new Set();
+            reasons.add(reason);
+            reasonsByTarget.set(id, reasons);
+          }
         }
       }
       const kept: string[] = [];
@@ -507,10 +520,12 @@ export class ContactImportService {
     const evidence = new Map<string, ReturnType<typeof ContactEvidenceSchema.parse>[]>();
     const organizations: Record<string, string[]> = {};
     for (const id of allIds) {
-      const loaded = await readCompleteContact(this.options.graph, id);
-      if (!loaded) throw new Error('IDENTITY_PROFILE_UNAVAILABLE');
+      const loaded = await attempt(() => readCompleteContact(this.options.graph, id, {
+        onIncomplete: () => { incomplete = true; },
+      }), null);
+      if (!loaded) { incomplete = true; continue; }
       const entity = ContactEntitySchema.safeParse(loaded.entity);
-      if (!entity.success) throw new Error('IDENTITY_PROFILE_INVALID');
+      if (!entity.success || entity.data.entity_id !== id) { incomplete = true; continue; }
       existing.set(id, entity.data);
       evidence.set(id, (Array.isArray(loaded.evidence) ? loaded.evidence : []).flatMap(raw => {
         const parsed = ContactEvidenceSchema.safeParse(raw);
@@ -525,13 +540,27 @@ export class ContactImportService {
     const suggestions = candidates.flatMap(candidate => {
       const ids = idsByCandidate.get(candidate.candidate_id) ?? [];
       const related = ids.flatMap(id => existing.has(id) ? [existing.get(id)!] : []);
-      return suggestMatches(candidate, related, {
+      const verified = suggestMatches(candidate, related, {
         candidateOrganizations: employers.get(candidate.candidate_id),
         existingOrganizationsById: organizations,
         existingEvidenceById: Object.fromEntries(ids.map(id => [id, evidence.get(id) ?? []])),
       });
+      const fallback = ids.flatMap(id => {
+        const name = names.get(id);
+        if (existing.has(id)) return [];
+        const reasons: MatchSuggestion['reasons'] = [...(identityReasons.get(candidate.candidate_id)?.get(id) ?? [])]
+          .map(kind => ({ kind, value: '' }));
+        if (name && candidate.properties.name && normalize(name) === normalize(candidate.properties.name)) {
+          reasons.push({ kind: 'same_name', value: name });
+        }
+        if (!reasons.length) return [];
+        return [{ entityId: id, candidateId: candidate.candidate_id, candidateName: candidate.properties.name ?? '',
+          existingName: name ?? '', reasons,
+          existingUpdatedAt: '', candidateSources: [], existingSources: [] }];
+      });
+      return [...verified, ...fallback];
     });
-    return { suggestions, truncated };
+    return { suggestions, truncated, incomplete: incomplete || truncated };
   }
 
   async commit(input: { import_id: string; preview_version: number; operation_id: string;
@@ -541,7 +570,10 @@ export class ContactImportService {
     if (input.operation_id !== `contact-import:${input.import_id}`) {
       throw new Error('Invalid commit operation_id');
     }
-    if (input.require_confirmation) {
+    const initialJob = await this.getRaw(input.import_id);
+    if (!initialJob) throw new Error('IMPORT_NOT_FOUND');
+    if (initialJob.actor !== actor) throw new Error('IMPORT_ACCESS_DENIED');
+    if (input.require_confirmation && initialJob.status !== 'committed') {
       const preview = await this.getUploadPreview(input.import_id, actor);
       beforeWrite?.();
       if (!preview) throw new Error('IMPORT_NOT_FOUND');
@@ -555,14 +587,12 @@ export class ContactImportService {
       const job = await this.getRaw(input.import_id);
       if (!job) throw new Error('IMPORT_NOT_FOUND');
       if (job.actor !== actor) throw new Error('IMPORT_ACCESS_DENIED');
-      if (input.require_confirmation && job.version !== input.preview_version) throw new Error('PREVIEW_VERSION_CHANGED');
+      if (input.require_confirmation && job.status !== 'committed' && job.version !== input.preview_version) throw new Error('PREVIEW_VERSION_CHANGED');
       if (!['ready_for_review', 'committed'].includes(job.status)) throw new Error('IMPORT_NOT_READY');
       if (job.status === 'ready_for_review' && !input.require_confirmation) {
         const preview = await this.getUploadPreview(input.import_id, actor);
         beforeWrite?.();
-        if ((Array.isArray(preview?.match_suggestions) && preview.match_suggestions.length > 0) || preview?.match_suggestions_truncated
-          || (Array.isArray(preview?.warnings) && preview.warnings.some(warning => typeof warning === 'string'
-            && (warning.includes('匹配查询失败') || warning.includes('截断'))))) {
+        if (!preview?.confirmation.allowed) {
           throw new Error('MANUAL_REVIEW_REQUIRED');
         }
       }
@@ -588,12 +618,45 @@ export class ContactImportService {
       }
     }
     if (!choices) throw new Error('Commit choices are required');
+    const job = await this.getRaw(input.import_id);
+    if (!job) throw new Error('IMPORT_NOT_FOUND');
+    if (job.actor !== actor) throw new Error('IMPORT_ACCESS_DENIED');
+    const allCandidates = Array.isArray(job.data.candidates) ? job.data.candidates : [];
+    const selected = new Map(choices.flatMap(raw => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+      const choice = raw as Record<string, unknown>;
+      return (choice.action === 'create' || choice.action === 'merge') && typeof choice.candidate_id === 'string'
+        ? [[choice.candidate_id, choice] as const] : [];
+    }));
+    const matchCandidates = allCandidates.filter(raw => raw && typeof raw === 'object'
+      && selected.has((raw as Record<string, unknown>).candidate_id as string));
+    const duplicateMatches: { candidate_id: string; target_id: string; reasons: string[] }[] = [];
+    const duplicateTargetIds = new Set<string>();
+    let duplicateMatchIncomplete = false;
+    if (job.status === 'ready_for_review') {
+      for (let offset = 0; offset < matchCandidates.length; offset += 50) {
+        const matches = await this.matchSuggestions(matchCandidates.slice(offset, offset + 50), allCandidates);
+        duplicateMatchIncomplete ||= matches.incomplete;
+        for (const match of matches.suggestions) {
+          if (selected.get(match.candidateId)?.target_id === match.entityId) continue;
+          if (!duplicateTargetIds.has(match.entityId) && duplicateTargetIds.size >= 50) {
+            duplicateMatchIncomplete = true;
+            continue;
+          }
+          duplicateTargetIds.add(match.entityId);
+          duplicateMatches.push({ candidate_id: match.candidateId, target_id: match.entityId,
+            reasons: [...new Set(match.reasons.map(reason => reason.kind))].sort() });
+        }
+      }
+    }
     // The page capability may be revoked while the service awaits preview reads.
     beforeWrite?.();
     const result = await this.options.graph.request<Record<string, unknown>>('commit_import', {
       operation_id: input.operation_id, actor, import_id: input.import_id,
       expected_version: input.preview_version, choices,
       relation_choices: relationChoices,
+      duplicate_matches: duplicateMatches,
+      duplicate_match_incomplete: duplicateMatchIncomplete,
       ...(input.auto_create ? { auto_selected_relations: true } : {}),
     });
     if (this.options.onCommitted && Array.isArray(result.results)) {

@@ -12,7 +12,10 @@ const file: UploadedFile = {
 };
 const candidate = ImportCandidateSchema.parse({
   candidate_id: 'c_1', label: 'Person', properties: { name: '陈晓' },
-  extensions: { hobbies: [], instantMessaging: [] }, evidence: [],
+  extensions: { hobbies: [], instantMessaging: [] }, evidence: [{ field_path: 'properties.name', value: '陈晓',
+    source_type: 'file', file_name: 'invented.pdf', file_sha256: 'a'.repeat(64), quote: '陈晓', page: 1,
+    evidence_id: 'ev_1', subject_kind: 'entity', subject_id: 'c_1',
+    collected_at: '2026-09-26T00:00:00.000Z', locator_status: 'located' }],
   relation_suggestions: [], warnings: [], can_commit: true,
 });
 
@@ -108,10 +111,10 @@ it('finds same-name people without contact details and compares confirmed employ
   expect(preview?.match_suggestions).toMatchObject([{ entityId: 'p1',
     reasons: [{ kind: 'name_with_organization', value: '星辰科技' }] }]);
   expect(h.state.job.status).toBe('ready_for_review');
-  await expect(h.service.commit({ import_id: 'ci_1', preview_version: 3,
-    operation_id: 'contact-import:ci_1', auto_create: true }, 'reviewer')).rejects.toThrow('MANUAL_REVIEW_REQUIRED');
-  expect(h.state.job.status).toBe('ready_for_review');
-  expect(h.state.lastCommit).toBeNull();
+  const saved = await h.service.commit({ import_id: 'ci_1', preview_version: 3,
+    operation_id: 'contact-import:ci_1', auto_create: true }, 'reviewer');
+  expect(saved.status).toBe('committed');
+  expect(h.state.lastCommit?.duplicate_matches).toEqual([{ candidate_id: 'c_1', target_id: 'p1', reasons: ['name_with_organization'] }]);
 });
 
 it('does not treat an unreadable same-name profile as proof that no duplicate exists', async () => {
@@ -126,9 +129,180 @@ it('does not treat an unreadable same-name profile as proof that no duplicate ex
   };
   const preview = await h.service.get('ci_1', 'reviewer');
   expect(preview?.warnings).toContain('身份匹配查询失败，请人工核对已有联系人');
-  await expect(h.service.commit({ import_id: 'ci_1', preview_version: 3,
-    operation_id: 'contact-import:ci_1', auto_create: true }, 'reviewer')).rejects.toThrow('MANUAL_REVIEW_REQUIRED');
-  expect(h.state.lastCommit).toBeNull();
+  const saved = await h.service.commit({ import_id: 'ci_1', preview_version: 3,
+    operation_id: 'contact-import:ci_1', auto_create: true }, 'reviewer');
+  expect(saved.status).toBe('committed');
+  expect(h.state.lastCommit?.duplicate_match_incomplete).toBe(true);
+  expect(h.state.lastCommit?.duplicate_matches).toEqual([{ candidate_id: 'c_1', target_id: 'p1', reasons: ['same_name'] }]);
+});
+
+it.each(['identity', 'organization', 'supplement', 'all'])('saves successful matching stages when %s fails', async failure => {
+  const h = harness();
+  const person = ImportCandidateSchema.parse({ ...candidate, properties: { name: '陈晓', email: ['chen@example.com'] },
+    relation_suggestions: [{ source_candidate_id: 'c_1', target_candidate_id: 'org', relation_type: 'worksFor',
+      properties: {}, evidence: [], uncertain: false }] });
+  const org = ImportCandidateSchema.parse({ candidate_id: 'org', label: 'Organization', properties: { name: '公司' },
+    evidence: [], relation_suggestions: [], warnings: [], can_commit: true });
+  h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'ready_for_review', version: 3,
+    data: { candidates: [person, org], warnings: [], processed_block_ids: [], unprocessed_block_ids: [] } };
+  const request = h.graph.request;
+  h.graph.request = async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+    const input = payload as Record<string, unknown>;
+    if (op === 'search_keyword') {
+      if (failure === 'all' || (failure === 'organization' && input.name === '公司')) throw new Error('private');
+      return { items: input.name === '陈晓' ? [{ entity_id: 'p1', label: 'Person', name: '陈晓' }] : [], total: input.name === '陈晓' ? 1 : 0 } as T;
+    }
+    if (op === 'find_identity_candidates') {
+      if (failure === 'identity' || failure === 'all') throw new Error('private');
+      return { entity_ids: ['p1'], truncated: false } as T;
+    }
+    if (op === 'get_contact') {
+      if (failure === 'supplement' && input.evidence_offset !== undefined) throw new Error('private');
+      return { entity: { entity_id: 'p1', label: 'Person', properties: { name: '陈晓', email: ['chen@example.com'] },
+        extensions: { hobbies: [], instantMessaging: [] }, metadata: { version: 1,
+          created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z' } }, evidence: [], relations: [],
+        ...(failure === 'supplement' ? { pagination: { evidence: { total: 1, next_offset: 0 }, relations: { total: 0, next_offset: null } } } : {}) } as T;
+    }
+    return request<T>(op, payload);
+  };
+  const saved = await h.service.commit({ import_id: 'ci_1', preview_version: 3,
+    operation_id: 'contact-import:ci_1', auto_create: true }, 'reviewer');
+  expect(saved.status).toBe('committed');
+  expect(h.state.lastCommit?.duplicate_match_incomplete).toBe(true);
+  expect(h.state.lastCommit?.duplicate_matches).toEqual(failure === 'all' ? [] : [{ candidate_id: 'c_1', target_id: 'p1',
+    reasons: ['email', 'same_name'] }]);
+});
+
+it('keeps other matches when explicitly merging into one match and aggregates later candidate pages', async () => {
+  const h = harness();
+  const people = Array.from({ length: 51 }, (_, index) => ImportCandidateSchema.parse({ ...candidate, candidate_id: `c_${index}` }));
+  h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'ready_for_review', version: 3,
+    data: { candidates: people, warnings: [], processed_block_ids: [], unprocessed_block_ids: [] } };
+  const request = h.graph.request;
+  let searches = 0;
+  h.graph.request = async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+    if (op === 'search_keyword') {
+      if (++searches === 1) throw new Error('private');
+      return { items: ['p1', 'p2'].map(entity_id => ({ entity_id, label: 'Person', name: '陈晓' })), total: 2 } as T;
+    }
+    if (op === 'get_contact') return { entity: { entity_id: (payload as { entity_id: string }).entity_id, label: 'Person', properties: { name: '陈晓' },
+      extensions: { hobbies: [], instantMessaging: [] }, metadata: { version: 1, created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z' } }, evidence: [], relations: [] } as T;
+    return request<T>(op, payload);
+  };
+  await h.service.commit({ import_id: 'ci_1', preview_version: 3, operation_id: 'contact-import:ci_1',
+    choices: people.map(person => ({ candidate_id: person.candidate_id, action: 'merge', target_id: 'p1', expected_target_version: 1 })) }, 'reviewer');
+  expect(h.state.lastCommit?.duplicate_match_incomplete).toBe(true);
+  expect(h.state.lastCommit?.duplicate_matches).toContainEqual({ candidate_id: 'c_50', target_id: 'p2', reasons: ['same_name'] });
+  expect((h.state.lastCommit?.duplicate_matches as { target_id: string }[]).every(match => match.target_id === 'p2')).toBe(true);
+});
+
+it('bounds distinct matching targets across candidate pages and ignores caller-derived matches', async () => {
+  const h = harness();
+  const people = Array.from({ length: 51 }, (_, index) => ImportCandidateSchema.parse({ ...candidate,
+    candidate_id: `c_${index}`, properties: { name: `姓名${index}` } }));
+  h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'ready_for_review', version: 3,
+    data: { candidates: people, warnings: [], processed_block_ids: [], unprocessed_block_ids: [] } };
+  const request = h.graph.request;
+  h.graph.request = async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+    const input = payload as Record<string, unknown>;
+    if (op === 'search_keyword') return { items: [{ entity_id: `p_${input.name}`, label: 'Person', name: input.name }], total: 1 } as T;
+    if (op === 'get_contact') return { entity: { entity_id: input.entity_id, label: 'Person', properties: { name: String(input.entity_id).slice(2) },
+      extensions: { hobbies: [], instantMessaging: [] }, metadata: { version: 1, created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z' } }, evidence: [], relations: [] } as T;
+    return request<T>(op, payload);
+  };
+  await h.service.commit({ import_id: 'ci_1', preview_version: 3, operation_id: 'contact-import:ci_1',
+    choices: people.map(person => ({ candidate_id: person.candidate_id, action: 'merge', target_id: 'merged', expected_target_version: 1 })),
+    duplicate_matches: [{ candidate_id: 'c_0', target_id: 'forged', reasons: ['email'] }], duplicate_match_incomplete: false,
+  } as Parameters<ContactImportService['commit']>[0], 'reviewer');
+  const matches = h.state.lastCommit?.duplicate_matches as { target_id: string }[];
+  expect(matches).toHaveLength(50);
+  expect(matches.some(match => match.target_id === 'forged')).toBe(false);
+  expect(h.state.lastCommit?.duplicate_match_incomplete).toBe(true);
+});
+
+it('reaches the durable receipt replay after a confirmed upload response is lost', async () => {
+  const h = harness();
+  h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'ready_for_review', version: 3,
+    data: { candidates: [candidate], warnings: [], processed_block_ids: [], unprocessed_block_ids: [] } };
+  const request = h.graph.request;
+  let receipt: Record<string, unknown> | undefined;
+  h.graph.request = async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+    if (op === 'commit_import') {
+      if (receipt) {
+        expect((payload as Record<string, unknown>).expected_version).toBe(3);
+        return { ...receipt, replayed: true } as T;
+      }
+      receipt = await request<Record<string, unknown>>(op, payload);
+      return receipt as T;
+    }
+    return request<T>(op, payload);
+  };
+  const input = { import_id: 'ci_1', preview_version: 3, operation_id: 'contact-import:ci_1', auto_create: true, require_confirmation: true };
+  await h.service.commit(input, 'reviewer');
+  const retry = await h.newService().commit(input, 'reviewer');
+  expect(retry.replayed).toBe(true);
+  expect(retry.version).toBe(4);
+});
+
+it('keeps attributable email matches with different names when the first profile read fails', async () => {
+  const h = harness();
+  const person = ImportCandidateSchema.parse({ ...candidate, properties: { name: '不同姓名', email: ['match@example.com'], telephone: ['13800138000'] } });
+  h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'ready_for_review', version: 3,
+    data: { candidates: [person], warnings: [], processed_block_ids: [], unprocessed_block_ids: [] } };
+  const request = h.graph.request;
+  h.graph.request = async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+    const input = payload as { emails?: string[] };
+    if (op === 'find_identity_candidates') return { entity_ids: input.emails?.length ? ['p1'] : [], truncated: false } as T;
+    if (op === 'get_contact') throw new Error('private detail unavailable');
+    return request<T>(op, payload);
+  };
+  await h.service.commit({ import_id: 'ci_1', preview_version: 3, operation_id: 'contact-import:ci_1', auto_create: true }, 'reviewer');
+  expect(h.state.lastCommit?.duplicate_matches).toEqual([{ candidate_id: 'c_1', target_id: 'p1', reasons: ['email'] }]);
+  expect(h.state.lastCommit?.duplicate_match_incomplete).toBe(true);
+});
+
+it('keeps verified employer relations from the second profile page if the third page fails', async () => {
+  const h = harness();
+  const employer = ImportCandidateSchema.parse({ candidate_id: 'org', label: 'Organization', properties: { name: '公司' },
+    evidence: [], relation_suggestions: [], warnings: [], can_commit: true });
+  const person = ImportCandidateSchema.parse({ ...candidate, relation_suggestions: [{ source_candidate_id: 'c_1', target_candidate_id: 'org',
+    relation_type: 'worksFor', properties: {}, evidence: [], uncertain: false }] });
+  h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'ready_for_review', version: 3,
+    data: { candidates: [person, employer], warnings: [], processed_block_ids: [], unprocessed_block_ids: [] } };
+  const request = h.graph.request;
+  h.graph.request = async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+    const input = payload as Record<string, unknown>;
+    if (op === 'search_keyword') return { items: [{ entity_id: input.name === '公司' ? 'o1' : 'p1', label: input.name === '公司' ? 'Organization' : 'Person', name: input.name }], total: 1 } as T;
+    if (op === 'get_contact') {
+      const offset = input.relation_offset ?? 0;
+      if (offset === 2) throw new Error('private third page');
+      return { version: 1, entity: { entity_id: 'p1', label: 'Person', properties: { name: '陈晓' },
+        extensions: { hobbies: [], instantMessaging: [] }, metadata: { version: 1, created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z' } }, evidence: [],
+        relations: offset === 1 ? [{ relation_id: 'r1', source_id: 'p1', target_id: 'o1', relation_type: 'worksFor', properties: { role: { '@type': 'OrganizationRole', roleName: '工程师' } },
+          metadata: { version: 1, created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z' } }] : [{}],
+        pagination: { evidence: { total: 0, next_offset: null }, relations: { total: 3, next_offset: Number(offset) + 1 } } } as T;
+    }
+    return request<T>(op, payload);
+  };
+  const preview = await h.service.get('ci_1', 'reviewer');
+  expect(preview?.match_suggestions).toMatchObject([{ reasons: [{ kind: 'name_with_organization' }] }]);
+  expect(preview?.match_suggestions_incomplete).toBe(true);
+});
+
+it('aggregates matching incomplete from later upload preview candidate pages', async () => {
+  const h = harness();
+  const people = Array.from({ length: 51 }, (_, index) => ImportCandidateSchema.parse({ ...candidate, candidate_id: `c_${index}` }));
+  h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'ready_for_review', version: 3,
+    data: { candidates: people, warnings: [], processed_block_ids: [], unprocessed_block_ids: [] } };
+  const request = h.graph.request;
+  let searches = 0;
+  h.graph.request = async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+    if (op === 'search_keyword' && ++searches === 51) throw new Error('later page');
+    return request<T>(op, payload);
+  };
+  const preview = await h.service.getUploadPreview('ci_1', 'reviewer');
+  expect(preview?.match_suggestions_incomplete).toBe(true);
+  expect(preview?.warnings).toContain('身份匹配查询失败，请人工核对已有联系人');
 });
 
 describe('reviewed contact imports', () => {

@@ -104,6 +104,87 @@ fn save_result(
     Ok(())
 }
 
+// Preserve stored endpoint direction and every discovery source while closing
+// identity hints within the same transaction as the explicit contact merge.
+fn close_duplicate_claims(
+    tx: &Transaction<'_>,
+    input: &MergeInput,
+    changed_at: &str,
+) -> Result<(), AppError> {
+    let pairs: Vec<String> = {
+        let mut statement = tx.prepare("SELECT claim_id FROM contact_claims WHERE kind='relation' AND relation_type='possible_duplicate' AND status='unverified' AND ((subject_id=?1 AND target_id=?2) OR (subject_id=?2 AND target_id=?1))").map_err(internal)?;
+        let rows = statement
+            .query_map(params![input.source_id, input.target_id], |row| row.get(0))
+            .map_err(internal)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(internal)?
+    };
+    for id in pairs {
+        tx.execute(
+            "UPDATE contact_claims SET status='confirmed',updated_at=?1 WHERE claim_id=?2",
+            params![changed_at, id],
+        )
+        .map_err(internal)?;
+        duplicate_claim_audit(tx, input, changed_at, &id, "merged", None)?;
+    }
+    Ok(())
+}
+
+fn duplicate_claim_audit(
+    tx: &Transaction<'_>,
+    input: &MergeInput,
+    changed_at: &str,
+    claim_id: &str,
+    reason: &str,
+    retained: Option<&str>,
+) -> Result<(), AppError> {
+    tx.execute("INSERT INTO audit_log(operation_id,actor,op,subject_id,changed_at,change_json) VALUES(?1,?2,'merge_duplicate_claim',?3,?4,?5)",
+        params![input.operation_id,input.actor,input.target_id,changed_at,json!({"claim_id":claim_id,"reason":reason,"retained_claim_id":retained,"source_id":input.source_id,"target_id":input.target_id}).to_string()]).map_err(internal)?;
+    Ok(())
+}
+
+fn fold_duplicate_claims(
+    tx: &Transaction<'_>,
+    input: &MergeInput,
+    changed_at: &str,
+) -> Result<(), AppError> {
+    let rows: Vec<(String, String, String, String)> = {
+        let mut statement = tx.prepare("SELECT claim_id,subject_id,target_id,status FROM contact_claims WHERE kind='relation' AND relation_type='possible_duplicate' AND (subject_id=?1 OR target_id=?1) ORDER BY CASE WHEN status='unverified' THEN 1 ELSE 0 END,created_at,claim_id").map_err(internal)?;
+        let rows = statement
+            .query_map([&input.target_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .map_err(internal)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(internal)?
+    };
+    let mut retained: Vec<(String, String, String)> = Vec::new();
+    for (id, subject, target, status) in rows {
+        let prior = retained
+            .iter()
+            .find(|(_, a, b)| (a == &subject && b == &target) || (a == &target && b == &subject));
+        if let Some((keep, _, _)) = prior {
+            // Already handled histories retain their processing status.
+            if status == "unverified" {
+                tx.execute(
+                    "UPDATE contact_claims SET status='rejected',updated_at=?1 WHERE claim_id=?2",
+                    params![changed_at, id],
+                )
+                .map_err(internal)?;
+                duplicate_claim_audit(
+                    tx,
+                    input,
+                    changed_at,
+                    &id,
+                    "merge_deduplicated",
+                    Some(keep),
+                )?;
+            }
+        } else {
+            retained.push((id, subject, target));
+        }
+    }
+    Ok(())
+}
+
 impl Store {
     fn set_archive(
         &self,
@@ -375,6 +456,7 @@ impl Store {
                     params![record["evidence_id"].as_str(),input.target_id,record["field_path"].as_str(),record["value"].to_string(),record.to_string()]).map_err(internal)?;
             }
         }
+        close_duplicate_claims(&tx, &input, &changed_at)?;
         tx.execute(
             "UPDATE contact_claims SET subject_id=?1,updated_at=?3 WHERE subject_id=?2",
             params![input.target_id, input.source_id, changed_at],
@@ -385,6 +467,7 @@ impl Store {
             params![input.target_id, input.source_id, changed_at],
         )
         .map_err(internal)?;
+        fold_duplicate_claims(&tx, &input, &changed_at)?;
         source_meta["archived_at"] = json!(changed_at);
         source_meta["merged_into"] = json!(input.target_id);
         source_meta["updated_at"] = json!(changed_at);

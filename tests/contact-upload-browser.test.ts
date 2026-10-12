@@ -181,7 +181,7 @@ async function ready(page: Page | Frame) { await expect.poll(() => page.locator(
 it('defers review without committing or cancelling and can resume the same preview', async () => {
   const h = await open();
   await ready(h.ui);
-  await h.ui.getByRole('button', { name: '暂不决定', exact: true }).click();
+  await h.ui.getByRole('button', { name: '暂不保存', exact: true }).click();
   expect(await h.ui.locator('#commit').isEnabled()).toBe(false);
   expect(await body(h.ui)).toContain('尚未入库');
   expect(await body(h.ui)).toContain('ci_browser');
@@ -256,9 +256,6 @@ it.each([
   ['不可入库主体', { candidates: [person('p_1', { can_commit: false })] }],
   ['没有可定位主体证据', { candidates: [person('p_1', { evidence: [{ ...person().evidence[0], locator_status: 'unavailable' }] })] }],
   ['非主体人物', { candidates: [person('p_1', { warnings: ['非主体人物线索'] })] }],
-  ['可能重复', { match_suggestions: [{ entityId: 'existing_1', candidateId: 'p_1', reasons: [] }] }],
-  ['匹配截断', { match_suggestions_truncated: true }],
-  ['匹配查询失败', { warnings: ['身份匹配查询失败，请人工核对已有联系人'] }],
   ['任务失败', { status: 'failed' }],
   ['未处理文本块', { unprocessed_block_ids: ['b_2'] }],
   ['覆盖不可用', { coverage_available: false }],
@@ -267,6 +264,23 @@ it.each([
   const { page } = await open({ data: preview({ ...data, confirmation: { allowed: false, reasons: [_name] } }) });
   expect(await page.locator('#commit').isEnabled()).toBe(false);
   expect(await body(page)).toContain('ci_browser');
+});
+
+it('saves an authorized independent contact with duplicate hints only after the user clicks', async () => {
+  const h = await open({ data: preview({ match_suggestions: [{ entityId: 'existing_1', candidateId: 'p_1', candidateName: '陈晓', existingName: '陈晓', reasons: [{ kind: 'same_name', value: '陈晓' }] }] }) });
+  await ready(h.ui);
+  expect(h.commits).toEqual([]);
+  expect(await h.ui.locator('#commit').textContent()).toBe('保存资料，身份待核对');
+  await h.ui.locator('#commit').click();
+  await expect.poll(() => h.commits.length).toBe(1);
+  expect(h.commits[0]).toEqual({ preview_version: 3 });
+});
+
+it('warns that matching is incomplete while leaving authorized save available', async () => {
+  const h = await open({ data: preview({ match_suggestions_truncated: true }) });
+  await ready(h.ui);
+  expect(await body(h.ui)).toContain('重复核对未完整完成');
+  expect(h.commits).toEqual([]);
 });
 
 it.each([undefined, { allowed: false, reasons: ['预览不完整，请在聊天中核对。'] }])(

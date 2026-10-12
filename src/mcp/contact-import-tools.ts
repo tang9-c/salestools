@@ -71,7 +71,7 @@ export function registerContactImportTools(server: McpServer, imports: ContactIm
     input.offset, input.limit) ?? { found: false }));
 
   server.registerTool('commit_contact_import', {
-    description: '经用户确认入库。发现可能重复时先比较已有资料，再明确选择 merge 合并、create 新建独立联系人或 skip 跳过；暂不决定时不要提交。merge 默认保留已有单值、补充空字段并追加去重数组；明确替换字段使用 set_properties/set_extensions。auto_create 仅用于已核对无重复的单一主体及证据充分的组织与项目。正式关系需用户确认，不能据同名同公司自动合并。operation_id 固定为 contact-import:<import_id>。',
+    description: '经用户确认入库。有效联系人资料可独立保存，身份待核对；疑似重复和匹配不完整仅作提示。可明确选择 merge 合并、create 新建独立联系人或 skip 跳过。明确合并只解决指定对象，其他身份线索仍保留。merge 默认保留已有单值、补充空字段并追加去重数组；明确替换字段使用 set_properties/set_extensions。auto_create 用于主体明确且有证据的单一人物及证据充分的组织与项目。正式关系需用户确认，不能据同名同公司自动合并。operation_id 固定为 contact-import:<import_id>。',
     inputSchema: z.object({ import_id: id, preview_version: z.int().positive(),
       operation_id: operationId, choices: z.array(choice).max(800).optional(),
       auto_create: z.boolean().optional(),

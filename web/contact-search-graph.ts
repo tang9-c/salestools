@@ -229,13 +229,22 @@ function renderDetail() {
   for (const c of records(selected.conflicts)) if (c.subject_kind === 'entity' && c.subject_id === selection.id && safeField(c.field_path)) {
     const box = text(panel, 'div', '字段冲突', 'record'); text(box, 'p', `${fieldLabel(c.field_path)}：${readable(c.value)}`); source(box, c);
   }
+  const duplicateReasons: Record<string, string> = { same_name: '姓名相同', name_with_organization: '姓名与机构相同', self_phone: '本人电话相同', email: '邮箱相同', instant_messaging: '即时通信账号相同' };
+  for (const c of records(selected.unverified_claims)) {
+    if (c.kind !== 'relation' || c.relation_type !== 'possible_duplicate' || c.status !== 'unverified'
+      || c.subject_id !== selection.id && c.target_id !== selection.id) continue;
+    const value = object(c.value);
+    const box = text(panel, 'div', '身份待核对', 'record');
+    text(box, 'p', `线索记录名称：${readable(value.subject_name) || '名称未提供'} ↔ ${readable(value.target_name) || '名称未提供'}`);
+    const reasons = Array.isArray(value.reasons) ? value.reasons.filter((r): r is string => typeof r === 'string').map(r => duplicateReasons[r] ?? '匹配理由待核对') : [];
+    text(box, 'p', `匹配理由：${reasons.join('、') || '未提供'}。仅为身份线索，请继续核对；确认同一人后再明确选择合并。`);
+  }
   if (input?.include_unverified) for (const c of records(selected.unverified_claims)) {
     if (c.subject_id !== selection.id || c.status !== 'unverified' || !(c.kind === 'relation' && professionalRelations.has(String(c.relation_type)) || c.kind === 'field' && safeField(c.field_path))) continue;
     if (edges.some(e => e.id === `claim:${c.claim_id}`)) continue;
     const box = text(panel, 'div', '待核实线索', 'record'); text(box, 'p', `${c.kind === 'relation' ? labels[String(c.relation_type)] : fieldLabel(c.field_path)}：${readable(c.value)} · ${readable(c.reason)}`); source(box, object(c.source));
   }
   for (const collection of ['evidence', 'relations', 'unverified_claims'] as const) {
-    if (collection === 'unverified_claims' && !input?.include_unverified) continue;
     const p = object(object(selected.pagination)[collection]);
     const row = text(panel, 'div', '', 'pager'); text(row, 'span', `${collectionLabels[collection]} ${selection.offsets[collection]}/${readable(p.total)}`);
     const change = (offset: number) => { if (!selection) return; pendingDetail = { ...selection, offsets: { ...selection.offsets, [collection]: offset } }; detailVersion++; void pump(); };
@@ -291,7 +300,7 @@ async function pump() {
         try {
           const d = await readDetail({ entity_id: operation.id, evidence_offset: operation.offsets.evidence, evidence_limit: 10,
             relation_offset: operation.offsets.relations, relation_limit: 20, claim_offset: operation.offsets.unverified_claims,
-            claim_limit: input?.include_unverified ? 20 : 0 });
+            claim_limit: 20 });
           if (version !== requestVersion || ticket !== detailVersion) continue;
           selected = d; selection = operation; selectedEdge = operation.edge; notice.textContent = ''; renderDetail();
         } catch { if (version === requestVersion && ticket === detailVersion) {

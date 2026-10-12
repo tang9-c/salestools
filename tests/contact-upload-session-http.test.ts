@@ -296,7 +296,7 @@ it('admits only one concurrent upload and permits retry after a failed multipart
   expect(responses.map(response => response.status).sort()).toEqual([201, 409]);
 });
 
-it('rejects cross-session reads and commits, stale versions, and duplicate suggestions', async () => {
+it('rejects cross-session reads and stale versions but saves despite duplicate suggestions', async () => {
   const h = await setup();
   await h.upload();
   await fetch(`${h.base}/contact-upload/import`, { method: 'POST', headers: h.headers });
@@ -310,8 +310,9 @@ it('rejects cross-session reads and commits, stale versions, and duplicate sugge
   h.get.mockResolvedValueOnce(previewPage(0, 1, { match_suggestions: [{ kind: 'duplicate' }] }));
   const duplicate = await fetch(`${h.base}/contact-upload/commit`, { method: 'POST', headers: {
     ...h.headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ preview_version: 3 }) });
-  expect(duplicate.status).toBe(409);
-  expect(h.formalWrites).toEqual([]);
+  expect(duplicate.status).toBe(200);
+  expect(await duplicate.json()).toMatchObject({ status: 'committed' });
+  expect(h.formalWrites).toHaveLength(1);
 });
 
 it.each([
@@ -578,8 +579,6 @@ it('returns a complete server decision for a single located subject', async () =
 it.each([
   ['unknown coverage', {}],
   ['unprocessed coverage', { processed_block_ids: ['b_1'], unprocessed_block_ids: ['b_2'] }],
-  ['matching failure', { processed_block_ids: [], unprocessed_block_ids: [], warnings: ['身份匹配查询失败，请人工核对已有联系人'] }],
-  ['matching truncation', { processed_block_ids: [], unprocessed_block_ids: [], warnings: ['身份匹配结果已截断，可能遗漏已有联系人'] }],
   ['no subject', { processed_block_ids: [], unprocessed_block_ids: [], candidates: [] }],
 ] as const)('uses the service decision to deny %s in both preview and page commit', async (_name, data) => {
   const review = realReviewService(data);
@@ -601,7 +600,7 @@ it('rejects multiple real subjects and an unlocated sole subject with the same o
   }
 });
 
-it('returns the full later-page candidate and refuses its matching blocker', async () => {
+it('returns the full later-page candidate and saves with its incomplete matching warning', async () => {
   const { person } = realReviewService({});
   const candidates = Array.from({ length: 51 }, (_, n) => ({ ...person, candidate_id: `c_${n + 1}`,
     ...(n > 0 ? { can_commit: false, warnings: ['非主体人物线索'] } : {}) }));
@@ -610,11 +609,18 @@ it('returns the full later-page candidate and refuses its matching blocker', asy
   const result = await review.service.getUploadPreview('import_1', 'alice');
   expect(result!.candidates).toHaveLength(51);
   expect((result!.candidates.at(-1) as { candidate_id: string }).candidate_id).toBe('c_51');
-  expect(result!.confirmation.allowed).toBe(false);
+  expect(result!.confirmation.allowed).toBe(true);
+  expect(result!.warnings).toContain('身份匹配结果已截断，可能遗漏已有联系人');
   await expect(review.service.commit({ import_id: 'import_1', preview_version: 3,
     operation_id: 'contact-import:import_1', auto_create: true, require_confirmation: true }, 'alice'))
-    .rejects.toThrow('MANUAL_REVIEW_REQUIRED');
-  expect(review.formalWrites).toEqual([]);
+    .resolves.toMatchObject({ status: 'committed' });
+  expect(review.formalWrites).toHaveLength(1);
+  const write = review.formalWrites[0] as { choices: Array<{ candidate_id: string; action: string }>; duplicate_match_incomplete: boolean };
+  expect(write.choices).toHaveLength(51);
+  expect(write.choices[0]).toEqual({ candidate_id: 'c_1', action: 'create' });
+  expect(write.choices.slice(1).every(choice => choice.action === 'skip')).toBe(true);
+  // Existing task warnings remain visible; this flag describes the newly computed match.
+  expect(write.duplicate_match_incomplete).toBe(false);
 });
 
 it('rereads server policy after GET before accepting the HTTP confirmation', async () => {
@@ -631,17 +637,29 @@ it('rereads server policy after GET before accepting the HTTP confirmation', asy
 });
 
 
-it.each(['duplicate', 'truncated', 'failure'] as const)('denies an actual %s matching result in the server decision and commit', async matching => {
+it.each(['duplicate', 'truncated', 'failure'] as const)('saves an actual %s matching result and sends derived identity information', async matching => {
   const { person } = realReviewService({});
   const review = realReviewService({ candidates: [{ ...person, properties: { ...person.properties, telephone: ['13800138000'] } }],
     processed_block_ids: ['b_1'], unprocessed_block_ids: [] }, undefined, 3, matching);
   const result = await review.service.getUploadPreview('import_1', 'alice');
-  expect(result!.confirmation.allowed).toBe(false);
+  expect(result!.confirmation.allowed).toBe(true);
   if (matching === 'duplicate') expect(result!.match_suggestions).toHaveLength(1);
+  else { expect(Array.isArray(result!.warnings)).toBe(true); expect(result!.warnings).not.toEqual([]); }
   await expect(review.service.commit({ import_id: 'import_1', preview_version: 3,
     operation_id: 'contact-import:import_1', auto_create: true, require_confirmation: true }, 'alice'))
-    .rejects.toThrow('MANUAL_REVIEW_REQUIRED');
-  expect(review.formalWrites).toEqual([]);
+    .resolves.toMatchObject({ status: 'committed' });
+  expect(review.formalWrites).toHaveLength(1);
+  expect(review.formalWrites[0]).toMatchObject({ choices: [{ candidate_id: 'c_1', action: 'create' }], duplicate_match_incomplete: matching !== 'duplicate' });
+  if (matching === 'duplicate') expect(review.formalWrites[0]).toMatchObject({ duplicate_matches: [{ candidate_id: 'c_1', target_id: 'existing_1', reasons: expect.arrayContaining(['same_name', 'self_phone']) }] });
+});
+
+it.each(['身份匹配查询失败，请人工核对已有联系人', '身份匹配结果已截断，可能遗漏已有联系人'])('retains matching warning %s without removing authorization to save', async warning => {
+  const review = realReviewService({ processed_block_ids: ['b_1'], unprocessed_block_ids: [], warnings: [warning] });
+  const result = await review.service.getUploadPreview('import_1', 'alice');
+  expect(result!.confirmation.allowed).toBe(true);
+  expect(result!.warnings).toContain(warning);
+  await expect(review.service.commit({ import_id: 'import_1', preview_version: 3, operation_id: 'contact-import:import_1', auto_create: true, require_confirmation: true }, 'alice')).resolves.toMatchObject({ status: 'committed' });
+  expect(review.formalWrites[0]).toMatchObject({ duplicate_match_incomplete: false });
 });
 
 it('rejects a job version changed after the complete decision and before auto selection', async () => {

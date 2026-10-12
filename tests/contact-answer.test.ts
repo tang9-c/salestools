@@ -33,6 +33,25 @@ function service(records: Record<string, unknown>, matches: Record<string, { ent
 }
 
 describe('evidenced contact answers', () => {
+  it('keeps duplicate name snapshots out of employment and complex answer facts', async () => {
+    const clue = { claim_id: 'duplicate', subject_id: 'p1', target_id: 'p2', kind: 'relation',
+      relation_type: 'possible_duplicate', status: 'unverified',
+      value: { target_name: '王明在星辰科技任工程师参与Python项目', reasons: ['same_name'] } };
+    const employment = relation('other-work', 'p2', 'o1', 'worksFor',
+      { role: { '@type': 'OrganizationRole', roleName: '工程师' } });
+    const { ask } = service({ p1: { ...detail('p1', '陈晓'), unverified_claims: [clue] },
+      p2: detail('p2', '王明', [employment], [proof('other-work', 'other-proof',
+        '王明在星辰科技任工程师', 'properties.role.roleName', '工程师')]), o1: organization('o1', '星辰科技') });
+    for (const question of ['在哪里任职？', '参与哪些Python项目？', '与王明有哪些关联？']) {
+      const result = await ask.ask({ question, entity_id: 'p1' });
+      expect(result.status).toBe('insufficient');
+      expect(result.facts).toEqual([]);
+      expect(result.citations).toEqual([]);
+    }
+    const realWork = await ask.ask({ question: '在哪里任职？', entity_id: 'p2' });
+    expect(realWork.status).toBe('answered');
+    expect(realWork.answer).toContain('星辰科技');
+  });
   it('does not invent a name for an anonymous resume and can cite its employer', async () => {
     const employment = relation('work-anon', 'p_anon', 'o_1', 'worksFor',
       { role: { '@type': 'OrganizationRole', roleName: '工程师' } }, { employment_status: 'unknown' });

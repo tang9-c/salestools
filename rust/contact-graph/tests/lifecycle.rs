@@ -34,6 +34,119 @@ fn works_for(store: &Store, op: &str, person: &str, org: &str, role: &str) -> St
     result["result"]["relation_id"].as_str().unwrap().into()
 }
 
+fn duplicate(store: &Store, id: &str, subject: &str, target: &str, status: &str, date: &str) {
+    let job = store.put_import_job(&json!({"operation_id":format!("job-{id}"),"actor":"tester","file_id":id,"status":"queued","data":{}})).unwrap();
+    store.graph.connection().execute("INSERT INTO contact_claims(claim_id,subject_id,target_id,kind,relation_type,value_json,source_json,status,reason,import_id,candidate_id,created_at,updated_at) VALUES(?1,?2,?3,'relation','possible_duplicate','{}',?4,?5,'possible_duplicate',?6,'synthetic',?7,?7)", rusqlite::params![id,subject,target,json!({"origin":id}).to_string(),status,job["import_id"].as_str(),date]).unwrap();
+}
+
+#[test]
+fn merge_closes_pair_and_folds_bidirectional_third_person_hints_without_deleting_history() {
+    for existing_status in ["unverified", "rejected", "confirmed"] {
+        let processed = existing_status != "unverified";
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(d.path().join("g.db")).unwrap();
+        let a = create(&s, "a", "Person", "甲");
+        let b = create(&s, "b", "Person", "乙");
+        let c = create(&s, "c", "Person", "丙");
+        duplicate(&s, "ab", &a, &b, "unverified", "1");
+        duplicate(&s, "ac", &a, &c, "unverified", "2");
+        duplicate(&s, "cb", &c, &b, existing_status, "3");
+        let input = json!({"operation_id":"merge","actor":"tester","source_id":a,"target_id":b,"expected_source_version":1,"expected_target_version":1});
+        for key in ["expected_source_version", "expected_target_version"] {
+            let mut stale = input.clone();
+            stale[key] = json!(99);
+            assert_eq!(
+                request(&s, "merge_contacts", stale)["error"]["code"],
+                "VERSION_CONFLICT"
+            );
+        }
+        // Force a late transaction failure after claim and relation updates.
+        let org = create(&s, "org", "Organization", "公司");
+        works_for(&s, "job", &a, &org, "职员");
+        s.graph.connection().execute_batch("CREATE TRIGGER fail_merge BEFORE INSERT ON operation_results WHEN NEW.op='merge_contacts' BEGIN SELECT RAISE(ABORT,'forced rollback'); END;").unwrap();
+        assert_eq!(request(&s, "merge_contacts", input.clone())["ok"], false);
+        assert_eq!(
+            request(&s, "get_contact", json!({"entity_id":a}))["result"]["entity"]["metadata"]
+                ["version"],
+            1
+        );
+        let state: String = s
+            .graph
+            .connection()
+            .query_row(
+                "SELECT status FROM contact_claims WHERE claim_id='ab'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "unverified");
+        assert_eq!(
+            request(&s, "get_contact", json!({"entity_id":a}))["result"]["relations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        s.graph
+            .connection()
+            .execute_batch("DROP TRIGGER fail_merge;")
+            .unwrap();
+        let result = request(&s, "merge_contacts", input.clone());
+        assert_eq!(result["ok"], true, "{result}");
+        let rows: Vec<(String,String,String,String,String)> = s.graph.connection().prepare("SELECT claim_id,subject_id,target_id,status,source_json FROM contact_claims ORDER BY claim_id").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].3, "confirmed");
+        assert_eq!(rows[1].1, b);
+        assert_eq!(rows[1].2, c);
+        assert_eq!(rows[2].1, c);
+        assert_eq!(rows[2].2, b);
+        assert_eq!(rows[1].3, if processed { "rejected" } else { "unverified" });
+        assert_eq!(
+            rows[2].3,
+            if processed {
+                existing_status
+            } else {
+                "rejected"
+            }
+        );
+        for row in &rows {
+            assert_eq!(
+                serde_json::from_str::<Value>(&row.4).unwrap()["origin"],
+                row.0
+            );
+        }
+        for id in [&b, &c] {
+            let detail = request(&s, "get_contact", json!({"entity_id":id}));
+            assert_eq!(
+                detail["result"]["unverified_claims"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                if processed { 0 } else { 1 }
+            );
+        }
+        assert_eq!(
+            request(&s, "get_contact", json!({"entity_id":c}))["result"]["entity"]["metadata"]
+                ["version"],
+            1
+        );
+        assert_eq!(
+            request(&s, "merge_contacts", input)["result"]["replayed"],
+            true
+        );
+        let audits: i64 = s
+            .graph
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM audit_log WHERE op='merge_duplicate_claim'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audits, 2);
+    }
+}
+
 #[test]
 fn archive_and_explicit_restore_hide_and_reveal_an_identity() {
     let directory = tempfile::tempdir().unwrap();

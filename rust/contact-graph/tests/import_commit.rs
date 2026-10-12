@@ -36,6 +36,413 @@ fn count(store: &Store, table: &str) -> i64 {
         .unwrap()
 }
 
+fn duplicate_person(store: &Store, operation: &str, name: &str) -> String {
+    store
+        .save_contact(
+            &json!({"operation_id":operation,"actor":"reviewer","label":"Person",
+        "set_properties":{"name":name},"evidence":[proof("properties.name",json!(name))]}),
+        )
+        .unwrap()["entity_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn mark_merged(store: &Store, from: &str, to: Value) {
+    let encoded: String = store
+        .graph
+        .connection()
+        .query_row(
+            "SELECT metadata_json FROM entity_meta WHERE entity_id=?1",
+            [from],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut metadata: Value = serde_json::from_str(&encoded).unwrap();
+    metadata["merged_into"] = to;
+    metadata["archived_at"] = json!("2026-10-11T00:00:00.000Z");
+    store
+        .graph
+        .connection()
+        .execute(
+            "UPDATE entity_meta SET metadata_json=?1 WHERE entity_id=?2",
+            rusqlite::params![metadata.to_string(), from],
+        )
+        .unwrap();
+}
+
+#[test]
+fn duplicate_claims_save_independent_profiles_and_durable_warnings_with_stable_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph.sqlite");
+    let store = Store::open(&path).unwrap();
+    let target = duplicate_person(&store, "target", "陈晓");
+    let old = store.get_contact(&json!({"entity_id":target})).unwrap();
+    let import_id = ready(&store, vec![candidate("c1", "陈晓")]);
+    let mut data = store
+        .get_import_job(&json!({"import_id":import_id}))
+        .unwrap()["data"]
+        .clone();
+    data["warnings"] = json!(["已有提醒"]);
+    data["source"] = json!({"source_type":"text","text_sha256":"abc","original_text":"secret original",
+        "file_name":"长".repeat(2000),"collected_at":"2026-10-11T00:00:00.000Z"});
+    store
+        .graph
+        .connection()
+        .execute(
+            "UPDATE import_jobs SET data_json=?1 WHERE import_id=?2",
+            rusqlite::params![data.to_string(), import_id],
+        )
+        .unwrap();
+    let raw = json!({"operation_id":format!("contact-import:{import_id}"),"actor":"reviewer","import_id":import_id,
+        "expected_version":2,"choices":[{"candidate_id":"c1","action":"create"}],
+        "duplicate_matches":[{"candidate_id":"c1","target_id":target,"reasons":["same_name","same_name"]}],
+        "duplicate_match_incomplete":true});
+    let saved = store.commit_import(&raw).unwrap();
+    let new_id = saved["results"][0]["entity_id"].as_str().unwrap();
+    assert_ne!(new_id, target);
+    assert_eq!(
+        store.get_contact(&json!({"entity_id":target})).unwrap()["entity"],
+        old["entity"]
+    );
+    assert_eq!(count(&store, "kg_relations"), 0);
+    let detail = store.get_contact(&json!({"entity_id":new_id})).unwrap();
+    assert_eq!(detail["unverified_claims"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        detail["unverified_claims"][0]["relation_type"],
+        "possible_duplicate"
+    );
+    let (value, source): (String, String) = store
+        .graph
+        .connection()
+        .query_row(
+            "SELECT value_json,source_json FROM contact_claims",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&value).unwrap()["reasons"],
+        json!(["same_name"])
+    );
+    assert!(source.len() <= 2048 && !source.contains("secret original"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&source).unwrap()["truncated"],
+        true
+    );
+    let warning = json!("本次入库的重复核对未完整完成，已保存资料及已获得的线索。");
+    assert!(saved["warnings"].as_array().unwrap().contains(&warning));
+    assert!(saved["warnings"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("已有提醒")));
+    drop(store);
+    let reopened = Store::open(&path).unwrap();
+    assert!(reopened
+        .get_import_job(&json!({"import_id":import_id}))
+        .unwrap()["data"]["warnings"]
+        .as_array()
+        .unwrap()
+        .contains(&warning));
+    let mut replay = raw.clone();
+    replay["duplicate_matches"] = json!([]);
+    replay["duplicate_match_incomplete"] = json!(false);
+    let receipt = reopened.commit_import(&replay).unwrap();
+    assert_eq!(receipt["warnings"], saved["warnings"]);
+    assert_eq!(receipt["replayed"], true);
+    assert_eq!(count(&reopened, "contact_claims"), 1);
+    assert_eq!(count(&reopened, "entity_ids"), 2);
+    let mut changed = raw.clone();
+    changed["actor"] = json!("another");
+    assert_eq!(
+        reopened.commit_import(&changed).unwrap_err().code,
+        "OPERATION_CONFLICT"
+    );
+    changed = raw.clone();
+    changed["choices"][0]["action"] = json!("skip");
+    assert_eq!(
+        reopened.commit_import(&changed).unwrap_err().code,
+        "OPERATION_CONFLICT"
+    );
+}
+
+#[test]
+fn derived_duplicate_targets_follow_merge_chains_and_keep_archived_targets() {
+    for mode in [
+        "redirect",
+        "multilevel",
+        "self",
+        "archived",
+        "cycle",
+        "missing",
+        "invalid",
+        "stale_explicit",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let a = duplicate_person(&store, "a", "陈晓");
+        let b = duplicate_person(&store, "b", "另一个人");
+        let c = duplicate_person(&store, "c", "最终档案");
+        match mode {
+            "redirect" | "self" | "stale_explicit" => mark_merged(&store, &a, json!(b)),
+            "multilevel" => {
+                mark_merged(&store, &a, json!(b));
+                mark_merged(&store, &b, json!(c));
+            }
+            "cycle" => {
+                mark_merged(&store, &a, json!(b));
+                mark_merged(&store, &b, json!(a));
+            }
+            "missing" => mark_merged(&store, &a, json!("missing")),
+            "invalid" => mark_merged(&store, &a, json!(42)),
+            "archived" => {
+                store.archive_contact(&json!({"operation_id":"archive","actor":"reviewer","entity_id":a,"expected_version":1})).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let import_id = ready(&store, vec![candidate("c1", "陈晓")]);
+        let choice = if mode == "self" {
+            json!({"candidate_id":"c1","action":"merge","target_id":b,"expected_target_version":1})
+        } else if mode == "stale_explicit" {
+            json!({"candidate_id":"c1","action":"merge","target_id":a,"expected_target_version":1})
+        } else {
+            json!({"candidate_id":"c1","action":"create"})
+        };
+        let result = store.commit_import(
+            &json!({"operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
+            "import_id":import_id,"expected_version":2,"choices":[choice],
+            "duplicate_matches":[{"candidate_id":"c1","target_id":a,"reasons":["same_name"]}]}),
+        );
+        if ["cycle", "missing", "invalid", "stale_explicit"].contains(&mode) {
+            assert!(result.is_err());
+            assert_eq!(count(&store, "entity_ids"), 3);
+            assert_eq!(count(&store, "contact_claims"), 0);
+        } else if mode == "self" {
+            assert!(result.is_ok());
+            assert_eq!(count(&store, "contact_claims"), 0);
+        } else {
+            let saved = result.unwrap();
+            let actual: String = store
+                .graph
+                .connection()
+                .query_row("SELECT target_id FROM contact_claims", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(
+                actual,
+                if mode == "multilevel" {
+                    c.clone()
+                } else if mode == "redirect" {
+                    b.clone()
+                } else {
+                    a.clone()
+                }
+            );
+            let old_pending:i64=store.graph.connection().query_row("SELECT COUNT(*) FROM contact_claims WHERE target_id=?1 AND status='unverified'",[&a],|r|r.get(0)).unwrap();
+            assert_eq!(old_pending, if mode == "archived" { 1 } else { 0 });
+            assert_ne!(saved["results"][0]["entity_id"], json!(a));
+        }
+        assert_eq!(count(&store, "kg_relations"), 0);
+    }
+}
+
+#[test]
+fn merge_keeps_other_duplicate_matches_and_claim_failure_rolls_back_person() {
+    for failure in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let a = duplicate_person(&store, "a", "陈晓");
+        let b = duplicate_person(&store, "b", "陈晓");
+        let import_id = ready(&store, vec![candidate("c1", "陈晓")]);
+        if failure {
+            store.graph.connection().execute_batch("CREATE TRIGGER fail_claim BEFORE INSERT ON contact_claims BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        }
+        let choice = if failure {
+            json!({"candidate_id":"c1","action":"create"})
+        } else {
+            json!({"candidate_id":"c1","action":"merge","target_id":a,"expected_target_version":1})
+        };
+        let result=store.commit_import(&json!({"operation_id":format!("contact-import:{import_id}"),"actor":"reviewer","import_id":import_id,
+            "expected_version":2,"choices":[choice],"duplicate_matches":[
+                {"candidate_id":"c1","target_id":a,"reasons":["same_name"]},{"candidate_id":"c1","target_id":b,"reasons":["email"]}]}));
+        assert_eq!(count(&store, "entity_ids"), 2);
+        if failure {
+            assert!(result.is_err());
+            assert_eq!(count(&store, "contact_claims"), 0);
+            assert_eq!(
+                store
+                    .get_import_job(&json!({"import_id":import_id}))
+                    .unwrap()["status"],
+                "ready_for_review"
+            );
+        } else {
+            assert!(result.is_ok());
+            assert_eq!(count(&store, "contact_claims"), 1);
+            let pair: (String, String) = store
+                .graph
+                .connection()
+                .query_row("SELECT subject_id,target_id FROM contact_claims", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(pair, (a, b));
+        }
+    }
+}
+
+#[test]
+fn legacy_commit_hash_replays_with_new_derived_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+    let import_id = ready(&store, vec![candidate("c1", "陈晓")]);
+    let raw = json!({"operation_id":format!("contact-import:{import_id}"),"actor":"reviewer","import_id":import_id,
+        "expected_version":2,"choices":[{"candidate_id":"c1","action":"create"}]});
+    let first = store.commit_import(&raw).unwrap();
+    let mut retry = raw;
+    retry["duplicate_matches"] = json!([]);
+    retry["duplicate_match_incomplete"] = json!(true);
+    let replay = store.commit_import(&retry).unwrap();
+    assert_eq!(replay["results"], first["results"]);
+    assert_eq!(replay["warnings"], first["warnings"]);
+    assert_eq!(replay["replayed"], true);
+}
+
+#[test]
+fn duplicate_pair_deduplication_preserves_direction_source_and_processed_status() {
+    for status in ["unverified", "rejected", "confirmed"] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let name = if status == "unverified" {
+            "长".repeat(700)
+        } else {
+            "陈晓".to_owned()
+        };
+        let a = duplicate_person(&store, "a", &name);
+        let b = duplicate_person(&store, "b", &name);
+        let first_import = ready(&store, vec![candidate("c1", &name)]);
+        store.commit_import(&json!({"operation_id":format!("contact-import:{first_import}"),"actor":"reviewer",
+            "import_id":first_import,"expected_version":2,"choices":[{"candidate_id":"c1","action":"merge","target_id":a,"expected_target_version":1}],
+            "duplicate_matches":[{"candidate_id":"c1","target_id":b,"reasons":["same_name"]}]})).unwrap();
+        let original: (String, String) = store
+            .graph
+            .connection()
+            .query_row("SELECT claim_id,source_json FROM contact_claims", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        store
+            .graph
+            .connection()
+            .execute(
+                "UPDATE contact_claims SET status=?1 WHERE claim_id=?2",
+                rusqlite::params![status, original.0],
+            )
+            .unwrap();
+        let next = store.put_import_job(&json!({"operation_id":"start2","actor":"reviewer","file_id":"file-b","status":"queued","data":{"candidates":[]}})).unwrap();
+        let second_import = next["import_id"].as_str().unwrap();
+        store.put_import_job(&json!({"operation_id":"ready2","actor":"system","file_id":"file-b","import_id":second_import,"expected_version":1,
+            "status":"ready_for_review","data":{"candidates":[candidate("c2",&name)]}})).unwrap();
+        store.commit_import(&json!({"operation_id":format!("contact-import:{second_import}"),"actor":"reviewer",
+            "import_id":second_import,"expected_version":2,"choices":[{"candidate_id":"c2","action":"merge","target_id":b,"expected_target_version":1}],
+            "duplicate_matches":[{"candidate_id":"c2","target_id":a,"reasons":["email"]}]})).unwrap();
+        assert_eq!(count(&store, "contact_claims"), 1);
+        let saved: (String, String, String, String, String) = store
+            .graph
+            .connection()
+            .query_row(
+                "SELECT subject_id,target_id,status,value_json,source_json FROM contact_claims",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(saved.0, a);
+        assert_eq!(saved.1, b);
+        assert_eq!(saved.2, status);
+        assert_eq!(saved.4, original.1);
+        assert!(saved.3.len() <= 2048);
+        if status == "unverified" {
+            assert_eq!(
+                serde_json::from_str::<Value>(&saved.3).unwrap()["truncated"],
+                true
+            );
+            assert!(saved.3.len() > 2000);
+        }
+        assert_eq!(
+            serde_json::from_str::<Value>(&saved.3).unwrap()["reasons"],
+            if status == "unverified" {
+                json!(["email", "same_name"])
+            } else {
+                json!(["same_name"])
+            }
+        );
+        let audit: String = store
+            .graph
+            .connection()
+            .query_row(
+                "SELECT change_json FROM audit_log WHERE operation_id=?1",
+                [format!("contact-import:{second_import}")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let audit: Value = serde_json::from_str(&audit).unwrap();
+        assert_eq!(
+            audit["duplicate_discoveries"][0]["source"]["import_id"],
+            second_import
+        );
+        assert_eq!(audit["duplicate_discoveries"][0]["claim_id"], original.0);
+    }
+}
+
+#[test]
+fn invalid_duplicate_inputs_roll_back_all_import_writes() {
+    for mode in [
+        "reason",
+        "missing_candidate",
+        "skipped_candidate",
+        "organization_target",
+        "empty_reasons",
+        "unknown_field",
+        "raw_content",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let target = if mode == "organization_target" {
+            store.save_contact(&json!({"operation_id":"target","actor":"reviewer","label":"Organization","set_properties":{"name":"公司"},
+                "evidence":[proof("properties.name",json!("公司"))]})).unwrap()["entity_id"].as_str().unwrap().to_owned()
+        } else {
+            duplicate_person(&store, "target", "陈晓")
+        };
+        let import_id = ready(&store, vec![candidate("c1", "陈晓")]);
+        let mut matched = json!({"candidate_id":"c1","target_id":target,"reasons":["same_name"]});
+        if mode == "reason" {
+            matched["reasons"] = json!(["arbitrary private text"]);
+        }
+        if mode == "missing_candidate" {
+            matched["candidate_id"] = json!("unknown");
+        }
+        if mode == "empty_reasons" {
+            matched["reasons"] = json!([]);
+        }
+        if mode == "unknown_field" {
+            matched["other"] = json!("private");
+        }
+        if mode == "raw_content" {
+            matched["original_text"] = json!("private");
+        }
+        let result=store.commit_import(&json!({"operation_id":format!("contact-import:{import_id}"),"actor":"reviewer","import_id":import_id,
+            "expected_version":2,"choices":[{"candidate_id":"c1","action":if mode=="skipped_candidate" {"skip"} else {"create"}}],
+            "duplicate_matches":[matched]}));
+        assert!(result.is_err());
+        assert_eq!(count(&store, "entity_ids"), 1);
+        assert_eq!(count(&store, "contact_claims"), 0);
+        assert_eq!(
+            store
+                .get_import_job(&json!({"import_id":import_id}))
+                .unwrap()["status"],
+            "ready_for_review"
+        );
+    }
+}
+
 #[test]
 fn import_merge_preserves_scalar_conflicts_and_appends_arrays_unless_explicitly_replaced() {
     for replace in [false, true] {

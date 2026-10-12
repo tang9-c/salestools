@@ -117,6 +117,28 @@ afterEach(async () => { await Promise.all(pages.splice(0).map(p => p.close())); 
 afterAll(async () => { await browser?.close(); });
 async function completed(ui: Frame) { await expect.poll(() => ui.locator('#progress').textContent()).toContain('加载完成'); }
 
+it.each(['p1', 'p2'])('shows identity hints from either endpoint without professional opt-in or graph edges: %s', async id => {
+  const claim = { claim_id: 'dup-private-id', kind: 'relation', status: 'unverified', subject_id: 'p1', target_id: 'p2', relation_type: 'possible_duplicate', reason: 'possible_duplicate', value: { subject_name: '陈晓甲', target_name: '陈晓乙', reasons: ['same_name', 'email'] } };
+  const data = { ...root, items: [{ entity_id: id, name: `人物${id}`, label: 'Person' }] };
+  const h = await open(call => {
+    const d = detail(String(call.arguments.entity_id), [], null, call.arguments.claim_limit === 20 ? [claim, { claim_id: 'career', kind: 'field', subject_id: id, status: 'unverified', field_path: 'properties.skills', value: '隐藏职业线索' }] : []);
+    if (call.arguments.evidence_limit === 10) d.pagination.unverified_claims = { offset: Number(call.arguments.claim_offset ?? 0), total: 21, next_offset: call.arguments.claim_offset ? null : 20 };
+    return result(d);
+  }, { query: '陈晓', mode: 'keyword' }, data);
+  await completed(h.ui);
+  await h.ui.locator('#node-list button').click();
+  await expect.poll(() => h.ui.locator('#detail').innerText()).toContain('身份待核对');
+  const visible = await h.ui.locator('#detail').innerText();
+  expect(visible).toContain('线索记录名称：陈晓甲 ↔ 陈晓乙');
+  expect(visible).toContain('姓名相同'); expect(visible).toContain('邮箱相同');
+  expect(visible).not.toContain('dup-private-id'); expect(visible).not.toContain('隐藏职业线索');
+  expect(await h.ui.locator('[data-edge]').count()).toBe(0);
+  await h.ui.locator('#detail .pager').filter({ hasText: '待核实线索' }).getByRole('button', { name: '下一页' }).click();
+  await expect.poll(() => h.calls.at(-1)?.arguments.claim_offset).toBe(20);
+  expect(h.calls.at(-1)?.arguments.claim_limit).toBe(20);
+  expect(await h.ui.locator('[data-node]').count()).toBe(1);
+});
+
 it('shows endpoint names, distinct jobs and Chinese evidence labels instead of internal identifiers', async () => {
   const personId = 'p_b3512f79cccd43eab17f3902724c50bb';
   const relations = ['运维工程师', '质量工程师'].map((role, i) => ({ ...edge(i), source_id: personId,
