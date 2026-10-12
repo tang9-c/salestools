@@ -670,7 +670,11 @@ export class CompanyContextService {
             )
               continue;
             const item = await material(relation);
-            if (item) { clients.set(relation.source_id, item); candidates.push(item); }
+            if (item) {
+              // Use the first proof, matching same-source material deduplication.
+              if (!clients.has(relation.source_id)) clients.set(relation.source_id, item);
+              candidates.push(item);
+            }
           }
         for (const relation of read.items) {
           if (candidates.length >= context.remaining_materials + 20) {

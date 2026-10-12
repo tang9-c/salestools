@@ -193,3 +193,35 @@ it('preserves actual SQLite snapshot dependencies through final Ark bytes withou
     expect(validateContextRefs(['assessment:compound:A','assessment:compound:B'],result.items)).toHaveLength(2);
   }finally{f.db.close();}
 });
+it('keeps a member path when same-file client evidence for two confirmed organizations deduplicates',async()=>{
+  const f=createContextFixture();try {
+    const second={...f.org,entity_id:'o2'};
+    f.links.write({action:'confirm',organization_id:'o2',credit_code:CODE,operation_id:'duplicate-org',expected_link_version:0,
+      expected_organization_version:1,note:'同企业合成组织'},'test',identityHash(second),AT);
+    const clients=['o1','o2'].map((target,index)=>({relation_id:`client${index+1}`,source_id:'j1',target_id:target,
+      relation_type:'clientOrganization',properties:{},metadata:meta}));
+    const member={relation_id:'member',source_id:'p1',target_id:'j1',relation_type:'memberOf',properties:{},metadata:meta};
+    const evidence=(id:string,type:string,quote:string)=>({evidence_id:`e-${id}`,subject_kind:'relation',subject_id:id,field_path:'$relation',
+      value:{relation_type:type},quote,source_type:'manual',locator_status:'not_applicable',file_sha256:'a'.repeat(64),collected_at:AT});
+    f.request.mockImplementation(async(op,payload)=>{
+      if(op==='company_organizations') return {items:[f.org,second],total:2,next_offset:null,complete:true};
+      if(op==='company_relations') return {items:[...clients,member],total:3,next_offset:null,complete:true};
+      const id=(payload as {entity_id:string}).entity_id;
+      return {entity:{entity_id:id,label:id==='j1'?'Project':id==='p1'?'Person':'Organization',
+        properties:{name:id==='j1'?'同一项目':id==='p1'?'测试人':f.org.name},...(id==='p1'?{extensions:{hobbies:[],instantMessaging:[]}}:{}),metadata:meta},
+        relations:id==='j1'?clients:id==='p1'?[member]:[],evidence:id==='j1'?clients.map(r=>evidence(r.relation_id,r.relation_type,`同一项目客户为${f.org.name}`)):
+          id==='p1'?[evidence('member','memberOf','测试人是同一项目成员')]:[],conflicts:[],version:1};
+    });
+    const result=await f.service.materials(CODE,'客户项目参与人物',createMaterialReadContext(AbortSignal.timeout(30000),null));
+    expect(result.items.map(item=>item.predicate)).toEqual(['clientOrganization','memberOf']);
+    const client=result.items.find(item=>item.predicate==='clientOrganization')!;
+    const person=result.items.find(item=>item.predicate==='memberOf')!;
+    expect(client.citation.ref).toBe('contact:e-client1');
+    expect(person.required_context_refs).toEqual([client.citation.ref]);
+    expect(new Set(result.items.map(item=>item.source_key)).size).toBe(1);
+    expect(validateContextRefs([person.citation.ref,client.citation.ref],result.items)).toHaveLength(2);
+    expect(()=>validateContextRefs([person.citation.ref],result.items)).toThrow();
+    const a=ark();const packed=await a.client.answer({legalName:f.org.name!,question:'客户项目参与人物',items:[],facts:[],context:result.items});
+    expect(packed.includedContextRefs).toEqual(expect.arrayContaining([person.citation.ref,client.citation.ref]));
+  }finally{f.db.close();}
+});
