@@ -250,11 +250,12 @@ function renderDetail() {
   for (const collection of ['evidence', 'relations', 'unverified_claims'] as const) {
     const p = object(object(selected.pagination)[collection]);
     const row = text(panel, 'div', '', 'pager'); text(row, 'span', `${collectionLabels[collection]} ${selection.offsets[collection]}/${readable(p.total)}`);
-    const change = (offset: number) => { if (!selection) return; pendingDetail = { ...selection, offsets: { ...selection.offsets, [collection]: offset } }; detailVersion++; reportVersion++; report = null; reportError = ''; reportBusy = false; void pump(); };
+    const change = (offset: number) => { if (!selection) return; pendingDetail = { ...selection, offsets: { ...selection.offsets, [collection]: offset } }; detailVersion++; reportVersion++; report = null; reportError = ''; reportBusy = false; renderDetail(); void pump(); };
     button(row, '上一页', () => change(Math.max(0, selection!.offsets[collection] - limit[collection])), selection.offsets[collection] === 0);
     button(row, '下一页', () => { try { const next = nextOffset(selected!, collection, selection!.offsets[collection]); if (next !== null) change(next); } catch { notice.textContent = '分页游标异常，不能继续读取。'; } }, p.next_offset == null);
   }
 }
+function detailPending() { return pendingDetail !== null || readingDetail?.version === detailVersion; }
 function renderCompany() {
   if (!selected || !selection || object(selected.entity).label !== 'Organization') return;
   const ctx = object(selected.company_context), link = object(ctx.link);
@@ -280,12 +281,12 @@ function renderCompany() {
   const directory = object(ctx.reports);
   for (const item of records(directory.items)) {
     text(panel, 'p', `${readable(item.generated_at)} · 机会等级：${readable(item.overall_opportunity)}`);
-    if (typeof item.assessment_id === 'string') button(panel, `查看报告 ${item.assessment_id}`, () => { void openReport(String(item.assessment_id)); }, reportBusy || !connected);
+    if (typeof item.assessment_id === 'string') button(panel, `查看报告 ${item.assessment_id}`, () => { void openReport(String(item.assessment_id)); }, reportBusy || detailPending() || !connected);
   }
   const move = (offset: number) => {
     if (!selection) return;
     reportVersion++; report = null; reportError = ''; reportBusy = false;
-    pendingDetail = { ...selection, reportOffset: offset }; detailVersion++; void pump();
+    pendingDetail = { ...selection, reportOffset: offset }; detailVersion++; renderDetail(); void pump();
   };
   button(panel, '报告上一页', () => move(Math.max(0, selection!.reportOffset - 10)), selection.reportOffset === 0 || !connected);
   button(panel, '报告下一页', () => {
@@ -299,11 +300,14 @@ function renderCompany() {
   if (report) { text(panel, 'p', `报告生成时间：${readable(report.generated_at)}`); text(panel, 'pre', report.markdown, 'report-body'); }
 }
 async function openReport(id: string) {
-  if (!connected || !selection || !selected || object(selected.company_context?.link).state !== 'confirmed'
+  if (!connected || detailPending() || !selection || !selected || object(selected.company_context?.link).state !== 'confirmed'
     || !records(selected.company_context?.reports.items).some(item => item.assessment_id === id)) return;
+  const selectedPage = selection, directory = selected.company_context?.reports;
   const node = selection.id, ticket = ++reportVersion, detailTicket = detailVersion, version = requestVersion;
   report = null; reportBusy = true; reportError = ''; renderDetail();
-  const current = () => connected && ticket === reportVersion && detailTicket === detailVersion && version === requestVersion && selection?.id === node;
+  const current = () => connected && ticket === reportVersion && detailTicket === detailVersion && version === requestVersion && selection?.id === node && selection === selectedPage && !detailPending()
+    && selected?.company_context?.reports === directory && selected?.company_context?.link.state === 'confirmed'
+    && directory?.items.some(item => item.assessment_id === id);
   try {
     const value = output(await app.callServerTool({ name: 'get_assessment_report', arguments: { assessment_id: id } }, { timeout: 30_000 }));
     if (!current()) return;
@@ -375,8 +379,8 @@ async function pump() {
           selected = d; selection = operation; selectedEdge = operation.edge; notice.textContent = ''; renderDetail();
         } catch { if (version === requestVersion && ticket === detailVersion) {
           notice.replaceChildren(); text(notice, 'span', '所选档案读取失败或不可用；保留此前成功详情。');
-          button(notice, '重试详情', () => { pendingDetail = operation; detailVersion++; void pump(); });
-        } } finally { readingDetail = null; }
+          button(notice, '重试详情', () => { pendingDetail = operation; detailVersion++; reportVersion++; report = null; reportBusy = false; renderDetail(); void pump(); });
+        } } finally { readingDetail = null; if (version === requestVersion) renderDetail(); }
         continue;
       }
       if (!page || paused || waitingResult) break;

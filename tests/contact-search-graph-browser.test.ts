@@ -441,7 +441,7 @@ function companyFixture(state = 'confirmed') {
   const item = {assessment_id:reportId,generated_at:'2026-10-12T00:00:00Z',collected_at:'2026-10-11T00:00:00Z',overall_opportunity:'中',recommended_product:null};
   return {state:'partial',warnings:['合成资料限制'],link:{state,candidates:[{legal_name:'候选名字'}]},has_profile:true,report_count:null,
     profile:{legal_name:'云杉智造',basic_profile:{industry:'装备制造',telephone:'hidden-phone'},collected_at:item.collected_at,stale:true},
-    latest_report:item,reports:{items:[item],total:null,next_offset:null,complete:false}};
+    latest_report:item,reports:{items:[item],total:null,next_offset:null as number | null,complete:false}};
 }
 it('shows candidates without exposing unconfirmed profiles or reports', async () => {
   const h = await open(call => result({...detail(String(call.arguments.entity_id)), ...(call.arguments.include_company_context ? {company_context:companyFixture('candidate')} : {})}));
@@ -508,4 +508,63 @@ it('ignores slow organization context after selecting a person', async () => {
   await expect.poll(() => h.ui.locator('#detail h3').textContent()).toBe('人物p1');
   await h.barrier(); expect(await h.ui.locator('#detail').innerText()).not.toContain('装备制造');
   expect(h.calls.filter(c=>c.arguments.entity_id==='p1').every(c=>c.arguments.include_company_context!==true)).toBe(true);
+});
+
+it.each(['reports', 'evidence', 'relations'])('blocks old report reads while a slow %s page is pending', async collection => {
+  let release!: (v:unknown) => void;
+  const nextId = '10000000-0000-4000-8000-000000000002';
+  function pageDetail(offset: number) {
+    const d = {...detail('o1'),company_context:companyFixture()};
+    d.pagination.evidence = {offset:0,total:11,next_offset:10};
+    d.pagination.relations = {offset:0,total:21,next_offset:20};
+    d.company_context.reports.next_offset = (offset === 0 ? 10 : null);
+    if(offset) d.company_context.reports.items[0].assessment_id=nextId;
+    return d;
+  }
+  const h = await open(call => {
+    if(call.name==='get_assessment_report') throw new Error('old report must not be requested');
+    if(!call.arguments.include_company_context) return result(detail('o1'));
+    if(Number(call.arguments.report_offset)>0 || Number(call.arguments.evidence_offset)>0 || Number(call.arguments.relation_offset)>0)
+      return new Promise(resolve => {release=resolve;});
+    return result(pageDetail(0));
+  });
+  await completed(h.ui); await h.ui.locator('#node-list button').click();
+  const old = h.ui.getByRole('button',{name:`查看报告 ${reportId}`,exact:true});
+  await expect.poll(() => old.isEnabled()).toBe(true);
+  if(collection==='reports') await h.ui.getByRole('button',{name:'报告下一页',exact:true}).click();
+  else await h.ui.locator('#detail .pager').filter({hasText:collection==='evidence'?'证据':'关系'}).getByRole('button',{name:'下一页',exact:true}).click();
+  await expect.poll(() => typeof release).toBe('function');
+  expect(await old.isDisabled()).toBe(true);
+  await old.evaluate(button => (button as HTMLButtonElement).click());
+  await h.barrier(); expect(h.calls.some(call=>call.name==='get_assessment_report')).toBe(false);
+  release(result(pageDetail(collection==='reports'?10:0)));
+  await expect.poll(() => h.ui.getByRole('button',{name:`查看报告 ${collection==='reports'?nextId:reportId}`,exact:true}).isEnabled()).toBe(true);
+  expect(await h.ui.locator('#detail pre').count()).toBe(0);
+  const args=h.calls.at(-1)?.arguments;
+  expect(args?.report_offset).toBe(collection==='reports'?10:0);
+  expect(args?.evidence_offset).toBe(collection==='evidence'?10:0);
+  expect(args?.relation_offset).toBe(collection==='relations'?20:0);
+});
+it.each(['reports', 'evidence', 'relations'])('discards an in-flight report when %s pagination starts', async collection => {
+  let releaseReport!: (v:unknown) => void;
+  const h = await open(call => {
+    if(call.name==='get_assessment_report') return new Promise(resolve=>{releaseReport=resolve;});
+    const d={...detail('o1'),...(call.arguments.include_company_context?{company_context:companyFixture()}: {})};
+    if(d.company_context) {
+      d.company_context.reports.next_offset=(call.arguments.report_offset?null:10);
+      d.pagination.evidence={offset:0,total:11,next_offset:call.arguments.evidence_offset?null:10};
+      d.pagination.relations={offset:0,total:21,next_offset:call.arguments.relation_offset?null:20};
+    }
+    return result(d);
+  });
+  await completed(h.ui); await h.ui.locator('#node-list button').click();
+  await expect.poll(()=>h.ui.getByRole('button',{name:`查看报告 ${reportId}`,exact:true}).isEnabled()).toBe(true);
+  await h.ui.getByRole('button',{name:`查看报告 ${reportId}`,exact:true}).click();
+  await expect.poll(()=>typeof releaseReport).toBe('function');
+  if(collection==='reports') await h.ui.getByRole('button',{name:'报告下一页',exact:true}).click();
+  else await h.ui.locator('#detail .pager').filter({hasText:collection==='evidence'?'证据':'关系'}).getByRole('button',{name:'下一页',exact:true}).click();
+  await expect.poll(()=>h.calls.filter(c=>c.name==='get_contact' && c.arguments.include_company_context).length).toBe(2);
+  await expect.poll(()=>h.ui.getByRole('button',{name:`查看报告 ${reportId}`,exact:true}).isEnabled()).toBe(true);
+  releaseReport(result({assessment_id:reportId,status:'completed',markdown:'过期分页报告'}));
+  await h.barrier(); expect(await h.ui.locator('#detail').innerText()).not.toContain('过期分页报告');
 });
