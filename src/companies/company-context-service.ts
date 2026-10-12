@@ -2,7 +2,7 @@ import { ContactEntitySchema, ContactEvidenceSchema, ContactRelationSchema } fro
 import type { ContactEvidence, ContactEntity } from '../contracts/index.js';
 import { supportedRelationEvidence } from '../contacts/relation-evidence.js';
 import { canReuse } from '../orchestration/company-question-service.js';
-import { dedupeMaterials, filterConflictedEvidence, readSelectedReport } from './company-evidence.js';
+import { dedupeMaterials, contextDependencyGroup, filterConflictedEvidence, readSelectedReport } from './company-evidence.js';
 import type { ContextMaterial, ContextMaterials, MaterialReadContext } from './company-context-types.js';
 import type { GraphClient } from '../contacts/graph-client.js';
 import type { CompanyLinkRepository } from '../db/company-link-repository.js';
@@ -18,7 +18,7 @@ const UNKNOWN_REPORTS = (): Page<ReportItem> =>
   ({ items: [], total: null, next_offset: null, complete: false });
 const count = (ids: Set<string>, complete: boolean): Count =>
   ({ count: complete ? ids.size : null, loaded_count: ids.size, complete });
-const normalize = (value: string): string => value.normalize('NFKC').replace(/\s+/gu, '').toLowerCase();
+const normalize = (value: string): string => value.normalize('NFKC').replace(/\s+/gu, '').replace(/[A-Z]/g, character => character.toLowerCase());
 const chunks = <T>(items: T[], size: number): T[][] =>
   Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size));
 
@@ -257,8 +257,6 @@ export class CompanyContextService {
     signal.throwIfAborted();
     const warnings: string[] = [];
     const candidates: ContextMaterial[] = [];
-    const projectGroups: ContextMaterial[][] = [];
-    const snapshotGroups: ContextMaterial[][] = [];
     const before = context.remaining_contacts;
     let profile: StoredCompanyProfile | undefined;
     try {
@@ -269,9 +267,9 @@ export class CompanyContextService {
     }
     let organizationIds: string[] = [];
     try {
-      const overview = await this.overview(code, signal);
-      organizationIds = overview.organization_ids;
-      warnings.push(...overview.warnings);
+      const orgs = await this.confirmedOrganizations(code, signal);
+      organizationIds = orgs.ids;
+      warnings.push(...orgs.warnings);
     } catch {
       signal.throwIfAborted();
       warnings.push("ORGANIZATIONS_UNAVAILABLE");
@@ -368,7 +366,8 @@ export class CompanyContextService {
               object: fact.statement,
             });
           }
-          snapshotGroups.push(group);
+          for (const item of group) item.required_context_refs = group
+            .filter(other => other.citation.ref !== item.citation.ref).map(other => other.citation.ref);
           candidates.push(...group);
         }
       } else if (snapshot && report?.creditCode === code)
@@ -576,8 +575,22 @@ export class CompanyContextService {
               return typed || explicit;
             })
           : filtered.usable;
-      const proof = supportedRelationEvidence(usable, full.data, source, other);
+      const businessEvidence = usable.filter(item =>
+        (!source.properties.name || (item.quote ?? "").includes(source.properties.name))
+        && !/(?:不是|并非|未曾|否认|不在|未任职|未在|尚未|计划|拟任|拟加入|打算|准备|预计|希望|意向|\b(?:not|planned?|proposed?|intend(?:s|ed)?|will|would)\b)/iu.test(item.quote ?? ""));
+      const proof = supportedRelationEvidence(businessEvidence, full.data, source, other);
       if (!proof) return null;
+      const contactPattern = /(?:\+?\d[\d ()-]{5,}\d|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|电话|手机|邮箱|e-?mail|telephone)/iu;
+      const quote = (proof.quote ?? "").split(/[，,；;。\n]/u)
+        .find(part => part.trim() && !contactPattern.test(part)
+          && (!source.properties.name || part.includes(source.properties.name))
+          && supportedRelationEvidence([{ ...proof, quote: part }], full.data, source, other));
+      const businessFields = [source.properties.name, other.properties.name,
+        full.data.relation_type === "worksFor" ? full.data.properties.role.roleName : ""];
+      if (!quote || businessFields.some(value => value && contactPattern.test(value))) {
+        warnings.push("CONTACT_BUSINESS_EVIDENCE_UNSAFE");
+        return null;
+      }
       const status =
         full.data.relation_type === "worksFor"
           ? full.data.metadata.employment_status
@@ -598,7 +611,7 @@ export class CompanyContextService {
           entity_id: source.entity_id,
           relation_id: relation.relation_id,
           evidence_id: proof.evidence_id,
-          quote: proof.quote,
+          quote,
           collected_at: proof.collected_at,
           ...(proof.source_url ? { source_url: proof.source_url } : {}),
           ...(proof.file_name ? { file_name: proof.file_name } : {}),
@@ -617,13 +630,33 @@ export class CompanyContextService {
     };
     if (organizationIds.length && this.deps.graph) {
       try {
-        const read = await this.pages<RelationItem>(
-          "company_relations",
-          { organization_ids: organizationIds },
-          BATCH,
-          signal,
-        );
-        if (!read.complete) warnings.push("RELATIONS_INCOMPLETE");
+        const relations = new Map<string, RelationItem>();
+        for (const batch of chunks(organizationIds, BATCH)) {
+          let offset = 0;
+          for (;;) {
+            if (context.remaining_relation_pages <= 0) {
+              warnings.push("RELATIONS_INCOMPLETE");
+              break;
+            }
+            context.remaining_relation_pages--;
+            try {
+              const page = await this.request<Page<RelationItem>>("company_relations",
+                { organization_ids: batch, offset, limit: BATCH }, signal);
+              for (const item of page.items) relations.set(item.relation_id, item);
+              if (page.complete && page.next_offset === null) break;
+              if (page.next_offset === null || page.next_offset <= offset) {
+                warnings.push("RELATIONS_INCOMPLETE");
+                break;
+              }
+              offset = page.next_offset;
+            } catch {
+              signal.throwIfAborted();
+              warnings.push("RELATIONS_UNAVAILABLE");
+              break;
+            }
+          }
+        }
+        const read = { items: [...relations.values()] };
         const orgs = new Set(organizationIds);
         const clients = new Map<string, ContextMaterial>();
         const projectQuestion = /项目|客户|参与|project|client/iu.test(
@@ -637,7 +670,7 @@ export class CompanyContextService {
             )
               continue;
             const item = await material(relation);
-            if (item) clients.set(relation.source_id, item);
+            if (item) { clients.set(relation.source_id, item); candidates.push(item); }
           }
         for (const relation of read.items) {
           if (candidates.length >= context.remaining_materials + 20) {
@@ -659,9 +692,8 @@ export class CompanyContextService {
           ) {
             const item = await material(relation);
             if (item) {
-              const pair = [clients.get(relation.target_id)!, item];
-              projectGroups.push(pair);
-              candidates.push(...pair);
+              item.required_context_refs = [clients.get(relation.target_id)!.citation.ref];
+              candidates.push(item);
             }
           }
         }
@@ -672,18 +704,10 @@ export class CompanyContextService {
     }
     signal.throwIfAborted();
     const unique = dedupeMaterials(candidates);
-    const dependentGroups = [...snapshotGroups, ...projectGroups];
-    const dependentRefs = new Set(
-      dependentGroups.flat().map((item) => item.citation.ref),
-    );
-    const groups = [
-      ...unique
-        .filter((item) => !dependentRefs.has(item.citation.ref))
-        .map((item) => [item]),
-      ...dependentGroups,
-    ];
     let supported: ContextMaterial[] = [];
-    for (const group of groups) {
+    for (const item of unique) {
+      const group = contextDependencyGroup(item, unique);
+      if (!group) continue;
       const combined = dedupeMaterials([...supported, ...group]);
       if (combined.length <= context.remaining_materials) supported = combined;
     }

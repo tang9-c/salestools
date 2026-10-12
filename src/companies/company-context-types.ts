@@ -104,12 +104,13 @@ export interface ContextCitation {
 export interface ContextMaterial {
   citation: ContextCitation; statement: string; source_key: string;
   predicate: string; object: string; employment_status?: string;
+  required_context_refs?: string[];
 }
 export interface ContextMaterials extends ReadMeta {
   items: ContextMaterial[]; omitted_count: number; contacts_read: number;
 }
 export interface MaterialReadContext {
-  readonly signal: AbortSignal; remaining_contacts: number; remaining_materials: number;
+  readonly signal: AbortSignal; remaining_contacts: number; remaining_materials: number; remaining_relation_pages: number;
   readonly selected_report_id: string | null; report_reads: number;
   report: import('../db/assessment-repository.js').AssessmentRecord | null | undefined;
   contacts: Map<string, Record<string, unknown> | null>;

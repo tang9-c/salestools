@@ -308,7 +308,7 @@ export class ContactAnswerService {
             ? `；截至 ${meta.status_as_of} 的记录为在职` : '';
           return `${item.other.properties.name}${role?.roleName ? `任${role.roleName}` : '有任职记录'}${period ? `（${period}${current}）` : current}`;
         }).join('；') + '。';
-        if (includedContext.length) answer += '\n\n企业背景（独立于人物关系）\n' + includedContext.map(item=>`${item.citation.subject_id}：${item.statement}`).join('\n');
+        if (includedContext.length) answer += '\n\n企业背景（独立于人物关系）\n' + includedContext.map(item=>`${item.citation.subject_id}：${item.statement} [${item.citation.ref}]`).join('\n');
         return { status: 'answered', answer, citations, facts, ...contextResult };
       }
       try {

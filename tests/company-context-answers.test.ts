@@ -49,6 +49,7 @@ it.each([false,true])('shares real contacts and the newest single report without
     const result=await answer.ask({entity_id:'p1',question:'张某的任职公司背景是什么？'});
     expect(result.status).toBe('answered');
     expect(result.answer).toContain('第一行业');expect(result.answer).toContain('第二行业');
+    for (const citation of result.context_citations ?? []) expect(result.answer).toContain(`[${citation.ref}]`);
     expect(result.facts).toHaveLength(2);expect(result.citations).toHaveLength(2);
     expect(materials).toHaveBeenCalledTimes(2);
     expect(materials.mock.calls[0][2]).toBe(materials.mock.calls[1][2]);

@@ -142,7 +142,7 @@ function hasSufficientLibraryContext(question: string, topics: QuestionTopic[], 
   if (!scope || topics.some(topic => topic !== 'recruitment')) return false;
   const predicates = new Set(context.filter(item => item.citation.source_type === 'contact').map(item => item.predicate));
   return /项目/u.test(scope)
-    ? predicates.has('clientOrganization') && predicates.has('memberOf')
+    ? predicates.has('clientOrganization')
     : predicates.has('worksFor');
 }
 

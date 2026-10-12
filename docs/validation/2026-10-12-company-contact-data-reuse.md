@@ -36,3 +36,12 @@ Task 9 新增测试与文档的 `npm run typecheck`（tsc --noEmit）通过；`g
 | Chromium 模拟 MCP 宿主 | CI 锁定版本，以 run 日志为准 | 03b325442d75f9c1564bc3b5ea0b517551bf199a | 早期完整 gate 通过；83d7ad2 后续运行失败；Task 9 新用例待最终 gate | 上述运行日志；不是实际宿主证据 |
 
 获得环境后，每个实际宿主使用脱敏合成企业执行组织搜索 → 展开 → 点击组织 → 历史翻页 → 报告阅读 → 解除后重查，逐步记录版本、tested SHA、实际结果和脱敏截图／日志路径。未执行的项目不能填通过；最终 CI 通过也不能替代实际宿主验收，因此当前功能未标记整体验收通过。
+
+
+## 全分支综合修复验证（2026-10-12）
+
+依据 final-review 的 I1–I4、M1–M2 和最终 CI fixture 失败进行限定修复。直接客户项目与人物经项目的路径分别校验；必要引文依赖贯穿条数预算、Ark 实际 body 字节预算和返回引用闭包。materials 关系查询按 50 个组织分批，整个共享材料读取 context 的 20 次页请求预算包含失败。职业引文先校验完整原文的主体、关系、冲突与否定/计划，再保留安全原文子串；原始证据及 get_contact 权限不改。
+
+新增纯 TS／真实 Node SQLite 测试使用 51 条正式确认关联及原生协议大小约束 mock，并通过真实 CompanyContextService、CompanyQuestionService 和 CompanyAnswerClient 捕获实际 body；不将此 mock 当成原生验收。首次 10 个新增回归均失败；修复后指定 7 个纯测试文件 110 passed。正文 ref 新断言以原渲染实现验证 2 failed，再恢复修复。后续加强了电话／邮件完整问答返回和实际 SQLite 快照字节闭包，详见本地 `.superpowers/sdd/2026-10-12-company-contact-data-reuse/final-fix-report.md` 的命令和结果。
+
+`node_modules/.bin/tsc --noEmit` 与 `git diff --check` 通过。以上为提交前工作树检查，不能替代最终 SHA 的原生／浏览器／容器 gate。browser open helper 等待 fixture 的实际匹配总数，保留 foreign-directory guard；本机未运行浏览器/native/full-suite/页面 bundle 或任何构建。上一 run `38276109384` 已 failure/completed，tested SHA `3a710975654c3dc4b27c45e21d62bc4d42fd7ed9`；综合修复提交后调度同一只读 workflow，最终 SHA/run ID 记录于 final-fix-report，远程结果 pending。实际宿主环境仍未提供，未声明实际宿主完成。

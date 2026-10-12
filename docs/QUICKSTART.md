@@ -391,4 +391,6 @@ test -n "$SALESTOOLS_MCP_TOKEN" && echo 'Token 已设置'
 
 `related_updates` 最多 20 条，按记录时间倒序，只表示报告生成时间 `since` 之后已入库的相关记录，不是现实事件发生时间线。查看 `scope`、`truncated`、`state`、`warnings` 判断范围、截断及来源不可用；无法读到图谱时不会把未知人数显示为零。独立 `get_assessment_report` 沿用原报告读取权限，UUID 不证明报告属于当前组织；图谱 App 只打开当前节点目录中的报告，企业问答拒绝主体不符的显式报告。
 
+库内客户项目事实由已验证的 `clientOrganization` 支持，项目没有人物成员时仍可回答。人物经项目关联企业须同时具有成员和客户证据；最终模型输入预算不足时省略依赖材料，正文引用也须完整。职业引文中附带电话或邮件时，只复用能够独立支持业务事实的安全原文子串；无法保留依据时返回 warning。原档案及其读取权限不变。确定性企业背景正文逐条附带与 `context_citations` 对应的 ref。
+
 真实宿主和最终 SHA 验证状态见[贯通验收记录](validation/2026-10-12-company-contact-data-reuse.md)。

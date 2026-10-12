@@ -104,7 +104,7 @@ async function open(reply: (call: Call) => Promise<unknown> | unknown, input: Re
   });
   await page.goto('http://graph.test/');
   const ui = page.frames().find(frame => frame !== page.mainFrame())!;
-  await expect.poll(() => ui.locator('#summary').textContent()).toContain('1');
+  await expect.poll(() => ui.locator('#summary').textContent()).toContain(`匹配 ${data.total}`);
   return { page, ui, calls, logs, sent, barrier: () => page.evaluate(() => (window as unknown as Host).barrier()), notify: async (method: string, params: unknown) => {
     await page.evaluate(({ method, params }) => (window as unknown as Host).notify(method, params), { method, params });
   } };

@@ -307,15 +307,15 @@ function projectRecords(
         : records[(p as { entity_id: string }).entity_id],
   );
 }
-it("accepts both project links together and never returns a one-link conclusion", async () => {
+it("keeps direct client facts independently but requires both links for a person path", async () => {
   const f = createContextFixture();
   try {
     projectRecords(f);
     const c = createMaterialReadContext(new AbortController().signal, null);
     c.remaining_materials = 1;
     const result = await f.service.materials(CODE, "谁参与了客户项目", c);
-    expect(result.items).toEqual([]);
-    expect(result.omitted_count).toBe(2);
+    expect(result.items.map(i => i.predicate)).toEqual(["clientOrganization"]);
+    expect(result.omitted_count).toBe(1);
     const full = await f.service.materials(
       CODE,
       "谁参与了客户项目",

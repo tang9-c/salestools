@@ -453,7 +453,7 @@ it('deduplicates repeated imports but preserves different facts', () => {
 
 先过滤冲突，再调用 supportedRelationEvidence，最后生成 ContextMaterial。blocked 非空时返回具体字段的“存在冲突，无法确认” warning；仅有冲突材料则 insufficient，仍有独立可支持材料时可以部分回答，但不把冲突字段放进 supported claim。ask_contacts 现有选取路径同样调用过滤器；模型输入不能用未过滤 evidence 绕过。已有报告快照中带冲突/不确定归属的事实继续按原分类降级，不升级成 supported。测试必须覆盖“同一任职关系职位冲突”“一条关系级冲突阻断该边”“其他独立关系仍可回答”“有明确不重叠日期的任职段不被误删”，可执行用例见“修正项回归代码 E”。
 
-为未知任职生成的材料 statement 必须写“有任职记录，当前状态未知”；不得把 unknown 转为 current。每条项目客户结论分别携带 memberOf 与 clientOrganization 所需材料，缺少一跳只返回证据不足。仅使用 context 固定选中的报告，时效规则仍由现有问答服务判断，过期快照不能经 context 旁路重新加入。
+为未知任职生成的材料 statement 必须写“有任职记录，当前状态未知”；不得把 unknown 转为 current。直接项目客户事实仅需已验证的 clientOrganization；人物经项目关联企业时必须同时携带 memberOf 与 clientOrganization，缺少一跳只返回证据不足。必要引文依赖必须在材料条数与最终模型字节预算中完整保留，并校验正文引用闭包。仅使用 context 固定选中的报告，时效规则仍由现有问答服务判断，过期快照不能经 context 旁路重新加入。
 - [ ] **5. 绿测与提交。** `node node_modules/vitest/vitest.mjs run tests/company-evidence.test.ts tests/company-context-budget.test.ts tests/contact-answer.test.ts`；`npm run typecheck`。Commit: `feat(companies): adapt bounded cross-source evidence`。
 
 ## Task 7: 两个问答入口组合已有资料
