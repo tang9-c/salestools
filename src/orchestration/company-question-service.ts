@@ -136,6 +136,16 @@ function orderEvidence(
 const DYNAMIC = /(?:最新|近期|最近|目前|当前|趋势|近一年|今年|发布|招聘趋势|扩张信号)/u;
 const PRODUCTS = /\b(?:solid\s*works|windchill|feigenbaum|creo|catia|abaqus|cst|plm|qms|pdm)\b/iu;
 
+function hasSufficientLibraryContext(question: string, topics: QuestionTopic[], context: ContextMaterial[]): boolean {
+  // A complete library scope is required; a relationship must not cover an unrelated public clause.
+  const scope = question.trim().match(/^(?:这家公司|该公司|本公司)?(?:目前|当前)?(?:库内)?(?:有哪些)?(联系人(?:和职位|的任职记录)?|任职记录|人物关系|(?:客户)?项目)(?:是谁|是什么|有哪些|情况|信息)?[？?]?$/u)?.[1];
+  if (!scope || topics.some(topic => topic !== 'recruitment')) return false;
+  const predicates = new Set(context.filter(item => item.citation.source_type === 'contact').map(item => item.predicate));
+  return /项目/u.test(scope)
+    ? predicates.has('clientOrganization') && predicates.has('memberOf')
+    : predicates.has('worksFor');
+}
+
 export function canReuse(snapshot: EvidenceSnapshot, question: string, now: Date): boolean {
   const collected = Date.parse(snapshot.collectedAt);
   if (collected > now.getTime() || collected < now.getTime() - 30 * 86_400_000) return false;
@@ -361,14 +371,16 @@ export class CompanyQuestionService {
       } catch { signal.throwIfAborted(); contextWarnings.push('COMPANY_CONTEXT_UNAVAILABLE'); }
     }
     const snapshot = report?.evidenceSnapshot;
-    const reuse = snapshot !== null && snapshot !== undefined && canReuse(snapshot, input.question, now);
+    const snapshotReusable = snapshot !== null && snapshot !== undefined && canReuse(snapshot, input.question, now);
+    const reuse = snapshotReusable && topics.every(topic => snapshot.items.some(item =>
+      item.entityScope === 'legal_entity' && item.entityMatch === 'confirmed' && matchesTopic(item,topic)));
     let material: EvidenceSnapshot;
     const limitations: string[] = [];
-    const contextOnly = context.some(item=>item.citation.source_type === 'contact' && ['worksFor','memberOf','clientOrganization'].includes(item.predicate)) && /(?:联系人|库内|任职|关系|项目|客户)/u.test(input.question) && !/(?:招聘|产品发布|融资|扩产|招标|公告|公开动态|新闻)/u.test(input.question);
-    if (contextOnly) {
-      material = {collectedAt:now.toISOString(),items:[],facts:[]};
-    } else if (reuse) {
+    const contextOnly = hasSufficientLibraryContext(input.question, topics, context);
+    if (reuse || (contextOnly && snapshotReusable)) {
       material = snapshot;
+    } else if (contextOnly) {
+      material = {collectedAt:now.toISOString(),items:[],facts:[]};
     } else {
       markFresh();
       const items: ResearchItem[] = [];
@@ -411,6 +423,10 @@ export class CompanyQuestionService {
         catch { signal.throwIfAborted(); limitations.push('豆包搜索定向查询失败'); }
       }
       material = snapshotOf(items, this.now().toISOString());
+      if (snapshotReusable) {
+        material.items = [...snapshot.items,...material.items];
+        material.facts = snapshot.facts;
+      }
       if (snapshot === null && report !== null) limitations.push('原报告没有可复用的证据快照，已尝试定向补查');
     }
     const confirmed = material.items.filter(item => item.entityScope === 'legal_entity' && item.entityMatch === 'confirmed');

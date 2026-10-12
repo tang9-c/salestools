@@ -107,6 +107,40 @@ describe('CompanyQuestionService', () => {
     expect(runtime.qccCall).not.toHaveBeenCalled();
   });
 
+  it.each(['库内联系人和最新动态是什么？','库内有哪些联系人，这家公司今年是否有扩张或新工厂？','库内联系人和新产品是什么？'])('researches the public part of a mixed library question: %s',async question=>{
+    const materials=vi.fn(async()=>({state:'ok' as const,warnings:[],omitted_count:0,contacts_read:1,items:[{citation:{ref:'contact:work',source_type:'contact' as const,subject_id:'p1'},statement:'已有任职记录',source_key:'file:one',predicate:'worksFor',object:'工程师'}]}));
+    const r=setup({companyContext:{materials}});
+    if (question.includes('新产品')) {
+      const id=r.complete(),stored=r.assessments.get(id)!;
+      r.db.prepare('UPDATE assessments SET evidence_snapshot_json=? WHERE assessment_id=?').run(JSON.stringify({...stored.evidenceSnapshot,items:stored.evidenceSnapshot!.items.map(item=>({...item,title:'库内联系人'}))}),id);
+    }
+    await r.service.ask({...r.input,question});
+    expect(r.search.mock.calls.length).toBeGreaterThan(0);
+    expect(r.search.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(r.qccCall.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(r.answer.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(r.answer.mock.calls[0][0].context?.[0].citation.ref).toBe('contact:work');
+    if (question.includes('新产品')) expect(r.answer.mock.calls[0][0].items.map(i=>i.evidenceId)).toContain('qcc-recruitment-1');
+  });
+
+  it('preserves a reusable snapshot when contact context also covers a pure library question',async()=>{
+    const materials=vi.fn(async()=>({state:'ok' as const,warnings:[],omitted_count:0,contacts_read:1,items:[{citation:{ref:'contact:work',source_type:'contact' as const,subject_id:'p1'},statement:'已有任职记录',source_key:'file:one',predicate:'worksFor',object:'工程师'}]}));
+    const r=setup({companyContext:{materials}}),id=r.complete();
+    const stored=r.assessments.get(id)!;
+    r.db.prepare('UPDATE assessments SET evidence_snapshot_json=? WHERE assessment_id=?').run(JSON.stringify({...stored.evidenceSnapshot,items:stored.evidenceSnapshot!.items.map(item=>({...item,title:'库内有哪些联系人'}))}),id);
+    await r.service.ask({...r.input,question:'这家公司库内有哪些联系人？'});
+    expect(r.search).not.toHaveBeenCalled();expect(r.qccCall).not.toHaveBeenCalled();
+    expect(r.answer.mock.calls[0][0].items.map(i=>i.evidenceId)).toEqual(['qcc-recruitment-1']);
+    expect(r.answer.mock.calls[0][0].facts).toHaveLength(1);
+  });
+
+  it('does not let an employment record cover a requested client project',async()=>{
+    const materials=vi.fn(async()=>({state:'ok' as const,warnings:[],omitted_count:0,contacts_read:1,items:[{citation:{ref:'contact:work',source_type:'contact' as const,subject_id:'p1'},statement:'已有任职记录',source_key:'file:one',predicate:'worksFor',object:'工程师'}]}));
+    const r=setup({companyContext:{materials}});
+    await r.service.ask({...r.input,question:'这家公司库内有哪些客户项目？'});
+    expect(r.search.mock.calls.length).toBeGreaterThan(0);
+  });
+
   it('refuses a contact ref excluded from the actual model input',async()=>{
     const materials=vi.fn(async()=>({state:'ok' as const,warnings:[],omitted_count:0,contacts_read:1,items:[{citation:{ref:'omitted',source_type:'contact' as const,subject_id:'p1'},statement:'已有任职',source_key:'file:one',predicate:'worksFor',object:'工程师'}]}));
     const r=setup({companyContext:{materials}});

@@ -63,10 +63,24 @@ it.each([false,true])('shares real contacts and the newest single report without
 
 it('never queries company context for a name or study question',async()=>{
   const f=createContextFixture();try {
-    f.request.mockImplementation(async()=>({entity:{entity_id:'p1',label:'Person',properties:{name:'张某'},extensions:{hobbies:[],instantMessaging:[]},metadata:meta},relations:[],evidence:[],conflicts:[]}));
+    const school={relation_id:'school',source_id:'p1',target_id:'u1',relation_type:'alumniOf',properties:{},metadata:meta};
+    const proofBase={source_type:'manual',locator_status:'not_applicable',collected_at:AT};
+    f.request.mockImplementation(async(_op,payload)=>{
+      const id=(payload as {entity_id:string}).entity_id;
+      return id==='p1' ? {entity:{entity_id:id,label:'Person',properties:{name:'张某'},extensions:{hobbies:[],instantMessaging:[]},metadata:meta},
+        relations:[school,works('r1','o1')],evidence:[
+          {...proofBase,evidence_id:'name',subject_kind:'entity',subject_id:id,field_path:'properties.name',value:'张某',quote:'姓名张某'},
+          {...proofBase,evidence_id:'study',subject_kind:'relation',subject_id:'school',field_path:'$relation',value:{relation_type:'alumniOf'},quote:'张某毕业于测试大学'},
+          evidence('r1',f.org.name!),
+        ],conflicts:[]}
+        : {entity:{entity_id:id,label:'Organization',properties:{name:id==='u1'?'测试大学':f.org.name},metadata:meta},relations:[],evidence:[],conflicts:[]};
+    });
     const summaries=vi.spyOn(f.service,'summaries'),materials=vi.spyOn(f.service,'materials');
     const answer=new ContactAnswerService({graph:f.graph,resolvePeople:async()=>[],companyContext:f.service});
-    for(const question of ['姓名是什么？','就读哪里？','毕业哪里？','在哪里工作？']) await answer.ask({entity_id:'p1',question});
+    for(const question of ['姓名是什么？','就读哪里？','毕业哪里？','在哪里工作？']) {
+      const result=await answer.ask({entity_id:'p1',question});
+      expect(result.status).toBe('answered');expect(result.citations).toHaveLength(1);
+    }
     expect(summaries).not.toHaveBeenCalled();expect(materials).not.toHaveBeenCalled();
   }finally{f.db.close();}
 });
