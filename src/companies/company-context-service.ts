@@ -544,6 +544,16 @@ export class CompanyContextService {
       const usable =
         relation.relation_type === "clientOrganization"
           ? filtered.usable.filter((item) => {
+              const relationshipQuote = (item.quote ?? "")
+                .replaceAll(source.properties.name ?? "", "")
+                .replaceAll(other.properties.name ?? "", "");
+              // A typed edge cannot override a quote that only describes a future plan.
+              if (
+                /拟|计划|将|意向|打算|准备|预计|预期|希望|洽谈|尚未|未达成|未成立|未签|有望|可能|\b(?:planned?|proposed?|intend(?:s|ed)?|will|would)\b/iu.test(
+                  relationshipQuote,
+                )
+              )
+                return false;
               const typed =
                 typeof item.value === "object" &&
                 item.value !== null &&

@@ -4,7 +4,12 @@ import type { ContextMaterial, ContextCitation, MaterialReadContext, ReportItem 
 export function dedupeMaterials(items: ContextMaterial[]): ContextMaterial[] {
   const seen = new Set<string>();
   return items.filter(item => {
-    const key = JSON.stringify([item.source_key,item.citation.subject_id,item.predicate,item.object,item.statement]);
+    // Snapshot facts can require distinct excerpts from the same underlying source.
+    // Keep those citations while source_key continues to identify one source.
+    const requiredCitation = item.citation.source_type === 'assessment'
+      ? [item.citation.ref, item.citation.quote] : null;
+    const key = JSON.stringify([item.source_key,item.citation.subject_id,item.predicate,
+      item.object,item.statement,requiredCitation]);
     if (seen.has(key)) return false;
     seen.add(key); return true;
   });

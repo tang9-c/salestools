@@ -621,3 +621,111 @@ it.each([
     }
   },
 );
+
+it.each([
+  ["测试项目拟为测试装备有限公司提供服务", "服务计划"],
+  [
+    "测试项目拟为测试装备有限公司提供服务",
+    { relation_type: "clientOrganization" },
+  ],
+  ["测试项目计划为测试装备有限公司提供服务", "服务计划"],
+  ["测试项目将为测试装备有限公司提供服务", "服务计划"],
+  ["测试项目有意向为测试装备有限公司提供服务", "服务计划"],
+])(
+  "does not promote a proposed client relationship: %s",
+  async (quote, value) => {
+    const f = createContextFixture();
+    try {
+      projectRecords(f, quote as string, value);
+      const result = await f.service.materials(
+        CODE,
+        "谁参与了客户项目",
+        createMaterialReadContext(new AbortController().signal, null),
+      );
+      expect(result.items).toEqual([]);
+    } finally {
+      f.db.close();
+    }
+  },
+);
+
+it.each([1, 2])(
+  "retains all required same-URL excerpts with material budget %i",
+  async (budget) => {
+    const f = createContextFixture();
+    try {
+      const reference = {
+        title: "装备制造行业资料",
+        url: "https://example.test/company",
+        originalPublisher: null,
+        originalDomain: null,
+        publishedAt: null,
+        collectedAt: AT,
+        mentionedName: f.org.name,
+        entityScope: "legal_entity",
+        entityMatch: "confirmed",
+        matchBasis: [],
+        source: "qcc",
+        sourceKind: "company",
+        excerptTruncated: false,
+      };
+      const snapshot = {
+        collectedAt: AT,
+        items: [
+          { ...reference, evidenceId: "A", excerpt: "生产设备" },
+          { ...reference, evidenceId: "B", excerpt: "提供维护" },
+        ],
+        facts: [
+          {
+            factId: "compound",
+            statement: "该企业既生产设备也提供维护",
+            kind: "industry",
+            productTags: [],
+            strength: "direct",
+            evidenceIds: ["A", "B"],
+            entityScope: "legal_entity",
+            entityMatch: "confirmed",
+            matchBasis: [],
+          },
+        ],
+      };
+      f.db
+        .prepare(
+          `INSERT INTO assessments
+      (assessment_id,cache_key,requested_by,legal_name,credit_code,status,evidence_snapshot_json,created_at,completed_at)
+      VALUES ('compound',?,'test',?,?,'completed',?,?,?)`,
+        )
+        .run(CODE, f.org.name, CODE, JSON.stringify(snapshot), AT, AT);
+      const context = createMaterialReadContext(
+        new AbortController().signal,
+        "compound",
+      );
+      context.remaining_materials = budget;
+      const result = await f.service.materials(
+        CODE,
+        "装备制造行业资料",
+        context,
+      );
+      if (budget === 1) {
+        expect(result.items).toEqual([]);
+        expect(result.omitted_count).toBe(2);
+        expect(context.remaining_materials).toBe(1);
+      } else {
+        expect(result.items.map((item) => item.citation.ref)).toEqual([
+          "assessment:compound:A",
+          "assessment:compound:B",
+        ]);
+        expect(result.items.map((item) => item.citation.quote)).toEqual([
+          "生产设备",
+          "提供维护",
+        ]);
+        expect(new Set(result.items.map((item) => item.source_key)).size).toBe(
+          1,
+        );
+        expect(context.remaining_materials).toBe(0);
+      }
+    } finally {
+      f.db.close();
+    }
+  },
+);

@@ -59,3 +59,32 @@ it("blocks every field of a disputed relationship", () => {
     b = proof("b", "r1", "properties.role.roleName");
   expect(filterConflictedEvidence([a, b], [a]).usable).toEqual([]);
 });
+
+it("preserves required assessment citations from one source while deduplicating the same citation", () => {
+  const first = {
+    ...make("assessment:r:A", "设备和维护"),
+    citation: {
+      ref: "assessment:r:A",
+      source_type: "assessment" as const,
+      subject_id: "company",
+      evidence_id: "A",
+      quote: "设备",
+    },
+  };
+  const second = {
+    ...first,
+    citation: {
+      ...first.citation,
+      ref: "assessment:r:B",
+      evidence_id: "B",
+      quote: "维护",
+    },
+  };
+  expect(dedupeMaterials([first, { ...first }, second])).toEqual([
+    first,
+    second,
+  ]);
+  expect(
+    validateContextRefs(["assessment:r:A", "assessment:r:B"], [first, second]),
+  ).toEqual([first.citation, second.citation]);
+});
