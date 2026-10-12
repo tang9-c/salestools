@@ -137,8 +137,9 @@ fn duplicate_claim_audit(
     reason: &str,
     retained: Option<&str>,
 ) -> Result<(), AppError> {
+    let audit_operation_id = format!("{}:duplicate:{}:{}", input.operation_id, claim_id, reason);
     tx.execute("INSERT INTO audit_log(operation_id,actor,op,subject_id,changed_at,change_json) VALUES(?1,?2,'merge_duplicate_claim',?3,?4,?5)",
-        params![input.operation_id,input.actor,input.target_id,changed_at,json!({"claim_id":claim_id,"reason":reason,"retained_claim_id":retained,"source_id":input.source_id,"target_id":input.target_id}).to_string()]).map_err(internal)?;
+        params![audit_operation_id,input.actor,input.target_id,changed_at,json!({"merge_operation_id":input.operation_id,"claim_id":claim_id,"reason":reason,"retained_claim_id":retained,"source_id":input.source_id,"target_id":input.target_id}).to_string()]).map_err(internal)?;
     Ok(())
 }
 

@@ -64,7 +64,18 @@ fn merge_closes_pair_and_folds_bidirectional_third_person_hints_without_deleting
         let org = create(&s, "org", "Organization", "公司");
         works_for(&s, "job", &a, &org, "职员");
         s.graph.connection().execute_batch("CREATE TRIGGER fail_merge BEFORE INSERT ON operation_results WHEN NEW.op='merge_contacts' BEGIN SELECT RAISE(ABORT,'forced rollback'); END;").unwrap();
-        assert_eq!(request(&s, "merge_contacts", input.clone())["ok"], false);
+        let failed = request(&s, "merge_contacts", input.clone());
+        assert_eq!(failed["ok"], false);
+        assert!(
+            failed["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("forced rollback"),
+            "{failed}"
+        );
+        assert_eq!(s.graph.connection().query_row(
+            "SELECT count(*) FROM audit_log WHERE op IN ('merge_contacts','merge_duplicate_claim')",
+            [], |r| r.get::<_,i64>(0)).unwrap(), 0);
         assert_eq!(
             request(&s, "get_contact", json!({"entity_id":a}))["result"]["entity"]["metadata"]
                 ["version"],
@@ -144,6 +155,35 @@ fn merge_closes_pair_and_folds_bidirectional_third_person_hints_without_deleting
             )
             .unwrap();
         assert_eq!(audits, 2);
+        let root_audits: i64 = s
+            .graph
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM audit_log WHERE operation_id='merge' AND op='merge_contacts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(root_audits, 1);
+        let child_audits: Vec<(String, String)> = s
+            .graph
+            .connection()
+            .prepare(
+                "SELECT operation_id,change_json FROM audit_log WHERE op='merge_duplicate_claim'",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_ne!(child_audits[0].0, child_audits[1].0);
+        for (operation_id, change) in child_audits {
+            assert_ne!(operation_id, "merge");
+            assert_eq!(
+                serde_json::from_str::<Value>(&change).unwrap()["merge_operation_id"],
+                "merge"
+            );
+        }
     }
 }
 
