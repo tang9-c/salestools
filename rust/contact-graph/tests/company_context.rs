@@ -1,4 +1,7 @@
-use contact_graph::{protocol::parse_and_dispatch, store::Store};
+use contact_graph::{
+    protocol::{parse_and_dispatch, MAX_FRAME_BYTES},
+    store::Store,
+};
 use rusqlite::params;
 use serde_json::{json, Value};
 
@@ -267,7 +270,7 @@ fn credit_code_whitelist_refreshes_and_reopen_backfills_once() {
     let id;
     {
         let store = Store::open(&path).unwrap();
-        let correct = code("统一社会信用代码", " 91ABC ");
+        let correct = code("统一社会信用代码", "91ABC");
         let wrong = code("其他编号", "OTHER");
         let create = request(
             &store,
@@ -340,17 +343,25 @@ fn client_project_members_are_reachable_only_from_customer_organization() {
             "relation_type":kind,"source_id":source,"target_id":target}))]}),
         )
     };
-    assert_eq!(
-        save("client", &project, &customer, "clientOrganization")["ok"],
-        true
+    let customer_edge = save("client", &project, &customer, "clientOrganization");
+    assert_eq!(customer_edge["ok"], true, "{customer_edge}");
+    let participation = request(
+        &store,
+        "save_relation",
+        json!({"operation_id":"member","actor":"tester",
+        "source_id":member,"target_id":project,"relation_type":"memberOf",
+        "properties":{"role":{"@type":"OrganizationRole","roleName":"成员"}},"metadata":{},
+        "evidence":[evidence("$relation",json!({"relation_type":"memberOf","source_id":member,"target_id":project})),
+            evidence("properties.role.roleName",json!("成员"))]}),
     );
-    assert_eq!(save("member", &member, &project, "memberOf")["ok"], true);
+    assert_eq!(participation["ok"], true, "{participation}");
     let (a, b) = if member < unrelated {
         (&member, &unrelated)
     } else {
         (&unrelated, &member)
     };
-    assert_eq!(save("family", a, b, "spouse")["ok"], true);
+    let family = save("family", a, b, "spouse");
+    assert_eq!(family["ok"], true, "{family}");
     let page = request(
         &store,
         "company_relations",
@@ -418,7 +429,7 @@ fn imported_organization_is_searchable_without_reopening() {
     let result = request(
         &store,
         "commit_import",
-        json!({"operation_id":"commit","actor":"tester",
+        json!({"operation_id":format!("contact-import:{import_id}"),"actor":"tester",
         "import_id":import_id,"expected_version":2,"choices":[{"candidate_id":"company","action":"create"}]}),
     );
     assert_eq!(result["ok"], true, "{result}");
@@ -471,7 +482,7 @@ fn snapshot_created_organization_refreshes_name_key() {
     let initialize = request(
         &store,
         "sync_snapshots",
-        json!({"operation_id":"initialize","actor":"system",
+        json!({"operation_id":"snapshot-sync:initialize","actor":"system",
         "initialize":true,"snapshots":[]}),
     );
     assert_eq!(initialize["ok"], true, "{initialize}");
@@ -482,7 +493,7 @@ fn snapshot_created_organization_refreshes_name_key() {
     let result = request(
         &store,
         "sync_snapshots",
-        json!({"operation_id":"sync-1","actor":"system","snapshots":[snapshot]}),
+        json!({"operation_id":"snapshot-sync:1-1","actor":"system","snapshots":[snapshot]}),
     );
     assert_eq!(result["ok"], true, "{result}");
     let found = request(
@@ -495,5 +506,152 @@ fn snapshot_created_organization_refreshes_name_key() {
         found["result"]["items"].as_array().unwrap().len(),
         1,
         "{found}"
+    );
+}
+
+fn insert_identity_evidence(
+    store: &Store,
+    subject: &str,
+    evidence_id: &str,
+    value: &str,
+    collected_at: &str,
+    quote_len: usize,
+) {
+    let record = json!({"evidence_id":evidence_id,"subject_kind":"entity","subject_id":subject,
+        "field_path":"properties.name","value":value,"collected_at":collected_at,"quote":"证".repeat(quote_len)});
+    store.graph.connection().execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'entity',?2,'properties.name',?3,?4)",
+        params![evidence_id,subject,json!(value).to_string(),record.to_string()]).unwrap();
+}
+
+#[test]
+fn company_identity_budget_advances_page_and_marks_truncated_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let first = entity(&store, "Organization", "预算公司", "budget-first");
+    let second = entity(&store, "Organization", "预算公司", "budget-second");
+    insert_identity_evidence(
+        &store,
+        &first,
+        "large-first",
+        "预算公司",
+        "2026-10-02T00:00:00Z",
+        47000,
+    );
+    insert_identity_evidence(
+        &store,
+        &second,
+        "large-second",
+        "预算公司",
+        "2026-10-02T00:00:00Z",
+        47000,
+    );
+    let payload = json!({"entity_ids":[first,second],"credit_codes":[],"normalized_names":[],"offset":0,"limit":2});
+    let page1 = request(&store, "company_organizations", payload.clone());
+    assert_eq!(page1["ok"], true, "{page1}");
+    assert!(serde_json::to_vec(&page1).unwrap().len() < MAX_FRAME_BYTES);
+    assert_eq!(
+        page1["result"]["items"].as_array().unwrap().len(),
+        1,
+        "{page1}"
+    );
+    assert_eq!(page1["result"]["next_offset"], 1);
+    let mut next = payload;
+    next["offset"] = json!(1);
+    let page2 = request(&store, "company_organizations", next);
+    assert_eq!(page2["ok"], true, "{page2}");
+    assert_ne!(
+        page1["result"]["items"][0]["entity_id"],
+        page2["result"]["items"][0]["entity_id"]
+    );
+    assert_eq!(page2["result"]["next_offset"], Value::Null);
+
+    for index in 0..3 {
+        insert_identity_evidence(
+            &store,
+            &first,
+            &format!("extra-{index}"),
+            "预算公司",
+            "2026-10-02T00:00:00Z",
+            35000,
+        );
+    }
+    let oversized = request(
+        &store,
+        "company_organizations",
+        json!({"entity_ids":[first],"credit_codes":[],
+        "normalized_names":[],"offset":0,"limit":1}),
+    );
+    assert_eq!(oversized["ok"], true, "{oversized}");
+    assert!(serde_json::to_vec(&oversized).unwrap().len() < MAX_FRAME_BYTES);
+    assert_eq!(oversized["result"]["items"][0]["identity_complete"], false);
+}
+
+#[test]
+fn one_oversized_relation_returns_response_too_large() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let org = entity(&store, "Organization", "超大关系公司", "large-org");
+    let person = entity(&store, "Person", "甲", "large-person");
+    let relation = work(&store, "large-work", &person, &org);
+    let huge =
+        json!({"role":{"@type":"OrganizationRole","roleName":"甲".repeat(90000)}}).to_string();
+    store.graph.connection().execute("UPDATE kg_relations SET properties=?1 WHERE id=(SELECT kg_id FROM relation_ids WHERE relation_id=?2)",
+        params![huge,relation]).unwrap();
+    let response = request(
+        &store,
+        "company_relations",
+        json!({"organization_ids":[org],"offset":0,"limit":1}),
+    );
+    assert_eq!(
+        response["error"]["code"], "RESPONSE_TOO_LARGE",
+        "{response}"
+    );
+}
+
+#[test]
+fn recent_since_is_exclusive_and_equal_times_sort_by_kind_then_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let org = entity(&store, "Organization", "时间公司", "time-org");
+    insert_identity_evidence(
+        &store,
+        &org,
+        "time-b",
+        "时间公司",
+        "2026-10-02T00:00:00Z",
+        0,
+    );
+    insert_identity_evidence(
+        &store,
+        &org,
+        "time-a",
+        "时间公司",
+        "2026-10-02T00:00:00Z",
+        0,
+    );
+    let input = json!({"organization_ids":[org],"since":"2026-10-01T00:00:00Z","limit":20});
+    let records = request(&store, "company_recent_records", input);
+    assert_eq!(records["ok"], true, "{records}");
+    let evidence_ids: Vec<&str> = records["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["id"] == "time-a" || r["id"] == "time-b")
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(evidence_ids, vec!["time-a", "time-b"]);
+    let boundary = request(
+        &store,
+        "company_recent_records",
+        json!({"organization_ids":[org],
+        "since":"2026-10-02T00:00:00Z","limit":20}),
+    );
+    assert!(
+        !boundary["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "time-a" || r["id"] == "time-b"),
+        "{boundary}"
     );
 }
