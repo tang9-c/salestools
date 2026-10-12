@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { AT, CODE, createContextFixture } from './fixtures/company-context.js';
 import { identityHash } from '../src/companies/company-link.js';
 import type { ContactEvidence } from '../src/contracts/index.js';
@@ -115,6 +115,28 @@ it('keeps reports available when graph fails', async () => {
   } finally { f.db.close(); }
 });
 
+it('reports an exact zero when both empty reports and graph succeed', async () => {
+  const f = createContextFixture();
+  try {
+    const overview = await f.service.overview(CODE);
+    expect(overview.state).toBe('ok');
+    expect(overview.reports).toEqual({ count: 0, latest: null });
+    expect(overview.people).toMatchObject({ count: 0, complete: true });
+  } finally { f.db.close(); }
+});
+
+it('keeps graph counts available when the report source fails', async () => {
+  const f = createContextFixture();
+  try {
+    vi.spyOn(f.assessments, 'summariesByCreditCodes').mockImplementation(() => { throw new Error('report offline'); });
+    const overview = await f.service.overview(CODE);
+    expect(overview.state).toBe('partial');
+    expect(overview.reports).toBeNull();
+    expect(overview.people).toMatchObject({ count: 0, complete: true });
+    expect(overview.warnings).toContain('REPORTS_UNAVAILABLE');
+  } finally { f.db.close(); }
+});
+
 it('combines recent graph, profile and assessment records with a bounded scope', async () => {
   const f = createContextFixture();
   try {
@@ -143,6 +165,58 @@ it('does not invent an entity id for a graph record missing attribution', async 
     expect(updates.truncated).toBe(true);
     expect(updates.items.some(item => item.id === 'r1')).toBe(false);
     expect(updates.warnings).toContain('GRAPH_RECORD_UNATTRIBUTED');
+  } finally { f.db.close(); }
+});
+
+it('continues graph pages after invalid records to collect valid updates', async () => {
+  const f = createContextFixture();
+  try {
+    f.request.mockImplementation(async (op, payload) => {
+      if (op !== 'company_recent_records') return { items: [f.org], total: null, next_offset: null, complete: true };
+      const offset = (payload as { offset: number }).offset;
+      if (offset === 0) return { items: Array.from({ length: 20 }, (_, i) => ({
+        kind: 'relation', id: `invalid-${i}`, recorded_at: AT, label: 'worksFor',
+      })), total: null, next_offset: 20, complete: false };
+      return { items: [{ kind: 'entity', id: 'valid', entity_id: 'p1', recorded_at: AT, label: 'Person' }],
+        total: null, next_offset: null, complete: true };
+    });
+    const updates = await f.service.relatedUpdates(CODE, '2026-10-11T00:00:00.000Z');
+    expect(updates.items.some(item => item.id === 'valid')).toBe(true);
+    expect(f.request.mock.calls.filter(([op]) => op === 'company_recent_records')
+      .map(([, payload]) => (payload as { offset: number }).offset)).toEqual([0, 20]);
+    expect(updates.state).toBe('partial');
+    expect(updates.truncated).toBe(true);
+  } finally { f.db.close(); }
+});
+
+it('stops recent graph pagination at the shared twenty-page budget', async () => {
+  const f = createContextFixture();
+  try {
+    f.request.mockImplementation(async (op, payload) => op === 'company_recent_records'
+      ? { items: [{ kind: 'relation', id: `invalid-${(payload as { offset: number }).offset}`,
+        recorded_at: AT, label: 'worksFor' }], total: null,
+        next_offset: (payload as { offset: number }).offset + 1, complete: false }
+      : { items: [f.org], total: null, next_offset: null, complete: true });
+    const updates = await f.service.relatedUpdates(CODE, '2026-10-11T00:00:00.000Z');
+    expect(f.request.mock.calls.filter(([op]) => op === 'company_recent_records')).toHaveLength(20);
+    expect(updates).toMatchObject({ state: 'partial', truncated: true });
+    expect(updates.warnings).toContain('GRAPH_UPDATES_PAGE_LIMIT');
+  } finally { f.db.close(); }
+});
+
+it('sorts mixed RFC3339 offsets by actual time with stable ties', async () => {
+  const f = createContextFixture();
+  try {
+    f.request.mockImplementation(async (op) => op === 'company_recent_records'
+      ? { items: [
+        { kind: 'entity', id: 'earlier', entity_id: 'p1', recorded_at: '2026-10-12T00:30:00+01:00', label: 'Person' },
+        { kind: 'entity', id: 'later', entity_id: 'p2', recorded_at: '2026-10-11T23:45:00Z', label: 'Person' },
+        { kind: 'evidence', id: 'tie', entity_id: 'p3', recorded_at: '2026-10-11T23:45:00+00:00', label: '职业身份依据' },
+      ], total: null, next_offset: null, complete: true }
+      : { items: [f.org], total: null, next_offset: null, complete: true });
+    const updates = await f.service.relatedUpdates(CODE, '2026-10-11T23:00:00Z');
+    expect(updates.items.filter(item => ['tie', 'later', 'earlier'].includes(item.id))
+      .map(item => item.id)).toEqual(['later', 'tie', 'earlier']);
   } finally { f.db.close(); }
 });
 

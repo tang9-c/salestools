@@ -164,20 +164,22 @@ export class CompanyContextService {
   }
 
   private async confirmedOrganizations(code: string, signal: AbortSignal): Promise<{
-    ids: string[]; complete: boolean; warnings: string[] }> {
+    ids: string[]; complete: boolean; available: boolean; warnings: string[] }> {
     const profile = this.deps.profiles.findByCreditCodes([code])[0];
     signal.throwIfAborted();
-    if (!profile || !this.deps.graph) return { ids: [], complete: false,
+    if (!profile || !this.deps.graph) return { ids: [], complete: false, available: false,
       warnings: [!profile ? 'PROFILE_NOT_FOUND' : 'GRAPH_NOT_CONFIGURED'] };
     const names = [profile.identity.legalName, ...profile.identity.formerNames].map(normalize);
     const saved = this.deps.links.byCreditCode(code).map(link => link.organization_id);
     signal.throwIfAborted();
     const found = new Map<string, OrganizationIdentity>();
     let complete = true;
+    let available = false;
     const warnings: string[] = [];
     try {
       const candidates = await this.pages<OrganizationIdentity>('company_organizations',
         { entity_ids: [], credit_codes: [code], normalized_names: names }, BATCH, signal);
+      available = true;
       complete &&= candidates.complete;
       for (const item of candidates.items) found.set(item.entity_id, item);
     } catch { signal.throwIfAborted(); complete = false; warnings.push('ORGANIZATIONS_UNAVAILABLE'); }
@@ -186,6 +188,7 @@ export class CompanyContextService {
       try {
         const read = await this.pages<OrganizationIdentity>('company_organizations',
           { entity_ids: batch, credit_codes: [], normalized_names: [] }, BATCH, signal);
+        available = true;
         complete &&= read.complete;
         for (const item of read.items) found.set(item.entity_id, item);
       } catch { signal.throwIfAborted(); complete = false; warnings.push('ORGANIZATIONS_UNAVAILABLE'); }
@@ -194,15 +197,16 @@ export class CompanyContextService {
     const ids = [...resolved.values()].filter(link => link.state === 'confirmed' && link.credit_code === code)
       .map(link => link.organization_id).sort();
     if (!complete) warnings.push('ORGANIZATIONS_INCOMPLETE');
-    return { ids, complete, warnings };
+    return { ids, complete, available, warnings };
   }
 
   async overview(code: string, signal?: AbortSignal): Promise<CompanyOverview> {
     const active = this.active(signal);
     let reports: ReportSummary | null = null;
+    let reportsAvailable = true;
     const warnings: string[] = [];
     try { reports = this.deps.assessments.summariesByCreditCodes([code]).get(code) ?? null; }
-    catch { active.throwIfAborted(); warnings.push('REPORTS_UNAVAILABLE'); }
+    catch { active.throwIfAborted(); reportsAvailable = false; warnings.push('REPORTS_UNAVAILABLE'); }
     active.throwIfAborted();
     if (!this.deps.graph) return { state: 'not_applicable', warnings, organization_ids: [],
       organizations_complete: false, people: count(new Set(), false),
@@ -233,7 +237,7 @@ export class CompanyContextService {
         people.add(relation.source_id);
       }
     }
-    return { state: warnings.length ? (reports ? 'partial' : 'unavailable') : 'ok', warnings,
+    return { state: warnings.length ? (reportsAvailable || orgs.available ? 'partial' : 'unavailable') : 'ok', warnings,
       organization_ids: orgs.ids, organizations_complete: orgs.complete,
       people: count(people, complete), projects: count(projects, complete), reports };
   }
@@ -243,28 +247,62 @@ export class CompanyContextService {
     if (!Number.isFinite(Date.parse(since))) throw new Error('INVALID_SINCE');
     const items: RecentRecord[] = [], scope: string[] = [], warnings: string[] = [];
     let truncated = false;
-    let orgs = { ids: [] as string[], complete: false, warnings: [] as string[] };
+    let orgs = { ids: [] as string[], complete: false, available: false, warnings: [] as string[] };
     if (this.deps.graph) {
       orgs = await this.confirmedOrganizations(code, active);
       warnings.push(...orgs.warnings);
       truncated ||= !orgs.complete;
       if (orgs.ids.length) {
-        let graphOk = true;
-        for (const batch of chunks(orgs.ids, BATCH)) {
+        let graphRead = false;
+        let graphPages = 0;
+        const graphSeen = new Set<string>();
+        const batches = chunks(orgs.ids, BATCH);
+        for (const [batchIndex, batch] of batches.entries()) {
           active.throwIfAborted();
-          try {
-            const page = await this.request<Page<RecentRecord>>('company_recent_records',
-              { organization_ids: batch, since, offset: 0, limit: 20 }, active);
-            if (page.items.some(item => !item.entity_id)) {
-              warnings.push('GRAPH_RECORD_UNATTRIBUTED');
+          let offset = 0;
+          let batchValid = 0;
+          for (;;) {
+            if (graphPages === MAX_PAGES) {
+              warnings.push('GRAPH_UPDATES_PAGE_LIMIT');
               truncated = true;
+              break;
             }
-            items.push(...page.items.filter(item => !!item.recorded_at
-              && !!item.entity_id && Date.parse(item.recorded_at) > Date.parse(since)));
-            truncated ||= !page.complete || page.next_offset !== null;
-          } catch { active.throwIfAborted(); graphOk = false; warnings.push('GRAPH_UPDATES_UNAVAILABLE'); }
+            try {
+              const page = await this.request<Page<RecentRecord>>('company_recent_records',
+                { organization_ids: batch, since, offset, limit: 20 }, active);
+              graphPages++;
+              graphRead = true;
+              for (const item of page.items) {
+                if (!item.entity_id) {
+                  if (!warnings.includes('GRAPH_RECORD_UNATTRIBUTED')) warnings.push('GRAPH_RECORD_UNATTRIBUTED');
+                  truncated = true;
+                  continue;
+                }
+                if (!item.recorded_at || !Number.isFinite(Date.parse(item.recorded_at))
+                  || Date.parse(item.recorded_at) <= Date.parse(since)) continue;
+                const key = `${item.kind}\u0000${item.id}`;
+                if (graphSeen.has(key)) continue;
+                graphSeen.add(key);
+                items.push(item);
+                batchValid++;
+              }
+              if (page.complete && page.next_offset === null) break;
+              if (page.next_offset === null || page.next_offset <= offset) {
+                warnings.push('GRAPH_UPDATES_INCOMPLETE');
+                truncated = true;
+                break;
+              }
+              if (batchValid >= 20) { truncated = true; break; }
+              offset = page.next_offset;
+            } catch { active.throwIfAborted(); warnings.push('GRAPH_UPDATES_UNAVAILABLE'); truncated = true; break; }
+          }
+          if (graphPages === MAX_PAGES && batchIndex < batches.length - 1) {
+            warnings.push('GRAPH_UPDATES_PAGE_LIMIT');
+            truncated = true;
+            break;
+          }
         }
-        if (graphOk) scope.push('graph');
+        if (graphRead) scope.push('graph');
       } else if (orgs.complete) scope.push('graph');
     }
     active.throwIfAborted();
@@ -287,7 +325,7 @@ export class CompanyContextService {
     } catch { active.throwIfAborted(); warnings.push('ASSESSMENT_UPDATES_UNAVAILABLE'); }
     active.throwIfAborted();
     const unique = [...new Map(items.map(item => [`${item.kind}\u0000${item.id}`, item])).values()];
-    unique.sort((a, b) => b.recorded_at.localeCompare(a.recorded_at)
+    unique.sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at)
       || a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id));
     truncated ||= unique.length > 20;
     return { state: !this.deps.graph ? 'not_applicable' : warnings.length ? 'partial' : 'ok',

@@ -22,3 +22,12 @@
 ## 提交
 
 - `feat(companies): aggregate existing company context`（本报告随同一提交保存；SHA 见 Git 历史）。
+
+## 审查修正 round 1
+
+- `overview` 分别记录报告源与图谱组织源是否成功。正常零报告仍是成功来源；报告源失败但图谱计数可用时返回 `partial`，两个来源均不可用时才返回 `unavailable`。没有增加画像查询。
+- `relatedUpdates` 使用 `next_offset` 补读图谱近期记录页；无真实 `entity_id` 的项继续省略并标记部分结果。所有图谱近期请求共用最多 20 页预算，每个组织批最多收 20 条有效项，最后跨来源去重、排序、输出最多 20 条。预算用尽且仍有未读页时标记 `truncated` 和 `GRAPH_UPDATES_PAGE_LIMIT`；图谱有成功页时 `scope` 才包含 graph。
+- 跨来源时间排序改为 `Date.parse` 得到的 epoch 降序；同一时刻按 kind、id 稳定排序。不同 RFC 3339 时区偏移的测试验证实际时间顺序。
+- 红测：新增状态、续页和时区测试后，定向 service 套件 13 例中 3 例失败，分别复现 `unavailable` 误判、后页遗漏、时间顺序错误；零报告测试同时通过。
+- 绿测：`node node_modules/vitest/vitest.mjs run tests/company-context-service.test.ts tests/company-context-repositories.test.ts`，2 文件 16/16 通过；`npm run typecheck` 通过。仍未执行本地构建、native 编译或 full suite。
+- 剩余边界：实际 native 关系近期记录的 `entity_id` 依赖 Task 2 修正；本层持续拒绝编造该字段。原生协议与完整套件需远程 CI 对同一 SHA 验证。
