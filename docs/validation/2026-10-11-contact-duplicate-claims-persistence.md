@@ -37,3 +37,4 @@ HTTP 测试保留主体、证据、覆盖、归属及版本失败断言；旧重
 - 修正测试 SHA：`34ebdac4c8950ff06d71228bf26943abcffc1229`，[运行 38215144609](https://github.com/tang9-c/salestools/actions/runs/38215144609)。Rust 源码与全部测试编译通过；审核 14 项通过，入库 47 项中 46 项通过、1 项失败，剩余 gate 因此未执行。
 - 失败为既有 `merge_into_unnamed_target_still_checks_anonymous_relation_evidence`：引文只有“陈晓任职甲公司”，所选任职关系含 CEO，预期 `VALIDATION_ERROR`，实际成功写入。该用例及合并／匿名判定逻辑相对基准 `fb45499` 均未修改。合并给匿名目标补姓名后，最终 `properties` 存在 name，未进入 `unnamed_landed`，后续匿名任职角色定位校验被跳过。不是本轮重复线索字段或存储 Schema 的错误。
 - 因原计划明确不调整正式字段合并和任职规则，本轮停止合并并请求确认是否扩大到这处既有校验修复。没有修改／删除失败断言，没有合并 main、发布或部署。当前 CI 不能视为通过。
+- 2026-10-12 用户授权修复此处校验。最小改动在导入 merge 读取目标旧 properties 后、补入候选字段前，把匿名 Person 记入既有 `unnamed_landed`；姓名合并行为不改，后续复用原任职／教育定位校验。原失败用例保留，并补有／无职位定位依据的双路径，以及失败后旧档案、版本、实体和关系原子回滚断言。Rust GREEN 等待远程 CI，本地仅做格式与 diff 检查。

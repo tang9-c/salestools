@@ -892,30 +892,42 @@ fn unnamed_employment_does_not_accept_a_role_without_located_file_evidence() {
 
 #[test]
 fn merge_into_unnamed_target_still_checks_anonymous_relation_evidence() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
-    let anonymous = store
-        .save_contact(&json!({
-            "operation_id":"anonymous-target","actor":"reviewer","label":"Person",
-            "set_properties":{"skills":["Python"]},
-            "evidence":[proof("properties.skills",json!("Python"))]
-        }))
-        .unwrap();
-    let target_id = anonymous["entity_id"].as_str().unwrap();
-    let mut named = candidate("named", "陈晓");
-    named["relation_suggestions"] = json!([{
-        "source_candidate_id":"named","target_candidate_id":"company","relation_type":"worksFor",
-        "properties":{"role":{"@type":"OrganizationRole","roleName":"CEO"}},"uncertain":false,
-        "evidence":[{"field_path":"$relation","value":{"relation_type":"worksFor",
-            "source_id":"named","target_id":"company"},"source_type":"file",
-            "file_name":"resume.pdf","file_sha256":"abc","quote":"陈晓任职甲公司",
-            "page":1,"locator_status":"located","collected_at":"2026-09-26T00:00:00.000Z"}]
-    }]);
-    let company = json!({"candidate_id":"company","label":"Organization",
+    for has_role_proof in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("graph.sqlite")).unwrap();
+        let anonymous = store
+            .save_contact(&json!({
+                "operation_id":"anonymous-target","actor":"reviewer","label":"Person",
+                "set_properties":{"skills":["Python"]},
+                "evidence":[proof("properties.skills",json!("Python"))]
+            }))
+            .unwrap();
+        let target_id = anonymous["entity_id"].as_str().unwrap();
+        let mut named = candidate("named", "陈晓");
+        named["relation_suggestions"] = json!([{
+            "source_candidate_id":"named","target_candidate_id":"company","relation_type":"worksFor",
+            "properties":{"role":{"@type":"OrganizationRole","roleName":"CEO"}},"uncertain":false,
+            "evidence":[{"field_path":"$relation","value":{"relation_type":"worksFor",
+                "source_id":"named","target_id":"company"},"source_type":"file",
+                "file_name":"resume.pdf","file_sha256":"abc","quote":"陈晓任职甲公司",
+                "page":1,"locator_status":"located","collected_at":"2026-09-26T00:00:00.000Z"}]
+        }]);
+        if has_role_proof {
+            named["relation_suggestions"][0]["evidence"]
+                .as_array_mut()
+                .unwrap()
+                .push(
+                    json!({"field_path":"properties.role.roleName","value":"CEO",
+                "source_type":"file","file_name":"resume.pdf","file_sha256":"abc",
+                "quote":"陈晓在甲公司担任CEO","page":1,"locator_status":"located",
+                "collected_at":"2026-09-26T00:00:00.000Z"}),
+                );
+        }
+        let company = json!({"candidate_id":"company","label":"Organization",
         "properties":{"name":"甲公司"},"evidence":[proof("properties.name",json!("甲公司"))],
         "relation_suggestions":[],"warnings":[],"can_commit":true});
-    let import_id = ready(&store, vec![named, company]);
-    let result = store.commit_import(&json!({
+        let import_id = ready(&store, vec![named, company]);
+        let result = store.commit_import(&json!({
         "operation_id":format!("contact-import:{import_id}"),"actor":"reviewer",
         "import_id":import_id,"expected_version":2,
         "choices":[{"candidate_id":"named","action":"merge","target_id":target_id,
@@ -923,11 +935,25 @@ fn merge_into_unnamed_target_still_checks_anonymous_relation_evidence() {
         "relation_choices":[{"source_candidate_id":"named","target_candidate_id":"company",
             "relation_type":"worksFor","properties":{"role":{"@type":"OrganizationRole","roleName":"CEO"}}}]
     }));
-    assert_eq!(result.unwrap_err().code, "VALIDATION_ERROR");
-    assert_eq!(
-        store.get_contact(&json!({"entity_id":target_id})).unwrap()["version"],
-        1
-    );
+        if has_role_proof {
+            assert_eq!(result.unwrap()["relations"].as_array().unwrap().len(), 1);
+            let saved = store.get_contact(&json!({"entity_id":target_id})).unwrap();
+            assert_eq!(saved["entity"]["properties"]["name"], "陈晓");
+            assert_eq!(
+                saved["relations"][0]["properties"]["role"]["roleName"],
+                "CEO"
+            );
+            assert_eq!(saved["version"], 2);
+            assert_eq!(count(&store, "kg_relations"), 1);
+        } else {
+            assert_eq!(result.unwrap_err().code, "VALIDATION_ERROR");
+            let saved = store.get_contact(&json!({"entity_id":target_id})).unwrap();
+            assert_eq!(saved["version"], 1);
+            assert!(saved["entity"]["properties"].get("name").is_none());
+            assert_eq!(count(&store, "kg_entities"), 1);
+            assert_eq!(count(&store, "kg_relations"), 0);
+        }
+    }
 }
 
 #[test]

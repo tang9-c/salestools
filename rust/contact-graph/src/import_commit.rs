@@ -1325,6 +1325,10 @@ impl Store {
                     old_evidence = read_existing_evidence(self, target_id)?;
                     properties =
                         serde_json::to_value(entity.properties).map_err(AppError::internal)?;
+                    // Filling a missing name must not bypass anonymous relation evidence checks.
+                    if label == "Person" && properties.get("name").is_none() {
+                        unnamed_landed.insert(choice.candidate_id.clone());
+                    }
                     let old_name = properties["name"].clone();
                     for (key, value) in object(candidate_properties)? {
                         if key == "name" && choice.keep_name == Some(false) {
