@@ -1,3 +1,4 @@
+import { createTokenAdminRouter } from './admin/token-router.js';
 import { type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
@@ -324,7 +325,10 @@ export function createApplication(
   const uploadsEnabled = process.env.NODE_ENV !== 'production' || !!config.contactWorkerSocket;
   const app = createHttpApp(config, token => tokenService.verify(token), servicesFor,
     uploadsEnabled ? uploadStore : undefined,
-    contactImport ? { sessions: uploadSessions, imports: contactImport, html: uploadHtml } : undefined);
+    contactImport ? { sessions: uploadSessions, imports: contactImport, html: uploadHtml } : undefined,
+    config.tokenAdminKeySha256 ? createTokenAdminRouter({keyHash: config.tokenAdminKeySha256,
+      publicMcpHost: config.publicMcpHost, service: tokenService,
+      audit: event => logger.logAdminTokenOperation(event)}) : undefined);
 
   let upstreamClosing: Promise<void> | null = null;
   const closeUpstreams = (): Promise<void> => {

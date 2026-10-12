@@ -59,6 +59,18 @@ export class TokenRepository {
     return Number(result.changes);
   }
 
+  listPage(offset: number, limit: number): { items: TokenMetadata[]; nextOffset: number | null } {
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > Number.MAX_SAFE_INTEGER - 100
+        || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Invalid token pagination');
+    const rows = this.database.prepare(`
+      SELECT user_id, enabled, created_at FROM tokens
+      ORDER BY created_at, user_id, token_hash LIMIT ? OFFSET ?
+    `).all(limit + 1, offset) as unknown as Pick<TokenRow, 'user_id' | 'enabled' | 'created_at'>[];
+    return { items: rows.slice(0, limit).map(row => ({ userId: row.user_id,
+      enabled: row.enabled === 1, createdAt: row.created_at })),
+      nextOffset: rows.length > limit ? offset + limit : null };
+  }
+
   list(): TokenMetadata[] {
     const rows = this.database.prepare(`
       SELECT user_id, token_hash, enabled, created_at

@@ -256,3 +256,11 @@ describe('loadConfig', () => {
     expect(() => loadConfig(env)).toThrow('Invalid configuration: ALLOWED_ORIGINS');
   });
 });
+
+
+it('defaults the admin API off and validates its independent key digest', () => {
+  expect(loadConfig(valid).tokenAdminKeySha256).toBeUndefined();
+  expect(loadConfig({...valid,TOKEN_ADMIN_KEY_SHA256:'  '}).tokenAdminKeySha256).toBeUndefined();
+  expect(loadConfig({...valid,TOKEN_ADMIN_KEY_SHA256:'a'.repeat(64)}).tokenAdminKeySha256).toBe('a'.repeat(64));
+  expect(() => loadConfig({...valid,TOKEN_ADMIN_KEY_SHA256:'invalid'})).toThrow();
+});

@@ -125,3 +125,7 @@ npm test
 npm run typecheck
 npm run build
 ```
+
+## 远程 Token 管理
+
+可通过独立管理 API 和本机单文件 CLI 创建、分页查看、按用户禁用 Token，无需进入容器。首次启用、权限、结果未知处理及回滚见 [操作说明](docs/operations/token-admin.md)。默认未配置管理员摘要时 API 关闭；原容器 CLI 仍可使用。
