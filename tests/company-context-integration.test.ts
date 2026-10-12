@@ -48,7 +48,7 @@ it('reuses one native graph and SQLite history through six registered MCP entrie
       const items = input.context?.filter(item => item.predicate === 'clientOrganization' || item.predicate === 'memberOf') ?? [];
       expect(items.map(item => item.predicate)).toEqual(expect.arrayContaining(['clientOrganization', 'memberOf']));
       return { includedContextRefs: items.map(item => item.citation.ref), claims: items.map(item => ({
-        text: item.statement, category: 'supported' as const, evidenceIds: [], contextRefs: [item.citation.ref],
+        text: item.statement, category: 'supported' as const, evidenceIds: [], contextRefs: [item.citation.ref, ...(item.required_context_refs ?? [])],
       })) };
     } }) });
   const server = buildMcpServer({ companyContext: context, companyLinks,
