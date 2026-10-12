@@ -40,3 +40,4 @@ HTTP 测试保留主体、证据、覆盖、归属及版本失败断言；旧重
 - 2026-10-12 用户授权修复此处校验。最小改动在导入 merge 读取目标旧 properties 后、补入候选字段前，把匿名 Person 记入既有 `unnamed_landed`；姓名合并行为不改，后续复用原任职／教育定位校验。原失败用例保留，并补有／无职位定位依据的双路径，以及失败后旧档案、版本、实体和关系原子回滚断言。Rust GREEN 等待远程 CI，本地仅做格式与 diff 检查。
 - 修复测试 SHA：`7994c6d898ad37c51c628f6fc126be9ec3c995c1`，[运行 38253652370](https://github.com/tang9-c/salestools/actions/runs/38253652370)。匿名任职校验双路径与全部 47 项入库测试通过。随后本轮新增 lifecycle 合并测试失败：逐条身份线索审计及合并主审计复用了 `audit_log.operation_id`，违反唯一约束。故完整 gate 仍未通过，main 未合并。
 - 对上述本轮缺陷做最小修正：子审计 ID 按原合并 ID／claim／处理原因派生，主操作 ID 不变；子审计 JSON 保留 `merge_operation_id` 供追溯。不改表或幂等协议。现有真实 Store 测试增加主／子审计不冲突、重放不重复及故意晚期失败确实触发并回滚审计的断言，后续 CI 待记录。
+- SHA `ed45b014067e2d8f0247cf04db11d69c0ed55325` 的[运行 38254776116](https://github.com/tang9-c/salestools/actions/runs/38254776116)通过全部 Rust、bundle 构建和 Python。完整 Vitest 1442 项通过、1 项失败：本轮安全预览先于自动主体选择，导致无主体／多主体的既有具体错误码变成通用 `MANUAL_REVIEW_REQUIRED`。最小修复仅前移原主体选择，保留预览安全检查；不更改失败断言。本地先复现两个具体错误码失败，再验证修复后的导入／HTTP 用例通过，下一轮完整 CI 待记录。

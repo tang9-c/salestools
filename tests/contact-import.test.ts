@@ -83,6 +83,22 @@ function harness(overrides: Partial<ConstructorParameters<typeof ContactImportSe
   return { state, service, jobs, newService, graph };
 }
 
+it.each([
+  ['AUTO_CREATE_NO_PERSON', []],
+  ['AUTO_CREATE_AMBIGUOUS_PERSON', [candidate, { ...candidate, candidate_id: 'c_2', properties: { name: '赵明' },
+    evidence: candidate.evidence.map(proof => ({ ...proof, subject_id: 'c_2', evidence_id: 'ev_2',
+      value: '赵明', quote: '赵明' })) }]],
+] as const)('preserves %s without a graph commit', async (code, people) => {
+  const h = harness();
+  h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'ready_for_review', version: 3,
+    data: { candidates: people, warnings: [], processed_block_ids: ['b_1'], unprocessed_block_ids: [] } };
+  await expect(h.service.commit({ import_id: 'ci_1', preview_version: 3,
+    operation_id: 'contact-import:ci_1', auto_create: true }, 'reviewer')).rejects.toThrow(code);
+  expect(h.state.lastCommit).toBeNull();
+  expect(h.state.calls).not.toContain('commit_import');
+  expect(h.state.job.status).toBe('ready_for_review');
+});
+
 it('finds same-name people without contact details and compares confirmed employer node IDs', async () => {
   const h = harness();
   const employer = ImportCandidateSchema.parse({ candidate_id: 'company', label: 'Organization',

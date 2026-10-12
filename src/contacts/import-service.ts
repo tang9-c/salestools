@@ -589,6 +589,9 @@ export class ContactImportService {
       if (job.actor !== actor) throw new Error('IMPORT_ACCESS_DENIED');
       if (input.require_confirmation && job.status !== 'committed' && job.version !== input.preview_version) throw new Error('PREVIEW_VERSION_CHANGED');
       if (!['ready_for_review', 'committed'].includes(job.status)) throw new Error('IMPORT_NOT_READY');
+      const candidates = (Array.isArray(job.data.candidates) ? job.data.candidates : [])
+        .map(raw => ImportCandidateSchema.parse(raw));
+      ({ choices, relationChoices } = autoCreateSelection(candidates));
       if (job.status === 'ready_for_review' && !input.require_confirmation) {
         const preview = await this.getUploadPreview(input.import_id, actor);
         beforeWrite?.();
@@ -596,9 +599,6 @@ export class ContactImportService {
           throw new Error('MANUAL_REVIEW_REQUIRED');
         }
       }
-      const candidates = (Array.isArray(job.data.candidates) ? job.data.candidates : [])
-        .map(raw => ImportCandidateSchema.parse(raw));
-      ({ choices, relationChoices } = autoCreateSelection(candidates));
     } else if (Array.isArray(choices)) {
       const createdIds = new Set(choices.flatMap(choice => {
         if (!choice || typeof choice !== 'object' || Array.isArray(choice)) return [];
