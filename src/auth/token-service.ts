@@ -15,6 +15,7 @@ export interface TokenStore {
   findByHash(tokenHash: string): TokenRecord | null;
   disableByUserId(userId: string): number;
   list(): TokenMetadata[];
+  listPage?(offset: number, limit: number): { items: TokenMetadata[]; nextOffset: number | null };
 }
 
 function hashToken(plaintext: string): string {
@@ -60,6 +61,11 @@ export class TokenService {
 
   disable(userId: string): boolean {
     return this.repository.disableByUserId(userId) > 0;
+  }
+
+  listPage(offset: number, limit: number): { items: TokenMetadata[]; nextOffset: number | null } {
+    if (!this.repository.listPage) throw new Error('Token pagination unavailable');
+    return this.repository.listPage(offset, limit);
   }
 
   list(): TokenMetadata[] {

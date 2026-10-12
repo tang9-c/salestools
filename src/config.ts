@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { isAbsolute, resolve } from 'node:path';
 
 const CONFIG_KEYS = [
-  'PORT', 'PUBLIC_MCP_HOST', 'ALLOWED_ORIGINS', 'SQLITE_PATH',
+  'TOKEN_ADMIN_KEY_SHA256', 'PORT', 'PUBLIC_MCP_HOST', 'ALLOWED_ORIGINS', 'SQLITE_PATH',
   'QCC_MCP_COMPANY_URL', 'QCC_MCP_RISK_URL', 'QCC_MCP_IPR_URL', 'QCC_MCP_OPERATION_URL', 'QCC_API_KEY',
   'DOUBAO_SEARCH_API_URL', 'DOUBAO_SEARCH_API_KEY', 'ARK_API_URL', 'ARK_MODEL', 'ARK_CREDENTIAL',
   'ARK_EMBEDDING_API_URL', 'ARK_EMBEDDING_MODEL', 'ARK_EMBEDDING_CREDENTIAL',
@@ -43,6 +43,7 @@ const origins = nonEmptyString.refine(
 );
 
 const configSchema = z.object({
+  TOKEN_ADMIN_KEY_SHA256: optionalTrimmed.refine(value => value === undefined || /^[a-f0-9]{64}$/.test(value)),
   PORT: positiveInteger.default(3000),
   PUBLIC_MCP_HOST: nonEmptyString,
   ALLOWED_ORIGINS: origins,
@@ -112,6 +113,7 @@ const configSchema = z.object({
 type ParsedConfig = z.infer<typeof configSchema>;
 
 export type AppConfig = ParsedConfig & {
+  tokenAdminKeySha256?: string;
   port: number;
   publicMcpHost: string;
   sqlitePath: string;
@@ -170,6 +172,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   const originUrls = parsed.data.ALLOWED_ORIGINS.split(',').map(value => value.trim()).filter(Boolean);
   return {
     ...parsed.data,
+    tokenAdminKeySha256: parsed.data.TOKEN_ADMIN_KEY_SHA256,
     port: parsed.data.PORT,
     publicMcpHost: parsed.data.PUBLIC_MCP_HOST,
     sqlitePath: parsed.data.SQLITE_PATH,
