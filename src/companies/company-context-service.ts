@@ -262,15 +262,15 @@ export class CompanyContextService {
           let offset = 0;
           let batchValid = 0;
           for (;;) {
-            if (graphPages === MAX_PAGES) {
+            if (graphPages >= MAX_PAGES) {
               warnings.push('GRAPH_UPDATES_PAGE_LIMIT');
               truncated = true;
               break;
             }
             try {
+              graphPages++;
               const page = await this.request<Page<RecentRecord>>('company_recent_records',
                 { organization_ids: batch, since, offset, limit: 20 }, active);
-              graphPages++;
               graphRead = true;
               for (const item of page.items) {
                 if (!item.entity_id) {
@@ -296,7 +296,7 @@ export class CompanyContextService {
               offset = page.next_offset;
             } catch { active.throwIfAborted(); warnings.push('GRAPH_UPDATES_UNAVAILABLE'); truncated = true; break; }
           }
-          if (graphPages === MAX_PAGES && batchIndex < batches.length - 1) {
+          if (graphPages >= MAX_PAGES && batchIndex < batches.length - 1) {
             warnings.push('GRAPH_UPDATES_PAGE_LIMIT');
             truncated = true;
             break;

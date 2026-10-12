@@ -31,3 +31,9 @@
 - 红测：新增状态、续页和时区测试后，定向 service 套件 13 例中 3 例失败，分别复现 `unavailable` 误判、后页遗漏、时间顺序错误；零报告测试同时通过。
 - 绿测：`node node_modules/vitest/vitest.mjs run tests/company-context-service.test.ts tests/company-context-repositories.test.ts`，2 文件 16/16 通过；`npm run typecheck` 通过。仍未执行本地构建、native 编译或 full suite。
 - 剩余边界：实际 native 关系近期记录的 `entity_id` 依赖 Task 2 修正；本层持续拒绝编造该字段。原生协议与完整套件需远程 CI 对同一 SHA 验证。
+
+## 审查修正 round 2
+
+- 近期图谱的共享 20 次请求预算改为在请求发起前扣减，失败的请求也计入。预算耗尽时停止后续组织批，返回 `GRAPH_UPDATES_PAGE_LIMIT`、`truncated=true` 和部分状态。
+- 红测：用真实内存 SQLite 写入 1001 个已确认组织，组成 21 个组织批；模拟每批图谱近期请求立即失败。修正前实际发送 21 次，违反 20 次上限。
+- 绿测：`node node_modules/vitest/vitest.mjs run tests/company-context-service.test.ts tests/company-context-repositories.test.ts`，2 文件 17/17 通过；`npm run typecheck` 与 `git diff --check` 通过。未执行本地构建、native 编译或 full suite。

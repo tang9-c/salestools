@@ -204,6 +204,31 @@ it('stops recent graph pagination at the shared twenty-page budget', async () =>
   } finally { f.db.close(); }
 });
 
+it('counts failed recent requests against the shared budget across organization batches', async () => {
+  const f = createContextFixture();
+  try {
+    const organizations = new Map([[f.org.entity_id, f.org]]);
+    for (let i = 2; i <= 1001; i++) {
+      const org = { ...f.org, entity_id: `o${i}` };
+      organizations.set(org.entity_id, org);
+      f.links.write({ action: 'confirm', organization_id: org.entity_id, credit_code: CODE,
+        operation_id: `fixture-${i}`, expected_link_version: 0, expected_organization_version: 1,
+        note: '合成数据人工关联' }, 'test', identityHash(org), AT);
+    }
+    f.request.mockImplementation(async (op, payload) => {
+      if (op === 'company_recent_records') throw new Error('temporary graph failure');
+      const ids = (payload as { entity_ids: string[] }).entity_ids;
+      return { items: ids.length ? ids.map(id => organizations.get(id)) : [f.org],
+        total: null, next_offset: null, complete: true };
+    });
+    const updates = await f.service.relatedUpdates(CODE, '2026-10-11T00:00:00.000Z');
+    expect(f.request.mock.calls.filter(([op]) => op === 'company_recent_records')).toHaveLength(20);
+    expect(updates).toMatchObject({ state: 'partial', truncated: true });
+    expect(updates.warnings).toContain('GRAPH_UPDATES_PAGE_LIMIT');
+    expect(updates.scope).not.toContain('graph');
+  } finally { f.db.close(); }
+});
+
 it('sorts mixed RFC3339 offsets by actual time with stable ties', async () => {
   const f = createContextFixture();
   try {
