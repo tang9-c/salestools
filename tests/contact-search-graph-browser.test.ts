@@ -326,7 +326,10 @@ it('keeps the latest selection when an older detail request resolves after resel
   await expect.poll(() => typeof release).toBe('function');
   await h.ui.locator('#node-list button').filter({ hasText: '云杉智造' }).click();
   release(result(detail('p1')));
-  await expect.poll(() => h.sent.length).toBe(h.calls.length);
+  await expect.poll(() => h.sent.some(value => {
+    const sent = value as Call;
+    return sent.name === 'get_contact' && sent.arguments.entity_id === 'p1' && sent.arguments.evidence_limit === 10;
+  })).toBe(true);
   await h.barrier();
   await expect.poll(() => h.ui.locator('#detail h3').textContent()).toBe('云杉智造');
 });
