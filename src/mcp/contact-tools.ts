@@ -1,3 +1,5 @@
+import type { CompanyContextService } from '../companies/company-context-service.js';
+import { detailOutput, unavailableDetail } from './company-context-output.js';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { ContactLibraryService } from '../contacts/library-service.js';
@@ -11,6 +13,9 @@ const proof = z.array(z.record(z.string().min(1), z.unknown())).max(256);
 
 const getInput = z.object({
   entity_id: id,
+  include_company_context: z.boolean().default(false),
+  report_offset: z.int().nonnegative().default(0),
+  report_limit: z.int().min(1).max(50).default(10),
   evidence_offset: z.int().nonnegative().optional(),
   evidence_limit: z.int().min(1).max(50).optional(),
   claim_offset: z.int().nonnegative().optional(),
@@ -81,14 +86,19 @@ function actor(context: { http?: { authInfo?: { clientId?: string } } }): string
   return clientId;
 }
 
-export function registerContactTools(server: McpServer, library: ContactLibraryService): void {
+export function registerContactTools(server: McpServer, library: ContactLibraryService,
+  companyContext?: Pick<CompanyContextService, 'detail'>, profileOptions?: { now?: () => Date; ttlDays?: number }): void {
   server.registerTool('get_contact', {
     description: '分页读取共享联系人档案、字段证据、冲突及当前关系；按 pagination.evidence、pagination.relations、pagination.unverified_claims 的 next_offset 分别翻页；待核实线索使用独立 claim_offset/claim_limit，不是正式事实。与公开网页搜索 discover_contacts 区分。',
     inputSchema: getInput,
     _meta: { ui: { visibility: ['model', 'app'] } },
-  }, async ({ entity_id, ...page }) => {
+  }, async ({ entity_id, include_company_context, report_offset, report_limit, ...page }) => {
     const contact = await library.get(entity_id, page);
-    return result(contact ?? { found: false });
+    if (!contact || !include_company_context) return result(contact ?? { found: false });
+    let detail = unavailableDetail(entity_id, companyContext ? 'unavailable' : 'not_applicable');
+    try { if (companyContext) detail = await companyContext.detail(entity_id, report_offset, report_limit); }
+    catch (error) { if (error instanceof Error && error.name === 'AbortError') throw error; }
+    return result({ ...contact, company_context: detailOutput(detail, profileOptions?.now, profileOptions?.ttlDays) });
   });
 
   server.registerTool('save_contact', {

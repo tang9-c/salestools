@@ -1,3 +1,6 @@
+import { CompanyLinkRepository } from './db/company-link-repository.js';
+import { CompanyLinkService } from './companies/company-link.js';
+import { CompanyContextService } from './companies/company-context-service.js';
 import { createTokenAdminRouter } from './admin/token-router.js';
 import { type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -306,9 +309,19 @@ export function createApplication(
     now: overrides.now,
     signal: abortController.signal,
   });
+  const companyLinkRepository = graphClient ? new CompanyLinkRepository(database) : undefined;
+  const companyContext = companyLinkRepository ? new CompanyContextService({
+    graph: graphClient, links: companyLinkRepository, profiles, assessments,
+    now: overrides.now ?? (() => new Date()), profileTtlDays: config.profileCacheTtlDays,
+  }) : undefined;
+  const companyLinks = graphClient && companyLinkRepository ? new CompanyLinkService({
+    graph: graphClient, links: companyLinkRepository, profiles, now: overrides.now ?? (() => new Date()),
+  }) : undefined;
   const servicesFor = (userId: string, token: string): McpServices => ({
     contactUpload: contactImport ? { actor: userId, sessions: uploadSessions, sourceTokenHash: tokenService.hash(token),
       baseUrl, html: uploadHtml } : undefined,
+    companyContext, companyLinks,
+    companyProfileOptions: { now: overrides.now, ttlDays: config.profileCacheTtlDays },
     contactLibrary,
     contactImport,
     contactSearch,
@@ -318,7 +331,7 @@ export function createApplication(
     getCompanyProfile: input => activity.track(() => profileService.get(input.query, input.regionHint)),
     submitAssessment: input => activity.track(() => assessmentService.submit(input, userId)),
     getAssessmentStatus: input => activity.track(() => assessmentService.status(input)),
-    getAssessmentReport: input => activity.track(() => assessmentService.report(input)),
+    getAssessmentReport: input => activity.track(() => assessmentService.reportWithUpdates(input, companyContext, abortController.signal)),
     getContacts: input => activity.track(() => contactService.get(input)),
     askCompany: input => activity.track(() => questionService.ask(input, abortController.signal)),
   });

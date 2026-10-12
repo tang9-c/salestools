@@ -4,6 +4,8 @@ import { UtcTimestampSchema } from './identity.js';
 import { OpportunityLevelSchema } from './opportunity.js';
 import { ResearchSourceStatusSchema } from './research.js';
 
+export * from './company-context.js';
+import { CompanyOverviewSchema, RelatedUpdatesSchema } from './company-context.js';
 export * from './identity.js';
 export * from './gaps.js';
 export * from './research.js';
@@ -38,6 +40,7 @@ export const BasicProfileSchema = z.object({
 }).strict();
 
 const CompanyProfileCompletedSchema = z.object({
+  company_context: z.lazy(() => CompanyOverviewSchema).optional(),
   source_status: z.literal('completed'),
   candidates: z.array(CandidateSchema),
   basic_profile: BasicProfileSchema.nullable(),
@@ -102,6 +105,8 @@ const AssessmentReportCompletedSchema = z.object({
   overall_opportunity: OpportunityLevelSchema,
   recommended_product: ProductKeySchema.nullable(),
   collected_at: UtcTimestampSchema,
+  generated_at: UtcTimestampSchema.optional(),
+  related_updates: z.lazy(() => RelatedUpdatesSchema).optional(),
   dynamic_signal_freshness: z.enum(['current', 'stale']),
   source_status: z.object({
     qcc: ResearchSourceStatusSchema,

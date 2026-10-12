@@ -1,3 +1,9 @@
+import type { CompanyContextService } from '../companies/company-context-service.js';
+import type { CompanyLinkService } from '../companies/company-link.js';
+import type { RelatedUpdates } from '../companies/company-context-types.js';
+import { CompanyOverviewSchema } from '../contracts/company-context.js';
+import { unavailableOverview } from './company-context-output.js';
+import { registerCompanyLinkTools } from './company-link-tools.js';
 import { McpServer } from '@modelcontextprotocol/server';
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { z } from 'zod';
@@ -13,6 +19,7 @@ import type { CompanyQuestionInput } from '../orchestration/company-question-ser
 import type { CompanyQuestionResult } from '../contracts/index.js';
 import {
   AssessmentIdInputSchema,
+  AssessmentReportInputSchema,
   AssessmentReportOutputSchema,
   AssessmentStatusOutputSchema,
   CompanyProfileInputSchema,
@@ -109,6 +116,8 @@ export type AssessmentReportServiceOutput = {
   overallOpportunity: OpportunityLevel;
   recommendedProduct: ProductKey | null;
   collectedAt: string;
+  generatedAt?: string;
+  relatedUpdates?: RelatedUpdates;
   dynamicSignalFreshness: 'current' | 'stale';
   sourceStatus: {
     qcc: ResearchSourceStatus;
@@ -129,9 +138,12 @@ export interface McpServices {
   getCompanyProfile(input: CompanyProfileServiceInput): Awaitable<CompanyProfileServiceOutput>;
   submitAssessment(input: SubmitAssessmentServiceInput, userId: string): Awaitable<SubmitAssessmentServiceOutput>;
   getAssessmentStatus(input: AssessmentServiceInput): Awaitable<AssessmentStatusServiceOutput>;
-  getAssessmentReport(input: AssessmentServiceInput): Awaitable<AssessmentReportServiceOutput>;
+  getAssessmentReport(input: AssessmentServiceInput & { includeRelatedUpdates?: boolean }): Awaitable<AssessmentReportServiceOutput>;
   getContacts(input: CompanyProfileServiceInput): Awaitable<ContactServiceOutput>;
   askCompany(input: CompanyQuestionInput): Awaitable<CompanyQuestionResult>;
+  companyContext?: Pick<CompanyContextService, 'detail' | 'summaries' | 'overview' | 'relatedUpdates'>;
+  companyLinks?: Pick<CompanyLinkService, 'change'>;
+  companyProfileOptions?: { now?: () => Date; ttlDays?: number };
   contactLibrary?: ContactLibraryService;
   contactImport?: ContactImportService;
   contactSearch?: ContactSearch;
@@ -213,6 +225,8 @@ function assessmentReportOutput(output: AssessmentReportServiceOutput) {
     overall_opportunity: output.overallOpportunity,
     recommended_product: output.recommendedProduct,
     collected_at: output.collectedAt,
+    ...(output.generatedAt === undefined ? {} : { generated_at: output.generatedAt }),
+    ...(output.relatedUpdates === undefined ? {} : { related_updates: output.relatedUpdates }),
     dynamic_signal_freshness: output.dynamicSignalFreshness,
     source_status: {
       qcc: output.sourceStatus.qcc,
@@ -286,19 +300,29 @@ export function buildMcpServer(services: McpServices): McpServer {
       }] }));
   }
 
-  if (services.contactLibrary) registerContactTools(server, services.contactLibrary);
+  if (services.contactLibrary) registerContactTools(server, services.contactLibrary, services.companyContext, services.companyProfileOptions);
   if (services.contactImport) registerContactImportTools(server, services.contactImport);
-  if (services.contactSearch) registerContactSearchTools(server, services.contactSearch, services.vectorIndexer, services.contactSearchApp);
+  if (services.contactSearch) registerContactSearchTools(server, services.contactSearch, services.vectorIndexer, services.contactSearchApp, services.companyContext);
   if (services.contactAnswer) registerContactAnswerTools(server, services.contactAnswer);
+
+  if (services.companyLinks) registerCompanyLinkTools(server, services.companyLinks);
 
   server.registerTool('get_company_profile', {
     description: 'Default tool for basic company-profile lookups and ambiguous requests; use it before any formal assessment.',
     inputSchema: CompanyProfileInputSchema,
     outputSchema: CompanyProfileOutputSchema,
-  }, async input => toolResult(companyProfileOutput(await services.getCompanyProfile({
-    query: input.query,
-    ...(input.region_hint === undefined ? {} : { regionHint: input.region_hint }),
-  }))));
+  }, async input => {
+    const output = companyProfileOutput(await services.getCompanyProfile({
+      query: input.query,
+      ...(input.region_hint === undefined ? {} : { regionHint: input.region_hint }),
+    }));
+    if (!input.include_company_context || output.source_status !== 'completed'
+      || output.candidates.length !== 1 || output.basic_profile === null) return toolResult(output);
+    let overview = unavailableOverview(services.companyContext ? 'unavailable' : 'not_applicable');
+    try { if (services.companyContext) overview = await services.companyContext.overview(output.candidates[0]!.credit_code); }
+    catch (error) { if (error instanceof Error && error.name === 'AbortError') throw error; }
+    return toolResult(CompanyProfileOutputSchema.parse({ ...output, company_context: CompanyOverviewSchema.parse(overview) }));
+  });
 
   server.registerTool('submit_assessment', {
     description: 'Use only for an explicit formal assessment after the user confirms legal_name and credit_code.',
@@ -320,10 +344,11 @@ export function buildMcpServer(services: McpServices): McpServer {
 
   server.registerTool('get_assessment_report', {
     description: 'Read a completed assessment report, or its current processing or failure state.',
-    inputSchema: AssessmentIdInputSchema,
+    inputSchema: AssessmentReportInputSchema,
     outputSchema: AssessmentReportOutputSchema,
-  }, async ({ assessment_id }) => toolResult(assessmentReportOutput(await services.getAssessmentReport({
-    assessmentId: assessment_id,
+    _meta: { ui: { visibility: ['model', 'app'] } },
+  }, async ({ assessment_id, include_related_updates }) => toolResult(assessmentReportOutput(await services.getAssessmentReport({
+    assessmentId: assessment_id, includeRelatedUpdates: include_related_updates,
   }))));
 
   server.registerTool('discover_contacts', {

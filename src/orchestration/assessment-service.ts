@@ -1,3 +1,5 @@
+import type { CompanyContextService } from '../companies/company-context-service.js';
+import type { RelatedUpdates } from '../companies/company-context-types.js';
 import type {
   AssessmentRecord,
   AssessmentRepository,
@@ -107,11 +109,34 @@ export class AssessmentService {
       legalName: record.legalName,
       overallOpportunity: record.overallOpportunity,
       recommendedProduct: record.recommendedProduct,
+      generatedAt: record.completedAt,
       collectedAt: record.collectedAt,
       dynamicSignalFreshness: presentation.dynamicSignalFreshness,
       sourceStatus: record.sourceStatus,
       markdown: presentation.markdown,
     };
+  }
+
+  async reportWithUpdates(input: { assessmentId: string; includeRelatedUpdates?: boolean },
+    context?: Pick<CompanyContextService, 'relatedUpdates'>, signal?: AbortSignal) {
+    const record = this.required(input.assessmentId);
+    const report = this.report(input);
+    if (report.status !== 'completed' || !input.includeRelatedUpdates) return report;
+    signal?.throwIfAborted();
+    const since = record.completedAt!;
+    let relatedUpdates: RelatedUpdates;
+    if (!context) relatedUpdates = { state: 'not_applicable', warnings: [], since,
+      items: [], scope: [], truncated: false };
+    else try {
+      relatedUpdates = await context.relatedUpdates(record.creditCode, since, signal);
+      signal?.throwIfAborted();
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      relatedUpdates = { state: 'unavailable', warnings: ['RELATED_UPDATES_UNAVAILABLE'],
+        since, items: [], scope: [], truncated: false };
+    }
+    return { ...report, relatedUpdates };
   }
 
   failInterruptedAssessments(): number {

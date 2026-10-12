@@ -3,6 +3,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   AssessmentIdInputSchema,
+  AssessmentReportInputSchema,
   AskCompanyInputSchema,
   CompanyProfileInputSchema,
   GetContactsInputSchema,
@@ -138,7 +139,7 @@ async function connectedClient(toolServices: McpServices) {
 
 describe('MCP tool schemas', () => {
   it('uses strict bounded input schemas and defaults force_refresh to false', () => {
-    expect(CompanyProfileInputSchema.parse({ query: '测试公司' })).toEqual({ query: '测试公司' });
+    expect(CompanyProfileInputSchema.parse({ query: '测试公司' })).toEqual({ query: '测试公司', include_company_context: false });
     expect(CompanyProfileInputSchema.safeParse({ query: '', unknown: true }).success).toBe(false);
     expect(CompanyProfileInputSchema.safeParse({ query: 'x', region_hint: '' }).success).toBe(false);
     expect(CompanyProfileInputSchema.safeParse({ query: 'x'.repeat(257) }).success).toBe(false);
@@ -153,6 +154,8 @@ describe('MCP tool schemas', () => {
       legal_name: '测试制造有限公司', credit_code: '91310000TEST000001', extra: true,
     }).success).toBe(false);
 
+    expect(AssessmentReportInputSchema.parse({ assessment_id: assessmentId })).toEqual({ assessment_id: assessmentId, include_related_updates: false });
+    expect(AssessmentIdInputSchema.safeParse({ assessment_id: assessmentId, include_related_updates: true }).success).toBe(false);
     expect(AssessmentIdInputSchema.safeParse({ assessment_id: assessmentId }).success).toBe(true);
     expect(AssessmentIdInputSchema.safeParse({ assessment_id: 'not-uuid' }).success).toBe(false);
     expect(AssessmentIdInputSchema.safeParse({ assessment_id: assessmentId, user_id: 'other' }).success).toBe(false);
@@ -252,7 +255,7 @@ describe('MCP tool schemas', () => {
       { legalName: '测试制造有限公司', creditCode: '91310000TEST000001', forceRefresh: false },
       '',
       { assessmentId },
-      { assessmentId },
+      { assessmentId, includeRelatedUpdates: false },
       { query: '测试制造', regionHint: '上海' },
       { legalName: '测试制造有限公司', creditCode: '91310000TEST000001', question: 'SolidWorks 招聘说明什么？', assessmentId },
     ]);

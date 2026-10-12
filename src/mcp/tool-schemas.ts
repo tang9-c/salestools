@@ -10,6 +10,7 @@ import {
 export const CompanyProfileInputSchema = z.object({
   query: z.string().min(1).max(256),
   region_hint: z.string().min(1).max(64).optional(),
+  include_company_context: z.boolean().default(false),
 }).strict();
 
 export const SubmitAssessmentInputSchema = z.object({
@@ -21,6 +22,10 @@ export const SubmitAssessmentInputSchema = z.object({
 export const AssessmentIdInputSchema = z.object({
   assessment_id: z.uuid(),
 }).strict();
+
+export const AssessmentReportInputSchema = AssessmentIdInputSchema.extend({
+  include_related_updates: z.boolean().default(false),
+});
 
 export const GetContactsInputSchema = z.object({
   query: z.string().trim().min(1).max(48),
