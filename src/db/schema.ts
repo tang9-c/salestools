@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS assessments (
 CREATE UNIQUE INDEX IF NOT EXISTS one_processing_per_company
 ON assessments(cache_key) WHERE status = 'processing';
 
+CREATE INDEX IF NOT EXISTS assessments_company_completed
+ON assessments(credit_code, status, completed_at DESC, assessment_id DESC);
+
 CREATE TABLE IF NOT EXISTS company_links (
   organization_id TEXT PRIMARY KEY,
   credit_code TEXT,

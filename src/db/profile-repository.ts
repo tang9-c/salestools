@@ -39,6 +39,26 @@ function toStoredProfile(row: ProfileRow): StoredCompanyProfile {
 export class ProfileRepository {
   constructor(private readonly database: DatabaseSync) {}
 
+  findByCreditCodes(codes: string[]): StoredCompanyProfile[] {
+    if (codes.length === 0) return [];
+    const rows = this.database.prepare(`
+      SELECT normalized_legal_name, identity_json, basic_profile_json, collected_at
+      FROM company_profiles WHERE credit_code IN (SELECT value FROM json_each(?))
+      ORDER BY credit_code
+    `).all(JSON.stringify(codes)) as unknown as ProfileRow[];
+    return rows.map(toStoredProfile);
+  }
+
+  findByNormalizedNames(names: string[]): StoredCompanyProfile[] {
+    if (names.length === 0) return [];
+    const rows = this.database.prepare(`
+      SELECT normalized_legal_name, identity_json, basic_profile_json, collected_at
+      FROM company_profiles WHERE normalized_legal_name IN (SELECT value FROM json_each(?))
+      ORDER BY credit_code
+    `).all(JSON.stringify(names)) as unknown as ProfileRow[];
+    return rows.map(toStoredProfile);
+  }
+
   upsert(input: CompanyProfileInput): void {
     const identity = IdentityProfileSchema.parse(input.identity);
     const basicProfile = BasicProfileSchema.parse(input.basicProfile);

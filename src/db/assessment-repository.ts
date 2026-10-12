@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import type { Page, ReportItem, ReportSummary } from '../companies/company-context-types.js';
 import {
   AssessmentResultAuditSchema,
   EvidenceSnapshotSchema,
@@ -126,6 +127,51 @@ function ttlCutoff(now: Date, ttlDays: number): string {
 
 export class AssessmentRepository {
   constructor(private readonly database: DatabaseSync) {}
+
+  summariesByCreditCodes(codes: string[]): Map<string, ReportSummary> {
+    const result = new Map(codes.map(code => [code, { count: 0, latest: null } as ReportSummary]));
+    if (codes.length === 0) return result;
+    const rows = this.database.prepare(`
+      WITH ranked AS (
+        SELECT credit_code, assessment_id, completed_at AS generated_at, collected_at,
+          overall_opportunity, recommended_product,
+          row_number() OVER (PARTITION BY credit_code ORDER BY completed_at DESC, assessment_id DESC) AS rank,
+          count(*) OVER (PARTITION BY credit_code) AS report_count
+        FROM assessments
+        WHERE credit_code IN (SELECT value FROM json_each(?)) AND status = 'completed'
+      ) SELECT * FROM ranked WHERE rank = 1
+    `).all(JSON.stringify(codes)) as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      result.set(row.credit_code as string, {
+        count: row.report_count as number,
+        latest: {
+          assessment_id: row.assessment_id as string,
+          generated_at: row.generated_at as string,
+          collected_at: row.collected_at as string,
+          overall_opportunity: row.overall_opportunity as string,
+          recommended_product: row.recommended_product as string | null,
+        },
+      });
+    }
+    return result;
+  }
+
+  listCompleted(code: string, offset: number, limit: number): Page<ReportItem> {
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+      throw new Error('INVALID_PAGINATION');
+    }
+    const total = (this.database.prepare(`
+      SELECT count(*) AS count FROM assessments WHERE credit_code = ? AND status = 'completed'
+    `).get(code) as { count: number }).count;
+    const items = this.database.prepare(`
+      SELECT assessment_id, completed_at AS generated_at, collected_at,
+        overall_opportunity, recommended_product
+      FROM assessments WHERE credit_code = ? AND status = 'completed'
+      ORDER BY completed_at DESC, assessment_id DESC LIMIT ? OFFSET ?
+    `).all(code, limit, offset) as unknown as ReportItem[];
+    const next = offset + items.length;
+    return { items, total, next_offset: next < total ? next : null, complete: true };
+  }
 
   createOrReuseAssessment(
     input: AssessmentInput,

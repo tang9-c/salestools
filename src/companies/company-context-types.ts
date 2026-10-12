@@ -56,3 +56,13 @@ export interface LinkResolution {
   candidates: Array<{ credit_code: string; legal_name: string }>;
   warnings: string[];
 }
+
+export interface ReportItem {
+  assessment_id: string;
+  generated_at: string;
+  collected_at: string;
+  overall_opportunity: string;
+  recommended_product: string | null;
+}
+
+export interface ReportSummary { count: number; latest: ReportItem | null }
