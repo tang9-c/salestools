@@ -374,6 +374,8 @@ export function buildMcpServer(services: McpServices): McpServer {
     return toolResult(AskCompanyOutputSchema.parse({
       status: answer.status, legal_name: answer.legalName, markdown: answer.markdown,
       used_fresh_research: answer.usedFreshResearch, collected_at: answer.collectedAt,
+      ...(answer.context_citations ? {context_citations:answer.context_citations}:{}),
+      ...(answer.context_warnings ? {context_warnings:answer.context_warnings}:{}),
       sources: answer.sources.map(source => ({
         title: source.title, source: source.source, url: source.url,
         published_at: source.publishedAt,

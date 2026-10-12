@@ -49,11 +49,13 @@ function contactPageState(value: unknown): { evidence: ContactPageState; relatio
 
 /** Internal consumers need all cited facts; the MCP tool deliberately exposes pages instead. */
 export async function readCompleteContact(graph: GraphClient, entityId: string, options: {
-  evidence?: boolean; relations?: boolean;
+  evidence?: boolean; relations?: boolean; signal?: AbortSignal;
   // Opt in to returning only pages already validated against the initial version.
   onIncomplete?: () => void;
 } = {}): Promise<Record<string, unknown> | null> {
-  const first = await graph.request<Record<string, unknown> | null>('get_contact', { entity_id: entityId, claim_limit: 0 });
+  options.signal?.throwIfAborted();
+  const first = await graph.request<Record<string, unknown> | null>('get_contact', { entity_id: entityId, claim_limit: 0 }, ...(options.signal ? [options.signal] as const : [] as const));
+  options.signal?.throwIfAborted();
   if (!first) return null;
   const initial = contactPageState(first);
   if (!initial) return first;
@@ -61,18 +63,21 @@ export async function readCompleteContact(graph: GraphClient, entityId: string, 
   const includeRelations = options.relations !== false;
   const evidence = includeEvidence && Array.isArray(first.evidence) ? [...first.evidence] : [];
   const relations = includeRelations && Array.isArray(first.relations) ? [...first.relations] : [];
+  const conflicts = Array.isArray(first.conflicts) ? [...first.conflicts] : [];
   let state = initial;
   const maxPages = 40;
   try {
     for (let pageIndex = 1; (includeEvidence && state.evidence.next_offset !== null)
       || (includeRelations && state.relations.next_offset !== null); pageIndex++) {
+      options.signal?.throwIfAborted();
       if (pageIndex >= maxPages) throw new GraphClientError('GRAPH_CONTACT_PAGE_LIMIT');
       const evidenceOffset = includeEvidence ? state.evidence.next_offset ?? state.evidence.total : state.evidence.total;
       const relationOffset = includeRelations ? state.relations.next_offset ?? state.relations.total : state.relations.total;
       const next = await graph.request<Record<string, unknown> | null>('get_contact', {
         entity_id: entityId, evidence_offset: evidenceOffset, relation_offset: relationOffset,
         evidence_limit: 50, relation_limit: 50, claim_limit: 0,
-      });
+      }, ...(options.signal ? [options.signal] as const : [] as const));
+      options.signal?.throwIfAborted();
       if (!next || next.version !== first.version || next.index_content_version !== first.index_content_version
         || !Array.isArray(next.evidence) || !Array.isArray(next.relations)) {
         throw new GraphClientError('GRAPH_CONTACT_CHANGED_DURING_READ');
@@ -88,6 +93,7 @@ export async function readCompleteContact(graph: GraphClient, entityId: string, 
       }
       if (includeEvidence && state.evidence.next_offset !== null) evidence.push(...next.evidence);
       if (includeRelations && state.relations.next_offset !== null) relations.push(...next.relations);
+      if (Array.isArray(next.conflicts)) conflicts.push(...next.conflicts);
       state = following;
     }
     if ((includeEvidence && evidence.length !== initial.evidence.total)
@@ -95,11 +101,12 @@ export async function readCompleteContact(graph: GraphClient, entityId: string, 
       throw new GraphClientError('GRAPH_INVALID_RESPONSE');
     }
   } catch (error) {
+    options.signal?.throwIfAborted();
     if (!options.onIncomplete) throw error;
     options.onIncomplete();
-    return { ...first, evidence, relations, pagination: state };
+    return { ...first, evidence, relations, conflicts, pagination: state };
   }
-  return { ...first, evidence, relations,
+  return { ...first, evidence, relations, conflicts,
     pagination: { evidence: includeEvidence ? { total: evidence.length, next_offset: null } : initial.evidence,
       relations: includeRelations ? { total: relations.length, next_offset: null } : initial.relations } };
 }

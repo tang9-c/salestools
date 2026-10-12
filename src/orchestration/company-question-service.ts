@@ -1,3 +1,6 @@
+import { createMaterialReadContext, readSelectedReport, selectReportForQuestion, dedupeMaterials, validateContextRefs } from '../companies/company-evidence.js';
+import type { CompanyContextService } from '../companies/company-context-service.js';
+import type { ContextMaterial, ContextCitation, ReportItem, Page } from '../companies/company-context-types.js';
 import type {
   CompanyAnswerClaim, CompanyQuestionResult, EvidenceFact, EvidenceSnapshot,
   IdentityProfile, ResearchItem, SnapshotItem,
@@ -12,7 +15,7 @@ import type { CompanyAnswerInput } from '../upstream/ark/company-answer.js';
 
 interface AssessmentStore {
   get(id: string): AssessmentRecord | null;
-  findLatestCompletedWithSnapshot(code: string, now: Date, ttlDays: number): AssessmentRecord | null;
+  listCompleted(code: string, offset: number, limit: number): Page<ReportItem>;
 }
 interface ProfileStore {
   findFreshByCreditCode(code: string, now: Date, ttlDays: number): StoredCompanyProfile | null;
@@ -29,6 +32,7 @@ interface QuestionAnswerClient {
     claims: CompanyAnswerClaim[];
     omittedCount?: number;
     includedEvidenceIds?: string[];
+    includedContextRefs?: string[];
   }>;
 }
 
@@ -40,6 +44,7 @@ export interface CompanyQuestionInput {
 }
 
 export interface CompanyQuestionOptions {
+  companyContext?: Pick<CompanyContextService, 'materials'>;
   profiles: ProfileStore;
   assessments: AssessmentStore;
   profileTtlDays: number;
@@ -234,6 +239,8 @@ function render(
   collectedAt: string,
   unansweredTopics: QuestionTopic[] = [],
   unansweredPurchaseInference = false,
+  context: ContextMaterial[] = [],
+  contextWarnings: string[] = [],
 ): CompanyQuestionResult {
   const byId = new Map(items.map(item => [item.evidenceId, item]));
   const sections = [
@@ -253,7 +260,8 @@ function render(
     lines.push(`## ${heading}`, '');
     for (const claim of group) {
       const refs = claim.evidenceIds.map(id => cited.get(id)).filter((value): value is number => value !== undefined);
-      lines.push(`- ${markdownText(claim.text)}${refs.length === 0 ? '' : ` [${refs.join('、')}]`}`);
+      const contextRefs = (claim.contextRefs ?? []).map(markdownText);
+      lines.push(`- ${markdownText(claim.text)}${refs.length === 0 ? '' : ` [${refs.join('、')}]`}${contextRefs.length === 0 ? '' : `（库内来源：${contextRefs.join('、')}）`}`);
     }
     lines.push('');
   }
@@ -279,7 +287,11 @@ function render(
   if (!claims.some(claim => claim.category === 'supported')) {
     lines.splice(2, 0, '没有足够的已确认主体证据回答这个问题。', '');
   }
+  const contextCitations = validateContextRefs(claims.flatMap(claim=>claim.contextRefs ?? []),context);
+  if (contextCitations.length) lines.push('## 库内来源','',...contextCitations.map(c=>`- ${markdownText(c.ref)}：${markdownText(c.quote ?? String(c.value ?? '已有资料'))}`));
   return {
+    ...(contextCitations.length ? {context_citations:contextCitations}:{}),
+    ...(contextWarnings.length ? {context_warnings:contextWarnings}:{}),
     status: answered ? 'answered' : 'insufficient', legalName,
     markdown: lines.join('\n').trim(), usedFreshResearch, collectedAt, sources,
   };
@@ -323,21 +335,39 @@ export class CompanyQuestionService {
     if (profile === null || profile.identity.legalName !== input.legalName || profile.identity.creditCode !== input.creditCode) {
       return failed(input.legalName, '主体未确认或画像已过期，请先调用 get_company_profile');
     }
-    let report: AssessmentRecord | null;
-    if (input.assessmentId !== undefined) {
-      report = this.options.assessments.get(input.assessmentId);
-      if (report === null || report.status !== 'completed'
-        || report.legalName !== input.legalName || report.creditCode !== input.creditCode) {
-        return failed(input.legalName, '指定报告不存在、未完成或主体不一致');
-      }
-    } else {
-      report = this.options.assessments.findLatestCompletedWithSnapshot(input.creditCode, now, 30);
+    signal.throwIfAborted();
+    const contextWarnings: string[] = [];
+    let reports: ReportItem[] = [];
+    if (input.assessmentId === undefined) {
+      try { reports = this.options.assessments.listCompleted(input.creditCode,0,1).items; }
+      catch { signal.throwIfAborted(); contextWarnings.push('REPORT_DIRECTORY_UNAVAILABLE'); }
+    }
+    const readContext = createMaterialReadContext(signal,selectReportForQuestion(reports,input.assessmentId));
+    let report: AssessmentRecord | null = null;
+    try { report = readSelectedReport(readContext,id=>this.options.assessments.get(id)); }
+    catch { signal.throwIfAborted(); contextWarnings.push('REPORT_UNAVAILABLE'); }
+    if (input.assessmentId !== undefined && (report === null || report.status !== 'completed'
+      || report.legalName !== input.legalName || report.creditCode !== input.creditCode)) {
+      return failed(input.legalName, '指定报告不存在、未完成或主体不一致');
+    }
+    const selectedContext = readContext;
+    let context: ContextMaterial[] = [];
+    if (this.options.companyContext) {
+      try {
+        const found = await this.options.companyContext.materials(input.creditCode,input.question,selectedContext);
+        signal.throwIfAborted();
+        context = dedupeMaterials(found.items).slice(0,20);
+        contextWarnings.push(...found.warnings);
+      } catch { signal.throwIfAborted(); contextWarnings.push('COMPANY_CONTEXT_UNAVAILABLE'); }
     }
     const snapshot = report?.evidenceSnapshot;
     const reuse = snapshot !== null && snapshot !== undefined && canReuse(snapshot, input.question, now);
     let material: EvidenceSnapshot;
     const limitations: string[] = [];
-    if (reuse) {
+    const contextOnly = context.some(item=>item.citation.source_type === 'contact' && ['worksFor','memberOf','clientOrganization'].includes(item.predicate)) && /(?:联系人|库内|任职|关系|项目|客户)/u.test(input.question) && !/(?:招聘|产品发布|融资|扩产|招标|公告|公开动态|新闻)/u.test(input.question);
+    if (contextOnly) {
+      material = {collectedAt:now.toISOString(),items:[],facts:[]};
+    } else if (reuse) {
       material = snapshot;
     } else {
       markFresh();
@@ -356,7 +386,7 @@ export class CompanyQuestionService {
             qccCovered = topic;
             found.forEach(item => tagged.set(item.evidenceId, topic));
           }
-        } catch { limitations.push('企查查定向查询失败'); }
+        } catch { signal.throwIfAborted(); limitations.push('企查查定向查询失败'); }
         finally { await gateway.close().catch(() => undefined); }
       }
       const search = this.options.searchFactory(signal);
@@ -378,16 +408,16 @@ export class CompanyQuestionService {
             if (!tagged.has(item.evidenceId)) tagged.set(item.evidenceId, topic);
           });
         }
-        catch { limitations.push('豆包搜索定向查询失败'); }
+        catch { signal.throwIfAborted(); limitations.push('豆包搜索定向查询失败'); }
       }
       material = snapshotOf(items, this.now().toISOString());
       if (snapshot === null && report !== null) limitations.push('原报告没有可复用的证据快照，已尝试定向补查');
     }
     const confirmed = material.items.filter(item => item.entityScope === 'legal_entity' && item.entityMatch === 'confirmed');
     if (signal.aborted) throw new Error('question-aborted');
-    if (confirmed.length === 0) {
+    if (confirmed.length === 0 && context.length === 0) {
       return render(input.legalName, [], material.items, limitations, 0, !reuse, material.collectedAt,
-        topics, asksPurchaseInference);
+        topics, asksPurchaseInference, context, contextWarnings);
     }
     const product = input.question.normalize('NFKC').toLowerCase().match(PRODUCTS)?.[0]?.replace(/\s+/gu, '');
     for (const item of material.items) {
@@ -405,13 +435,18 @@ export class CompanyQuestionService {
       };
       return rank(right) - rank(left);
     });
+    const snapshotIds = new Set(material.items.map(item=>item.evidenceId));
+    context = context.filter(item=>item.citation.source_type !== 'assessment' || !snapshotIds.has(item.citation.evidence_id ?? ''));
     const answer = await this.options.answerFactory(signal).answer({
       legalName: profile.identity.legalName, question: input.question,
-      items: orderedItems, facts: material.facts,
+      items: orderedItems, facts: material.facts, context,
     });
+    const includedContext = context.filter(item=>(answer.includedContextRefs ?? []).includes(item.citation.ref));
     const included = new Set(answer.includedEvidenceIds ?? material.items.map(item => item.evidenceId));
     const byId = new Map(material.items.map(item => [item.evidenceId, item]));
     const claims = answer.claims.flatMap(claim => {
+      let citations: ContextCitation[];
+      try { citations = validateContextRefs(claim.contextRefs ?? [],includedContext); } catch { return []; }
       if (claim.evidenceIds.some(id => !included.has(id) || !byId.has(id))) return [];
       const hasUnconfirmedSource = claim.evidenceIds.some(id => {
         const item = byId.get(id)!;
@@ -421,7 +456,8 @@ export class CompanyQuestionService {
         return [{ ...claim, category: 'unknown' as const }];
       }
       if (claim.category === 'supported') {
-        if (claim.evidenceIds.length === 0) return [];
+        if (claim.evidenceIds.length === 0 && citations.length === 0) return [];
+        if ((claim.contextRefs?.length ?? 0) > 0 && /(?:拥有|具有|有|掌握|负责).{0,8}(?:采购权|采购决定权|采购决策权)/u.test(claim.text)) return [];
         const affirmativePurchase = /(?:已(?:经)?采购|采购了|计划采购|拟采购|正在采购|准备采购|即将采购|采购意向|采购需求|预算已落实|已有专项预算|已购买|正在购买)/u;
         const directProcurementSource = directlySupportsPurchase(claim, byId, profile.identity.legalName);
         const unsupportedPurchase = claim.text.split(/[，。；;！!]/u).some(clause => {
@@ -464,8 +500,8 @@ export class CompanyQuestionService {
       /(?:采购|购买)/u.test(claim.text)
       && /(?:计划|意向|需求|证明|无法|不能|未获证实|已采购)/u.test(claim.text));
     return render(input.legalName, scopedClaims, material.items, limitations,
-      answer.omittedCount ?? 0, !reuse, material.collectedAt,
+      answer.omittedCount ?? 0, !reuse && !contextOnly, material.collectedAt,
       topics.length < 2 ? [] : topics.filter(topic => !answeredTopics.has(topic)),
-      asksPurchaseInference && !purchaseAnswered);
+      asksPurchaseInference && !purchaseAnswered, includedContext, contextWarnings);
   }
 }

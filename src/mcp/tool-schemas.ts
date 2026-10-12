@@ -1,3 +1,4 @@
+import { ContextCitationSchema } from '../contracts/company-context.js';
 import { z } from 'zod';
 import {
   AssessmentReportOutputSchema,
@@ -45,6 +46,8 @@ export const AskCompanyOutputSchema = z.object({
   markdown: z.string(),
   used_fresh_research: z.boolean(),
   collected_at: z.iso.datetime({ offset: true }).nullable(),
+  context_citations:z.array(ContextCitationSchema).max(20).optional(),
+  context_warnings:z.array(z.string()).optional(),
   sources: z.array(z.object({
     title: z.string(), source: z.enum(['qcc', 'doubao_search']),
     url: z.string().nullable(), published_at: z.iso.datetime({ offset: true }).nullable(),

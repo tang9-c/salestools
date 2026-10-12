@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AssessmentRepository } from '../src/db/assessment-repository.js';
 import { initializeDatabase } from '../src/db/database.js';
 import { ProfileRepository } from '../src/db/profile-repository.js';
-import { CompanyQuestionService } from '../src/orchestration/company-question-service.js';
+import { CompanyQuestionService, type CompanyQuestionOptions } from '../src/orchestration/company-question-service.js';
 import type { CompanyAnswerClaim, ResearchItem } from '../src/contracts/index.js';
 import type { CompanyAnswerInput } from '../src/upstream/ark/company-answer.js';
 import type { SearchQuery } from '../src/upstream/search/search-plan.js';
@@ -47,7 +47,7 @@ describe('CompanyQuestionService', () => {
   const databases: DatabaseSync[] = [];
   afterEach(() => databases.splice(0).forEach(db => db.close()));
 
-  function setup(options: { profile?: boolean; snapshotAgeDays?: number; qccFails?: boolean } = {}) {
+  function setup(options: { profile?: boolean; snapshotAgeDays?: number; qccFails?: boolean; companyContext?: CompanyQuestionOptions['companyContext'] } = {}) {
     const db = initializeDatabase(new DatabaseSync(':memory:'));
     databases.push(db);
     const profiles = new ProfileRepository(db);
@@ -65,13 +65,13 @@ describe('CompanyQuestionService', () => {
     const qccClose = vi.fn(async () => undefined);
     const search = vi.fn(async (_query: SearchQuery, _signal?: AbortSignal): Promise<ResearchItem[]> => []);
     const answer = vi.fn(async (_input: CompanyAnswerInput): Promise<{
-      claims: CompanyAnswerClaim[]; includedEvidenceIds?: string[]; omittedCount?: number;
+      claims: CompanyAnswerClaim[]; includedEvidenceIds?: string[]; includedContextRefs?: string[]; omittedCount?: number;
     }> => ({ claims: [{
       category: 'supported' as const, text: '该岗位要求 SolidWorks 技能，不能据此断定采购计划。',
       evidenceIds: ['qcc-recruitment-1'],
     }] }));
     const service = new CompanyQuestionService({
-      profiles, assessments, profileTtlDays: 30, now: () => NOW,
+      profiles, assessments, companyContext: options.companyContext, profileTtlDays: 30, now: () => NOW,
       qccFactory: () => ({ call: qccCall, close: qccClose }),
       searchFactory: () => ({ search }),
       answerFactory: () => ({ answer }),
@@ -90,6 +90,31 @@ describe('CompanyQuestionService', () => {
     };
     return { service, input, assessments, profiles, complete, qccCall, qccClose, search, answer, db };
   }
+
+  it.each(['这家公司库内有哪些联系人？','这家公司目前库内有哪些联系人和职位？'])('answers from supplied contacts without fresh research and rejects fabricated refs: %s', async question => {
+    const materials = vi.fn(async () => ({state:'ok' as const,warnings:[],omitted_count:0,contacts_read:1,
+      items:[{citation:{ref:'contact:e-work',source_type:'contact' as const,subject_id:'p1',quote:'张某曾任工程师'},
+        statement:'张某有工程师任职记录，当前状态未知。',source_key:'file:synthetic',predicate:'worksFor',object:'工程师'}]}));
+    const runtime = setup({companyContext:{materials}});
+    runtime.answer.mockResolvedValueOnce({claims:[{category:'supported',text:'张某有工程师任职记录，当前状态未知。',evidenceIds:[],contextRefs:['contact:e-work']},
+      {category:'supported',text:'伪造说法',evidenceIds:[],contextRefs:['fake']}],includedEvidenceIds:[],includedContextRefs:['contact:e-work']});
+    const result = await runtime.service.ask({...runtime.input,question});
+    expect(result.status).toBe('answered');
+    expect(result.markdown).toContain('当前状态未知');
+    expect(result.markdown).not.toContain('伪造说法');
+    expect(result.context_citations?.map(c=>c.ref)).toEqual(['contact:e-work']);
+    expect(runtime.search).not.toHaveBeenCalled();
+    expect(runtime.qccCall).not.toHaveBeenCalled();
+  });
+
+  it('refuses a contact ref excluded from the actual model input',async()=>{
+    const materials=vi.fn(async()=>({state:'ok' as const,warnings:[],omitted_count:0,contacts_read:1,items:[{citation:{ref:'omitted',source_type:'contact' as const,subject_id:'p1'},statement:'已有任职',source_key:'file:one',predicate:'worksFor',object:'工程师'}]}));
+    const r=setup({companyContext:{materials}});
+    r.answer.mockResolvedValueOnce({claims:[{category:'supported',text:'不得出现的说法',evidenceIds:[],contextRefs:['omitted']}],includedEvidenceIds:[],includedContextRefs:[]});
+    const result=await r.service.ask({...r.input,question:'库内联系人是谁？'});
+    expect(result.status).toBe('insufficient');expect(result.markdown).not.toContain('不得出现的说法');
+    expect(result.context_citations).toBeUndefined();
+  });
 
   it('rejects absent or mismatched confirmed identity before upstream calls', async () => {
     const missing = setup({ profile: false });

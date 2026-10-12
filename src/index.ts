@@ -150,8 +150,13 @@ export function createApplication(
   const vectorIndexer = graphClient && embedding
     ? new VectorIndexer({ graph: graphClient, embedding, model: config.embeddingModel! }) : undefined;
   const contactSearch = graphClient ? new ContactSearch(graphClient, embedding) : undefined;
+  const companyLinkRepository = graphClient ? new CompanyLinkRepository(database) : undefined;
+  const companyContext = companyLinkRepository ? new CompanyContextService({
+    graph: graphClient, links: companyLinkRepository, profiles, assessments,
+    now: overrides.now ?? (() => new Date()), profileTtlDays: config.profileCacheTtlDays,
+  }) : undefined;
   const contactAnswer = graphClient && contactSearch ? new ContactAnswerService({
-    graph: graphClient,
+    graph: graphClient, companyContext,
     resolvePeople: async name => {
       const page = await contactSearch.search({ name, mode: 'keyword', limit: 50 });
       return page.items.filter(item => item.label === 'Person' && item.name)
@@ -259,7 +264,7 @@ export function createApplication(
     now: overrides.now,
   });
   const questionService = new CompanyQuestionService({
-    profiles, assessments, profileTtlDays: config.profileCacheTtlDays,
+    profiles, assessments, companyContext, profileTtlDays: config.profileCacheTtlDays,
     now: overrides.now,
     requestTimeoutMs: overrides.questionTimeoutMs,
     qccFactory: signal => overrides.qccGateway === undefined
@@ -309,11 +314,6 @@ export function createApplication(
     now: overrides.now,
     signal: abortController.signal,
   });
-  const companyLinkRepository = graphClient ? new CompanyLinkRepository(database) : undefined;
-  const companyContext = companyLinkRepository ? new CompanyContextService({
-    graph: graphClient, links: companyLinkRepository, profiles, assessments,
-    now: overrides.now ?? (() => new Date()), profileTtlDays: config.profileCacheTtlDays,
-  }) : undefined;
   const companyLinks = graphClient && companyLinkRepository ? new CompanyLinkService({
     graph: graphClient, links: companyLinkRepository, profiles, now: overrides.now ?? (() => new Date()),
   }) : undefined;

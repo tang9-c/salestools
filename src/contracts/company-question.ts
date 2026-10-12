@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ContextCitationSchema } from './company-context.js';
 import { EvidenceFactSchema, EvidenceReferenceSchema } from './evidence.js';
 import { UtcTimestampSchema } from './identity.js';
 
@@ -22,6 +23,7 @@ export const CompanyAnswerClaimSchema = z.object({
   category: z.enum(['supported', 'interpretation', 'unknown']),
   text: z.string().trim().min(1).max(1000),
   evidenceIds: z.array(z.string()),
+  contextRefs: z.array(z.string()).max(20).optional(),
 }).strict();
 
 export const CompanyAnswerSchema = z.object({
@@ -42,6 +44,8 @@ export const CompanyQuestionResultSchema = z.object({
   usedFreshResearch: z.boolean(),
   collectedAt: UtcTimestampSchema.nullable(),
   sources: z.array(CompanyQuestionSourceSchema),
+  context_citations: z.array(ContextCitationSchema).max(20).optional(),
+  context_warnings: z.array(z.string()).optional(),
 }).strict();
 
 export type CompanyAnswerClaim = z.infer<typeof CompanyAnswerClaimSchema>;

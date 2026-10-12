@@ -173,3 +173,15 @@ it('rejects a bounded queue while the worker is stuck', async () => {
   await graph.close(50);
   await Promise.all([active, ...queued]);
 });
+
+it('merges conflicts from subsequent verified evidence pages', async () => {
+  const graph: GraphClient = {close:async()=>{},request:async <T>(_op:unknown,payload:unknown):Promise<T>=>{
+    const later=(payload as {evidence_offset?:number}).evidence_offset===1;
+    return {version:1,entity:{entity_id:'p1'},relations:[],evidence:[{evidence_id:later?'later':'first'}],
+      conflicts:later?[{evidence_id:'dispute',subject_kind:'relation',subject_id:'r1'}]:[],
+      pagination:{evidence:{total:2,next_offset:later?null:1},relations:{total:0,next_offset:null}}} as T;
+  }};
+  const result=await readCompleteContact(graph,'p1');
+  expect(result?.conflicts).toEqual([{evidence_id:'dispute',subject_kind:'relation',subject_id:'r1'}]);
+  expect(result?.evidence).toHaveLength(2);
+});

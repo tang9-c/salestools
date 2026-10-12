@@ -61,3 +61,13 @@ describe('ask_contacts MCP registration', () => {
     } finally { await session.close(); }
   });
 });
+
+it('preserves independently cited company context through MCP output validation',async()=>{
+  const session=await connected(async()=>({status:'answered',answer:'已有任职记录，企业行业为装备制造。',citations:[],facts:[],
+    context_citations:[{ref:'profile:one',source_type:'profile',subject_id:'company',value:'装备制造'}],context_warnings:['部分来源不可用']}));
+  try {
+    const response=await session.client.callTool({name:'ask_contacts',arguments:{question:'公司背景是什么？'}});
+    expect(response.isError).not.toBe(true);
+    expect(response.structuredContent).toMatchObject({context_citations:[{ref:'profile:one'}],context_warnings:['部分来源不可用']});
+  } finally {await session.close();}
+});

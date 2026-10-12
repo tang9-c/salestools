@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
+import { ContextCitationSchema } from '../contracts/company-context.js';
 import type { ContactAnswerService } from '../contacts/contact-answer.js';
 
 const askInput = z.object({
@@ -23,6 +24,8 @@ const answerOutput = z.object({
   citations: z.array(citation).max(20),
   candidates: z.array(z.object({ entity_id: z.string().min(1), name: z.string().min(1) }).strict()).max(50).optional(),
   facts: z.array(fact).max(20).optional(),
+  context_citations:z.array(ContextCitationSchema).max(20).optional(),
+  context_warnings:z.array(z.string()).optional(),
 }).strict().superRefine((value, context) => {
   if (!value.facts) return;
   const cited = new Set(value.citations.map(item => item.evidence_id));

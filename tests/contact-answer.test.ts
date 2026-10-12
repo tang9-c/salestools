@@ -22,14 +22,14 @@ function proof(relationId: string, evidenceId: string, quote: string, field_path
     source_type: 'file', file_name: 'synthetic.pdf', file_sha256: 'a'.repeat(64), quote, page: 1,
     locator_status: 'located', collected_at: time };
 }
-function service(records: Record<string, unknown>, matches: Record<string, { entity_id: string; name: string }[]> = {}, generate?: ContactAnswerOptions['generate']) {
+function service(records: Record<string, unknown>, matches: Record<string, { entity_id: string; name: string }[]> = {}, generate?: ContactAnswerOptions['generate'], extra: Partial<ContactAnswerOptions> = {}) {
   const request = vi.fn(async (op: GraphOp, payload: unknown) => {
     if (op !== 'get_contact') throw new Error(`unexpected ${op}`);
     return records[(payload as { entity_id: string }).entity_id] ?? null;
   });
   const graph = { request, close: vi.fn(async () => undefined) } as unknown as GraphClient;
   return { ask: new ContactAnswerService({ graph, resolvePeople: async name => matches[name] ?? [],
-    ...(generate ? { generate } : {}) }), request };
+    ...(generate ? { generate } : {}), ...extra }), request };
 }
 
 describe('evidenced contact answers', () => {
@@ -105,7 +105,7 @@ describe('evidenced contact answers', () => {
     const result = await ask.ask({ question: '陈晓的配偶是谁？', entity_id: 'p1' });
     expect(result.status).toBe('answered');
     expect(result.citations[0]?.evidence_id).toBe('later');
-    expect(request).toHaveBeenCalledWith('get_contact', expect.objectContaining({ evidence_offset: 1 }));
+    expect(request).toHaveBeenCalledWith('get_contact', expect.objectContaining({ evidence_offset: 1 }), expect.any(AbortSignal));
   });
 
   it('respects parent direction when asked from child or parent', async () => {
@@ -249,4 +249,31 @@ describe('evidenced contact answers', () => {
     expect(answer.citations.map(item => item.entity_id)).toEqual(['p1', 'p2']);
     expect(request.mock.calls.length).toBeLessThanOrEqual(3);
   });
+});
+
+it('cancels before subsequent contact evidence pages', async () => {
+  const controller = new AbortController();
+  const request = vi.fn(async () => {
+    controller.abort(new Error('stop'));
+    return {...detail('p1','陈晓'),pagination:{evidence:{total:1,next_offset:0},relations:{total:0,next_offset:null}}};
+  });
+  const ask = new ContactAnswerService({graph:{request} as unknown as GraphClient,resolvePeople:async()=>[]});
+  const result = await ask.ask({question:'在哪里任职？',entity_id:'p1'},controller.signal);
+  expect(result.status).toBe('failed');
+  expect(result.answer).toContain('取消');
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+it('filters original facts to the actual model citations and rejects fabricated context refs',async()=>{
+  const work1=relation('work1','p1','o1','worksFor',{role:{'@type':'OrganizationRole',roleName:'工程师'}});
+  const work2=relation('work2','p1','o2','worksFor',{role:{'@type':'OrganizationRole',roleName:'工程师'}});
+  const records={p1:detail('p1','张某',[work1,work2],[proof('work1','e1','张某任职甲公司工程师','$relation',{relation_type:'worksFor'}),proof('work2','e2','张某任职乙公司工程师','$relation',{relation_type:'worksFor'})]),o1:organization('o1','甲公司'),o2:organization('o2','乙公司')};
+  const generate=vi.fn<NonNullable<ContactAnswerOptions['generate']>>(async()=>({answer:'甲公司，工程师',citations:[{evidence_id:'e1',quote:'张某任职甲公司工程师'}]}));
+  const runtime=service(records,{},generate);
+  const input={question:'张某与企业的关联是什么？',entity_id:'p1'};
+  const valid=await runtime.ask.ask(input);
+  expect(valid.status).toBe('answered');expect(valid.facts?.map(f=>f.evidence_id)).toEqual(['e1']);
+  generate.mockResolvedValueOnce({answer:'甲公司，工程师',citations:[{evidence_id:'e1',quote:'张某任职甲公司工程师'}],contextRefs:['fabricated']});
+  const invalid=await runtime.ask.ask(input);
+  expect(invalid.status).toBe('failed');expect(invalid.context_citations).toBeUndefined();
 });
