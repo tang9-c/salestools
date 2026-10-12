@@ -1,4 +1,5 @@
 use contact_graph::{protocol::parse_and_dispatch, store::Store};
+use rusqlite::params;
 use serde_json::{json, Value};
 
 fn request(store: &Store, op: &str, payload: Value) -> Value {
@@ -69,6 +70,7 @@ fn name_query_selects_only_live_organizations_and_pages_stably() {
     assert_eq!(page1["ok"], true, "{page1}");
     assert_eq!(page1["result"]["items"].as_array().unwrap().len(), 1);
     assert_ne!(page1["result"]["items"][0]["entity_id"], person);
+    assert!(page1["result"]["items"][0]["identifiers"].is_array());
     let mut next = filter;
     next["offset"] = page1["result"]["next_offset"].clone();
     let page2 = request(&store, "company_organizations", next);
@@ -111,6 +113,13 @@ fn name_keys_follow_edits_and_archive_state() {
     );
     assert_eq!(archive["ok"], true, "{archive}");
     assert_eq!(lookup("新公司")["result"]["items"], json!([]));
+    let restore = request(
+        &store,
+        "restore_contact",
+        json!({"operation_id":"restore","actor":"tester","entity_id":id,"expected_version":3}),
+    );
+    assert_eq!(restore["ok"], true, "{restore}");
+    assert_eq!(lookup("新公司")["result"]["items"][0]["entity_id"], id);
 }
 
 #[test]
@@ -247,5 +256,244 @@ fn recent_pages_advance_and_include_person_job_title_evidence() {
             .iter()
             .any(|item| item["kind"] == "evidence" && item["label"] == "职业身份依据"),
         "{all}"
+    );
+}
+
+#[test]
+fn credit_code_whitelist_refreshes_and_reopen_backfills_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph.db");
+    let code = |property_id: &str, value: &str| json!({"@type":"PropertyValue","propertyID":property_id,"value":value});
+    let id;
+    {
+        let store = Store::open(&path).unwrap();
+        let correct = code("统一社会信用代码", " 91ABC ");
+        let wrong = code("其他编号", "OTHER");
+        let create = request(
+            &store,
+            "save_contact",
+            json!({"operation_id":"credit-create","actor":"tester",
+            "label":"Organization","set_properties":{"name":"代码公司","identifier":[correct,wrong]},
+            "evidence":[evidence("properties.name",json!("代码公司")),
+                evidence("properties.identifier",correct),evidence("properties.identifier",wrong)]}),
+        );
+        assert_eq!(create["ok"], true, "{create}");
+        id = create["result"]["entity_id"].as_str().unwrap().to_owned();
+        let find = |value: &str| {
+            request(
+                &store,
+                "company_organizations",
+                json!({"entity_ids":[],"credit_codes":[value],"normalized_names":[],"limit":50,"offset":0}),
+            )
+        };
+        assert_eq!(find("91abc")["result"]["items"][0]["entity_id"], id);
+        assert_eq!(find("OTHER")["result"]["items"], json!([]));
+        store
+            .graph
+            .connection()
+            .execute("DELETE FROM company_organization_keys", [])
+            .unwrap();
+        store
+            .graph
+            .connection()
+            .execute("DELETE FROM company_context_migrations", [])
+            .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let find = |value: &str| {
+        request(
+            &store,
+            "company_organizations",
+            json!({"entity_ids":[],"credit_codes":[value],"normalized_names":[],"limit":50,"offset":0}),
+        )
+    };
+    assert_eq!(find("91abc")["result"]["items"][0]["entity_id"], id);
+    let replacement = code("uscc", "NEW123");
+    let edit = request(
+        &store,
+        "save_contact",
+        json!({"operation_id":"credit-edit","actor":"tester",
+        "label":"Organization","entity_id":id,"expected_version":1,
+        "set_properties":{"identifier":[replacement]},"evidence":[evidence("properties.identifier",replacement)]}),
+    );
+    assert_eq!(edit["ok"], true, "{edit}");
+    assert_eq!(find("91abc")["result"]["items"], json!([]));
+    assert_eq!(find("new123")["result"]["items"][0]["entity_id"], id);
+}
+
+#[test]
+fn client_project_members_are_reachable_only_from_customer_organization() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let customer = entity(&store, "Organization", "客户", "customer");
+    let other = entity(&store, "Organization", "别家公司", "other");
+    let project = entity(&store, "Project", "项目", "project");
+    let member = entity(&store, "Person", "成员", "member");
+    let unrelated = entity(&store, "Person", "外人", "outsider");
+    let save = |operation: &str, source: &str, target: &str, kind: &str| {
+        request(
+            &store,
+            "save_relation",
+            json!({
+        "operation_id":operation,"actor":"tester","source_id":source,"target_id":target,
+        "relation_type":kind,"properties":{},"metadata":{},"evidence":[evidence("$relation",json!({
+            "relation_type":kind,"source_id":source,"target_id":target}))]}),
+        )
+    };
+    assert_eq!(
+        save("client", &project, &customer, "clientOrganization")["ok"],
+        true
+    );
+    assert_eq!(save("member", &member, &project, "memberOf")["ok"], true);
+    let (a, b) = if member < unrelated {
+        (&member, &unrelated)
+    } else {
+        (&unrelated, &member)
+    };
+    assert_eq!(save("family", a, b, "spouse")["ok"], true);
+    let page = request(
+        &store,
+        "company_relations",
+        json!({"organization_ids":[customer],"limit":50,"offset":0}),
+    );
+    assert_eq!(page["ok"], true, "{page}");
+    let kinds: Vec<&str> = page["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["relation_type"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds.len(), 2, "{page}");
+    assert!(kinds.contains(&"clientOrganization") && kinds.contains(&"memberOf"));
+    let unrelated_page = request(
+        &store,
+        "company_relations",
+        json!({"organization_ids":[other],"limit":50,"offset":0}),
+    );
+    assert_eq!(unrelated_page["result"]["items"], json!([]));
+}
+
+#[test]
+fn merge_retires_source_name_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let source = entity(&store, "Organization", "旧主体", "merge-source");
+    let target = entity(&store, "Organization", "保留主体", "merge-target");
+    let merged = request(
+        &store,
+        "merge_contacts",
+        json!({"operation_id":"merge","actor":"tester",
+        "source_id":source,"target_id":target,"expected_source_version":1,"expected_target_version":1}),
+    );
+    assert_eq!(merged["ok"], true, "{merged}");
+    let lookup = |name: &str| {
+        request(
+            &store,
+            "company_organizations",
+            json!({"entity_ids":[],"credit_codes":[],"normalized_names":[name],"limit":50,"offset":0}),
+        )
+    };
+    assert_eq!(lookup("旧主体")["result"]["items"], json!([]));
+    assert_eq!(
+        lookup("保留主体")["result"]["items"][0]["entity_id"],
+        target
+    );
+}
+
+#[test]
+fn imported_organization_is_searchable_without_reopening() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let job = store
+        .put_import_job(
+            &json!({"operation_id":"start","actor":"tester","file_id":"import-file",
+        "status":"queued","data":{"candidates":[]}}),
+        )
+        .unwrap();
+    let import_id = job["import_id"].as_str().unwrap();
+    let candidate = json!({"candidate_id":"company","label":"Organization","properties":{"name":"导入公司"},
+        "evidence":[evidence("properties.name",json!("导入公司"))],"relation_suggestions":[],"warnings":[],"can_commit":true});
+    store.put_import_job(&json!({"operation_id":"ready","actor":"system","file_id":"import-file",
+        "import_id":import_id,"expected_version":1,"status":"ready_for_review","data":{"candidates":[candidate]}})).unwrap();
+    let result = request(
+        &store,
+        "commit_import",
+        json!({"operation_id":"commit","actor":"tester",
+        "import_id":import_id,"expected_version":2,"choices":[{"candidate_id":"company","action":"create"}]}),
+    );
+    assert_eq!(result["ok"], true, "{result}");
+    let found = request(
+        &store,
+        "company_organizations",
+        json!({"entity_ids":[],"credit_codes":[],
+        "normalized_names":["导入公司"],"limit":50,"offset":0}),
+    );
+    assert_eq!(
+        found["result"]["items"].as_array().unwrap().len(),
+        1,
+        "{found}"
+    );
+}
+
+#[test]
+fn confirmed_organization_claim_refreshes_legal_name_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let org = entity(&store, "Organization", "主体", "claim-org");
+    let job = store
+        .put_import_job(
+            &json!({"operation_id":"claim-job","actor":"tester","file_id":"claim-file",
+        "status":"queued","data":{}}),
+        )
+        .unwrap();
+    store.graph.connection().execute("INSERT INTO contact_claims(claim_id,subject_id,kind,field_path,value_json,source_json,status,reason,import_id,candidate_id,created_at,updated_at) VALUES('legal',?1,'field','properties.legalName',?2,'{}','unverified','missing_evidence',?3,'synthetic','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z')",
+        params![org,json!("新法定名").to_string(),job["import_id"].as_str()]).unwrap();
+    let result = request(
+        &store,
+        "review_contact_claim",
+        json!({"claim_id":"legal","action":"confirm",
+        "operation_id":"review-legal","actor":"tester","expected_entity_version":1,"confirmation_note":"人工核实"}),
+    );
+    assert_eq!(result["ok"], true, "{result}");
+    let found = request(
+        &store,
+        "company_organizations",
+        json!({"entity_ids":[],"credit_codes":[],
+        "normalized_names":["新法定名"],"limit":50,"offset":0}),
+    );
+    assert_eq!(found["result"]["items"][0]["entity_id"], org);
+}
+
+#[test]
+fn snapshot_created_organization_refreshes_name_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let initialize = request(
+        &store,
+        "sync_snapshots",
+        json!({"operation_id":"initialize","actor":"system",
+        "initialize":true,"snapshots":[]}),
+    );
+    assert_eq!(initialize["ok"], true, "{initialize}");
+    let snapshot = json!({"snapshot_id":1,"cache_key":"query-a","normalized_query":"快照公司",
+        "normalized_region_hint":null,"collected_at":"2026-09-26T00:00:00.000Z","stored_at":"2026-09-26T00:00:00.000Z",
+        "companies":[{"company_name":"快照公司","contacts":[{"name":"甲","title":"工程师",
+            "source_url":"https://example.com/1","published_at":"2026-09-20T00:00:00.000Z"}]}]});
+    let result = request(
+        &store,
+        "sync_snapshots",
+        json!({"operation_id":"sync-1","actor":"system","snapshots":[snapshot]}),
+    );
+    assert_eq!(result["ok"], true, "{result}");
+    let found = request(
+        &store,
+        "company_organizations",
+        json!({"entity_ids":[],"credit_codes":[],
+        "normalized_names":["快照公司"],"limit":50,"offset":0}),
+    );
+    assert_eq!(
+        found["result"]["items"].as_array().unwrap().len(),
+        1,
+        "{found}"
     );
 }

@@ -46,6 +46,7 @@ readline.createInterface({ input: process.stdin }).on('line', input => {
   if (request.payload.mode === 'malformed') { process.stdout.write('{broken\\n'); return; }
   if (request.payload.mode === 'oversize') { process.stdout.write('x'.repeat(256 * 1024 + 1)); return; }
   if (request.payload.mode === 'wrong_id') { process.stdout.write(JSON.stringify({ version: 1, request_id: 'other', ok: true, result: {} }) + '\\n'); return; }
+  if (request.payload.mode === 'remote_too_large') { process.stdout.write(JSON.stringify({ version: 1, request_id: request.request_id, ok: false, error: { code: 'RESPONSE_TOO_LARGE', message: 'single item' } }) + '\\n'); return; }
   const send = () => {
     process.stdout.write(JSON.stringify({ version: 1, request_id: request.request_id, ok: true,
       result: { nonce: request.payload.nonce, concurrent, dbPath: process.env.CONTACT_GRAPH_SQLITE_PATH } }) + '\\n');
@@ -127,6 +128,16 @@ it('allows ontology field_path evidence in a graph write payload', async () => {
     set_properties: { name: '陈晓' },
     evidence: [{ field_path: 'properties.name', value: '陈晓', source_type: 'manual' }],
   })).resolves.toMatchObject({ concurrent: 1 });
+});
+
+it('admits all company reads and surfaces an oversized single record as unavailable', async () => {
+  const graph = await client();
+  for (const op of ['company_organizations', 'company_relations', 'company_recent_records'] as const) {
+    await expect(graph.request<{ nonce: string }>(op, { nonce: op }))
+      .resolves.toMatchObject({ nonce: op });
+    await expect(graph.request(op, { mode: 'remote_too_large' }))
+      .rejects.toThrow('RESPONSE_TOO_LARGE');
+  }
 });
 
 it('honors an aborted queued request without disrupting the active request', async () => {
