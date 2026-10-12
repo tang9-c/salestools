@@ -11,7 +11,7 @@ fn normalize(value: &str) -> String {
     value
         .nfkc()
         .filter(|c| !c.is_whitespace())
-        .flat_map(char::to_lowercase)
+        .map(|c| c.to_ascii_lowercase())
         .collect()
 }
 
@@ -69,7 +69,8 @@ pub(crate) fn migrate_keys(store: &Store) -> Result<(), AppError> {
     let conn = store.graph.connection();
     conn.execute_batch("CREATE TABLE IF NOT EXISTS company_organization_keys (entity_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('name','credit_code')),value TEXT NOT NULL,PRIMARY KEY(entity_id,kind,value));
         CREATE INDEX IF NOT EXISTS company_organization_key_lookup ON company_organization_keys(kind,value,entity_id);
-        CREATE TABLE IF NOT EXISTS company_context_migrations (version INTEGER PRIMARY KEY);").map_err(AppError::internal)?;
+        CREATE TABLE IF NOT EXISTS company_context_migrations (version INTEGER PRIMARY KEY);
+        CREATE INDEX IF NOT EXISTS company_relation_target_lookup ON kg_relations(target_id);").map_err(AppError::internal)?;
     let done: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM company_context_migrations WHERE version=1)",
@@ -83,10 +84,12 @@ pub(crate) fn migrate_keys(store: &Store) -> Result<(), AppError> {
     let tx = store.graph.transaction().map_err(AppError::internal)?;
     let ids = {
         let mut stmt = tx.prepare("SELECT i.entity_id FROM entity_ids i JOIN kg_entities e ON e.id=i.kg_id WHERE e.entity_type='Organization'").map_err(AppError::internal)?;
-        stmt.query_map([], |r| r.get::<_, String>(0))
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
             .map_err(AppError::internal)?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(AppError::internal)?
+            .map_err(AppError::internal)?;
+        rows
     };
     for id in ids {
         refresh_keys(store, &id)?;
@@ -326,7 +329,8 @@ pub fn recent_records(store: &Store, raw: &Value) -> Result<Value, AppError> {
         .get("since")
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::validation("since is required"))?;
-    DateTime::parse_from_rfc3339(since).map_err(|_| AppError::validation("Invalid since"))?;
+    let since_time =
+        DateTime::parse_from_rfc3339(since).map_err(|_| AppError::validation("Invalid since"))?;
     let limit = raw
         .get("limit")
         .map_or(Some(20), Value::as_u64)
@@ -347,7 +351,10 @@ pub fn recent_records(store: &Store, raw: &Value) -> Result<Value, AppError> {
         let row:Option<(String,String)>=conn.query_row("SELECT e.entity_type,m.metadata_json FROM entity_ids i JOIN kg_entities e ON e.id=i.kg_id JOIN entity_meta m USING(entity_id) WHERE i.entity_id=?1",[&id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(AppError::internal)?;
         if let Some((label, meta)) = row {
             let meta: Value = serde_json::from_str(&meta).map_err(AppError::internal)?;
-            if let Some(time) = meta["updated_at"].as_str().filter(|t| *t > since) {
+            if let Some(time) = meta["updated_at"]
+                .as_str()
+                .filter(|t| DateTime::parse_from_rfc3339(t).is_ok_and(|at| at > since_time))
+            {
                 records.push(json!({"kind":"entity","id":id,"entity_id":id,"recorded_at":time,"label":label}));
             }
         }
@@ -360,7 +367,10 @@ pub fn recent_records(store: &Store, raw: &Value) -> Result<Value, AppError> {
         for row in rows {
             let (eid, record) = row.map_err(AppError::internal)?;
             let ev: Value = serde_json::from_str(&record).map_err(AppError::internal)?;
-            if let Some(time) = ev["collected_at"].as_str().filter(|t| *t > since) {
+            if let Some(time) = ev["collected_at"]
+                .as_str()
+                .filter(|t| DateTime::parse_from_rfc3339(t).is_ok_and(|at| at > since_time))
+            {
                 records.push(json!({"kind":"evidence","id":eid,"entity_id":id,"recorded_at":time,"label":"主体身份依据"}));
             }
         }
@@ -368,15 +378,34 @@ pub fn recent_records(store: &Store, raw: &Value) -> Result<Value, AppError> {
     for edge in edges {
         if let Some(time) = edge["metadata"]["updated_at"]
             .as_str()
-            .filter(|t| *t > since)
+            .filter(|t| DateTime::parse_from_rfc3339(t).is_ok_and(|at| at > since_time))
         {
             records.push(json!({"kind":"relation","id":edge["relation_id"],"recorded_at":time,"label":edge["relation_type"]}));
         }
+        let relation_id = edge["relation_id"].as_str().unwrap();
+        let mut stmt = conn.prepare("SELECT evidence_id,record_json FROM evidence WHERE subject_kind='relation' AND subject_id=?1 AND (field_path='$relation' OR field_path LIKE 'properties.%' OR field_path LIKE 'metadata.%')").map_err(AppError::internal)?;
+        let rows = stmt
+            .query_map([relation_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(AppError::internal)?;
+        for row in rows {
+            let (id, record) = row.map_err(AppError::internal)?;
+            let ev: Value = serde_json::from_str(&record).map_err(AppError::internal)?;
+            if let Some(time) = ev["collected_at"]
+                .as_str()
+                .filter(|t| DateTime::parse_from_rfc3339(t).is_ok_and(|at| at > since_time))
+            {
+                records.push(
+                    json!({"kind":"evidence","id":id,"recorded_at":time,"label":"职业关系依据"}),
+                );
+            }
+        }
     }
     records.sort_by(|a, b| {
-        b["recorded_at"]
-            .as_str()
-            .cmp(&a["recorded_at"].as_str())
+        DateTime::parse_from_rfc3339(b["recorded_at"].as_str().unwrap())
+            .unwrap()
+            .cmp(&DateTime::parse_from_rfc3339(a["recorded_at"].as_str().unwrap()).unwrap())
             .then_with(|| a["kind"].as_str().cmp(&b["kind"].as_str()))
             .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
     });

@@ -79,3 +79,86 @@ fn name_query_selects_only_live_organizations_and_pages_stably() {
     assert!(ids.contains(&first.as_str()) && ids.contains(&second.as_str()));
     assert_eq!(page2["result"]["next_offset"], Value::Null);
 }
+
+#[test]
+fn name_keys_follow_edits_and_archive_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let id = entity(&store, "Organization", "旧公司", "create");
+    let edit = request(
+        &store,
+        "save_contact",
+        json!({"operation_id":"rename","actor":"tester",
+        "label":"Organization","entity_id":id,"expected_version":1,
+        "set_properties":{"name":"新公司"},"evidence":[evidence("properties.name",json!("新公司"))]}),
+    );
+    assert_eq!(edit["ok"], true, "{edit}");
+    let lookup = |name: &str| {
+        request(
+            &store,
+            "company_organizations",
+            json!({
+        "entity_ids":[],"credit_codes":[],"normalized_names":[name],"offset":0,"limit":50}),
+        )
+    };
+    assert_eq!(lookup("旧公司")["result"]["items"], json!([]));
+    assert_eq!(lookup("新公司")["result"]["items"][0]["entity_id"], id);
+    let archive = request(
+        &store,
+        "archive_contact",
+        json!({"operation_id":"archive","actor":"tester",
+        "entity_id":id,"expected_version":2}),
+    );
+    assert_eq!(archive["ok"], true, "{archive}");
+    assert_eq!(lookup("新公司")["result"]["items"], json!([]));
+}
+
+#[test]
+fn direct_work_edge_is_returned_without_unrelated_people() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let org = entity(&store, "Organization", "甲公司", "org");
+    let person = entity(&store, "Person", "工程师", "person");
+    let other = entity(&store, "Organization", "乙公司", "other");
+    let edge = request(
+        &store,
+        "save_relation",
+        json!({"operation_id":"work","actor":"tester",
+        "source_id":person,"target_id":org,"relation_type":"worksFor",
+        "properties":{"role":{"@type":"OrganizationRole","roleName":"工程师"}},"metadata":{},
+        "evidence":[evidence("$relation",json!({"relation_type":"worksFor","source_id":person,"target_id":org})),
+            evidence("properties.role.roleName",json!("工程师"))]}),
+    );
+    assert_eq!(edge["ok"], true, "{edge}");
+    let page = request(
+        &store,
+        "company_relations",
+        json!({"organization_ids":[org],"offset":0,"limit":50}),
+    );
+    assert_eq!(page["ok"], true, "{page}");
+    assert_eq!(page["result"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        page["result"]["items"][0]["relation_id"],
+        edge["result"]["relation_id"]
+    );
+    let unrelated = request(
+        &store,
+        "company_relations",
+        json!({"organization_ids":[other],"offset":0,"limit":50}),
+    );
+    assert_eq!(unrelated["result"]["items"], json!([]));
+}
+
+#[test]
+fn organization_key_lookup_uses_derived_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let detail: String = store.graph.connection().query_row(
+        "EXPLAIN QUERY PLAN SELECT entity_id FROM company_organization_keys WHERE kind=?1 AND value=?2 ORDER BY entity_id",
+        ["name", "测试公司"], |row| row.get(3),
+    ).unwrap();
+    assert!(
+        detail.contains("company_organization_key_lookup"),
+        "{detail}"
+    );
+}
