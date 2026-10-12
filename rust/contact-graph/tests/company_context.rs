@@ -225,7 +225,7 @@ fn recent_pages_advance_and_include_person_job_title_evidence() {
     let store = Store::open(dir.path().join("graph.db")).unwrap();
     let org = entity(&store, "Organization", "公司", "org");
     let person = entity(&store, "Person", "甲", "person");
-    work(&store, "work", &person, &org);
+    let work_id = work(&store, "work", &person, &org);
     let edit = request(
         &store,
         "save_contact",
@@ -258,6 +258,21 @@ fn recent_pages_advance_and_include_person_job_title_evidence() {
             .unwrap()
             .iter()
             .any(|item| item["kind"] == "evidence" && item["label"] == "职业身份依据"),
+        "{all}"
+    );
+    let records = all["result"]["items"].as_array().unwrap();
+    let relation = records
+        .iter()
+        .find(|r| r["kind"] == "relation" && r["id"] == work_id)
+        .unwrap();
+    assert_eq!(relation["entity_id"], person, "{all}");
+    let relation_evidence: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["kind"] == "evidence" && r["label"] == "职业关系依据")
+        .collect();
+    assert!(!relation_evidence.is_empty(), "{all}");
+    assert!(
+        relation_evidence.iter().all(|r| r["entity_id"] == person),
         "{all}"
     );
 }
@@ -348,7 +363,7 @@ fn client_project_members_are_reachable_only_from_customer_organization() {
     let participation = request(
         &store,
         "save_relation",
-        json!({"operation_id":"member","actor":"tester",
+        json!({"operation_id":"relation-member","actor":"tester",
         "source_id":member,"target_id":project,"relation_type":"memberOf",
         "properties":{"role":{"@type":"OrganizationRole","roleName":"成员"}},"metadata":{},
         "evidence":[evidence("$relation",json!({"relation_type":"memberOf","source_id":member,"target_id":project})),
@@ -629,6 +644,8 @@ fn recent_since_is_exclusive_and_equal_times_sort_by_kind_then_id() {
         "2026-10-02T00:00:00Z",
         0,
     );
+    store.graph.connection().execute("UPDATE entity_meta SET metadata_json=json_set(metadata_json,'$.updated_at',?1) WHERE entity_id=?2",
+        params!["2026-10-02T00:00:00Z",org]).unwrap();
     let input = json!({"organization_ids":[org],"since":"2026-10-01T00:00:00Z","limit":20});
     let records = request(&store, "company_recent_records", input);
     assert_eq!(records["ok"], true, "{records}");
@@ -640,6 +657,21 @@ fn recent_since_is_exclusive_and_equal_times_sort_by_kind_then_id() {
         .map(|r| r["id"].as_str().unwrap())
         .collect();
     assert_eq!(evidence_ids, vec!["time-a", "time-b"]);
+    let tied: Vec<(&str, &str)> = records["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["recorded_at"] == "2026-10-02T00:00:00Z")
+        .map(|r| (r["kind"].as_str().unwrap(), r["id"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        tied,
+        vec![
+            ("entity", org.as_str()),
+            ("evidence", "time-a"),
+            ("evidence", "time-b")
+        ]
+    );
     let boundary = request(
         &store,
         "company_recent_records",
