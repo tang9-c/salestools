@@ -592,7 +592,10 @@ impl Store {
                 .connection()
                 .execute("ALTER TABLE source_mapping ADD COLUMN source_json TEXT", [])?;
         }
-        Ok(Self { graph })
+        let store = Self { graph };
+        crate::company_context::migrate_keys(&store)
+            .map_err(|error| std::io::Error::other(error.message))?;
+        Ok(store)
     }
 
     pub fn save_contact(&self, raw: &Value) -> Result<Value, AppError> {
@@ -821,6 +824,7 @@ impl Store {
             )
             .map_err(AppError::internal)?;
         }
+        crate::company_context::refresh_keys(self, &entity_id)?;
         crate::vectors::invalidate_vector(&tx, &entity_id)?;
         for record in new_evidence {
             tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'entity',?2,?3,?4,?5)",

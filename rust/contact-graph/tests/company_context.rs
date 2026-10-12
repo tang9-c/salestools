@@ -3,7 +3,10 @@ use serde_json::{json, Value};
 
 fn request(store: &Store, op: &str, payload: Value) -> Value {
     parse_and_dispatch(
-        &serde_json::to_vec(&json!({"version":1,"request_id":"company-test","op":op,"payload":payload})).unwrap(),
+        &serde_json::to_vec(
+            &json!({"version":1,"request_id":"company-test","op":op,"payload":payload}),
+        )
+        .unwrap(),
         store,
     )
 }
@@ -14,8 +17,12 @@ fn evidence(path: &str, value: Value) -> Value {
 }
 
 fn entity(store: &Store, label: &str, name: &str, operation: &str) -> String {
-    let result = request(store, "save_contact", json!({"operation_id":operation,"actor":"tester","label":label,
-        "set_properties":{"name":name},"evidence":[evidence("properties.name",json!(name))]}));
+    let result = request(
+        store,
+        "save_contact",
+        json!({"operation_id":operation,"actor":"tester","label":label,
+        "set_properties":{"name":name},"evidence":[evidence("properties.name",json!(name))]}),
+    );
     assert_eq!(result["ok"], true, "{result}");
     result["result"]["entity_id"].as_str().unwrap().to_owned()
 }
@@ -24,9 +31,13 @@ fn entity(store: &Store, label: &str, name: &str, operation: &str) -> String {
 fn empty_filter_cannot_scan_the_library() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("graph.db")).unwrap();
-    let result = request(&store, "company_organizations", json!({
-        "entity_ids":[],"credit_codes":[],"normalized_names":[],"offset":0,"limit":50
-    }));
+    let result = request(
+        &store,
+        "company_organizations",
+        json!({
+            "entity_ids":[],"credit_codes":[],"normalized_names":[],"offset":0,"limit":50
+        }),
+    );
     assert_eq!(result["error"]["code"], "VALIDATION_ERROR", "{result}");
 }
 
@@ -34,9 +45,13 @@ fn empty_filter_cannot_scan_the_library() {
 fn explicit_missing_ids_are_an_empty_page() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("graph.db")).unwrap();
-    let result = request(&store, "company_organizations", json!({
-        "entity_ids":["o_missing"],"credit_codes":[],"normalized_names":[],"offset":0,"limit":50
-    }));
+    let result = request(
+        &store,
+        "company_organizations",
+        json!({
+            "entity_ids":["o_missing"],"credit_codes":[],"normalized_names":[],"offset":0,"limit":50
+        }),
+    );
     assert_eq!(result["ok"], true, "{result}");
     assert_eq!(result["result"]["items"], json!([]));
     assert_eq!(result["result"]["next_offset"], Value::Null);
@@ -57,8 +72,10 @@ fn name_query_selects_only_live_organizations_and_pages_stably() {
     let mut next = filter;
     next["offset"] = page1["result"]["next_offset"].clone();
     let page2 = request(&store, "company_organizations", next);
-    let ids = [page1["result"]["items"][0]["entity_id"].as_str().unwrap(),
-        page2["result"]["items"][0]["entity_id"].as_str().unwrap()];
+    let ids = [
+        page1["result"]["items"][0]["entity_id"].as_str().unwrap(),
+        page2["result"]["items"][0]["entity_id"].as_str().unwrap(),
+    ];
     assert!(ids.contains(&first.as_str()) && ids.contains(&second.as_str()));
     assert_eq!(page2["result"]["next_offset"], Value::Null);
 }

@@ -9,13 +9,15 @@ const graphOps = new Set([
   'commit_import', 'sync_snapshots', 'get_sync_cursor', 'put_import_job',
   'get_import_job', 'get_import_start', 'recover_import_jobs', 'search_keyword', 'search_vector', 'put_vector', 'set_vector_state',
   'find_identity_candidates', 'review_contact_claim',
+  'company_organizations', 'company_relations', 'company_recent_records',
 ]);
 
 export type GraphOp = 'health' | 'get_contact' | 'list_relations' | 'save_contact'
   | 'save_relation' | 'merge_contacts' | 'archive_contact' | 'restore_contact'
   | 'archive_relation' | 'commit_import' | 'sync_snapshots' | 'get_sync_cursor'
   | 'put_import_job' | 'get_import_job' | 'get_import_start' | 'search_keyword' | 'search_vector' | 'put_vector'
-  | 'set_vector_state' | 'recover_import_jobs' | 'find_identity_candidates' | 'review_contact_claim';
+  | 'set_vector_state' | 'recover_import_jobs' | 'find_identity_candidates' | 'review_contact_claim'
+  | 'company_organizations' | 'company_relations' | 'company_recent_records';
 
 export interface GraphClient {
   request<T>(op: GraphOp, payload: unknown, signal?: AbortSignal): Promise<T>;

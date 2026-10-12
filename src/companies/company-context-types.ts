@@ -5,6 +5,26 @@ export interface ReadMeta { state: ReadState; warnings: string[] }
 export interface Count { count: number | null; loaded_count: number; complete: boolean }
 export interface Page<T> { items: T[]; total: number | null; next_offset: number | null; complete: boolean }
 
+export interface OrganizationIdentity {
+  entity_id: string;
+  version: number;
+  name: string | null;
+  legal_name: string | null;
+  identifiers: Array<{ '@type': 'PropertyValue'; propertyID: string; value: string }>;
+  archived: boolean;
+  identity_complete: boolean;
+  evidence: import('../contracts/index.js').ContactEvidence[];
+  conflicts: import('../contracts/index.js').ContactEvidence[];
+}
+
+export interface RecentRecord {
+  kind: 'entity' | 'relation' | 'evidence' | 'profile' | 'assessment';
+  id: string;
+  entity_id?: string;
+  recorded_at: string;
+  label: string;
+}
+
 export interface CompanyLink {
   organization_id: string;
   credit_code: string | null;

@@ -1451,6 +1451,7 @@ impl Store {
                     params![entity_id,metadata.to_string(),extensions.as_ref().map(Value::to_string)]).map_err(AppError::internal)?;
             }
             insert_evidence(&tx, &entity_id, &new_evidence)?;
+            crate::company_context::refresh_keys(self, &entity_id)?;
             crate::vectors::invalidate_vector(&tx, &entity_id)?;
             tx.execute(
                 "INSERT INTO source_mapping(source_key,entity_id) VALUES(?1,?2)",

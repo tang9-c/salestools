@@ -251,6 +251,9 @@ impl Store {
         let update = format!("UPDATE {table} SET metadata_json=?1 WHERE {column}=?2");
         tx.execute(&update, params![meta.to_string(), id])
             .map_err(internal)?;
+        if !relation {
+            crate::company_context::refresh_keys(self, id)?;
+        }
         let mut indexed_source: Option<String> = None;
         if relation {
             let source: Option<String> = tx.query_row(
@@ -489,6 +492,8 @@ impl Store {
             ],
         )
         .map_err(internal)?;
+        crate::company_context::refresh_keys(self, &input.source_id)?;
+        crate::company_context::refresh_keys(self, &input.target_id)?;
         tx.execute(
             "UPDATE source_mapping SET entity_id=?1 WHERE entity_id=?2",
             params![input.target_id, input.source_id],

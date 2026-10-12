@@ -239,6 +239,7 @@ fn new_entity(
         ],
     )
     .map_err(AppError::internal)?;
+    crate::company_context::refresh_keys(store, &id)?;
     Ok((id, kg_id))
 }
 

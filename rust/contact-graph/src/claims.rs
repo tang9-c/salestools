@@ -283,6 +283,7 @@ impl Store {
                     tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'entity',?2,?3,?4,?5)",
                         params![record["evidence_id"].as_str(),subject,path,record["value"].to_string(),record.to_string()]).map_err(AppError::internal)?;
                 }
+                crate::company_context::refresh_keys(self, &subject)?;
                 if entity.entity_type == "Person" && index_changed {
                     crate::vectors::invalidate_vector(&tx, &subject)?;
                     result["indexed_entity_id"] = json!(subject);

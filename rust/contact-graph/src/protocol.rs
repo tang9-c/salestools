@@ -107,6 +107,26 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
             "version": 1, "request_id": request_id, "ok": true,
             "result": { "nonce": request.payload.get("nonce").cloned().unwrap_or(Value::Null) }
         }),
+        "company_organizations" => {
+            match crate::company_context::organizations(store, &request.payload) {
+                Ok(result) => {
+                    json!({"version":1,"request_id":request_id,"ok":true,"result":result})
+                }
+                Err(err) => error(request_id, err.code, &err.message),
+            }
+        }
+        "company_relations" => match crate::company_context::relations(store, &request.payload) {
+            Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
+            Err(err) => error(request_id, err.code, &err.message),
+        },
+        "company_recent_records" => {
+            match crate::company_context::recent_records(store, &request.payload) {
+                Ok(result) => {
+                    json!({"version":1,"request_id":request_id,"ok":true,"result":result})
+                }
+                Err(err) => error(request_id, err.code, &err.message),
+            }
+        }
         "review_contact_claim" => match store.review_contact_claim(&request.payload) {
             Ok(result) => json!({"version":1,"request_id":request_id,"ok":true,"result":result}),
             Err(err) => error(request_id, err.code, &err.message),
@@ -199,6 +219,45 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
     };
     if request.op == "get_contact" && response["ok"] == true {
         trim_contact_response(&mut response);
+    }
+    if request.op.starts_with("company_") && response["ok"] == true {
+        while serde_json::to_vec(&response).is_ok_and(|frame| frame.len() >= MAX_FRAME_BYTES) {
+            let result = &mut response["result"];
+            let Some(items) = result["items"].as_array_mut() else {
+                break;
+            };
+            if items.len() <= 1 {
+                break;
+            }
+            items.pop();
+            let count = items.len();
+            let offset = request.payload["offset"].as_u64().unwrap_or(0) as usize;
+            let total = result["total"].as_u64().unwrap_or(0) as usize;
+            let next = (offset.saturating_add(count) < total).then_some(offset + count);
+            result["next_offset"] = json!(next);
+            result["complete"] = json!(next.is_none());
+        }
+        if request.op == "company_organizations" {
+            while serde_json::to_vec(&response).is_ok_and(|frame| frame.len() >= MAX_FRAME_BYTES) {
+                let Some(item) = response["result"]["items"]
+                    .as_array_mut()
+                    .and_then(|items| items.first_mut())
+                else {
+                    break;
+                };
+                let Some(evidence) = item["evidence"].as_array_mut() else {
+                    break;
+                };
+                let Some(removed) = evidence.pop() else {
+                    break;
+                };
+                let removed_id = removed["evidence_id"].clone();
+                if let Some(conflicts) = item["conflicts"].as_array_mut() {
+                    conflicts.retain(|record| record["evidence_id"] != removed_id);
+                }
+                item["identity_complete"] = json!(false);
+            }
+        }
     }
     bounded_response(response, response_id)
 }
