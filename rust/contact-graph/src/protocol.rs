@@ -232,8 +232,7 @@ pub fn parse_and_dispatch(line: &[u8], store: &Store) -> Value {
             items.pop();
             let count = items.len();
             let offset = request.payload["offset"].as_u64().unwrap_or(0) as usize;
-            let total = result["total"].as_u64().unwrap_or(0) as usize;
-            let next = (offset.saturating_add(count) < total).then_some(offset + count);
+            let next = Some(offset.saturating_add(count));
             result["next_offset"] = json!(next);
             result["complete"] = json!(next.is_none());
         }

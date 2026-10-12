@@ -150,18 +150,18 @@ fn identity(store: &Store, id: &str) -> Result<Option<Value>, AppError> {
     }
     let entity = store.graph.get_entity(kg_id).map_err(AppError::internal)?;
     let props = serde_json::to_value(entity.properties).map_err(AppError::internal)?;
-    let evidence: Vec<Value> = store
-        .read_evidence(id)?
-        .into_iter()
-        .filter(|ev| {
-            [
-                "properties.name",
-                "properties.legalName",
-                "properties.identifier",
-            ]
-            .contains(&ev["field_path"].as_str().unwrap_or(""))
+    let mut statement = conn.prepare("SELECT record_json FROM evidence WHERE subject_kind='entity' AND subject_id=?1 AND field_path IN ('properties.name','properties.legalName','properties.identifier') ORDER BY rowid LIMIT 51").map_err(AppError::internal)?;
+    let rows = statement
+        .query_map([id], |row| row.get::<_, String>(0))
+        .map_err(AppError::internal)?;
+    let mut evidence = rows
+        .map(|row| {
+            serde_json::from_str::<Value>(&row.map_err(AppError::internal)?)
+                .map_err(AppError::internal)
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
+    let identity_complete = evidence.len() <= 50;
+    evidence.truncate(50);
     let conflicts: Vec<Value> = evidence
         .iter()
         .filter(|ev| {
@@ -182,7 +182,7 @@ fn identity(store: &Store, id: &str) -> Result<Option<Value>, AppError> {
     Ok(Some(
         json!({"entity_id":id,"version":metadata["version"],"name":props["name"],
         "legal_name":props["legalName"],"identifiers":props["identifier"],"archived":false,
-        "identity_complete":true,"evidence":evidence,"conflicts":conflicts}),
+        "identity_complete":identity_complete,"evidence":evidence,"conflicts":conflicts}),
     ))
 }
 
@@ -194,32 +194,42 @@ pub fn organizations(store: &Store, raw: &Value) -> Result<Value, AppError> {
         return Err(AppError::validation("At least one filter is required"));
     }
     let (offset, limit) = page(raw, 50)?;
-    let mut matches = BTreeSet::new();
-    for id in ids {
-        matches.insert(id);
-    }
     let conn = store.graph.connection();
-    for (kind, values) in [("credit_code", credits), ("name", names)] {
-        for value in values {
-            let mut stmt = conn.prepare("SELECT entity_id FROM company_organization_keys WHERE kind=?1 AND value=?2 ORDER BY entity_id").map_err(AppError::internal)?;
-            let rows = stmt
-                .query_map(params![kind, normalize(&value)], |r| r.get::<_, String>(0))
-                .map_err(AppError::internal)?;
-            for row in rows {
-                matches.insert(row.map_err(AppError::internal)?);
-            }
-        }
-    }
-    let mut all = Vec::new();
-    for id in matches {
+    let mut stmt = conn.prepare("WITH candidates AS (
+        SELECT value AS entity_id FROM json_each(?1)
+        UNION SELECT entity_id FROM company_organization_keys WHERE kind='credit_code' AND value IN (SELECT value FROM json_each(?2))
+        UNION SELECT entity_id FROM company_organization_keys WHERE kind='name' AND value IN (SELECT value FROM json_each(?3))
+      ) SELECT c.entity_id FROM candidates c JOIN entity_ids i ON i.entity_id=c.entity_id
+        JOIN kg_entities e ON e.id=i.kg_id JOIN entity_meta m ON m.entity_id=c.entity_id
+      WHERE e.entity_type='Organization' AND json_extract(m.metadata_json,'$.archived_at') IS NULL
+        AND json_extract(m.metadata_json,'$.merged_into') IS NULL
+      ORDER BY c.entity_id LIMIT ?4 OFFSET ?5").map_err(AppError::internal)?;
+    let normalized_credits: Vec<_> = credits.iter().map(|s| normalize(s)).collect();
+    let normalized_names: Vec<_> = names.iter().map(|s| normalize(s)).collect();
+    let rows = stmt
+        .query_map(
+            params![
+                json!(ids).to_string(),
+                json!(normalized_credits).to_string(),
+                json!(normalized_names).to_string(),
+                (limit + 1) as i64,
+                offset.min(i64::MAX as usize) as i64
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(AppError::internal)?;
+    let found = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::internal)?;
+    let has_more = found.len() > limit;
+    let mut items = Vec::new();
+    for id in found.into_iter().take(limit) {
         if let Some(item) = identity(store, &id)? {
-            all.push(item);
+            items.push(item);
         }
     }
-    let total = all.len();
-    let items: Vec<_> = all.into_iter().skip(offset).take(limit).collect();
-    let next = (offset.saturating_add(items.len()) < total).then_some(offset + items.len());
-    Ok(json!({"items":items,"total":total,"next_offset":next,"complete":next.is_none()}))
+    let next = has_more.then_some(offset + items.len());
+    Ok(json!({"items":items,"total":null,"next_offset":next,"complete":next.is_none()}))
 }
 
 fn live_ids(store: &Store, raw: &Value) -> Result<Vec<String>, AppError> {
