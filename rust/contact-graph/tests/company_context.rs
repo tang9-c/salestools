@@ -162,3 +162,90 @@ fn organization_key_lookup_uses_derived_index() {
         "{detail}"
     );
 }
+
+fn work(store: &Store, op: &str, person: &str, org: &str) -> String {
+    let result = request(
+        store,
+        "save_relation",
+        json!({"operation_id":op,"actor":"tester",
+        "source_id":person,"target_id":org,"relation_type":"worksFor",
+        "properties":{"role":{"@type":"OrganizationRole","roleName":"工程师"}},"metadata":{},
+        "evidence":[evidence("$relation",json!({"relation_type":"worksFor","source_id":person,"target_id":org})),
+            evidence("properties.role.roleName",json!("工程师"))]}),
+    );
+    assert_eq!(result["ok"], true, "{result}");
+    result["result"]["relation_id"].as_str().unwrap().into()
+}
+
+#[test]
+fn relation_pages_are_distinct_stable_and_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let org = entity(&store, "Organization", "公司", "org");
+    let person = entity(&store, "Person", "甲", "person");
+    let first = work(&store, "first", &person, &org);
+    let another = entity(&store, "Person", "乙", "another");
+    let second = work(&store, "second", &another, &org);
+    let page1 = request(
+        &store,
+        "company_relations",
+        json!({"organization_ids":[org,org],"offset":0,"limit":1}),
+    );
+    assert_eq!(page1["ok"], true, "{page1}");
+    assert_eq!(page1["result"]["items"].as_array().unwrap().len(), 1);
+    let next = page1["result"]["next_offset"].as_u64().unwrap();
+    let page2 = request(
+        &store,
+        "company_relations",
+        json!({"organization_ids":[org],"offset":next,"limit":1}),
+    );
+    assert_eq!(page2["result"]["next_offset"], Value::Null);
+    let ids = [
+        page1["result"]["items"][0]["relation_id"].as_str().unwrap(),
+        page2["result"]["items"][0]["relation_id"].as_str().unwrap(),
+    ];
+    assert!(ids.contains(&first.as_str()) && ids.contains(&second.as_str()));
+}
+
+#[test]
+fn recent_pages_advance_and_include_person_job_title_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("graph.db")).unwrap();
+    let org = entity(&store, "Organization", "公司", "org");
+    let person = entity(&store, "Person", "甲", "person");
+    work(&store, "work", &person, &org);
+    let edit = request(
+        &store,
+        "save_contact",
+        json!({"operation_id":"title","actor":"tester",
+        "label":"Person","entity_id":person,"expected_version":1,
+        "set_properties":{"jobTitle":"工程师"},"evidence":[evidence("properties.jobTitle",json!("工程师"))]}),
+    );
+    assert_eq!(edit["ok"], true, "{edit}");
+    let base =
+        json!({"organization_ids":[org],"since":"2026-09-01T00:00:00Z","limit":1,"offset":0});
+    let page1 = request(&store, "company_recent_records", base.clone());
+    assert_eq!(page1["ok"], true, "{page1}");
+    let next = page1["result"]["next_offset"].as_u64().unwrap();
+    let mut second_input = base;
+    second_input["offset"] = json!(next);
+    let page2 = request(&store, "company_recent_records", second_input);
+    assert_eq!(page2["ok"], true, "{page2}");
+    assert_ne!(
+        page1["result"]["items"][0]["id"],
+        page2["result"]["items"][0]["id"]
+    );
+    let all = request(
+        &store,
+        "company_recent_records",
+        json!({"organization_ids":[org],"since":"2026-09-01T00:00:00Z","limit":20}),
+    );
+    assert!(
+        all["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "evidence" && item["label"] == "职业身份依据"),
+        "{all}"
+    );
+}
