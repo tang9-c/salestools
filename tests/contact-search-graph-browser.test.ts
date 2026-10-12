@@ -435,3 +435,77 @@ it('loads company detail on selection, pages history and opens the selected repo
   expect(h.calls.filter(c => c.arguments.report_offset===10)
     .every(c => Number(c.arguments.relation_offset ?? 0)===0)).toBe(true);
 });
+
+const reportId = '10000000-0000-4000-8000-000000000001';
+function companyFixture(state = 'confirmed') {
+  const item = {assessment_id:reportId,generated_at:'2026-10-12T00:00:00Z',collected_at:'2026-10-11T00:00:00Z',overall_opportunity:'中',recommended_product:null};
+  return {state:'partial',warnings:['合成资料限制'],link:{state,candidates:[{legal_name:'候选名字'}]},has_profile:true,report_count:null,
+    profile:{legal_name:'云杉智造',basic_profile:{industry:'装备制造',telephone:'hidden-phone'},collected_at:item.collected_at,stale:true},
+    latest_report:item,reports:{items:[item],total:null,next_offset:null,complete:false}};
+}
+it('shows candidates without exposing unconfirmed profiles or reports', async () => {
+  const h = await open(call => result({...detail(String(call.arguments.entity_id)), ...(call.arguments.include_company_context ? {company_context:companyFixture('candidate')} : {})}));
+  await completed(h.ui); await h.ui.locator('#node-list button').click();
+  await expect.poll(() => h.ui.locator('#detail').innerText()).toContain('候选关联，尚未确认');
+  const visible = await h.ui.locator('#detail').innerText();
+  expect(visible).toContain('候选名字'); expect(visible).not.toContain('装备制造');
+  expect(await h.ui.getByRole('button',{name:`查看报告 ${reportId}`,exact:true}).count()).toBe(0);
+});
+it('retries report failures and renders hostile report strings only as text', async () => {
+  let attempts = 0;
+  const hostile = '<img src=x onerror="window.hacked=1"><script>bad()</script>';
+  const h = await open(call => {
+    if(call.name === 'get_assessment_report') {
+      if (++attempts === 1) throw new Error('synthetic failure');
+      return result({assessment_id:reportId,status:'completed',markdown:hostile,generated_at:'2026-10-12T00:00:00Z'});
+    }
+    return result({...detail(String(call.arguments.entity_id)), ...(call.arguments.include_company_context ? {company_context:companyFixture()} : {})});
+  });
+  await completed(h.ui); await h.ui.locator('#node-list button').click();
+  await expect.poll(() => h.ui.locator('#detail').innerText()).toContain('装备制造');
+  expect(await h.ui.locator('#detail').innerText()).toContain('历史报告数量：未知');
+  expect(await h.ui.locator('#detail').innerText()).toContain('资料已过期');
+  expect(await h.ui.locator('#detail').innerText()).not.toContain('hidden-phone');
+  await h.ui.getByRole('button',{name:`查看报告 ${reportId}`,exact:true}).click();
+  await expect.poll(() => h.ui.locator('#detail').innerText()).toContain('报告读取失败');
+  await h.ui.getByRole('button',{name:`查看报告 ${reportId}`,exact:true}).click();
+  await expect.poll(() => h.ui.locator('#detail pre').textContent()).toBe(hostile);
+  expect(await h.ui.locator('#detail img, #detail script').count()).toBe(0);
+  expect(await h.ui.locator('[data-node]').count()).toBe(1);
+});
+it('discards late reports after selecting another node and keeps its base archive', async () => {
+  let release!: (v:unknown) => void;
+  const h = await open(call => {
+    if(call.name==='get_assessment_report') return new Promise(resolve => {release=resolve;});
+    return result({...detail(String(call.arguments.entity_id),call.arguments.entity_id==='o1'?[edge(1)]:[]), ...(call.arguments.include_company_context?{company_context:companyFixture()}: {})});
+  });
+  await completed(h.ui); await h.ui.locator('#node-list button').filter({hasText:'云杉智造'}).click();
+  await expect.poll(() => h.ui.locator('#detail').innerText()).toContain('装备制造');
+  await h.ui.getByRole('button',{name:`查看报告 ${reportId}`,exact:true}).click();
+  await expect.poll(() => typeof release).toBe('function');
+  await h.ui.locator('#node-list button').filter({hasText:'人物p1'}).click();
+  release(result({assessment_id:reportId,status:'completed',markdown:'迟到报告'}));
+  await expect.poll(() => h.ui.locator('#detail h3').textContent()).toBe('人物p1');
+  await h.barrier(); expect(await h.ui.locator('#detail').innerText()).not.toContain('迟到报告');
+});
+it('preserves the basic organization archive when company detail fails', async () => {
+  const h = await open(call => {if(call.arguments.include_company_context) throw new Error('context unavailable'); return result(detail(String(call.arguments.entity_id)));});
+  await completed(h.ui); await h.ui.locator('#node-list button').click();
+  await expect.poll(() => h.ui.locator('#notice').innerText()).toContain('档案读取失败');
+  expect(await h.ui.locator('#detail h3').textContent()).toBe('云杉智造');
+});
+
+it('ignores slow organization context after selecting a person', async () => {
+  let release!: (v:unknown) => void;
+  const h = await open(call => {
+    if(call.arguments.include_company_context) return new Promise(resolve => { release = resolve; });
+    return result(detail(String(call.arguments.entity_id),call.arguments.entity_id==='o1'?[edge(1)]:[]));
+  });
+  await completed(h.ui); await h.ui.locator('#node-list button').filter({hasText:'云杉智造'}).click();
+  await expect.poll(() => typeof release).toBe('function');
+  await h.ui.locator('#node-list button').filter({hasText:'人物p1'}).click();
+  release(result({...detail('o1'),company_context:companyFixture()}));
+  await expect.poll(() => h.ui.locator('#detail h3').textContent()).toBe('人物p1');
+  await h.barrier(); expect(await h.ui.locator('#detail').innerText()).not.toContain('装备制造');
+  expect(h.calls.filter(c=>c.arguments.entity_id==='p1').every(c=>c.arguments.include_company_context!==true)).toBe(true);
+});

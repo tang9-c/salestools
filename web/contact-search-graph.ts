@@ -9,13 +9,15 @@ const summary = el('summary'), progress = el('progress'), notice = el('notice'),
 const app = new App({ name: 'salestools-contact-search-graph', version: '1.0.0' });
 type Collection = 'relations' | 'unverified_claims';
 type Load = { id: string; collection: Collection | 'name'; offset: number; done: boolean; failed: boolean; message?: string };
-type DetailRequest = { id: string; offsets: { evidence: number; relations: number; unverified_claims: number }; edge?: GraphEdge };
+type DetailRequest = { reportOffset: number; id: string; offsets: { evidence: number; relations: number; unverified_claims: number }; edge?: GraphEdge };
 let page: SearchPage | null = null, input: SearchInput | null = null, hostInput: SearchInput | null = null;
 let materials: ContactDetail[] = [], loads: Load[] = [];
 let selected: ContactDetail | null = null, selection: DetailRequest | null = null;
 let pendingDetail: DetailRequest | null = null, pendingSearch: { args: SearchInput; previous: boolean } | null = null;
 let readingDetail: { request: DetailRequest; version: number } | null = null;
 let requestVersion = 0, detailVersion = 0, running = false, paused = false, connected = false;
+let report: Record<string, unknown> | null = null, reportBusy = false, reportError = '';
+let reportVersion = 0;
 let searching = false;
 let waitingResult = false, searchedOffsets: number[] = [];
 let view = { x: 0, y: 0, width: 1000, height: 510 }, extent = { width: 1000, height: 510 };
@@ -210,6 +212,7 @@ function renderDetail() {
   names.set(selection.id, displayTitle(entity, page?.items.find(i => i.entity_id === selection!.id)));
   const name = (id: string) => names.get(id) ?? '名称未提供';
   text(panel, 'h3', name(selection.id));
+  renderCompany();
   for (const key of ['jobTitle', 'skills']) if (readable(props[key])) text(panel, 'p', `${key === 'jobTitle' ? '职位' : '技能'}：${readable(props[key])}`);
   const edges = toGraph({ items: [{ entity_id: selection.id }], total: 1, mode_used: 'keyword', warnings: [] }, [selected], input?.include_unverified === true).edges;
   const allowed = new Set(edges.filter(e => e.status === 'recorded').map(e => e.record.relation_id));
@@ -247,23 +250,82 @@ function renderDetail() {
   for (const collection of ['evidence', 'relations', 'unverified_claims'] as const) {
     const p = object(object(selected.pagination)[collection]);
     const row = text(panel, 'div', '', 'pager'); text(row, 'span', `${collectionLabels[collection]} ${selection.offsets[collection]}/${readable(p.total)}`);
-    const change = (offset: number) => { if (!selection) return; pendingDetail = { ...selection, offsets: { ...selection.offsets, [collection]: offset } }; detailVersion++; void pump(); };
+    const change = (offset: number) => { if (!selection) return; pendingDetail = { ...selection, offsets: { ...selection.offsets, [collection]: offset } }; detailVersion++; reportVersion++; report = null; reportError = ''; reportBusy = false; void pump(); };
     button(row, '上一页', () => change(Math.max(0, selection!.offsets[collection] - limit[collection])), selection.offsets[collection] === 0);
     button(row, '下一页', () => { try { const next = nextOffset(selected!, collection, selection!.offsets[collection]); if (next !== null) change(next); } catch { notice.textContent = '分页游标异常，不能继续读取。'; } }, p.next_offset == null);
   }
+}
+function renderCompany() {
+  if (!selected || !selection || object(selected.entity).label !== 'Organization') return;
+  const ctx = object(selected.company_context), link = object(ctx.link);
+  text(panel, 'h4', '企业资料与历史报告');
+  if (!selected.company_context) { text(panel, 'p', '企业资料尚未读取或不可用'); return; }
+  const states: Record<string, string> = { confirmed: '已确认关联', candidate: '候选关联，尚未确认', conflict: '关联冲突', revoked: '关联已撤销', unlinked: '尚未关联' };
+  text(panel, 'p', states[String(link.state)] ?? '关联状态未知');
+  text(panel, 'p', `资料状态：${({ok:'可用',partial:'部分可用',unavailable:'不可用',not_applicable:'不适用'} as Record<string,string>)[String(ctx.state)] ?? '未知'}`);
+  for (const warning of (Array.isArray(ctx.warnings) ? ctx.warnings : [])) text(panel, 'p', warning);
+  if (link.state !== 'confirmed') {
+    for (const candidate of records(link.candidates)) text(panel, 'p', `候选企业：${readable(candidate.legal_name)}`);
+    return;
+  }
+  const profile = object(ctx.profile), basic = object(profile.basic_profile);
+  if (ctx.profile) {
+    text(panel, 'p', profile.legal_name);
+    text(panel, 'p', `采集时间：${readable(profile.collected_at)} · ${profile.stale === true ? '资料已过期' : '资料未过期'}`);
+    for (const key of ['industry', 'region', 'company_type', 'founded_year', 'registered_capital', 'employee_range', 'risk_summary']) if (readable(basic[key])) text(panel, 'p', basic[key]);
+  } else text(panel, 'p', ctx.has_profile === null ? '画像状态未知' : '暂无企业画像');
+  const latest = object(ctx.latest_report);
+  if (ctx.latest_report) text(panel, 'p', `最新报告：${readable(latest.generated_at)} · 机会等级：${readable(latest.overall_opportunity)} · 推荐产品：${readable(latest.recommended_product) || '未提供'}`);
+  text(panel, 'p', `历史报告数量：${ctx.report_count == null ? '未知' : readable(ctx.report_count)}`);
+  const directory = object(ctx.reports);
+  for (const item of records(directory.items)) {
+    text(panel, 'p', `${readable(item.generated_at)} · 机会等级：${readable(item.overall_opportunity)}`);
+    if (typeof item.assessment_id === 'string') button(panel, `查看报告 ${item.assessment_id}`, () => { void openReport(String(item.assessment_id)); }, reportBusy || !connected);
+  }
+  const move = (offset: number) => {
+    if (!selection) return;
+    reportVersion++; report = null; reportError = ''; reportBusy = false;
+    pendingDetail = { ...selection, reportOffset: offset }; detailVersion++; void pump();
+  };
+  button(panel, '报告上一页', () => move(Math.max(0, selection!.reportOffset - 10)), selection.reportOffset === 0 || !connected);
+  button(panel, '报告下一页', () => {
+    const next = directory.next_offset;
+    if (typeof next === 'number' && Number.isSafeInteger(next) && next > selection!.reportOffset) move(next);
+    else notice.textContent = '报告分页游标异常，不能继续读取。';
+  }, directory.next_offset == null || !connected);
+  if (directory.complete === false) text(panel, 'p', '报告目录尚不完整');
+  if (reportBusy) text(panel, 'p', '正在读取报告…');
+  if (reportError) text(panel, 'p', reportError, 'error');
+  if (report) { text(panel, 'p', `报告生成时间：${readable(report.generated_at)}`); text(panel, 'pre', report.markdown, 'report-body'); }
+}
+async function openReport(id: string) {
+  if (!connected || !selection || !selected || object(selected.company_context?.link).state !== 'confirmed'
+    || !records(selected.company_context?.reports.items).some(item => item.assessment_id === id)) return;
+  const node = selection.id, ticket = ++reportVersion, detailTicket = detailVersion, version = requestVersion;
+  report = null; reportBusy = true; reportError = ''; renderDetail();
+  const current = () => connected && ticket === reportVersion && detailTicket === detailVersion && version === requestVersion && selection?.id === node;
+  try {
+    const value = output(await app.callServerTool({ name: 'get_assessment_report', arguments: { assessment_id: id } }, { timeout: 30_000 }));
+    if (!current()) return;
+    if (value.assessment_id !== id || value.status !== 'completed' || typeof value.markdown !== 'string') throw new Error('Invalid report');
+    report = value;
+  } catch { if (current()) reportError = '报告读取失败或不可用，请再次点击查看报告重试。'; }
+  finally { if (current()) { reportBusy = false; renderDetail(); } }
 }
 function selectNode(id: string, edge?: GraphEdge) {
   if (!connected) { notice.textContent = '宿主连接不可用，请在聊天查询详情。'; return; }
   if (pendingDetail?.id === id && pendingDetail.edge?.id === edge?.id
     || readingDetail?.request.id === id && readingDetail.version === detailVersion && readingDetail.request.edge?.id === edge?.id) return;
   selectedEdge = edge;
-  detailVersion++;
+  detailVersion++; reportVersion++; report = null; reportError = ''; reportBusy = false;
   if (selection?.id === id && selected) { pendingDetail = null; selection.edge = edge; notice.textContent = ''; renderDetail(); return; }
-  pendingDetail = { id, offsets: { evidence: 0, relations: 0, unverified_claims: 0 }, edge };
+  pendingDetail = { id, reportOffset: 0, offsets: { evidence: 0, relations: 0, unverified_claims: 0 }, edge };
+  const base = materials.find(d => object(d.entity).entity_id === id);
+  if (base) { selected = base; selection = pendingDetail; renderDetail(); }
   notice.textContent = '正在读取所选档案…'; void pump();
 }
 function accept(p: SearchPage, args: SearchInput | null) {
-  requestVersion++; detailVersion++; page = p; input = args; waitingResult = false; paused = false;
+  requestVersion++; detailVersion++; reportVersion++; report = null; reportError = ''; reportBusy = false; page = p; input = args; waitingResult = false; paused = false;
   materials = []; loads = p.items.map(i => ({ id: i.entity_id, collection: 'relations', offset: 0, done: false, failed: false }));
   selected = null; selection = pendingDetail = null; selectedEdge = undefined;
   panel.textContent = '选择节点或关系查看来源。'; notice.textContent = '';
@@ -298,9 +360,17 @@ async function pump() {
         const operation = pendingDetail, ticket = detailVersion; pendingDetail = null;
         readingDetail = { request: operation, version: ticket };
         try {
-          const d = await readDetail({ entity_id: operation.id, evidence_offset: operation.offsets.evidence, evidence_limit: 10,
+          const known = object(materials.find(d => object(d.entity).entity_id === operation.id)?.entity);
+          let isOrganization = known.label === 'Organization' || page?.items.find(i => i.entity_id === operation.id)?.label === 'Organization' || selection?.id === operation.id && object(selected?.entity).label === 'Organization';
+          const args = { entity_id: operation.id, evidence_offset: operation.offsets.evidence, evidence_limit: 10,
             relation_offset: operation.offsets.relations, relation_limit: 20, claim_offset: operation.offsets.unverified_claims,
-            claim_limit: 20 });
+            claim_limit: 20 };
+          let d = await readDetail({ ...args, ...(isOrganization ? { include_company_context: true, report_offset: operation.reportOffset, report_limit: 10 } : {}) });
+          if (version !== requestVersion || ticket !== detailVersion) continue;
+          if (!isOrganization && object(d.entity).label === 'Organization') {
+            selected = d; selection = operation; renderDetail();
+            d = await readDetail({ ...args, include_company_context: true, report_offset: operation.reportOffset, report_limit: 10 });
+          }
           if (version !== requestVersion || ticket !== detailVersion) continue;
           selected = d; selection = operation; selectedEdge = operation.edge; notice.textContent = ''; renderDetail();
         } catch { if (version === requestVersion && ticket === detailVersion) {

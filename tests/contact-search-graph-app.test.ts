@@ -28,6 +28,8 @@ it('serves the graph resource through authenticated HTTP MCP without tokens or n
       { requestInit: { headers: { Authorization: 'Bearer fixture-personal-secret' } } }));
     const tool = (await client.listTools()).tools.find(t => t.name === 'search_contacts');
     expect(tool?.title).toEqual(expect.stringMatching(/联系人.*图谱/));
+    const reportTool = (await client.listTools()).tools.find(t => t.name === 'get_assessment_report');
+    expect(reportTool?._meta?.ui).toMatchObject({ visibility: ['model', 'app'] });
     const resourceUri = (tool?._meta?.ui as { resourceUri: string }).resourceUri;
     expect(resourceUri).toBe('ui://salestools/contact-search-graph.html');
     expect(tool?._meta?.['ui/resourceUri']).toBe(resourceUri);

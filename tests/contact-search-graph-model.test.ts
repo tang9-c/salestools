@@ -61,3 +61,8 @@ describe('one-hop contact graph', () => {
     expect(toGraph(page, [d], true).edges.map(e => e.id)).toEqual(['relation:r1', 'claim:c1']);
   });
 });
+
+it('company context does not change graph nodes or edges', () => {
+  const base = detail('p1',[relation('r1')]);
+  expect(toGraph(page,[{...base,company_context:{profile:{legal_name:'ignored'},reports:{items:[]}}} as never])).toEqual(toGraph(page,[base]));
+});

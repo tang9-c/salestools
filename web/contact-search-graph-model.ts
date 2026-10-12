@@ -2,7 +2,7 @@ import type { ContactSearch, ContactSearchInput } from '../src/contacts/contact-
 import type { ContactLibraryService } from '../src/contacts/library-service.js';
 export type SearchInput = ContactSearchInput;
 export type SearchPage = Awaited<ReturnType<ContactSearch['search']>>;
-export type ContactDetail = NonNullable<Awaited<ReturnType<ContactLibraryService['get']>>>;
+export type ContactDetail = NonNullable<Awaited<ReturnType<ContactLibraryService['get']>>> & { company_context?: import('../src/companies/company-context-types.js').CompanyDetail };
 export type GraphNode = { id: string; label: 'Person' | 'Organization' | 'Project' | 'Unknown'; title: string; matched: boolean };
 export type GraphEdge = { id: string; source: string; target: string; type: string;
   status: 'recorded' | 'unverified'; record: Record<string, unknown> };
