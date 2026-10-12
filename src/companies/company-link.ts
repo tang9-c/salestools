@@ -7,8 +7,10 @@ import type { CompanyLink, LinkResolution, LinkWrite, OrganizationIdentity } fro
 
 const alphabet = '0123456789ABCDEFGHJKLMNPQRTUWXY';
 const weights = [1, 3, 9, 27, 19, 26, 16, 17, 20, 29, 25, 13, 8, 24, 10, 30, 28];
-const creditIds = new Set(['统一社会信用代码', '统一社会信用代码号', 'creditCode', 'socialCreditCode', 'USCC']);
-const normalize = (value: string | null | undefined): string => (value ?? '').normalize('NFKC').replace(/\s+/gu, '').trim();
+const creditIds = new Set(['统一社会信用代码', 'credit_code', 'uscc']);
+const normalize = (value: string | null | undefined): string => (value ?? '').trim().normalize('NFKC')
+  .replace(/\s+/gu, '').replace(/[A-Z]/g, character => character.toLowerCase());
+const isCreditId = (propertyID: string): boolean => creditIds.has(normalize(propertyID));
 
 export function validCreditCode(code: string): boolean {
   if (code.length !== 18 || [...code].some(c => !alphabet.includes(c))) return false;
@@ -29,7 +31,7 @@ function matchesEvidence(org: OrganizationIdentity, field: string, value: unknow
 }
 
 function codeEvidence(org: OrganizationIdentity, code: string): boolean {
-  return org.identifiers.some(x => creditIds.has(x.propertyID) && x.value === code
+  return org.identifiers.some(x => isCreditId(x.propertyID) && x.value === code
     && matchesEvidence(org, 'properties.identifier', x));
 }
 
@@ -56,7 +58,7 @@ export function resolveCompanyLink(org: OrganizationIdentity, saved: CompanyLink
   if (saved && saved.identity_hash !== identityHash(org)) {
     return { ...base, state: 'conflict', warnings: ['组织身份已变化'] };
   }
-  const rawCodes = org.identifiers.filter(x => creditIds.has(x.propertyID) && validCreditCode(x.value));
+  const rawCodes = org.identifiers.filter(x => isCreditId(x.propertyID) && validCreditCode(x.value));
   const distinctCodes = [...new Set(rawCodes.map(x => x.value))];
   if (distinctCodes.length > 1) return { ...base, state: 'conflict', warnings: ['多个有效信用代码'] };
   const byCode = new Map(profiles.map(x => [x.identity.creditCode, x]));
@@ -106,12 +108,12 @@ export class CompanyLinkService {
     if (org.version !== input.expected_organization_version) throw new Error('ORGANIZATION_VERSION_CONFLICT');
     if (input.action === 'confirm') {
       if (this.deps.profiles.findByCreditCodes([input.credit_code!]).length !== 1) throw new Error('COMPANY_PROFILE_NOT_FOUND');
-      const codes = org.identifiers.filter(x => creditIds.has(x.propertyID) && validCreditCode(x.value));
+      const codes = org.identifiers.filter(x => isCreditId(x.propertyID) && validCreditCode(x.value));
       const disputedCodes = org.conflicts.filter(x => x.field_path === 'properties.identifier')
         .map(x => x.value).filter((value): value is { propertyID: string; value: string } =>
           typeof value === 'object' && value !== null && 'propertyID' in value && 'value' in value
           && typeof value.propertyID === 'string' && typeof value.value === 'string')
-        .filter(x => creditIds.has(x.propertyID) && validCreditCode(x.value));
+        .filter(x => isCreditId(x.propertyID) && validCreditCode(x.value));
       if (codes.some(x => x.value !== input.credit_code)
         || disputedCodes.some(x => x.value !== input.credit_code)) throw new Error('CREDIT_CODE_CONFLICT');
     }

@@ -29,3 +29,10 @@
 - 修复：写入只校验完整单页、唯一匹配的 `entity_id` 和无后续游标；自动确认在存在当前法定名时只认该法定名及对应证据，缺失法定名时才用展示名；冲突证据按 `evidence_id` 单条排除，不一概拦下全部证据。
 - 绿：`node node_modules/vitest/vitest.mjs run tests/company-link.test.ts tests/company-context-repositories.test.ts tests/company-link-repository.test.ts`，3 文件 19 用例通过；`npm run typecheck` 通过。报告摘要和分页目录均增加精确字段白名单断言。
 - 自审：回放仍先于图谱读取；保存后的回执路径未变。单条冲突证据被排除后，如无其他当前值证据，最多进入 candidate，不自动挂报告。未执行本地构建/native/full-suite。真实 native 端到端仍依赖远程 CI。
+
+## Integration fix round 2（跨语言规范化）
+
+- 红：新增 native 形状 `credit_code`、`uscc`、ASCII 大小写及空白 propertyID、未知别名、有效异码人工确认、名称大小写和原值证据回归。`tests/company-link.test.ts` 17 用例中 8 失败，正对应审查的两处跨语言偏差。
+- 修复：propertyID 经 NFKC、去空白及 ASCII 小写后，仅接受 Rust 的 `统一社会信用代码`、`credit_code`、`uscc`；名称及身份摘要同 `normalizeQccLegalName` 处理 ASCII 大小写。信用代码校验及原始证据值全等检查未改。
+- 绿：`node node_modules/vitest/vitest.mjs run tests/company-link.test.ts tests/company-context-repositories.test.ts tests/company-link-repository.test.ts`，3 文件 26/26 通过；`npm run typecheck`、`git diff --check` 通过。
+- 仍待：native/全套验证留给远程 CI。本轮未触发或取消任何 CI，未执行本地构建/native/full-suite。

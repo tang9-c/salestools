@@ -35,6 +35,54 @@ it('checks checksum and hashes identity fields only', () => {
   expect(validCreditCode(CODE.slice(0, 17) + (CODE[17] === '0' ? '1' : '0'))).toBe(false);
   expect(identityHash(ORG)).toBe(identityHash({ ...ORG, version: 2, evidence: [evidence('properties.name', ORG.name)] }));
   expect(identityHash(ORG)).not.toBe(identityHash({ ...ORG, name: '另一个组织' }));
+  expect(identityHash({ ...ORG, name: ' ACME  Tools ' }))
+    .toBe(identityHash({ ...ORG, name: 'acme tools' }));
+});
+
+it.each([
+  { propertyID: 'credit_code', expected: 'confirmed' },
+  { propertyID: ' uscc ', expected: 'confirmed' },
+  { propertyID: 'CREDIT_CODE', expected: 'confirmed' },
+  { propertyID: 'socialCreditCode', expected: 'candidate' },
+  { propertyID: 'creditCode', expected: 'candidate' },
+])('accepts only native normalized credit propertyID $propertyID', ({ propertyID, expected }) => {
+  const identifier = { ...codeIdentifier(), propertyID };
+  const org = provenOrg({ identifiers: [identifier], evidence: [
+    evidence('properties.identifier', identifier), evidence('properties.name', ORG.name),
+  ] });
+  expect(resolveCompanyLink(org, null, [PROFILE]).state).toBe(expected);
+});
+
+it('normalizes ASCII case in legal names while requiring exact raw evidence', () => {
+  const profile = { ...PROFILE, identity: { ...PROFILE.identity, legalName: 'Acme Tools' } };
+  const name = ' ACME  TOOLS ';
+  const org = provenOrg({ name, evidence: [
+    evidence('properties.identifier', codeIdentifier()), evidence('properties.name', name),
+  ] });
+  expect(resolveCompanyLink(org, null, [profile]).state).toBe('confirmed');
+  expect(resolveCompanyLink({ ...org, evidence: [
+    evidence('properties.identifier', codeIdentifier()), evidence('properties.name', 'acme tools'),
+  ] }, null, [profile]).state).toBe('candidate');
+});
+
+it('rejects manual confirmation when a native uscc identifier has another valid code', async () => {
+  const db = initializeDatabase(new DatabaseSync(':memory:'));
+  try {
+    const profiles = new ProfileRepository(db); profiles.upsert(PROFILE);
+    const links = new CompanyLinkRepository(db);
+    const otherCode = codeFrom('91310000123456788');
+    const identifier = { ...codeIdentifier(otherCode), propertyID: ' USCC ' };
+    const org = provenOrg({ identifiers: [identifier], evidence: [
+      evidence('properties.identifier', identifier), evidence('properties.name', ORG.name),
+    ] });
+    const request = vi.fn(async () => ({ items: [org], total: null, next_offset: null, complete: true }));
+    const graph = { request, close: async () => {} } as unknown as GraphClient;
+    const service = new CompanyLinkService({ graph, links, profiles, now: () => new Date(AT) });
+    await expect(service.change({ action: 'confirm', organization_id: 'o1', credit_code: CODE,
+      operation_id: 'other-code', expected_link_version: 0, expected_organization_version: 1,
+      note: '人工确认' }, 'test')).rejects.toThrow('CREDIT_CODE_CONFLICT');
+    expect(links.get('o1')).toBeNull();
+  } finally { db.close(); }
 });
 
 it('resolves evidence backed codes and names, and fails closed on incomplete or conflicting identity', () => {
