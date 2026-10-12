@@ -71,3 +71,14 @@ description: Use when a user wants to find contacts across the Salestools librar
 详细字段与关系契约以仓库 `docs/superpowers/specs/contact-data-contract.md` 和 MCP 工具输入定义为准；不要凭 skill 猜测未列字段。
 
 导入结果必须分别报告：已提交回读的档案和关系、带原因的待核实线索、`processed_block_ids`／`unprocessed_block_ids` 所示处理范围及告警。只有预览或 OCR 成功不能称为已入库。预算耗尽、部分模型失败或 OCR 无正文时，不把未读取部分说成已保存。来源定位只验证引文所属原块，语义归纳及主体归属由模型判断；正式文件事实仍未经人工核实。匿名档案可用学校／公司搜索，后续用 `save_contact` 在原 ID 补姓名。原样重试是幂等回放，不是重新提取，也没有自动断点续跑；重新导入产生重复提示，不自动跨文件合并。
+
+
+## 企业资料关联与历史
+
+启用企业关联服务时新增一个模型可见工具 `link_company`；不要硬编码工具总数。用户查询组织与企业背景时，可给 `search_contacts`、`get_contact`、`get_company_profile` 显式传 `include_company_context:true`。只有 `confirmed` 可用于跨库统计、画像报告展示和事实回答；唯一同名的 `candidate` 仍须人工核对。信用代码须有效并有主体证据，自动确认只读，不自动合并组织。学校／alumniOf 不代表雇主，unknown 不代表现任。
+
+人工关联使用 `link_company` 的 action、organization_id、credit_code（confirm 必需）、operation_id、expected_link_version、expected_organization_version、note。先读取实际组织与关联版本；actor 由认证提供，不传入工具参数。重放保持同一操作 ID 和完全相同参数。解除 action=unlink，省略 credit_code，使用当前版本和审核说明；revoked 抑制自动重新关联。身份变化冲突后须重新读取与核对，不自动改绑。
+
+`get_contact` 报告分页使用独立 report_offset/report_limit，默认 10、上限 50，跟随 reports.next_offset；证据和关系页码不能代替报告页码。旧画像可显示并标记 stale，但 ask_company 新鲜度限制仍生效。ask_contacts 任职企业背景和 ask_company 库内联系人／客户项目可复用确认资料，通过 context_citations 保留来源，不推断采购权或当前职位。首版最多 20 条跨库材料、12 个相关档案、最新一个已完成报告快照；同一文件多次导入不算独立来源。
+
+`get_assessment_report` 可传 include_related_updates=true，原正文保持不变。related_updates 最多 20 条，按记录时间倒序，since 是报告生成时间，必须说明 scope、truncated 和 warnings；不能把入库时间当事件时间。独立报告读取保留原权限；UUID 不证明当前组织归属，图谱 App 只能打开当前节点目录，ask_company 指定报告须匹配主体。浏览已有资料不触发外部调查或正式评估；问答涉及动态或库外问题时可走已有定向补查流程。真实宿主尚未验收时明确说明限制，不能用 Chromium 模拟结果代替。

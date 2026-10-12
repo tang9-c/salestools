@@ -1,6 +1,6 @@
 # salestools 快速入门
 
-这份指南覆盖联系人本地文件上传、共享图谱，以及 Codex 客户端的 MCP 注册和原有五个工具。它假设 salestools 服务端已经部署，并且你已经拿到服务端的 HTTPS 地址和个人 Bearer Token。
+这份指南覆盖联系人本地文件上传、共享图谱，以及 Codex 客户端的 MCP 注册和基础企业工具。它假设 salestools 服务端已经部署，并且你已经拿到服务端的 HTTPS 地址和个人 Bearer Token。
 
 ## 你需要准备什么
 
@@ -169,6 +169,7 @@ discover_contacts
 submit_assessment
 get_assessment_status
 get_assessment_report
+ask_company
 ```
 
 若管理员开启共享图谱，还应看到 `search_contacts`、`get_contact`、`ask_contacts`、`import_contacts`、`get_contact_import` 和 `commit_contact_import` 等联系人工具。看不到时先让管理员检查 `CONTACT_GRAPH_ENABLED` 与独立图谱库路径；这不影响上列原有工具。
@@ -360,3 +361,34 @@ test -n "$SALESTOOLS_MCP_TOKEN" && echo 'Token 已设置'
 | `submit_assessment` | 主体确认后启动正式评估 | `legal_name`、`credit_code`、可选 `force_refresh` |
 | `get_assessment_status` | 查询异步任务是否完成 | `assessment_id` |
 | `get_assessment_report` | 读取完成报告或失败状态 | `assessment_id` |
+
+
+## 企业与联系人资料复用
+
+已启用企业关联服务时，模型可见工具增加 `link_company` 一个；共享图谱和上传服务按配置另外注册各自工具，不使用固定总数判断安装是否成功。
+
+六个读取入口共享已有资料。`search_contacts`、`get_contact` 和 `get_company_profile` 需显式传 `include_company_context:true`，分别返回搜索摘要、组织企业详情和企业概览。`ask_contacts` 的任职公司背景问题、`ask_company` 的库内联系人或客户项目问题可引用已确认资料。`get_assessment_report` 传 `include_related_updates:true` 可附加变化目录。读取不会创建正式评估；浏览历史不触发外部调查。企业问答涉及库外或动态问题时仍可能按现有流程定向补查。
+
+只有 `confirmed` 关联参与跨库统计、画像与报告展示以及事实回答。`candidate` 即使唯一同名也仍需核对；错误信用代码不能自动确认。学校节点和 `alumniOf` 不得当作雇主。同一人物出现在两个已关联组织中只计一次；多个组织可关联同一企业，但不会自动合并。`unknown` 任职状态只表示没有证明当前状态，不能改称现任。
+
+`get_contact` 的历史报告目录独立使用 `report_offset`、`report_limit`，默认 10、上限 50。按 `company_context.reports.next_offset` 翻页，不能用证据或关系 offset 替代。旧画像可展示，`stale:true` 表示过期；`ask_company` 仍要求新鲜且匹配的主体画像。报告正文保留原文，`context_citations` 单列联系人、画像和报告证据的可追踪来源；引用只覆盖本次实际纳入且支持回答的材料，不表示未引用资料已核实。
+
+人工关联前先用 `get_contact` 读取组织版本，并读取 `company_context.link.version`。用核验后的真实企业代码替换示例值，版本必须来自刚读取的结果：
+
+```json
+{
+  "action": "confirm",
+  "organization_id": "实际组织ID",
+  "credit_code": "913100001234567896",
+  "operation_id": "本次操作的稳定唯一ID",
+  "expected_link_version": 0,
+  "expected_organization_version": 1,
+  "note": "已核对组织与法定主体"
+}
+```
+
+`link_company` 的 actor 来自认证上下文，不接受工具参数伪造。重试保留相同 `operation_id` 和参数。解除时传 `action:"unlink"`，省略 `credit_code`，读取当前两个版本并给出说明；解除会保留 `revoked` 标记、抑制自动重新关联。组织名称或标识变化产生冲突时须重新读取、核对和确认；旧版本操作会失败。
+
+`related_updates` 最多 20 条，按记录时间倒序，只表示报告生成时间 `since` 之后已入库的相关记录，不是现实事件发生时间线。查看 `scope`、`truncated`、`state`、`warnings` 判断范围、截断及来源不可用；无法读到图谱时不会把未知人数显示为零。独立 `get_assessment_report` 沿用原报告读取权限，UUID 不证明报告属于当前组织；图谱 App 只打开当前节点目录中的报告，企业问答拒绝主体不符的显式报告。
+
+真实宿主和最终 SHA 验证状态见[贯通验收记录](validation/2026-10-12-company-contact-data-reuse.md)。

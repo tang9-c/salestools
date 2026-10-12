@@ -568,3 +568,26 @@ it.each(['reports', 'evidence', 'relations'])('discards an in-flight report when
   releaseReport(result({assessment_id:reportId,status:'completed',markdown:'过期分页报告'}));
   await h.barrier(); expect(await h.ui.locator('#detail').innerText()).not.toContain('过期分页报告');
 });
+
+it('rejects a detached report action whose ID belongs to another organization directory', async () => {
+  const otherId = '10000000-0000-4000-8000-000000000099';
+  const data = { ...root, total: 2, items: [...root.items, { entity_id: 'o2', label: 'Organization', name: '另一合成企业' }] };
+  const h = await open(call => {
+    if (call.name === 'get_assessment_report') throw new Error('Foreign directory report must not be called');
+    const id = String(call.arguments.entity_id);
+    const context = companyFixture();
+    if (id === 'o2') context.reports.items[0].assessment_id = otherId;
+    return result({ ...detail(id), entity: { entity_id: id, label: 'Organization', properties: { name: id } },
+      ...(call.arguments.include_company_context ? { company_context: context } : {}) });
+  }, {}, data);
+  await completed(h.ui);
+  await h.ui.locator('#node-list button').nth(0).click();
+  const original = h.ui.getByRole('button', { name: `查看报告 ${reportId}`, exact: true });
+  await expect.poll(() => original.count()).toBe(1);
+  const detached = await original.elementHandle();
+  await h.ui.locator('#node-list button').nth(1).click();
+  await expect.poll(() => h.ui.getByRole('button', { name: `查看报告 ${otherId}`, exact: true }).count()).toBe(1);
+  await detached!.evaluate(button => (button as HTMLButtonElement).click());
+  await h.barrier();
+  expect(h.calls.some(call => call.name === 'get_assessment_report')).toBe(false);
+});
