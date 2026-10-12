@@ -390,3 +390,48 @@ it('keeps detail collection offsets independent and never removes graph edges wh
   expect(h.calls.at(-1)?.arguments.claim_offset).toBe(0);
   expect(await h.ui.locator('[data-edge]').count()).toBe(1);
 });
+
+it('loads company detail on selection, pages history and opens the selected report', async () => {
+  const reports = Array.from({length:11},(_,i) => ({
+    assessment_id:`10000000-0000-4000-8000-${String(i+1).padStart(12,'0')}`,
+    generated_at:'2026-10-12T00:00:00Z',collected_at:'2026-10-11T00:00:00Z',
+    overall_opportunity:'中',recommended_product:null,
+  }));
+  const h = await open(call => {
+    if (call.name === 'get_contact') {
+      const base = detail(String(call.arguments.entity_id));
+      if (!call.arguments.include_company_context) return result(base);
+      const offset = Number(call.arguments.report_offset ?? 0);
+      return result({...base,company_context:{state:'ok',warnings:[],
+        link:{state:'confirmed',organization_id:'o1',credit_code:'synthetic',basis:'manual',
+          version:1,candidates:[],warnings:[]},
+        has_profile:true,report_count:11,latest_report_at:reports[0].generated_at,
+        profile:{legal_name:'云杉智造',credit_code:'synthetic',basic_profile:{industry:'装备制造'},
+          collected_at:'2026-10-11T00:00:00Z',stale:false},
+        latest_report:reports[0],reports:{items:reports.slice(offset,offset+10),total:11,
+          next_offset:offset===0?10:null,complete:true}}});
+    }
+    if (call.name === 'get_assessment_report') return result({
+      assessment_id:call.arguments.assessment_id,status:'completed',legal_name:'云杉智造',
+      markdown:'# 第十一份历史报告',generated_at:reports[10].generated_at,
+      collected_at:reports[10].collected_at,overall_opportunity:'中',recommended_product:null,
+      dynamic_signal_freshness:'current',source_status:{qcc:'completed',doubao_search:'completed',ark:'completed'},
+    });
+    throw new Error(`Unexpected tool ${call.name}`);
+  });
+  await completed(h.ui);
+  expect(h.calls.some(c => c.name==='get_assessment_report')).toBe(false);
+  expect(h.calls.filter(c => c.name==='get_contact')
+    .every(c => c.arguments.include_company_context!==true)).toBe(true);
+  await h.ui.locator('#node-list button').click();
+  await expect.poll(() => h.ui.locator('#detail').innerText()).toContain('装备制造');
+  await h.ui.getByRole('button',{name:'报告下一页',exact:true}).click();
+  await expect.poll(() => h.calls.some(c => c.name==='get_contact' && c.arguments.report_offset===10)).toBe(true);
+  await h.ui.getByRole('button',{name:`查看报告 ${reports[10].assessment_id}`,exact:true}).click();
+  await expect.poll(() => h.ui.locator('#detail').innerText()).toContain('第十一份历史报告');
+  expect(h.calls.find(c => c.name==='get_assessment_report')?.arguments)
+    .toMatchObject({assessment_id:reports[10].assessment_id});
+  expect(await h.ui.locator('#node-list button').count()).toBe(1);
+  expect(h.calls.filter(c => c.arguments.report_offset===10)
+    .every(c => Number(c.arguments.relation_offset ?? 0)===0)).toBe(true);
+});
