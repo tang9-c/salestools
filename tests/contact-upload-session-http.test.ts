@@ -378,6 +378,12 @@ function realReviewService(data: Record<string, unknown>, laterData?: Record<str
         return { import_id: 'import_1', actor: 'alice', file_id: 'file_1', status: 'ready_for_review', version: reads > 1 ? laterVersion : 3,
           data: { candidates: [person], ...(reads > 1 && laterData ? laterData : data) } } as T;
       }
+      if (op === 'search_keyword') {
+        if (matching === 'failure') throw new Error('private matching dependency unavailable');
+        const items = matching === 'duplicate'
+          ? [{ entity_id: 'existing_1', label: 'Person', name: '陈晓' }] : [];
+        return { items, total: matching === 'truncated' ? 51 : items.length } as T;
+      }
       if (op === 'find_identity_candidates') {
         if (matching === 'failure') throw new Error('private matching dependency unavailable');
         return { entity_ids: matching === 'duplicate' ? ['existing_1'] : [], truncated: matching === 'truncated' } as T;
