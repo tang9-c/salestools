@@ -133,6 +133,127 @@ fn ids(result: &Value) -> Vec<String> {
 }
 
 #[test]
+fn duplicate_claims_are_bidirectional_pending_pages_without_other_incoming_claims() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let a = entity(&store, "dup-a", "Person", "甲", &[], &[], None);
+    let b = entity(&store, "dup-b", "Person", "乙", &[], &[], None);
+    let c = entity(&store, "dup-c", "Person", "丙", &[], &[], None);
+    let duplicate = project_claim(&store, "10-duplicate", &a, &b, "possible_duplicate");
+    let ordinary = project_claim(&store, "20-own", &b, &c, "memberOf");
+    project_claim(&store, "30-incoming", &c, &b, "memberOf");
+    for status in ["rejected", "confirmed"] {
+        let id = project_claim(&store, status, &a, &b, "possible_duplicate");
+        store
+            .graph
+            .connection()
+            .execute(
+                "UPDATE contact_claims SET status=?1 WHERE claim_id=?2",
+                rusqlite::params![status, id],
+            )
+            .unwrap();
+    }
+    let get = |id: &str, offset: usize, limit: usize| {
+        request(
+            &store,
+            "get_contact",
+            json!({"entity_id":id,"claim_offset":offset,"claim_limit":limit}),
+        )
+    };
+    let first = get(&b, 0, 1);
+    assert_eq!(first["ok"], true, "{first}");
+    assert_eq!(
+        first["result"]["unverified_claims"][0]["claim_id"],
+        duplicate
+    );
+    assert_eq!(first["result"]["unverified_claims"][0]["subject_id"], a);
+    assert_eq!(
+        first["result"]["pagination"]["unverified_claims"],
+        json!({"offset":0,"limit":1,"total":2,"next_offset":1})
+    );
+    let second = get(&b, 1, 1);
+    assert_eq!(
+        second["result"]["unverified_claims"][0]["claim_id"],
+        ordinary
+    );
+    assert_eq!(
+        second["result"]["pagination"]["unverified_claims"]["next_offset"],
+        Value::Null
+    );
+    assert_eq!(
+        get(&a, 0, 50)["result"]["unverified_claims"][0]["claim_id"],
+        duplicate
+    );
+    let third = get(&c, 0, 50);
+    assert_eq!(
+        third["result"]["unverified_claims"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        third["result"]["unverified_claims"][0]["relation_type"],
+        "memberOf"
+    );
+    assert_eq!(
+        get(&b, 0, 0)["result"]["pagination"]["unverified_claims"]["total"],
+        2
+    );
+    assert_eq!(get(&b, 2, 1)["result"]["unverified_claims"], json!([]));
+}
+
+#[test]
+fn duplicate_name_snapshots_never_supply_search_facts() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.sqlite")).unwrap();
+    let a = entity(&store, "dup-search-a", "Person", "甲", &[], &[], None);
+    let b = entity(
+        &store,
+        "dup-search-b",
+        "Person",
+        "乙Python星辰项目",
+        &[],
+        &["Python"],
+        None,
+    );
+    let claim = project_claim(&store, "duplicate-search", &a, &b, "possible_duplicate");
+    store.graph.connection().execute("UPDATE contact_claims SET value_json=?1 WHERE claim_id=?2", rusqlite::params![json!({"subject_name":"甲", "target_name":"乙Python星辰项目", "reasons":["same_name"]}).to_string(), claim]).unwrap();
+    for query in ["Python", "星辰项目", "乙"] {
+        let result = search(&store, json!({"query":query,"include_unverified":true}));
+        assert_eq!(ids(&result), vec![b.clone()], "{query}: {result}");
+        assert_eq!(result["total"], 1);
+        assert_eq!(
+            ids(&search(&store, json!({"query":query}))),
+            vec![b.clone()]
+        );
+    }
+    assert_eq!(
+        ids(&search(
+            &store,
+            json!({"skill":"Python","include_unverified":false})
+        )),
+        vec![b.clone()]
+    );
+    let ordinary = project_claim(&store, "ordinary-search", &a, &b, "memberOf");
+    store
+        .graph
+        .connection()
+        .execute(
+            "UPDATE contact_claims SET value_json=?1 WHERE claim_id=?2",
+            rusqlite::params![json!({"target_name":"可核实机构"}).to_string(), ordinary],
+        )
+        .unwrap();
+    assert_eq!(
+        ids(&search(
+            &store,
+            json!({"query":"可核实机构","include_unverified":true})
+        )),
+        vec![a]
+    );
+}
+
+#[test]
 fn identity_lookup_suggests_changed_name_by_exact_phone_without_auto_merge() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path().join("graph.sqlite")).unwrap();

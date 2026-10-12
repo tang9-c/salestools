@@ -345,4 +345,16 @@ describe('VectorIndexer', () => {
     expect(text).toContain('主管');
     expect(text).not.toMatch(/private@example\.cn|13800138000|12345678|wx-private/u);
   });
+
+  it('excludes incoming and outgoing duplicate clues from embedding facts', () => {
+    const clue = { kind: 'relation', relation_type: 'possible_duplicate', status: 'unverified',
+      subject_id: 'person-1', target_id: 'person-2',
+      value: { target_name: '另一人星辰科技Python项目', reasons: ['same_name'] } };
+    const text = buildEmbeddingText({ entity: { entity_id: 'person-1',
+      properties: { name: '陈晓', skills: ['CAD'] } },
+      relations: [{ relation_type: 'worksFor', source_id: 'person-1',
+        properties: { role: { roleName: '主管' } } }],
+      unverified_claims: [clue, { ...clue, subject_id: 'person-3', target_id: 'person-1' }] });
+    expect(text).toBe('陈晓\nCAD\n主管');
+  });
 });

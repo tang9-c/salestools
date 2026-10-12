@@ -3,7 +3,24 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { ContactGraphClient } from '../src/contacts/graph-client.js';
+import { ContactGraphClient, readCompleteContact, type GraphClient } from '../src/contacts/graph-client.js';
+
+it.each(['failure', 'version'])('returns only verified accumulated pages when partial reading is requested: %s', async mode => {
+  let incomplete = false;
+  const graph: GraphClient = { close: async () => undefined,
+    request: async <T>(_op: unknown, payload: unknown): Promise<T> => {
+      const offset = (payload as { relation_offset?: number }).relation_offset ?? 0;
+      if (offset === 2 && mode === 'failure') throw new Error('private failure');
+      return { version: offset === 2 ? 2 : 1, index_content_version: 1, entity: { entity_id: 'p1' }, evidence: [],
+        relations: [{ relation_id: `r${offset}` }], pagination: { evidence: { total: 0, next_offset: null },
+          relations: { total: 3, next_offset: offset === 2 ? null : offset + 1 } } } as T;
+    } };
+  const result = await readCompleteContact(graph, 'p1', { onIncomplete: () => { incomplete = true; } } as Parameters<typeof readCompleteContact>[2]);
+  expect(incomplete).toBe(true);
+  expect(result?.relations).toEqual([{ relation_id: 'r0' }, { relation_id: 'r1' }]);
+  expect(result?.version).toBe(1);
+  await expect(readCompleteContact(graph, 'p1')).rejects.toThrow(mode === 'failure' ? 'private failure' : 'GRAPH_CONTACT_CHANGED_DURING_READ');
+});
 
 const directories: string[] = [];
 const clients: ContactGraphClient[] = [];

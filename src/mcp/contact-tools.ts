@@ -122,7 +122,7 @@ export function registerContactTools(server: McpServer, library: ContactLibraryS
   }, async (input, context) => result(await library.saveRelation(input, actor(context))));
 
   server.registerTool('review_contact_claim', {
-    description: '明确确认或拒绝待核实断言，须提供当前实体版本与可重试 operation_id。confirm 必须附 1–500 字符人工审核说明；关系须有已创建且类型正确的 target_id。corrected_value 对字段是更正值（数组追加去重），对关系是 {properties, metadata?}；逐段确认 worksFor。未确认线索不会成为问答事实。',
+    description: '明确确认或拒绝待核实断言，须提供当前实体版本与可重试 operation_id。入向线索须先读取记录实际 subject_id 的主体档案，使用该主体当前版本。possible_duplicate 禁止 confirm，确认同一人须用 merge_contacts；reject 必须附 1–500 字符说明。其他 confirm 必须附 1–500 字符人工审核说明；关系须有已创建且类型正确的 target_id。corrected_value 对字段是更正值（数组追加去重），对关系是 {properties, metadata?}；逐段确认 worksFor。未确认线索不会成为问答事实。',
     inputSchema: reviewClaimInput,
   }, async (input, context) => result(await library.reviewClaim(input, actor(context))));
 

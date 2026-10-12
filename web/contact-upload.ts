@@ -104,7 +104,7 @@ function friendly(error: unknown): string {
     IMAGE_PIXELS_EXCEEDED: '图片尺寸过大，请缩小图片后重新选择。',
     INVALID_DOCUMENT: '文件无法读取，请重新导出 PDF 或拍摄清晰图片。',
     UPLOAD_ALREADY_USED: '此会话已经接收文件，请继续核对原任务，或在聊天中重新打开入口。',
-    MANUAL_REVIEW_REQUIRED: '存在可能重复或不完整的资料，请在聊天中人工核对。',
+    MANUAL_REVIEW_REQUIRED: '主体或资料处理范围尚未核对完整，请在聊天中人工核对。',
     IMPORT_COMMIT_FAILED: '提交未能确认，请在聊天中使用任务编号查询结果。',
   };
   return messages[error.code] ?? '处理未完成，请使用任务编号在聊天中查询，或重试当前步骤。';
@@ -213,7 +213,8 @@ function render(first: Preview): void {
     }
   }
   for (const reason of first.confirmation?.reasons ?? []) line(previewBox, 'p', `需要人工核对：${reason}`);
-  if (first.match_suggestions.length) line(previewBox, 'p', '请在聊天中选择：合并到已有联系人、新建独立联系人或跳过本次候选。信息不足时可暂不决定；匹配线索不代表已确认同一人。');
+  if (first.match_suggestions.length) line(previewBox, 'p', '保存资料将新建独立联系人，并保留身份待核对线索；匹配线索不代表已确认同一人或不同人。确认同一人且希望合并时，请在聊天中明确选择合并。');
+  if (first.match_suggestions_truncated) line(previewBox, 'p', '重复核对未完整完成，可能遗漏已有联系人。可保存有效资料及已获得的线索，之后继续核对身份。');
   review.hidden = false;
 }
 async function loadPreview(ticket: number, reconfirm = false): Promise<void> {
@@ -232,6 +233,7 @@ async function loadPreview(ticket: number, reconfirm = false): Promise<void> {
   version = first.version;
   receiptVersion = null;
   render(first);
+  commit.textContent = first.match_suggestions.length ? '保存资料，身份待核对' : '确认导入';
   defer.hidden = first.status !== 'ready_for_review';
   resume.hidden = true;
   commit.disabled = first.confirmation?.allowed !== true;
@@ -416,7 +418,7 @@ defer.addEventListener('click', () => {
   defer.hidden = true;
   resume.hidden = false;
   offerRetry(null);
-  manual.textContent = '暂不决定，尚未入库。保留任务编号，可在聊天中继续核对；预览按现有保留规则处理，上传会话仍可能到期。';
+  manual.textContent = '暂不保存，尚未入库。保留任务编号，可在聊天中继续核对；预览按现有保留规则处理，上传会话仍可能到期。';
 });
 resume.addEventListener('click', () => {
   if (busy || !session || resume.hidden) return;

@@ -54,6 +54,53 @@ fn detail(s: &Store, id: &str) -> Value {
 }
 
 #[test]
+fn duplicate_review_requires_merge_or_an_explained_rejection() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path().join("g.db")).unwrap();
+    let a = entity(&s, "Person", "甲");
+    let b = entity(&s, "Person", "乙");
+    claim(
+        &s,
+        "duplicate",
+        &a,
+        "possible_duplicate",
+        json!({"reasons":["same_name"]}),
+    );
+    s.graph
+        .connection()
+        .execute(
+            "UPDATE contact_claims SET target_id=?1 WHERE claim_id='duplicate'",
+            [&b],
+        )
+        .unwrap();
+    let confirmed = call(
+        &s,
+        "review_contact_claim",
+        review("duplicate", "confirm", 1),
+    );
+    assert_eq!(confirmed["ok"], false);
+    assert!(confirmed.to_string().contains("merge_contacts"));
+    assert_eq!(status(&s, "duplicate"), "unverified");
+    assert_eq!(detail(&s, &a)["relations"], json!([]));
+    let mut input = review("duplicate", "reject", 1);
+    for note in [Value::Null, json!(" "), json!("字".repeat(501))] {
+        input["confirmation_note"] = note;
+        assert_eq!(call(&s, "review_contact_claim", input.clone())["ok"], false);
+    }
+    input["confirmation_note"] = json!("已核对，为不同人");
+    let result = call(&s, "review_contact_claim", input.clone());
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(status(&s, "duplicate"), "rejected");
+    assert_eq!(detail(&s, &a)["entity"]["metadata"]["version"], 2);
+    assert_eq!(audit_count(&s), 1);
+    assert_eq!(
+        call(&s, "review_contact_claim", input)["result"]["replayed"],
+        true
+    );
+    assert_eq!(audit_count(&s), 1);
+}
+
+#[test]
 fn corrected_education_claim_writes_relation_details_with_manual_evidence() {
     let d = tempfile::tempdir().unwrap();
     let s = Store::open(d.path().join("g.db")).unwrap();

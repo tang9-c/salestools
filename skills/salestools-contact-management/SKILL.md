@@ -9,7 +9,7 @@ description: Use when a user wants to find contacts across the Salestools librar
 
 ## 综合查找联系人
 
-`search_contacts` 可附带“联系人图谱”MCP App，由宿主展示或让用户展开，不调用新的 opener。App 自行读取当前搜索页命中节点的全部一跳职业关系及名称；只为展示不要在聊天重复批量 `get_contact`。用户请求核对或结论时，仍按下面的真实 ID、状态和证据流程读取，不能用图像代替证据。点击详情不递归扩图，加载失败或未完成不表示没有关系；虚线仅为原查询显式开启的待核实项，现有接口不查询其他主体指向命中节点的入向 claim。正式边不等于人工核实，unknown 任职不能称现任。不支持 App 的宿主继续文字/表格；不要提供普通网页查询链接，也不擅自打开上传 App。
+`search_contacts` 可附带“联系人图谱”MCP App，由宿主展示或让用户展开，不调用新的 opener。App 自行读取当前搜索页命中节点的全部一跳职业关系及名称；只为展示不要在聊天重复批量 `get_contact`。用户请求核对或结论时，仍按下面的真实 ID、状态和证据流程读取，不能用图像代替证据。点击详情不递归扩图，加载失败或未完成不表示没有关系；虚线仅为原查询显式开启的职业待核实项。详情通过原 `get_contact` 单独显示双向 `possible_duplicate` 身份提示，不受 `include_unverified` 开关影响，且不画成关系边；共用 `unverified_claims` 分页。其他 claim 仍归属于实际主体。正式边不等于人工核实，unknown 任职不能称现任。不支持 App 的宿主继续文字/表格；不要提供普通网页查询链接，也不擅自打开上传 App。
 
 先根据用户表述确定查找环节。说“综合查找”“完整查找”而未限定范围时，默认依次执行：① `search_contacts` 查共享库；② 有招聘目标公司时 `discover_contacts` 查公开网页岗位线索；③ 对相关的库内 `entity_id` 用 `get_contact` 核对档案和证据。项目客户名是库内检索条件，不自动视为招聘目标公司。用户指定仅查公开网页、仅查库、仅看档案，或指定多个环节与顺序时，只执行指定环节；查询本身不触发导入、合并或其他写入。`ask_contacts` 用于既有直接正式关系；项目客户问题走下述项目路径。
 
@@ -34,7 +34,7 @@ description: Use when a user wants to find contacts across the Salestools librar
 
 ## 上传页面的授权、隐私与恢复
 
-在选文件前说明原件临时存储、提取的文字发送给服务配置的模型，确认后写入共享联系人库。页面路径必须由用户核对并点击“确认导入”，不能用后续聊天工具自动绕过页面的重复、处理范围未知/未处理块、匹配不完整或主体不明确阻断。用户另行明确要求人工处理时，先用原 `import_id` 读取完整预览再采用现有导入工具。本文下方默认自动提交约定用于用户明确授权的聊天/CLI 路径。
+在选文件前说明原件临时存储、提取的文字发送给服务配置的模型，确认后写入共享联系人库。页面路径由用户核对并点击“确认导入”；有重复提示时按钮为“保存资料，身份待核对”，经授权可独立入库，重复提示或匹配不完整只提示警告。处理范围未知/未处理块或主体不明确仍须核对。点击“暂不保存”只停留预览，不提交也不取消，可“继续核对”；不能代用户点击保存或选择合并。用户另行明确要求人工处理时，先用原 `import_id` 读取完整预览再采用现有导入工具。本文下方默认自动提交约定用于用户明确授权的聊天/CLI 路径。
 
 `open_contact_upload` 的外部短码 60 秒一次性；过期或已兑换时重开工具。页面不接收长期 Token，App 会话凭据只保存在内存中。App 刷新/关闭后不能恢复旧会话；保留真实 `import_id` 用 `get_contact_import` 查原任务，或重开入口。外部页刷新可尝试受限 HttpOnly Cookie 恢复；服务器重启、失效或退出后重开。任务编号不提供授权，不能跨用户读取。
 
@@ -54,6 +54,10 @@ description: Use when a user wants to find contacts across the Salestools librar
 导入后若要按客户找人，默认以客户名称调用 `search_contacts({query:"客户名",mode:"keyword",include_unverified:true})`，只把 `label=Person` 且带 `matched_project_id` 的结果当作项目参与人物；同时展示正式与待核实状态。读取该 Person 和 Project 的档案，逐一对齐 `memberOf`／`clientOrganization` 两跳的关系或 `claim_ids`、主体与文件引文；不能把待核实线索说成确定合作。若用户只要正式事实，关闭 `include_unverified`。判断客户是否也是雇主时，另查该 Person 指向同一 Organization 的独立 `worksFor`；缺少任职证据只报告“无法确认受雇”，不能断言“不是雇主”。
 
 ## 解释结果
+
+- 疑似重复：授权保存有效资料后，可创建独立档案，旧档案正式资料保持原状；无身份确认时保留 `possible_duplicate` 的 `unverified`（待核对）状态。名称为发现时快照，理由相同不证明同一人；线索不参与职业搜索、问答、向量或正式图谱。匹配失败/截断时报告重复核对未完整完成及实际已保存线索，不能称没有重复。本轮只覆盖新导入，不自动回填历史库；临时原件清理不使身份线索到期。
+- 确认同一人且授权合并时先读双方当前版本，再使用 `merge_contacts`，不调用 `review_contact_claim(action=confirm)` 确认身份线索。导入候选合并到 A 后，与 B 的提示仍可能待核对；不能宣称已经排除 B。成功后按真实返回 ID 回读结果与线索。
+- 拒绝 `possible_duplicate` 时，先读取记录实际 `subject_id` 的当前版本，即使当前查看的是另一端；按原 claim 分页核对记录。调用 `review_contact_claim` 时传该主体版本、`action=reject`、稳定 `operation_id`，并必须提供 1–500 字符 `confirmation_note`，说明确认不同人或仅忽略提示。忽略提醒不证明不同人；只查看或暂缓不授权拒绝，也不承诺有暂时隐藏/自动恢复功能。
 
 - 字段归属：Person 保存个人身份、联系方式和技能，爱好／婚姻情况／籍贯／即时通讯在 Person.extensions；学校／公司 Organization 只保存机构自身信息。专业、教育层次、就读起止时间在该人的 `alumniOf.properties.major/educationLevel/startDate/endDate`，不是学校属性；任职和项目参与角色／时间看各自关系。`educationLevel=本科` 不证明毕业或取得学位。
 - `skills=[]` 或可选经历字段提取失败，不作为拒绝保存有效联系人的理由；仍按预览的主体、证据和可提交状态操作。可疑教育／任职字段展示为 Person 上指向相应机构的关系待核实项，不展示成学校／公司事实。

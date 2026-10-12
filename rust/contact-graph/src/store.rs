@@ -950,7 +950,8 @@ impl Store {
             .graph
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM contact_claims WHERE subject_id=?1 AND status='unverified'",
+                "SELECT COUNT(*) FROM contact_claims WHERE status='unverified'
+                  AND (subject_id=?1 OR (kind='relation' AND relation_type='possible_duplicate' AND target_id=?1))",
                 [entity_id],
                 |row| row.get(0),
             )
@@ -958,7 +959,8 @@ impl Store {
         let mut statement = self.graph.connection().prepare(
             "SELECT claim_id,subject_id,kind,field_path,relation_type,target_id,value_json,source_json,
                 status,reason,import_id,candidate_id,created_at,updated_at
-             FROM contact_claims WHERE subject_id=?1 AND status='unverified'
+             FROM contact_claims WHERE status='unverified'
+               AND (subject_id=?1 OR (kind='relation' AND relation_type='possible_duplicate' AND target_id=?1))
              ORDER BY claim_id LIMIT ?2 OFFSET ?3",
         ).map_err(AppError::internal)?;
         let rows = statement.query_map(params![entity_id, claim_limit as i64,

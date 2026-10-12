@@ -348,6 +348,7 @@ pub fn search_keyword(store: &Store, raw: &Value) -> Result<Value, AppError> {
             SELECT i.entity_id,e.entity_type,e.properties,
               (SELECT MIN(c.claim_id) FROM contact_claims c
                 WHERE c.subject_id=i.entity_id AND c.status='unverified'
+                  AND (c.relation_type IS NULL OR c.relation_type <> 'possible_duplicate')
                   AND EXISTS (SELECT 1 FROM json_tree(CASE WHEN c.kind='relation' THEN
                       json_object('target_name',json_extract(c.value_json,'$.target_name'),
                         'properties',json_extract(c.value_json,'$.properties'))

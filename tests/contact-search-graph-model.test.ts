@@ -12,6 +12,15 @@ const detail = (id: string, relations: unknown[] = [], claims: unknown[] = []) =
   relations, unverified_claims: claims,
 });
 describe('one-hop contact graph', () => {
+  it('does not turn either end of a duplicate clue into a professional edge or neighbor', () => {
+    const clue = { claim_id: 'duplicate', kind: 'relation', status: 'unverified',
+      relation_type: 'possible_duplicate', subject_id: 'p1', target_id: 'p3',
+      value: { target_name: '另一人及其任职机构', reasons: ['same_name'] } };
+    const graph = toGraph(page, [detail('p1', [relation('employment')], [clue]),
+      detail('p2', [], [{ ...clue, subject_id: 'p3', target_id: 'p2' }])], true);
+    expect(graph.edges.map(edge => edge.id)).toEqual(['relation:employment']);
+    expect(graph.nodes.map(node => node.id)).toEqual(['p1', 'p2', 'o1']);
+  });
   it('does not use internal IDs as unnamed node titles while preserving distinct identities', () => {
     const ids = ['p_00112233445566778899aabbccddeeff', 'p_ffeeddccbbaa99887766554433221100'];
     const graph = toGraph({ ...page, items: ids.map(entity_id => ({ entity_id, label: 'Person',

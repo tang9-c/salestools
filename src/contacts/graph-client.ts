@@ -48,6 +48,8 @@ function contactPageState(value: unknown): { evidence: ContactPageState; relatio
 /** Internal consumers need all cited facts; the MCP tool deliberately exposes pages instead. */
 export async function readCompleteContact(graph: GraphClient, entityId: string, options: {
   evidence?: boolean; relations?: boolean;
+  // Opt in to returning only pages already validated against the initial version.
+  onIncomplete?: () => void;
 } = {}): Promise<Record<string, unknown> | null> {
   const first = await graph.request<Record<string, unknown> | null>('get_contact', { entity_id: entityId, claim_limit: 0 });
   if (!first) return null;
@@ -59,35 +61,41 @@ export async function readCompleteContact(graph: GraphClient, entityId: string, 
   const relations = includeRelations && Array.isArray(first.relations) ? [...first.relations] : [];
   let state = initial;
   const maxPages = 40;
-  for (let pageIndex = 1; (includeEvidence && state.evidence.next_offset !== null)
-    || (includeRelations && state.relations.next_offset !== null); pageIndex++) {
-    if (pageIndex >= maxPages) throw new GraphClientError('GRAPH_CONTACT_PAGE_LIMIT');
-    const evidenceOffset = includeEvidence ? state.evidence.next_offset ?? state.evidence.total : state.evidence.total;
-    const relationOffset = includeRelations ? state.relations.next_offset ?? state.relations.total : state.relations.total;
-    const next = await graph.request<Record<string, unknown> | null>('get_contact', {
-      entity_id: entityId, evidence_offset: evidenceOffset, relation_offset: relationOffset,
-      evidence_limit: 50, relation_limit: 50, claim_limit: 0,
-    });
-    if (!next || next.version !== first.version || next.index_content_version !== first.index_content_version
-      || !Array.isArray(next.evidence) || !Array.isArray(next.relations)) {
-      throw new GraphClientError('GRAPH_CONTACT_CHANGED_DURING_READ');
+  try {
+    for (let pageIndex = 1; (includeEvidence && state.evidence.next_offset !== null)
+      || (includeRelations && state.relations.next_offset !== null); pageIndex++) {
+      if (pageIndex >= maxPages) throw new GraphClientError('GRAPH_CONTACT_PAGE_LIMIT');
+      const evidenceOffset = includeEvidence ? state.evidence.next_offset ?? state.evidence.total : state.evidence.total;
+      const relationOffset = includeRelations ? state.relations.next_offset ?? state.relations.total : state.relations.total;
+      const next = await graph.request<Record<string, unknown> | null>('get_contact', {
+        entity_id: entityId, evidence_offset: evidenceOffset, relation_offset: relationOffset,
+        evidence_limit: 50, relation_limit: 50, claim_limit: 0,
+      });
+      if (!next || next.version !== first.version || next.index_content_version !== first.index_content_version
+        || !Array.isArray(next.evidence) || !Array.isArray(next.relations)) {
+        throw new GraphClientError('GRAPH_CONTACT_CHANGED_DURING_READ');
+      }
+      const following = contactPageState(next);
+      if (!following || following.evidence.total !== initial.evidence.total
+        || following.relations.total !== initial.relations.total
+        || (state.evidence.next_offset !== null && following.evidence.next_offset !== null
+          && following.evidence.next_offset <= evidenceOffset)
+        || (state.relations.next_offset !== null && following.relations.next_offset !== null
+          && following.relations.next_offset <= relationOffset)) {
+        throw new GraphClientError('GRAPH_INVALID_RESPONSE');
+      }
+      if (includeEvidence && state.evidence.next_offset !== null) evidence.push(...next.evidence);
+      if (includeRelations && state.relations.next_offset !== null) relations.push(...next.relations);
+      state = following;
     }
-    const following = contactPageState(next);
-    if (!following || following.evidence.total !== initial.evidence.total
-      || following.relations.total !== initial.relations.total
-      || (state.evidence.next_offset !== null && following.evidence.next_offset !== null
-        && following.evidence.next_offset <= evidenceOffset)
-      || (state.relations.next_offset !== null && following.relations.next_offset !== null
-        && following.relations.next_offset <= relationOffset)) {
+    if ((includeEvidence && evidence.length !== initial.evidence.total)
+      || (includeRelations && relations.length !== initial.relations.total)) {
       throw new GraphClientError('GRAPH_INVALID_RESPONSE');
     }
-    if (includeEvidence && state.evidence.next_offset !== null) evidence.push(...next.evidence);
-    if (includeRelations && state.relations.next_offset !== null) relations.push(...next.relations);
-    state = following;
-  }
-  if ((includeEvidence && evidence.length !== initial.evidence.total)
-    || (includeRelations && relations.length !== initial.relations.total)) {
-    throw new GraphClientError('GRAPH_INVALID_RESPONSE');
+  } catch (error) {
+    if (!options.onIncomplete) throw error;
+    options.onIncomplete();
+    return { ...first, evidence, relations, pagination: state };
   }
   return { ...first, evidence, relations,
     pagination: { evidence: includeEvidence ? { total: evidence.length, next_offset: null } : initial.evidence,
