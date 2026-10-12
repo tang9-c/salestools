@@ -131,7 +131,7 @@ function orderEvidence(
 const DYNAMIC = /(?:最新|近期|最近|目前|当前|趋势|近一年|今年|发布|招聘趋势|扩张信号)/u;
 const PRODUCTS = /\b(?:solid\s*works|windchill|feigenbaum|creo|catia|abaqus|cst|plm|qms|pdm)\b/iu;
 
-function canReuse(snapshot: EvidenceSnapshot, question: string, now: Date): boolean {
+export function canReuse(snapshot: EvidenceSnapshot, question: string, now: Date): boolean {
   const collected = Date.parse(snapshot.collectedAt);
   if (collected > now.getTime() || collected < now.getTime() - 30 * 86_400_000) return false;
   if (DYNAMIC.test(question)) return false;

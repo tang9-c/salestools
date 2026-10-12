@@ -40,3 +40,11 @@ export const CompanyOverviewSchema=z.object({...readMeta,organization_ids:z.arra
 export const RecentRecordSchema=z.object({kind:z.enum(['entity','relation','evidence','profile','assessment']),id:z.string(),entity_id:z.string().optional(),recorded_at:UtcTimestampSchema,label:z.string()}).strict();
 export const RelatedUpdatesSchema=z.object({...readMeta,since:UtcTimestampSchema,scope:z.array(z.string()),truncated:z.boolean(),
   items:z.array(RecentRecordSchema).max(20)}).strict();
+export const ContextCitationSchema=z.object({ref:z.string(),source_type:z.enum(['contact','profile','assessment']),
+  subject_id:z.string(),quote:z.string().optional(),value:z.unknown().optional(),evidence_id:z.string().optional(),
+  entity_id:z.string().optional(),relation_id:z.string().optional(),assessment_id:z.string().optional(),source_url:z.string().optional(),
+  file_name:z.string().optional(),page:z.int().positive().optional(),collected_at:UtcTimestampSchema.optional(),published_at:UtcTimestampSchema.optional()}).strict();
+export const ContextMaterialSchema=z.object({citation:ContextCitationSchema,statement:z.string(),source_key:z.string(),
+  predicate:z.string(),object:z.string(),employment_status:z.string().optional()}).strict();
+export const ContextMaterialsSchema=z.object({...readMeta,items:z.array(ContextMaterialSchema).max(20),
+  omitted_count:z.int().nonnegative(),contacts_read:z.int().nonnegative().max(12)}).strict();

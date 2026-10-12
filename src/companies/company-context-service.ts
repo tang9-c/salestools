@@ -1,3 +1,9 @@
+import { ContactEntitySchema, ContactEvidenceSchema, ContactRelationSchema } from '../contracts/index.js';
+import type { ContactEvidence, ContactEntity } from '../contracts/index.js';
+import { supportedRelationEvidence } from '../contacts/relation-evidence.js';
+import { canReuse } from '../orchestration/company-question-service.js';
+import { dedupeMaterials, filterConflictedEvidence, readSelectedReport } from './company-evidence.js';
+import type { ContextMaterial, ContextMaterials, MaterialReadContext } from './company-context-types.js';
 import type { GraphClient } from '../contacts/graph-client.js';
 import type { CompanyLinkRepository } from '../db/company-link-repository.js';
 import type { ProfileRepository, StoredCompanyProfile } from '../db/profile-repository.js';
@@ -19,7 +25,7 @@ const chunks = <T>(items: T[], size: number): T[][] =>
 interface RelationItem { relation_id: string; source_id: string; target_id: string; relation_type: string }
 type LinkRepo = Pick<CompanyLinkRepository, 'getMany' | 'byCreditCode'>;
 type ProfileRepo = Pick<ProfileRepository, 'findByCreditCodes' | 'findByNormalizedNames'>;
-type AssessmentRepo = Pick<AssessmentRepository, 'summariesByCreditCodes' | 'listCompleted'>;
+type AssessmentRepo = Pick<AssessmentRepository, 'summariesByCreditCodes' | 'listCompleted' | 'get'>;
 
 export class CompanyContextService {
   constructor(private readonly deps: {
@@ -240,6 +246,168 @@ export class CompanyContextService {
     return { state: warnings.length ? (reportsAvailable || orgs.available ? 'partial' : 'unavailable') : 'ok', warnings,
       organization_ids: orgs.ids, organizations_complete: orgs.complete,
       people: count(people, complete), projects: count(projects, complete), reports };
+  }
+
+  async materials(code: string, question: string, context: MaterialReadContext): Promise<ContextMaterials> {
+    const signal = context.signal;
+    signal.throwIfAborted();
+    const warnings: string[] = [];
+    const candidates: ContextMaterial[] = [];
+    const projectGroups: ContextMaterial[][] = [];
+    const before = context.remaining_contacts;
+    let profile: StoredCompanyProfile | undefined;
+    try { profile = this.deps.profiles.findByCreditCodes([code])[0]; }
+    catch { signal.throwIfAborted(); warnings.push('PROFILE_UNAVAILABLE'); }
+    let organizationIds: string[] = [];
+    try {
+      const overview = await this.overview(code, signal);
+      organizationIds = overview.organization_ids;
+      warnings.push(...overview.warnings);
+    } catch { signal.throwIfAborted(); warnings.push('ORGANIZATIONS_UNAVAILABLE'); }
+    if (profile?.identity.creditCode === code) {
+      // Display fields only: never expose contact details or infer purchase intent.
+      for (const field of ['industry','region','company_type','founded_year','registered_capital',
+        'employee_range','risk_summary'] as const) {
+        const value = profile.basicProfile[field];
+        if (value === null) continue;
+        candidates.push({citation:{ref:`profile:${encodeURIComponent(code)}:${encodeURIComponent(profile.collectedAt)}:${field}`,
+          source_type:'profile',subject_id:code,value,collected_at:profile.collectedAt},
+          statement:`${field}：${value}`,source_key:`profile:${code}:${profile.collectedAt}`,predicate:field,object:String(value)});
+      }
+    }
+    try {
+      const report = readSelectedReport(context,id=>this.deps.assessments.get(id));
+      const snapshot = report?.evidenceSnapshot;
+      if (report?.status === 'completed' && report.assessmentId === context.selected_report_id
+        && report.creditCode === code && report.legalName === profile?.identity.legalName && snapshot
+        && canReuse(snapshot,question,this.deps.now())) {
+        for (const fact of snapshot.facts) {
+          if (fact.entityScope !== 'legal_entity' || fact.entityMatch !== 'confirmed' || fact.strength === 'weak') continue;
+          for (const id of fact.evidenceIds) {
+            const item = snapshot.items.find(item=>item.evidenceId===id && item.entityScope==='legal_entity' && item.entityMatch==='confirmed');
+            if (!item) continue;
+            candidates.push({citation:{ref:`assessment:${encodeURIComponent(report.assessmentId)}:${encodeURIComponent(id)}`,
+              source_type:'assessment',subject_id:code,evidence_id:id,assessment_id:report.assessmentId,
+              ...(item.excerpt ? {quote:item.excerpt}:{}),...(item.url ? {source_url:item.url}:{}),
+              collected_at:item.collectedAt,...(item.publishedAt ? {published_at:item.publishedAt}:{})},
+              statement:fact.statement,source_key:item.url ?? `evidence:${id}`,predicate:fact.kind,object:fact.statement});
+          }
+        }
+      } else if (snapshot && report?.creditCode===code) warnings.push('REPORT_NOT_REUSABLE');
+    } catch { signal.throwIfAborted(); warnings.push('REPORT_UNAVAILABLE'); }
+
+    const get = async (id: string): Promise<Record<string,unknown>|null> => {
+      signal.throwIfAborted();
+      if (context.contacts.has(id)) return context.contacts.get(id) ?? null;
+      if (context.remaining_contacts <= 0) { warnings.push('CONTACT_BUDGET_EXHAUSTED'); return null; }
+      context.remaining_contacts--;
+      // Cache absence/failure too; all companies and original contact selection share this map.
+      context.contacts.set(id,null);
+      try {
+        if (!this.deps.graph) return null;
+        const first = await this.deps.graph.request<Record<string,unknown>|null>('get_contact',{entity_id:id,claim_limit:0},signal);
+        signal.throwIfAborted();
+        if (!first) return null;
+        const raw = {...first};
+        const evidence = Array.isArray(raw.evidence) ? [...raw.evidence] : [];
+        const relations = Array.isArray(raw.relations) ? [...raw.relations] : [];
+        const conflicts = Array.isArray(raw.conflicts) ? [...raw.conflicts] : [];
+        type Pagination = {evidence:{total:number;next_offset:number|null};relations:{total:number;next_offset:number|null}};
+        let page = raw.pagination as Pagination | undefined;
+        for (let n=1;page && (page.evidence.next_offset!==null || page.relations.next_offset!==null);n++) {
+          if(n>=5) {warnings.push('CONTACT_PAGES_INCOMPLETE');break;}
+          signal.throwIfAborted();
+          const next = await this.deps.graph.request<Record<string,unknown>|null>('get_contact',{
+            entity_id:id,claim_limit:0,evidence_offset:page.evidence.next_offset ?? page.evidence.total,
+            relation_offset:page.relations.next_offset ?? page.relations.total,evidence_limit:50,relation_limit:50},signal);
+          signal.throwIfAborted();
+          if(!next || next.version!==first.version || next.index_content_version!==first.index_content_version)
+            throw Error('CONTACT_CHANGED_DURING_READ');
+          const following=next.pagination as Pagination | undefined;
+          if(!following || (page.evidence.next_offset!==null && following.evidence.next_offset!==null && following.evidence.next_offset<=page.evidence.next_offset)
+            || (page.relations.next_offset!==null && following.relations.next_offset!==null && following.relations.next_offset<=page.relations.next_offset))
+            throw Error('CONTACT_INVALID_PAGINATION');
+          if(page.evidence.next_offset!==null && Array.isArray(next.evidence)) evidence.push(...next.evidence);
+          if(page.relations.next_offset!==null && Array.isArray(next.relations)) relations.push(...next.relations);
+          if(Array.isArray(next.conflicts)) conflicts.push(...next.conflicts);
+          page=following;
+        }
+        const result={...raw,evidence,relations,conflicts};
+        context.contacts.set(id,result);return result;
+      } catch {signal.throwIfAborted();warnings.push('CONTACT_UNAVAILABLE');return null;}
+    };
+    const entity = (raw: Record<string,unknown>|null): ContactEntity|null => {
+      const parsed=ContactEntitySchema.safeParse(raw?.entity);
+      return parsed.success && !parsed.data.metadata.archived_at && !parsed.data.metadata.merged_into ? parsed.data:null;
+    };
+    const evidenceOf = (values:unknown):ContactEvidence[] => (Array.isArray(values)?values:[]).flatMap(value=>{
+      const parsed=ContactEvidenceSchema.safeParse(value);return parsed.success?[parsed.data]:[];
+    });
+    const material = async (relation:RelationItem):Promise<ContextMaterial|null> => {
+      const owner=await get(relation.source_id), target=await get(relation.target_id);
+      const source=entity(owner), other=entity(target);
+      if(!source || !other || !owner) return null;
+      if(relation.relation_type==='clientOrganization'
+        ? source.label!=='Project' || other.label!=='Organization'
+        : source.label!=='Person' || !['Organization','Project'].includes(other.label)) return null;
+      const full=(Array.isArray(owner.relations)?owner.relations:[]).map(value=>ContactRelationSchema.safeParse(value))
+        .find(parsed=>parsed.success && parsed.data.relation_id===relation.relation_id);
+      if(!full?.success || full.data.metadata.archived_at || full.data.source_id!==relation.source_id
+        || full.data.target_id!==relation.target_id || full.data.relation_type!==relation.relation_type) return null;
+      const conflicts=evidenceOf(owner.conflicts);
+      const filtered=filterConflictedEvidence(evidenceOf(owner.evidence),conflicts);
+      for(const item of [...filtered.blocked,...conflicts.filter(item=>item.subject_id===relation.relation_id)]) warnings.push(`CONFLICT:${item.subject_id}:${item.field_path} 存在冲突，无法确认`);
+      if(conflicts.some(item=>item.subject_kind==='relation' && item.subject_id===relation.relation_id)) return null;
+      const proof=supportedRelationEvidence(filtered.usable,full.data,source,other);
+      if(!proof) return null;
+      const status=full.data.relation_type==='worksFor' ? full.data.metadata.employment_status : undefined;
+      const role=full.data.relation_type==='worksFor' ? full.data.properties.role.roleName:undefined;
+      const statement=full.data.relation_type==='worksFor'
+        ? `${source.properties.name ?? '未具名联系人'}在${other.properties.name}${role ? `任${role}`:''}，有任职记录${status==='unknown' || !status ? '，当前状态未知':''}`
+        : `${source.properties.name ?? '未具名档案'} ${relation.relation_type} ${other.properties.name}`;
+      return {citation:{ref:`contact:${encodeURIComponent(proof.evidence_id)}`,source_type:'contact',
+        subject_id:source.entity_id,entity_id:source.entity_id,relation_id:relation.relation_id,evidence_id:proof.evidence_id,
+        quote:proof.quote,collected_at:proof.collected_at,...(proof.source_url?{source_url:proof.source_url}:{}),
+        ...(proof.file_name?{file_name:proof.file_name}:{}),...(proof.page?{page:proof.page}:{})},
+        statement,source_key:proof.file_sha256 ?? proof.text_sha256 ?? proof.source_url ?? `evidence:${proof.evidence_id}`,
+        predicate:relation.relation_type,object:other.properties.name ?? '',...(status?{employment_status:status}:{})};
+    };
+    if(organizationIds.length && this.deps.graph) {
+      try {
+        const read=await this.pages<RelationItem>('company_relations',{organization_ids:organizationIds},BATCH,signal);
+        if(!read.complete) warnings.push('RELATIONS_INCOMPLETE');
+        const orgs=new Set(organizationIds);
+        const clients=new Map<string,ContextMaterial>();
+        const projectQuestion=/项目|客户|参与|project|client/iu.test(question);
+        if(projectQuestion) for(const relation of read.items) {
+          if(relation.relation_type!=='clientOrganization' || !orgs.has(relation.target_id)) continue;
+          const item=await material(relation);if(item) clients.set(relation.source_id,item);
+        }
+        for(const relation of read.items) {
+          if(candidates.length>=context.remaining_materials+20) {warnings.push('MATERIAL_BUDGET_EXHAUSTED');break;}
+          if(['worksFor','alumniOf','affiliation','memberOf'].includes(relation.relation_type) && orgs.has(relation.target_id)) {
+            const item=await material(relation);if(item) candidates.push(item);
+          } else if(projectQuestion && relation.relation_type==='memberOf' && clients.has(relation.target_id)) {
+            const item=await material(relation);
+            if(item) {const pair=[clients.get(relation.target_id)!,item];projectGroups.push(pair);candidates.push(...pair);}
+          }
+        }
+      } catch {signal.throwIfAborted();warnings.push('RELATIONS_UNAVAILABLE');}
+    }
+    signal.throwIfAborted();
+    const unique=dedupeMaterials(candidates);
+    const projectRefs=new Set(projectGroups.flat().map(item=>item.citation.ref));
+    const groups=[...unique.filter(item=>!projectRefs.has(item.citation.ref)).map(item=>[item]),...projectGroups];
+    let supported: ContextMaterial[]=[];
+    for(const group of groups) {
+      const combined=dedupeMaterials([...supported,...group]);
+      if(combined.length<=context.remaining_materials) supported=combined;
+    }
+    context.remaining_materials-=supported.length;
+    const omitted=unique.length-supported.length;
+    if(omitted) warnings.push('MATERIAL_BUDGET_EXHAUSTED');
+    return {state:warnings.length?'partial':'ok',warnings:[...new Set(warnings)],items:supported,
+      omitted_count:omitted,contacts_read:before-context.remaining_contacts};
   }
 
   async relatedUpdates(code: string, since: string, signal?: AbortSignal): Promise<RelatedUpdates> {

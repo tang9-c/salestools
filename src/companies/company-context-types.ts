@@ -94,3 +94,23 @@ export interface RelatedUpdates extends ReadMeta {
   items: RecentRecord[];
   truncated: boolean;
 }
+
+export interface ContextCitation {
+  ref: string; source_type: 'contact' | 'profile' | 'assessment'; subject_id: string;
+  quote?: string; value?: unknown; evidence_id?: string; entity_id?: string;
+  relation_id?: string; assessment_id?: string; source_url?: string;
+  file_name?: string; page?: number; collected_at?: string; published_at?: string;
+}
+export interface ContextMaterial {
+  citation: ContextCitation; statement: string; source_key: string;
+  predicate: string; object: string; employment_status?: string;
+}
+export interface ContextMaterials extends ReadMeta {
+  items: ContextMaterial[]; omitted_count: number; contacts_read: number;
+}
+export interface MaterialReadContext {
+  readonly signal: AbortSignal; remaining_contacts: number; remaining_materials: number;
+  readonly selected_report_id: string | null; report_reads: number;
+  report: import('../db/assessment-repository.js').AssessmentRecord | null | undefined;
+  contacts: Map<string, Record<string, unknown> | null>;
+}

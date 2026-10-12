@@ -1,3 +1,5 @@
+import { supportedRelationEvidence } from './relation-evidence.js';
+import { filterConflictedEvidence } from '../companies/company-evidence.js';
 import { z } from 'zod';
 import {
   ContactEntitySchema, ContactEvidenceSchema, ContactRelationSchema,
@@ -25,7 +27,7 @@ export interface ContactAnswerOptions {
   ark?: { url: string; model: string; credential: string; fetchFn?: typeof fetch; requestMaxBytes?: number };
 }
 
-interface Detail { entity: ContactEntity; evidence: ContactEvidence[]; relations: ContactRelation[] }
+interface Detail { entity: ContactEntity; evidence: ContactEvidence[]; conflicts: ContactEvidence[]; relations: ContactRelation[] }
 interface Selected { fact: ContactFact; citation: ContactCitation; relation: ContactRelation; other: ContactEntity }
 const Generated = z.object({ answer: z.string().trim().min(1).max(3000),
   citations: z.array(z.object({ evidence_id: z.string(), quote: z.string() }).strict()).min(1).max(20) }).strict();
@@ -65,39 +67,6 @@ function citationFor(root: ContactEntity, relation: ContactRelation, evidence: C
     ...(evidence.file_name ? { file_name: evidence.file_name } : {}),
     ...(evidence.source_url ? { source_url: evidence.source_url } : {}) };
 }
-function supportedRelationEvidence(
-  evidence: readonly ContactEvidence[], relation: ContactRelation,
-  subject: ContactEntity, other: ContactEntity,
-): ContactEvidence | null {
-  const otherName = other.properties.name;
-  if (!otherName) return null;
-  const relevant = evidence.filter(item => item.subject_kind === 'relation'
-    && item.subject_id === relation.relation_id && shortLocatedEvidence(item));
-  const selected = relevant.find(item => {
-    const quote = item.quote!;
-    if (relation.relation_type === 'worksFor') {
-      const role = relation.properties.role;
-      return (item.field_path === '$relation' || item.field_path === 'properties.role.roleName')
-        && quote.includes(otherName)
-        && (!role.roleName || quote.includes(role.roleName));
-    }
-    if (item.field_path !== '$relation') return false;
-    if (/(?:不是|并非|未曾|否认|无此关系|\bnot\b)/iu.test(quote)) return false;
-    const relationWords: Record<string, RegExp> = {
-      spouse: /配偶|妻|丈夫|夫妻|结婚|spouse|married/iu,
-      parent: /父|母|家长|儿|女|孩子|子女|parent|child/iu,
-      colleague: /同事|同僚|colleague|coworker/iu,
-      alumniOf: /校友|就读|学习|毕业|alumni|studied|graduated/iu,
-      affiliation: /所属|关联|affiliat/iu,
-      memberOf: /成员|会员|member/iu,
-    };
-    if (relationWords[relation.relation_type] && !relationWords[relation.relation_type].test(quote)) return false;
-    if (typeof item.value === 'object' && item.value !== null && 'relation_type' in item.value
-      && item.value.relation_type !== relation.relation_type) return false;
-    return (!subject.properties.name || quote.includes(subject.properties.name)) && quote.includes(otherName);
-  });
-  return selected ?? null;
-}
 function objectFor(relation: ContactRelation, other: ContactEntity, quote: string): string {
   if (relation.relation_type !== 'worksFor') return other.properties.name ?? '';
   const role = relation.properties.role;
@@ -128,6 +97,9 @@ export class ContactAnswerService {
       evidence: (Array.isArray(record.evidence) ? record.evidence : []).flatMap(value => {
         const item = ContactEvidenceSchema.safeParse(value); return item.success ? [item.data] : [];
       }),
+      conflicts: (Array.isArray(record.conflicts) ? record.conflicts : []).flatMap(value => {
+        const item = ContactEvidenceSchema.safeParse(value); return item.success ? [item.data] : [];
+      }),
       relations: (Array.isArray(record.relations) ? record.relations : []).flatMap(value => {
         const item = ContactRelationSchema.safeParse(value);
         return item.success && !item.data.metadata.archived_at ? [item.data] : [];
@@ -154,7 +126,8 @@ export class ContactAnswerService {
         if (!id) continue;
         const other = await getCached(id);
         if (!other) continue;
-        const evidence = supportedRelationEvidence(detail.evidence, relation, detail.entity, other.entity);
+        if (detail.conflicts.some(item => item.subject_kind === 'relation' && item.subject_id === relation.relation_id)) continue;
+        const evidence = supportedRelationEvidence(filterConflictedEvidence(detail.evidence, detail.conflicts).usable, relation, detail.entity, other.entity);
         if (evidence && !facts.some(item => item.relation.relation_id === relation.relation_id)) {
           facts.push({ relation, other: other.entity,
             fact: { subject_id: relation.source_id, predicate: relation.relation_type,
@@ -214,7 +187,7 @@ export class ContactAnswerService {
       }
       if (kind === 'name') {
         if (!root.entity.properties.name) return { status: 'insufficient', answer: '该档案的姓名尚未确认。', citations: [], facts: [] };
-        const evidence = root.evidence.find(item => item.subject_kind === 'entity'
+        const evidence = filterConflictedEvidence(root.evidence, root.conflicts).usable.find(item => item.subject_kind === 'entity'
           && item.field_path === 'properties.name' && item.value === root.entity.properties.name
           && shortLocatedEvidence(item) && item.quote!.includes(root.entity.properties.name));
         if (!evidence) return { status: 'insufficient', answer: '没有可引用的姓名证据。', citations: [], facts: [] };
