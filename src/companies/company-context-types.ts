@@ -66,3 +66,31 @@ export interface ReportItem {
 }
 
 export interface ReportSummary { count: number; latest: ReportItem | null }
+
+export interface CompanySummary extends ReadMeta {
+  link: LinkResolution;
+  has_profile: boolean | null;
+  report_count: number | null;
+  latest_report_at: string | null;
+}
+
+export interface CompanyDetail extends CompanySummary {
+  profile: import('../db/profile-repository.js').StoredCompanyProfile | null;
+  latest_report: ReportItem | null;
+  reports: Page<ReportItem>;
+}
+
+export interface CompanyOverview extends ReadMeta {
+  organization_ids: string[];
+  organizations_complete: boolean;
+  people: Count;
+  projects: Count;
+  reports: ReportSummary | null;
+}
+
+export interface RelatedUpdates extends ReadMeta {
+  since: string;
+  scope: string[];
+  items: RecentRecord[];
+  truncated: boolean;
+}
