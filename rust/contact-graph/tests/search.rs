@@ -233,7 +233,7 @@ fn duplicate_name_snapshots_never_supply_search_facts() {
             &store,
             json!({"skill":"Python","include_unverified":false})
         )),
-        vec![b]
+        vec![b.clone()]
     );
     let ordinary = project_claim(&store, "ordinary-search", &a, &b, "memberOf");
     store
