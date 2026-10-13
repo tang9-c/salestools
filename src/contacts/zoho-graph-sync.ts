@@ -60,15 +60,17 @@ export class ZohoGraphSync {
     if (oversized) result.warnings.push(`${code}：图谱同步 ${oversized} 条记录请求帧过大，未同步；CRM 查询结果已保留。`);
     if (failed) result.warnings.push(`${code}：图谱同步 ${failed} 批失败或超时，未确认同步；CRM 查询状态和结果已保留，可重新查询。`);
     if (this.indexer) {
+      let indexSchedulingFailed = false;
       for (const id of summary.entity_ids) {
         try {
           const detail = await this.graph.request<{ entity?: { label?: string }; index_status?: string; index_content_version?: number } | null>(
             'get_contact', { entity_id: id }, AbortSignal.timeout(30_000));
           if (detail?.entity?.label === 'Person' && detail.index_status === 'unindexed' && detail.index_content_version) {
-            await this.indexer.index(id, detail.index_content_version);
+            if (await this.indexer.index(id, detail.index_content_version) === false) indexSchedulingFailed = true;
           }
-        } catch { result.warnings.push('图谱同步已提交，向量索引调度失败；关键词查询仍可使用。'); }
+        } catch { indexSchedulingFailed = true; }
       }
+      if (indexSchedulingFailed) result.warnings.push('图谱同步已提交，向量索引调度失败；关键词查询仍可使用。');
     }
     return summary;
   }

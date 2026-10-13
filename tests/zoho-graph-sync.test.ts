@@ -116,6 +116,18 @@ it('keeps committed graph results when asynchronous indexing scheduling rejects'
   expect(output.warnings.join()).toContain('索引调度失败'); expect(output.warnings.join()).not.toContain('private');
 });
 
+it('reports rejected indexing once when multiple committed people exceed queue capacity', async () => {
+  const { sync, request, index } = setup(); const output = result();
+  request.mockImplementation(async (op: string) => op === 'get_contact'
+    ? { entity: { label: 'Person' }, index_status: 'unindexed', index_content_version: 2 }
+    : { created: 2, updated: 0, unchanged: 0, archived: 0, entity_ids: ['p1', 'p2'] });
+  index.mockReturnValue(false);
+  expect(await sync.sync(output, 'sales')).toMatchObject({ created: 2, entity_ids: ['p1', 'p2'] });
+  expect(index).toHaveBeenCalledTimes(2);
+  expect(output.warnings.filter(w => w.includes('索引调度失败'))).toHaveLength(1);
+  expect(output.status).toBe('completed'); expect(output.complete).toBe(true);
+});
+
 it('uses the GraphClient abort mechanism after the per-batch timeout', async () => {
   vi.useFakeTimers();
   const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
