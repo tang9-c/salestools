@@ -470,7 +470,14 @@ pub fn ensure_value_evidence(
     fn supports_value(record: &Value, value: &Value) -> bool {
         match record.get("source_type").and_then(Value::as_str) {
             Some("manual") => record["locator_status"] == "not_applicable",
-            Some("zoho") => valid_source_locator_fields(record),
+            Some("zoho") => {
+                // New proof was checked on write; keep prior stored URL-bearing proof usable.
+                let mut stored = record.clone();
+                if let Some(fields) = stored.as_object_mut() {
+                    fields.remove("source_url");
+                }
+                valid_source_locator_fields(&stored)
+            }
             // Quote location is checked by Node against parsed/pasted blocks.
             // Rust validates provenance and value binding; it does not hold that text.
             Some("file" | "text") => {

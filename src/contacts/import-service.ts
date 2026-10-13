@@ -1,5 +1,5 @@
-import { ContactEntitySchema, ContactEvidenceSchema, ContactRelationSchema, ImportCandidateSchema, ReviewItemSchema,
-  type ImportCandidate, type ParsedBlock } from '../contracts/index.js';
+import { ContactEntitySchema, parseStoredContactEvidence, ContactRelationSchema, ImportCandidateSchema, ReviewItemSchema,
+  type ContactEvidence, type ImportCandidate, type ParsedBlock } from '../contracts/index.js';
 import { readCompleteContact, type GraphClient } from './graph-client.js';
 import type { ImportJobs } from './import-jobs.js';
 import type { UploadedFile, UploadStore } from './upload-store.js';
@@ -517,7 +517,7 @@ export class ContactImportService {
       idsByCandidate.set(candidate.candidate_id, kept);
     }
     const existing = new Map<string, ReturnType<typeof ContactEntitySchema.parse>>();
-    const evidence = new Map<string, ReturnType<typeof ContactEvidenceSchema.parse>[]>();
+    const evidence = new Map<string, ContactEvidence[]>();
     const organizations: Record<string, string[]> = {};
     for (const id of allIds) {
       const loaded = await attempt(() => readCompleteContact(this.options.graph, id, {
@@ -528,7 +528,7 @@ export class ContactImportService {
       if (!entity.success || entity.data.entity_id !== id) { incomplete = true; continue; }
       existing.set(id, entity.data);
       evidence.set(id, (Array.isArray(loaded.evidence) ? loaded.evidence : []).flatMap(raw => {
-        const parsed = ContactEvidenceSchema.safeParse(raw);
+        const parsed = parseStoredContactEvidence(raw);
         return parsed.success ? [parsed.data] : [];
       }));
       organizations[id] = (Array.isArray(loaded.relations) ? loaded.relations : []).flatMap(raw => {

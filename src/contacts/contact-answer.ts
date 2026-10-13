@@ -4,7 +4,7 @@ import { supportedRelationEvidence } from './relation-evidence.js';
 import { createMaterialReadContext, dedupeMaterials, selectReportForQuestion, validateContextRefs, filterConflictedEvidence } from '../companies/company-evidence.js';
 import { z } from 'zod';
 import {
-  ContactEntitySchema, ContactEvidenceSchema, ContactRelationSchema,
+  ContactEntitySchema, parseStoredContactEvidence, ContactRelationSchema,
   type ContactEntity, type ContactEvidence, type ContactRelation,
 } from '../contracts/index.js';
 import { GraphClientError, readCompleteContact, type GraphClient } from './graph-client.js';
@@ -107,10 +107,10 @@ export class ContactAnswerService {
     return {
       entity: entity.data,
       evidence: (Array.isArray(record.evidence) ? record.evidence : []).flatMap(value => {
-        const item = ContactEvidenceSchema.safeParse(value); return item.success ? [item.data] : [];
+        const item = parseStoredContactEvidence(value); return item.success ? [item.data] : [];
       }),
       conflicts: (Array.isArray(record.conflicts) ? record.conflicts : []).flatMap(value => {
-        const item = ContactEvidenceSchema.safeParse(value); return item.success ? [item.data] : [];
+        const item = parseStoredContactEvidence(value); return item.success ? [item.data] : [];
       }),
       relations: (Array.isArray(record.relations) ? record.relations : []).flatMap(value => {
         const item = ContactRelationSchema.safeParse(value);

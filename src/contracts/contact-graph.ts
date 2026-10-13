@@ -333,3 +333,14 @@ export type ContactEntity = z.infer<typeof ContactEntitySchema>;
 export type ContactRelation = z.infer<typeof ContactRelationSchema>;
 export type ContactEvidence = z.infer<typeof ContactEvidenceSchema>;
 export type ParsedBlock = z.infer<typeof ParsedBlockSchema>;
+
+/** Read prior stored CRM proof without making legacy URL metadata writable again. */
+export function parseStoredContactEvidence(value: unknown): ReturnType<typeof ContactEvidenceSchema.safeParse> {
+  if (value && typeof value === 'object' && !Array.isArray(value)
+    && (value as Record<string, unknown>).source_type === 'zoho') {
+    const stored = { ...value as Record<string, unknown> };
+    delete stored.source_url;
+    return ContactEvidenceSchema.safeParse(stored);
+  }
+  return ContactEvidenceSchema.safeParse(value);
+}

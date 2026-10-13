@@ -10,6 +10,7 @@ import {
   PersonPropertiesSchema,
   ProjectPropertiesSchema,
   normalizeRelationEndpoints,
+  parseStoredContactEvidence,
 } from '../src/contracts/contact-graph.js';
 import { ImportCandidateSchema } from '../src/contracts/contact-import.js';
 
@@ -40,6 +41,22 @@ describe('shared contact graph contract', () => {
       locator_status: 'located', quote: 'Web Person', collected_at: '2026-10-13T00:00:00.000Z' };
     expect(ContactEvidenceSchema.safeParse({ ...proof, source_url: 'https://example.test/person' }).success).toBe(true);
     expect(ContactEvidenceSchema.safeParse({ ...proof, source_url: 'https://[broken' }).success).toBe(false);
+  });
+
+  it('reads prior CRM proof without mutating its ID or source while keeping new input strict', () => {
+    const prior = { ...zohoProof, source_url: 'https://crm.example.test/Contacts/contact-a' };
+    const parsed = parseStoredContactEvidence(prior);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) throw new Error('expected stored CRM proof');
+    expect(parsed.data).toEqual(zohoProof);
+    expect(prior.source_url).toBe('https://crm.example.test/Contacts/contact-a');
+    expect(ContactEvidenceSchema.safeParse(prior).success).toBe(false);
+    expect(parseStoredContactEvidence({ ...prior, source_record_id: ' ' }).success).toBe(false);
+    expect(parseStoredContactEvidence({ ...prior, email: 'private@example.test' }).success).toBe(false);
+    const web = { ...zohoProof, source_type: 'web', locator_status: 'located',
+      source_connection_id: undefined, source_module: undefined, source_record_id: undefined,
+      source_url: 'https://example.test/person', quote: 'CRM Person' };
+    expect(parseStoredContactEvidence(web)).toEqual(ContactEvidenceSchema.safeParse(web));
   });
 
   it('rejects missing or invalid Zoho locators and unapproved source fields', () => {

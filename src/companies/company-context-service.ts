@@ -1,4 +1,4 @@
-import { ContactEntitySchema, ContactEvidenceSchema, ContactRelationSchema } from '../contracts/index.js';
+import { ContactEntitySchema, parseStoredContactEvidence, ContactRelationSchema } from '../contracts/index.js';
 import type { ContactEvidence, ContactEntity } from '../contracts/index.js';
 import { supportedRelationEvidence } from '../contacts/relation-evidence.js';
 import { canReuse } from '../orchestration/company-question-service.js';
@@ -488,7 +488,7 @@ export class CompanyContextService {
     };
     const evidenceOf = (values: unknown): ContactEvidence[] =>
       (Array.isArray(values) ? values : []).flatMap((value) => {
-        const parsed = ContactEvidenceSchema.safeParse(value);
+        const parsed = parseStoredContactEvidence(value);
         return parsed.success ? [parsed.data] : [];
       });
     const material = async (
