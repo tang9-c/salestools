@@ -1,25 +1,36 @@
 ---
 name: salestools-contact-management
-description: Use when a user wants to find contacts across the Salestools library and public web, run only a selected contact lookup stage, import a resume or business card, edit the shared contact library, review duplicates, or ask evidence-backed questions about saved contacts.
+description: Use when a user wants to find contacts in the Salestools library, Zoho CRM or public web, view their relationship graph, import a resume, business card or text, maintain contact records, review possible duplicates, or ask evidence-backed questions about saved contacts.
 ---
 
 # 使用 Salestools 联系人库
 
-本 skill 只编排已启用的 Salestools 联系人 MCP 工具。先区分共享库和公开网页搜索：`discover_contacts` 找公开岗位线索，不是已确认档案，且不返回电话、邮箱；`search_contacts`、`get_contact`、`ask_contacts` 查询共享库。默认 `search_contacts` 和 `ask_contacts` 只把正式图谱事实用于命中与回答；导入简历留下的 `unverified` 线索须显式查找和标记。图谱中的公开网页同步记录也不等于人工确认。若某个工具不可用，说明该环节可能未启用，报告跳过原因，不模拟结果。
+本 skill 只编排已启用的 Salestools 联系人 MCP 工具。`discover_contacts` 从网页、Zoho 或两者发现联系人，不返回电话、邮箱；`search_contacts`、`get_contact`、`ask_contacts` 查询共享库。先检查当前连接实际提供的工具参数：仓库新增功能不代表远端已部署，旧版没有 `source` 参数时不能冒称已查询 CRM。默认 `search_contacts` 和 `ask_contacts` 只把正式图谱事实用于命中与回答；导入留下的 `unverified` 线索须显式查找和标记。正式图谱记录不等于人工核实或现任证明。工具不可用时报告具体缺失，不模拟结果。
+
+查询也可能由服务端同步资料到图谱：Zoho 路径见下节；网页新快照在已配置同步时也可能入库。不能笼统承诺 `discover_contacts` 永不写库。用户明确要求“不保存”时，先确认当前部署支持这一边界；现有工具没有单次禁用同步参数，不虚构 `save:false`。
 
 ## 综合查找联系人
 
+### 默认优先使用 MCP App UI
+
+- 有对应 App 时，默认调用可展示 App 的工具，让用户在当前聊天看到入口并展开；不要仅返回 JSON 或长表格，也不必等用户另说“打开 UI”。聊天补充简短结果、警告和下一步即可。用户明确只要文字时尊重其选择。
+- 文件／名片导入优先 `open_contact_upload` 内嵌页面，继续在页面完成选文件、预览与确认。内嵌不可用时才用工具返回的备用页面；CLI／HTTP 上传用于用户指定的自动化或可确认的 UI 不可用场景。
+- 库内搜索优先通过 `search_contacts` 展示联系人图谱，人物、机构、一跳关系与节点详情在 App 浏览。不要为显示详情额外生成网页或暴露内部 ID；需要形成结论时仍读取工具证据。
+- Zoho 查询完成且资料已同步、用户需要浏览联系人关系时，可继续用公司关键词调用 `search_contacts` 展示图谱。注明图谱是库内搜索范围，可能含其他来源和分页结果，不能当作本次 CRM 全部结果的等价展示。
+- 当前没有独立 App 的操作（如文字导入入口或 CRM 候选确认）继续在聊天完成，不虚构 UI 能力。已有 App 能承接的后续浏览优先用 App。
+- “工具已调用”不等于“用户已看到界面”。宿主需要用户手动展开时明确提示；用户说没看到或页面失败时核对实际状态，提供可用回退，不反复创建上传会话。UI 优先不改变保存、合并等授权边界。
+
 `search_contacts` 可附带“联系人图谱”MCP App，由宿主展示或让用户展开，不调用新的 opener。App 自行读取当前搜索页命中节点的全部一跳职业关系及名称；只为展示不要在聊天重复批量 `get_contact`。用户请求核对或结论时，仍按下面的真实 ID、状态和证据流程读取，不能用图像代替证据。点击详情不递归扩图，加载失败或未完成不表示没有关系；虚线仅为原查询显式开启的职业待核实项。详情通过原 `get_contact` 单独显示双向 `possible_duplicate` 身份提示，不受 `include_unverified` 开关影响，且不画成关系边；共用 `unverified_claims` 分页。其他 claim 仍归属于实际主体。正式边不等于人工核实，unknown 任职不能称现任。不支持 App 的宿主继续文字/表格；不要提供普通网页查询链接，也不擅自打开上传 App。
 
-先根据用户表述确定查找环节。说“综合查找”“完整查找”而未限定范围时，默认依次执行：① `search_contacts` 查共享库；② 有招聘目标公司时 `discover_contacts` 查公开网页岗位线索；③ 对相关的库内 `entity_id` 用 `get_contact` 核对档案和证据。项目客户名是库内检索条件，不自动视为招聘目标公司。用户指定仅查公开网页、仅查库、仅看档案，或指定多个环节与顺序时，只执行指定环节。Zoho 查询有下述服务端自动同步边界；其他查询不触发导入或合并。`ask_contacts` 用于既有直接正式关系；项目客户问题走下述项目路径。
+先根据用户表述确定查找环节。说“综合查找”“完整查找”而未限定范围时，默认依次执行：① `search_contacts` 查共享库；② 有招聘目标公司时 `discover_contacts` 查公开网页岗位线索；③ 对相关的库内 `entity_id` 用 `get_contact` 核对档案和证据。项目客户名是库内检索条件，不自动视为招聘目标公司。用户指定 CRM、仅查公开网页、仅查库、仅看档案，或指定多个环节与顺序时，只执行指定环节。服务端同步遵守本文边界，查询过程中不额外发起手工导入或合并。`ask_contacts` 用于既有直接正式关系；项目客户问题走下述项目路径。
 
-用户要求 CRM 时使用 `discover_contacts(source:"zoho"|"all")`，只选择实际配置的连接。needs_confirmation 时核对候选，用完整的 zoho_account_records 重查。启用 CONTACT_GRAPH_ENABLED 后，completed/partial 已取得的客户与联系人自动同步共享库，无需另请用户保存或上传；待确认、failed、空结果和关闭开关不写入。CRM status/complete 表示查询完整性，图谱同步计数与 warnings 独立，失败、超时或超大记录仍保留 CRM 返回；不可把 CRM completed 解释为全部入图。归档关联可能只跳过一部分，必须报告关联部分未同步。负责人只表示 CRM 记录归属，任职为 unknown，不能称现任；不请求或保存电话、邮箱或其他联系方式。连接 ID 必须长期稳定，来源以连接、Accounts/Contacts 模块、记录 ID 定位，不伪造 CRM URL；同名、跨连接或跨来源不自动合并。重复查询无内容变化不增长证据或版本，实质内容变化自动索引，负责人变化不索引。查询后需要查库时重新用 search_contacts 定位真实 entity_id，再用 get_contact 核对来源和关系；不虚构同步 ID，不改用旧网页快照同步。
+用户要求 CRM 时使用 `discover_contacts` 的 `source:"zoho"`；明确要同时查网页才用 `source:"all"`。不指定 `source` 默认查网页。CRM 候选确认、参数和同步结果处理见 [Zoho 查询与入库](references/zoho-discovery.md)，执行 CRM 查询前读取。
 
 1. **库内检索**：把姓名、公司、岗位等已知条件交给 `search_contacts`；综合查找且给出公司或学校关键词时，使用 `mode:"keyword",include_unverified:true` 同时查正式事实与简历线索，分别标出 `confirmed` 和 `unverified`，并对线索命中用 `get_contact` 读取来源。用户明确只要已确认资料时不包含未核实线索。有 `next_offset` 且仍需更多候选时继续翻页。记录实际命中范围及警告，语义/混合检索回退为关键词时如实说明。姓名相同不能直接选定一人。
 2. **公开线索**：有招聘目标公司时用公司名及已知地区调用 `discover_contacts`；仅有学校或项目客户名不算已提供招聘目标公司。按返回的线索、来源、`collected_at` 和警告呈现；结果可能来自缓存，不能称为实时全网结果，也不单凭岗位描述断言现任。缺少招聘目标公司时跳过公开环节，继续执行已请求且可执行的档案核对。公开阶段返回一次结果即结束；无结果不证明此人或岗位不存在。
 3. **档案核对**：对 `search_contacts` 返回的真实 `entity_id` 调用 `get_contact`，核对候选、字段证据及关系；项目客户命中还要读取返回的 `matched_project_id`，分别核对人物的 `memberOf` 与项目的 `clientOrganization` 两跳和来源。需要更多证据或关系时按各自的 `next_offset` 分页。仅有公开线索、没有 `entity_id` 时，不能虚构档案或为查档案而自动写入图谱；仅看档案但未给 ID 时，可先用已知条件 `search_contacts` 定位，多个同名且无法区分的候选须先请用户选定。
 
-回答时分别列出“共享库记录”和“公开网页线索”，附来源、采集/证据时间、警告及未完成的环节。两边姓名、公司或岗位相似时只标“可能关联、待核对”，不自动合并，也不把公开线索说成已确认任职。完成完整流程指上述可执行环节已经核对或明确说明跳过原因，并非穷尽所有网页。
+回答时按实际查询范围分别列出“共享库记录”“Zoho CRM 记录”和“公开网页线索”，附来源、采集/证据时间、警告及未完成的环节。不同来源姓名、公司或岗位相似时只标“可能关联、待核对”，不自动合并，也不把公开线索说成已确认任职。完成完整流程指上述可执行环节已经核对或明确说明跳过原因，并非穷尽所有网页。
 
 ## 按意图选择工具
 
@@ -30,6 +41,7 @@ description: Use when a user wants to find contacts across the Salestools librar
 | 查简历中的待核实线索 | 用户明确要求包括未确认信息时，用 `search_contacts({query:"学校、雇主或项目客户关键词",mode:"keyword",include_unverified:true})`；按 `match_status` 区分 `confirmed` 和 `unverified`，保留返回的 `claim_id` 或全部 `claim_ids`，用 `get_contact` 核对对应人物／项目。此标志需要非空 `query`，不能与 `semantic`／`hybrid` 一起使用。不要用 `ask_contacts` 召回或回答未核实线索。 |
 | 问库中人物关系或任职 | 直接正式关系用 `ask_contacts`；同名时用返回的候选 `entity_id` 请用户选定，再以 `entity_id` 重问。涉及“现任”还须用 `get_contact` 核对关系状态与时间。问参与过的项目或服务过的客户时，用客户名关键词 `search_contacts`，再读取 Person 和 `matched_project_id` 对应 Project 的两跳证据；不要把客户当雇主。`insufficient` 或 `failed` 不补造结论。 |
 | 导入本地简历/名片 | 用户在聊天中提交文件时优先调用 `open_contact_upload`，让用户在内嵌页面选择 PDF／图片或拍摄名片；不支持内嵌界面时给出工具返回的短时链接。页面显示预览后由用户点击确认。若页面提示人工核对，按 `import_id` 调用 `get_contact_import`。有授权的本地文件环境仍可使用鉴权的 `/contact-files` 或 `contacts:upload` CLI，再调用 `import_contacts`。缺少文件或上传能力时请用户提供，不宣称已上传。 |
+| 从一段文字导入 | 调用 `import_contacts_text({text,operation_id})`，原文非空且最多 20,000 字符；跳过上传与 Docling，仍进入预览、核对、提交流程。告知文字发送给模型并保存为来源；不要为了导入文字伪造文件或调用上传 App。 |
 | 编辑、合并、归档或恢复 | 先用 `get_contact` 读取版本与证据，再使用 `save_contact`、`merge_contacts`、`delete_contact` 或关系工具。 |
 
 显式待核实查询命中后，用 `get_contact({entity_id,claim_offset,claim_limit})` 读取 `unverified_claims`；项目客户路径还须读取 `matched_project_id` 的档案。按各自 `pagination.unverified_claims.next_offset` 继续翻页，并逐一核对搜索结果的全部 `claim_ids`，它们可能分别属于 Person 和 Project。`match_status=confirmed` 表示正式图谱命中，不保证经过人工核实；`unverified` 表示候选断言命中，不等于已任职、就读、毕业或服务该客户。若用户明确要求确认或拒绝某条线索，先在对应主体核对 `claim_id`、当前版本和原值，再用 `review_contact_claim` 传 `action`、稳定 `operation_id`、`expected_entity_version`；确认还须附 1–500 字审核说明，缺少已建目标时须提供正确的 `target_id`。响应丢失时原样重试，不能把弱文件引文当作人工确认。
@@ -48,6 +60,8 @@ description: Use when a user wants to find contacts across the Salestools librar
 
 ## 导入与写入边界
 
+文字入口和文件入口均只生成候选；保留原操作 ID 与原文不变以便重试。文字原文作为来源保存，但读取预览不返回全文；文件的临时原件清理规则不能套用于文字来源。用户只要求提取或预览时不提交；明确授权保存时按下列流程执行。名片姓名、公司和职位归属明确时可形成带证据的正式 `worksFor`，无日期则留空，仍不等于“已核实当前在职”；多人物、多公司或归属不清时保留待核实。
+
 1. `import_contacts` 只启动抽取，不创建正式联系人。保存返回的 `import_id`，用 `get_contact_import` 查看状态、分页候选、短引文、`review_items`、未选择的关系建议、警告和重复建议。`ready_for_review` 才能准备提交；`failed/cancelled` 不是成功。
 2. 用户明确要求导入简历／名片时，等预览到 `ready_for_review`，核对候选数量、来源、证据、未核实项和重复建议后，默认调用 `commit_contact_import` 的 `auto_create:true`；无需让用户逐候选或逐关系确认。每份文件只自动创建一个有实质内容的主体 `Person`，以及有定位证据的 `Organization`、与主体项目建议相连的 `Project`。文件证据明确且语境、端点有效时，雇主 `worksFor`、学校 `alumniOf`、项目参与 `memberOf` 和项目客户 `clientOrganization` 分别成为正式边；其余有效建议保留为 `unverified`。项目客户绝不直接作为人物雇主。证明人、推荐人或紧急联系人不作为主体抽取或自动建档。文件提取的正式事实仍须注明“来自文件，未经人工核对”。姓名、手机号或账号相同只提示可能重复，不自动合并。
 3. 若预览有多个仍可提交、无法判定主体的人物，或没有可提交的主体人物，自动提交会拒绝且不部分写入；此时只向用户询问具体主体归属或说明缺少证据。用户明确要求合并、跳过、修改字段或直接建立正式关系时，再使用手工 `choices`／`relation_choices`；手工模式同一文件也不能创建两个 `Person`，合并选择需 `target_id` 与 `expected_target_version`。提交一律携带 `preview_version`，`operation_id` 固定为 `contact-import:<import_id>`。响应丢失时用同一 ID 和相同请求重试，不生成新 ID 盲目重放。
@@ -57,7 +71,7 @@ description: Use when a user wants to find contacts across the Salestools librar
 
 ## 解释结果
 
-- 疑似重复：授权保存有效资料后，可创建独立档案，旧档案正式资料保持原状；无身份确认时保留 `possible_duplicate` 的 `unverified`（待核对）状态。名称为发现时快照，理由相同不证明同一人；线索不参与职业搜索、问答、向量或正式图谱。匹配失败/截断时报告重复核对未完整完成及实际已保存线索，不能称没有重复。本轮只覆盖新导入，不自动回填历史库；临时原件清理不使身份线索到期。
+- 疑似重复：授权保存有效资料后，可创建独立档案，旧档案正式资料保持原状；无身份确认时保留 `possible_duplicate` 的 `unverified`（待核对）状态。名称为发现时快照，理由相同不证明同一人；线索不参与职业搜索、问答、向量或正式图谱。匹配失败/截断时报告重复核对未完整完成及实际已保存线索，不能称没有重复。导入与 Zoho 同步均可留下长期身份线索，不自动回填历史库；临时原件清理不使身份线索到期。
 - 确认同一人且授权合并时先读双方当前版本，再使用 `merge_contacts`，不调用 `review_contact_claim(action=confirm)` 确认身份线索。导入候选合并到 A 后，与 B 的提示仍可能待核对；不能宣称已经排除 B。成功后按真实返回 ID 回读结果与线索。
 - 拒绝 `possible_duplicate` 时，先读取记录实际 `subject_id` 的当前版本，即使当前查看的是另一端；按原 claim 分页核对记录。调用 `review_contact_claim` 时传该主体版本、`action=reject`、稳定 `operation_id`，并必须提供 1–500 字符 `confirmation_note`，说明确认不同人或仅忽略提示。忽略提醒不证明不同人；只查看或暂缓不授权拒绝，也不承诺有暂时隐藏/自动恢复功能。
 

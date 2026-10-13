@@ -1,6 +1,6 @@
 ---
 name: salestools-customer-assessment
-description: Use when a user wants to look up a Chinese company, ask a specific question about a confirmed company or report evidence, run or check a sales assessment, read its report, or find public business contacts through the salestools MCP.
+description: Use when a user wants to look up a Chinese company, ask evidence-backed questions about a confirmed company, run or check a seven-product sales assessment, or read its report through the Salestools MCP. Contact discovery and imports use the contact-management skill.
 ---
 
 # 使用 Salestools 客户体检
@@ -8,6 +8,8 @@ description: Use when a user wants to look up a Chinese company, ask a specific 
 ## 核心原则
 
 先区分“初步了解”“单企业定向追问”“正式销售评估”和“查询关键岗位”。Skill 只编排 MCP 工具并解释结果；事实、证据和产品机会均以服务端返回为准，不自行补算或改写等级。
+
+当前工具提供 MCP App 时优先在聊天展示 UI，并用简短文字补充结论与警告；用户明确只要文字时除外。联系人搜索图谱和文件导入遵循联系人管理 skill 的 UI 优先流程。没有对应 App 的画像、追问和报告仍使用可读文字，不把工具可供 App 调用误认为它自带界面，也不宣称用户已看到尚未展开的 App。
 
 ## 调用路由
 
@@ -18,9 +20,11 @@ description: Use when a user wants to look up a Chinese company, ask a specific 
 | 正式评估、客户体检、产品机会、销售切入点 | 先调用 `get_company_profile` 校验并保存主体，再确认后调用 `submit_assessment` |
 | 查看进度 | 使用已有 `assessment_id` 调用 `get_assessment_status` |
 | 查看报告 | 调用 `get_assessment_report`；若仍在处理，只报告当前状态 |
-| 查负责人、研发、技术、IT、采购或质量岗位 | 调用 `discover_contacts`；说明结果来自公开网页，不等于法人主体认证 |
+| 查负责人、研发、技术、IT、采购或质量岗位，或 CRM 联系人 | 转到 [联系人管理 skill](../salestools-contact-management/SKILL.md)，按共享库、网页或 Zoho 来源选择工具；不为找人启动正式评估 |
 
 若所需 Salestools 工具不可用，明确说明 MCP 尚未连接或当前客户端未提供这些工具，不模拟结果。
+
+以当前连接的工具声明为准，不能用本地源码已实现来证明远程已部署。用户要结合图谱中的企业资料时，可在工具支持时传 `include_company_context:true`；仅 `confirmed` 关联用于跨库结论，候选同名不证明同一主体。报告可用 `include_related_updates:true` 获取生成后的关联更新，但原报告正文不会改写；区分入库时间与事件时间，保留截断及来源警告。
 
 ## 定向追问
 
