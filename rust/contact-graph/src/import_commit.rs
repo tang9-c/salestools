@@ -968,6 +968,69 @@ fn bound_duplicate_value(value: &mut Value) -> Result<(), AppError> {
     Ok(())
 }
 
+pub(crate) struct DuplicateWrite<'a> {
+    pub subject: &'a str,
+    pub target: &'a str,
+    pub value: Value,
+    pub source: &'a Value,
+    pub import_id: Option<&'a str>,
+    pub candidate_id: &'a str,
+    pub now: &'a str,
+}
+
+pub(crate) fn persist_duplicate(
+    tx: &rusqlite::Transaction<'_>,
+    mut input: DuplicateWrite<'_>,
+) -> Result<String, AppError> {
+    bound_duplicate_value(&mut input.value)?;
+    let prior: Option<(String,String,String)> = tx.query_row(
+        "SELECT claim_id,status,value_json FROM contact_claims WHERE kind='relation' AND relation_type='possible_duplicate'
+         AND ((subject_id=?1 AND target_id=?2) OR (subject_id=?2 AND target_id=?1))
+         ORDER BY CASE WHEN status='unverified' THEN 1 ELSE 0 END,created_at,claim_id LIMIT 1",
+        params![input.subject,input.target],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(AppError::internal)?;
+    if let Some((id, status, encoded)) = prior {
+        if status == "unverified" {
+            let mut old: Value = serde_json::from_str(&encoded).map_err(AppError::internal)?;
+            let mut combined: Vec<String> = old["reasons"]
+                .as_array()
+                .ok_or_else(|| validation("Invalid stored duplicate reasons"))?
+                .iter()
+                .chain(
+                    input.value["reasons"]
+                        .as_array()
+                        .ok_or_else(|| validation("Invalid duplicate reasons"))?,
+                )
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| validation("Invalid duplicate reason"))
+                })
+                .collect::<Result<_, _>>()?;
+            combined.sort();
+            combined.dedup();
+            old["reasons"] = json!(combined);
+            bound_duplicate_value(&mut old)?;
+            if old.to_string() != encoded {
+                tx.execute(
+                    "UPDATE contact_claims SET value_json=?1,updated_at=?2 WHERE claim_id=?3",
+                    params![old.to_string(), input.now, id],
+                )
+                .map_err(AppError::internal)?;
+            }
+        }
+        return Ok(id);
+    }
+    let id = format!(
+        "claim_{}",
+        canonical_hash(&json!({"import_id":input.import_id,
+        "candidate_id":input.candidate_id,"subject_id":input.subject,"target_id":input.target,"relation_type":"possible_duplicate"}))?
+    );
+    tx.execute("INSERT INTO contact_claims(claim_id,subject_id,kind,relation_type,target_id,value_json,source_json,status,reason,import_id,candidate_id,created_at,updated_at)
+        VALUES(?1,?2,'relation','possible_duplicate',?3,?4,?5,'unverified','possible_duplicate',?6,?7,?8,?8)",
+        params![id,input.subject,input.target,input.value.to_string(),input.source.to_string(),input.import_id,input.candidate_id,input.now]).map_err(AppError::internal)?;
+    Ok(id)
+}
+
 #[allow(clippy::too_many_arguments)] // Derived claims and provenance share the existing import transaction.
 fn persist_duplicate_matches(
     store: &Store,
@@ -1089,50 +1152,18 @@ fn persist_duplicate_matches(
         if source.to_string().len() > 2048 {
             return Err(validation("Duplicate source exceeds 2048 bytes"));
         }
-        let mut value = json!({"reasons":reasons,"subject_name":candidate["properties"]["name"].as_str().unwrap_or(""),"target_name":target_name});
-        bound_duplicate_value(&mut value)?;
-        let prior: Option<(String,String,String)> = tx.query_row(
-            "SELECT claim_id,status,value_json FROM contact_claims WHERE kind='relation' AND relation_type='possible_duplicate'
-             AND ((subject_id=?1 AND target_id=?2) OR (subject_id=?2 AND target_id=?1))
-             ORDER BY CASE WHEN status='unverified' THEN 1 ELSE 0 END,created_at,claim_id LIMIT 1",
-            params![subject,target],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(AppError::internal)?;
-        let claim_id = if let Some((id, status, encoded)) = prior {
-            if status == "unverified" {
-                let mut old: Value = serde_json::from_str(&encoded).map_err(AppError::internal)?;
-                let mut combined: Vec<String> = old["reasons"]
-                    .as_array()
-                    .ok_or_else(|| validation("Invalid stored duplicate reasons"))?
-                    .iter()
-                    .map(|v| {
-                        v.as_str()
-                            .map(str::to_owned)
-                            .ok_or_else(|| validation("Invalid stored duplicate reason"))
-                    })
-                    .collect::<Result<_, _>>()?;
-                combined.extend(reasons.clone());
-                combined.sort();
-                combined.dedup();
-                old["reasons"] = json!(combined);
-                bound_duplicate_value(&mut old)?;
-                tx.execute(
-                    "UPDATE contact_claims SET value_json=?1,updated_at=?2 WHERE claim_id=?3",
-                    params![old.to_string(), now, id],
-                )
-                .map_err(AppError::internal)?;
-            }
-            id
-        } else {
-            let id = format!(
-                "claim_{}",
-                canonical_hash(
-                    &json!({"import_id":input.import_id,"candidate_id":matched.candidate_id,"subject_id":subject,"target_id":target,"relation_type":"possible_duplicate"})
-                )?
-            );
-            tx.execute("INSERT INTO contact_claims(claim_id,subject_id,kind,relation_type,target_id,value_json,source_json,status,reason,import_id,candidate_id,created_at,updated_at)
-                VALUES(?1,?2,'relation','possible_duplicate',?3,?4,?5,'unverified','possible_duplicate',?6,?7,?8,?8)",
-                params![id,subject,target,value.to_string(),source.to_string(),input.import_id,matched.candidate_id,now]).map_err(AppError::internal)?;
-            id
-        };
+        let claim_id = persist_duplicate(
+            tx,
+            DuplicateWrite {
+                subject,
+                target: &target,
+                value: json!({"reasons":reasons,"subject_name":candidate["properties"]["name"].as_str().unwrap_or(""),"target_name":target_name}),
+                source: &source,
+                import_id: Some(&input.import_id),
+                candidate_id: &matched.candidate_id,
+                now,
+            },
+        )?;
         discoveries.push(json!({"claim_id":claim_id,"candidate_id":matched.candidate_id,"subject_id":subject,"target_id":target,
             "matched_target_id":matched.target_id,"reasons":reasons,"source":source}));
     }

@@ -70,6 +70,78 @@ pub(crate) fn canonical_hash(value: &Value) -> Result<String, AppError> {
     Ok(format!("{:x}", Sha256::digest(&bytes)))
 }
 
+pub(crate) struct EntityWrite<'a> {
+    pub entity_id: &'a str,
+    pub label: &'a str,
+    pub kg_id: Option<i64>,
+    pub properties: &'a Value,
+    pub extensions: Option<&'a Value>,
+    pub metadata: &'a Value,
+}
+
+// Callers validate their write policy first; graph rows and metadata share their transaction.
+pub(crate) fn persist_entity(
+    store: &Store,
+    tx: &rusqlite::Transaction<'_>,
+    input: EntityWrite<'_>,
+) -> Result<(), AppError> {
+    let name = input.properties["name"].as_str().unwrap_or(input.entity_id);
+    if let Some(kg_id) = input.kg_id {
+        let mut entity = store.graph.get_entity(kg_id).map_err(AppError::internal)?;
+        entity.name = name.to_owned();
+        entity.properties =
+            serde_json::from_value(input.properties.clone()).map_err(AppError::internal)?;
+        store
+            .graph
+            .update_entity(&entity)
+            .map_err(AppError::internal)?;
+        tx.execute(
+            "UPDATE entity_meta SET metadata_json=?1,extensions_json=?2 WHERE entity_id=?3",
+            params![
+                input.metadata.to_string(),
+                input.extensions.map(Value::to_string),
+                input.entity_id
+            ],
+        )
+        .map_err(AppError::internal)?;
+    } else {
+        let mut entity = sqlite_knowledge_graph::Entity::new(input.label, name);
+        entity.properties =
+            serde_json::from_value(input.properties.clone()).map_err(AppError::internal)?;
+        let kg_id = store
+            .graph
+            .insert_entity(&entity)
+            .map_err(AppError::internal)?;
+        tx.execute(
+            "INSERT INTO entity_ids(entity_id,kg_id) VALUES(?1,?2)",
+            params![input.entity_id, kg_id],
+        )
+        .map_err(AppError::internal)?;
+        tx.execute(
+            "INSERT INTO entity_meta(entity_id,metadata_json,extensions_json) VALUES(?1,?2,?3)",
+            params![
+                input.entity_id,
+                input.metadata.to_string(),
+                input.extensions.map(Value::to_string)
+            ],
+        )
+        .map_err(AppError::internal)?;
+    }
+    crate::company_context::refresh_keys(store, input.entity_id)
+}
+
+pub(crate) fn persist_evidence(
+    tx: &rusqlite::Transaction<'_>,
+    records: &[Value],
+) -> Result<(), AppError> {
+    for record in records {
+        tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![record["evidence_id"].as_str(),record["subject_kind"].as_str(),record["subject_id"].as_str(),
+                record["field_path"].as_str(),record["value"].to_string(),record.to_string()]).map_err(AppError::internal)?;
+    }
+    Ok(())
+}
+
 fn as_object(value: &Value) -> Result<&Map<String, Value>, AppError> {
     value
         .as_object()
@@ -789,56 +861,24 @@ impl Store {
                 "Unnamed Person needs supported information",
             ));
         }
-        let name = properties["name"].as_str().unwrap_or(&entity_id);
-        if let Some(kg_id) = kg_id {
-            let mut entity = self.graph.get_entity(kg_id).map_err(AppError::internal)?;
-            entity.name = name.to_owned();
-            entity.properties =
-                serde_json::from_value(properties.clone()).map_err(AppError::internal)?;
-            self.graph
-                .update_entity(&entity)
-                .map_err(AppError::internal)?;
+        if kg_id.is_some() {
             metadata["version"] = json!(metadata["version"].as_u64().unwrap() + 1);
             metadata["updated_at"] = json!(now);
-            tx.execute(
-                "UPDATE entity_meta SET metadata_json=?1,extensions_json=?2 WHERE entity_id=?3",
-                params![
-                    metadata.to_string(),
-                    extensions.as_ref().map(Value::to_string),
-                    entity_id
-                ],
-            )
-            .map_err(AppError::internal)?;
-        } else {
-            let mut entity = sqlite_knowledge_graph::Entity::new(&input.label, name);
-            entity.properties =
-                serde_json::from_value(properties.clone()).map_err(AppError::internal)?;
-            let kg_id = self
-                .graph
-                .insert_entity(&entity)
-                .map_err(AppError::internal)?;
-            tx.execute(
-                "INSERT INTO entity_ids(entity_id,kg_id) VALUES(?1,?2)",
-                params![entity_id, kg_id],
-            )
-            .map_err(AppError::internal)?;
-            tx.execute(
-                "INSERT INTO entity_meta(entity_id,metadata_json,extensions_json) VALUES(?1,?2,?3)",
-                params![
-                    entity_id,
-                    metadata.to_string(),
-                    extensions.as_ref().map(Value::to_string)
-                ],
-            )
-            .map_err(AppError::internal)?;
         }
-        crate::company_context::refresh_keys(self, &entity_id)?;
+        persist_entity(
+            self,
+            &tx,
+            EntityWrite {
+                entity_id: &entity_id,
+                label: &input.label,
+                kg_id,
+                properties: &properties,
+                extensions: extensions.as_ref(),
+                metadata: &metadata,
+            },
+        )?;
         crate::vectors::invalidate_vector(&tx, &entity_id)?;
-        for record in new_evidence {
-            tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'entity',?2,?3,?4,?5)",
-                params![record["evidence_id"].as_str(), entity_id, record["field_path"].as_str(), record["value"].to_string(), record.to_string()])
-                .map_err(AppError::internal)?;
-        }
+        persist_evidence(&tx, &new_evidence)?;
         let result = json!({"entity_id":entity_id,"version":metadata["version"],"replayed":false});
         tx.execute("INSERT INTO audit_log(operation_id,actor,op,subject_id,changed_at,change_json) VALUES(?1,?2,'save_contact',?3,?4,?5)",
             params![input.operation_id, input.actor, entity_id, now, raw.to_string()])

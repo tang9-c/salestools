@@ -518,10 +518,186 @@ fn archived_company_or_employment_is_not_revived_by_later_crm_changes() {
         assert_eq!(reply["ok"], true, "{reply}");
         data["contacts"][0]["title"] = json!("新职位");
         data["contacts"][0]["modified_at"] = json!(T2);
-        sync(&store, "changed", T2, vec![data]);
+        counts(&sync(&store, "changed", T2, vec![data]), 0, 1, 0, 1);
         assert_eq!(detail(&store, &person)["relations"], json!([]));
         assert_eq!(count(&store, "relation_ids"), 1);
     }
+}
+
+#[test]
+fn merged_crm_sources_do_not_take_turns_overwriting_each_others_supported_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.db")).unwrap();
+    let mut a = company("crm_a", "account-a", "contact-a", json!("共同原职位"));
+    let mut b = company("crm_b", "account-b", "contact-b", json!("共同原职位"));
+    sync(&store, "first", T1, vec![a.clone(), b.clone()]);
+    let (source, _) = mapped(&store, "crm_a", "Contacts", "contact-a");
+    let (target, _) = mapped(&store, "crm_b", "Contacts", "contact-b");
+    let merged = call(
+        &store,
+        "merge_contacts",
+        json!({"operation_id":"merge-crm","actor":"reviewer",
+        "source_id":source,"target_id":target,"expected_source_version":1,"expected_target_version":1}),
+    );
+    assert_eq!(merged["ok"], true, "{merged}");
+    a["contacts"][0]["title"] = json!("A新职位");
+    a["contacts"][0]["modified_at"] = json!(T2);
+    b["contacts"][0]["title"] = json!("B新职位");
+    b["contacts"][0]["modified_at"] = json!(T2);
+    sync(&store, "both-change", T2, vec![a, b]);
+    let after = detail(&store, &target);
+    assert_eq!(after["entity"]["properties"]["jobTitle"], "共同原职位");
+    for value in ["A新职位", "B新职位"] {
+        assert!(after["conflicts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["field_path"] == "properties.jobTitle" && e["value"] == value));
+    }
+    assert_eq!(mapped(&store, "crm_a", "Contacts", "contact-a").0, target);
+    assert_eq!(mapped(&store, "crm_b", "Contacts", "contact-b").0, target);
+}
+
+#[test]
+fn archived_company_allows_new_person_and_reports_partial_while_other_companies_sync() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.db")).unwrap();
+    sync(
+        &store,
+        "first",
+        T1,
+        vec![company("crm_a", "account-a", "contact-a", json!("总监"))],
+    );
+    let (org, _) = mapped(&store, "crm_a", "Accounts", "account-a");
+    let archived = call(
+        &store,
+        "archive_contact",
+        json!({"operation_id":"archive-company","actor":"reviewer","entity_id":org,
+        "expected_version":detail(&store,&org)["entity"]["metadata"]["version"]}),
+    );
+    assert_eq!(archived["ok"], true, "{archived}");
+    let result = sync(
+        &store,
+        "partial",
+        T2,
+        vec![
+            company("crm_a", "account-a", "new-under-archive", json!("工程师")),
+            company("crm_b", "account-b", "normal-contact", json!("经理")),
+        ],
+    );
+    counts(&result, 2, 0, 0, 1);
+    let (isolated, _) = mapped(&store, "crm_a", "Contacts", "new-under-archive");
+    let (normal, _) = mapped(&store, "crm_b", "Contacts", "normal-contact");
+    assert_eq!(detail(&store, &isolated)["relations"], json!([]));
+    assert_eq!(
+        detail(&store, &normal)["relations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(result["entity_ids"].as_array().unwrap().len(), 2);
+    assert_eq!(count(&store, "relation_ids"), 2);
+    assert!(detail(&store, &org).is_null());
+}
+
+#[test]
+fn source_dates_compare_instants_and_use_collection_when_either_modified_time_is_missing() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.db")).unwrap();
+    let mut data = company("crm_a", "account-a", "contact-a", json!("新职位"));
+    data["contacts"][0]["modified_at"] = json!("2026-10-13T02:00:00+00:00");
+    sync(&store, "first", T2, vec![data.clone()]);
+    let (id, source) = mapped(&store, "crm_a", "Contacts", "contact-a");
+    data["contacts"][0]["modified_at"] = json!("2026-10-13T08:00:00+08:00");
+    data["contacts"][0]["title"] = json!("迟到职位");
+    counts(
+        &sync(&store, "older-instant", T3, vec![data.clone()]),
+        0,
+        0,
+        1,
+        0,
+    );
+    assert_eq!(mapped(&store, "crm_a", "Contacts", "contact-a").1, source);
+    data["contacts"][0]["modified_at"] = Value::Null;
+    counts(
+        &sync(&store, "missing-old", T1, vec![data.clone()]),
+        0,
+        0,
+        1,
+        0,
+    );
+    assert_eq!(
+        detail(&store, &id)["entity"]["properties"]["jobTitle"],
+        "新职位"
+    );
+    data["contacts"][0]["title"] = json!("仅采集时间的新职位");
+    counts(&sync(&store, "missing-new", T3, vec![data]), 0, 1, 0, 0);
+    assert_eq!(
+        detail(&store, &id)["entity"]["properties"]["jobTitle"],
+        "仅采集时间的新职位"
+    );
+}
+
+#[test]
+fn nested_private_fields_missing_nullable_fields_and_invalid_dates_are_rejected() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.db")).unwrap();
+    let baseline = company("crm_a", "account-a", "contact-a", json!("总监"));
+    let mut cases = Vec::new();
+    let mut owner = baseline.clone();
+    owner["contacts"][0]["contact_owner"]["email"] = json!("private@example.test");
+    cases.push(owner);
+    let mut account = baseline.clone();
+    account["telephone"] = json!("private");
+    cases.push(account);
+    let mut missing = baseline.clone();
+    missing["contacts"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("title");
+    cases.push(missing);
+    let mut modified = baseline;
+    modified["contacts"][0]["modified_at"] = json!("yesterday");
+    cases.push(modified);
+    for (index, data) in cases.into_iter().enumerate() {
+        let result = call(
+            &store,
+            "sync_zoho_contacts",
+            input(&format!("invalid-{index}"), T1, vec![data]),
+        );
+        assert_eq!(result["error"]["code"], "VALIDATION_ERROR", "{result}");
+    }
+    assert_eq!(count(&store, "entity_ids"), 0);
+    assert_eq!(count(&store, "operation_results"), 0);
+}
+
+#[test]
+fn failing_update_rolls_back_existing_values_source_clocks_evidence_and_index() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.db")).unwrap();
+    let mut data = company("crm_a", "account-a", "contact-a", json!("总监"));
+    sync(&store, "first", T1, vec![data.clone()]);
+    let (id, source) = mapped(&store, "crm_a", "Contacts", "contact-a");
+    let before = detail(&store, &id);
+    store.graph.connection().execute_batch("CREATE TRIGGER fail_zoho_update BEFORE INSERT ON operation_results WHEN NEW.op='sync_zoho_contacts' BEGIN SELECT RAISE(ABORT,'forced rollback'); END;").unwrap();
+    data["contacts"][0]["title"] = json!("经理");
+    data["contacts"][0]["modified_at"] = json!(T2);
+    let failed = call(
+        &store,
+        "sync_zoho_contacts",
+        input("failed-update", T2, vec![data]),
+    );
+    assert_eq!(failed["ok"], false);
+    assert!(
+        failed["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("forced rollback"),
+        "{failed}"
+    );
+    assert_eq!(detail(&store, &id), before);
+    assert_eq!(mapped(&store, "crm_a", "Contacts", "contact-a").1, source);
 }
 
 #[test]

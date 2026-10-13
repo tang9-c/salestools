@@ -10,3 +10,4 @@ pub mod snapshot_sync;
 pub mod store;
 pub mod validation;
 pub mod vectors;
+pub mod zoho_sync;

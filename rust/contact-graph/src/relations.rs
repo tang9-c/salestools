@@ -552,10 +552,7 @@ pub(crate) fn persist_relation(
         .map_err(internal)?;
         1
     };
-    for record in records {
-        tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,'relation',?2,?3,?4,?5)",
-            params![record["evidence_id"].as_str(),relation_id,record["field_path"].as_str(),record["value"].to_string(),record.to_string()]).map_err(internal)?;
-    }
+    crate::store::persist_evidence(tx, &records)?;
     if kind == "worksFor" {
         crate::vectors::invalidate_vector(tx, &source)?;
     }
