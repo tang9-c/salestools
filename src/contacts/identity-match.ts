@@ -26,6 +26,9 @@ export interface MatchSource {
   collectedAt: string;
   fileName?: string;
   sourceUrl?: string;
+  sourceConnectionId?: string;
+  sourceModule?: 'Accounts' | 'Contacts';
+  sourceRecordId?: string;
 }
 
 export interface MatchContext {
@@ -59,6 +62,8 @@ function accounts(person: PersonCandidate | PersonEntity): string[] {
 
 function sources(evidence: readonly ContactEvidence[]): MatchSource[] {
   const values = evidence.map(item => ({ sourceType: item.source_type, collectedAt: item.collected_at,
+    ...(item.source_type === 'zoho' ? { sourceConnectionId: item.source_connection_id,
+      sourceModule: item.source_module, sourceRecordId: item.source_record_id } : {}),
     ...(item.file_name ? { fileName: item.file_name } : {}),
     ...(item.source_url ? { sourceUrl: item.source_url } : {}) }));
   return [...new Map(values.map(value => [JSON.stringify(value), value])).values()];

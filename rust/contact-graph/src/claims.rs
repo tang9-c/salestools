@@ -22,6 +22,64 @@ struct ReviewInput {
     confirmation_note: Option<String>,
 }
 
+pub(crate) fn migrate_import_link(store: &Store) -> rusqlite::Result<()> {
+    let tx = store.graph.connection().unchecked_transaction()?;
+    let required: bool = tx.query_row(
+        "SELECT \"notnull\" FROM pragma_table_info('contact_claims') WHERE name='import_id'",
+        [],
+        |row| row.get(0),
+    )?;
+    if required {
+        let definitions = {
+            let mut statement = tx.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='contact_claims' AND type IN ('index','trigger') AND sql IS NOT NULL")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        tx.execute_batch("CREATE TABLE contact_claims_zoho_migration (
+            claim_id TEXT PRIMARY KEY,
+            subject_id TEXT NOT NULL REFERENCES entity_ids(entity_id),
+            kind TEXT NOT NULL CHECK(kind IN ('field','relation')),
+            field_path TEXT,relation_type TEXT,target_id TEXT REFERENCES entity_ids(entity_id),
+            value_json TEXT NOT NULL CHECK(length(CAST(value_json AS BLOB)) <= 2048),
+            source_json TEXT NOT NULL CHECK(length(CAST(source_json AS BLOB)) <= 2048),
+            status TEXT NOT NULL CHECK(status IN ('unverified','confirmed','rejected')),
+            reason TEXT NOT NULL,import_id TEXT REFERENCES import_jobs(import_id),
+            candidate_id TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+            INSERT INTO contact_claims_zoho_migration
+                (claim_id,subject_id,kind,field_path,relation_type,target_id,value_json,source_json,status,reason,import_id,candidate_id,created_at,updated_at)
+                SELECT claim_id,subject_id,kind,field_path,relation_type,target_id,value_json,source_json,status,reason,import_id,candidate_id,created_at,updated_at FROM contact_claims;
+            DROP TABLE contact_claims;
+            ALTER TABLE contact_claims_zoho_migration RENAME TO contact_claims;")?;
+        for sql in definitions {
+            tx.execute_batch(&sql)?;
+        }
+    }
+    // Guard direct SQL writers too: legacy file claims retain their import foreign key.
+    for event in ["INSERT", "UPDATE"] {
+        tx.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS contact_claims_zoho_{} BEFORE {event} ON contact_claims
+            WHEN NEW.import_id IS NULL BEGIN
+                SELECT CASE WHEN NOT COALESCE(NEW.kind='relation' AND NEW.relation_type='possible_duplicate'
+                    AND NEW.field_path IS NULL AND NEW.target_id IS NOT NULL
+                    AND CASE WHEN json_valid(NEW.source_json) THEN
+                        json_type(NEW.source_json)='object'
+                        AND json_extract(NEW.source_json,'$.source_type')='zoho'
+                        AND json_type(NEW.source_json,'$.source_connection_id')='text'
+                        AND length(trim(json_extract(NEW.source_json,'$.source_connection_id'),char(9)||char(10)||char(13)||' '))>0
+                        AND json_extract(NEW.source_json,'$.source_module') IN ('Accounts','Contacts')
+                        AND json_type(NEW.source_json,'$.source_record_id')='text'
+                        AND length(trim(json_extract(NEW.source_json,'$.source_record_id'),char(9)||char(10)||char(13)||' '))>0
+                        AND NOT EXISTS(SELECT 1 FROM json_each(NEW.source_json) WHERE key NOT IN
+                            ('source_type','source_connection_id','source_module','source_record_id','source_url','collected_at','modified_at'))
+                        AND (json_type(NEW.source_json,'$.source_url') IS NULL OR
+                            (json_type(NEW.source_json,'$.source_url')='text' AND
+                                (json_extract(NEW.source_json,'$.source_url') GLOB 'https://?*' OR json_extract(NEW.source_json,'$.source_url') GLOB 'http://?*')))
+                    ELSE 0 END,0)
+                THEN RAISE(ABORT,'Null import_id requires a located Zoho duplicate claim') END;
+            END;", event.to_lowercase()))?;
+    }
+    tx.commit()
+}
+
 fn manual(path: &str, value: &Value, note: &str, now: &str) -> Value {
     json!({"field_path":path,"value":value,"source_type":"manual",
         "locator_status":"not_applicable","collected_at":now,"quote":note})

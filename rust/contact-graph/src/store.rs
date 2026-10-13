@@ -105,6 +105,9 @@ pub(crate) fn collect_evidence(
         "value",
         "value_path",
         "source_type",
+        "source_connection_id",
+        "source_module",
+        "source_record_id",
         "collected_at",
         "locator_status",
         "file_name",
@@ -124,6 +127,9 @@ pub(crate) fn collect_evidence(
         let fields = as_object(item)?;
         if fields.keys().any(|key| !allowed.contains(&key.as_str())) {
             return Err(AppError::validation("Unknown evidence field"));
+        }
+        if !crate::validation::valid_source_locator_fields(item) {
+            return Err(AppError::validation("Invalid CRM evidence locator"));
         }
         let path = fields
             .get("field_path")
@@ -176,6 +182,7 @@ pub(crate) fn collect_evidence(
         }
         match source {
             "manual" if locator == "not_applicable" => {}
+            "zoho" => {}
             "text"
                 if locator == "located"
                     && fields
@@ -593,6 +600,7 @@ impl Store {
                 .execute("ALTER TABLE source_mapping ADD COLUMN source_json TEXT", [])?;
         }
         let store = Self { graph };
+        crate::claims::migrate_import_link(&store)?;
         crate::company_context::migrate_keys(&store)
             .map_err(|error| std::io::Error::other(error.message))?;
         Ok(store)
@@ -974,7 +982,7 @@ impl Store {
                 "relation_type":row.get::<_,Option<String>>(4)?,"target_id":row.get::<_,Option<String>>(5)?,
                 "value":row.get::<_,String>(6)?,"source":row.get::<_,String>(7)?,
                 "status":row.get::<_,String>(8)?,"reason":row.get::<_,String>(9)?,
-                "import_id":row.get::<_,String>(10)?,"candidate_id":row.get::<_,String>(11)?,
+                "import_id":row.get::<_,Option<String>>(10)?,"candidate_id":row.get::<_,String>(11)?,
                 "created_at":row.get::<_,String>(12)?,"updated_at":row.get::<_,String>(13)?}))
         }).map_err(AppError::internal)?;
         let mut claims = Vec::new();

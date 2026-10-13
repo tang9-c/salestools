@@ -232,6 +232,9 @@ pub(crate) fn collect_relation_evidence(
                 "field_path",
                 "value",
                 "source_type",
+                "source_connection_id",
+                "source_module",
+                "source_record_id",
                 "collected_at",
                 "locator_status",
                 "file_name",
@@ -245,6 +248,9 @@ pub(crate) fn collect_relation_evidence(
             .contains(&key.as_str())
         }) {
             return Err(invalid("Unknown evidence field"));
+        }
+        if !crate::validation::valid_source_locator_fields(item) {
+            return Err(invalid("Invalid CRM evidence locator"));
         }
         let path = fields
             .get("field_path")
@@ -316,6 +322,7 @@ pub(crate) fn collect_relation_evidence(
             .ok_or_else(|| invalid("Missing locator_status"))?;
         let source_valid = match source_type {
             "manual" => locator == "not_applicable",
+            "zoho" => true,
             "text" => {
                 locator == "located"
                     && fields
@@ -346,6 +353,7 @@ pub(crate) fn collect_relation_evidence(
             return Err(invalid("Invalid evidence source"));
         }
         if source_type != "manual"
+            && source_type != "zoho"
             && (locator != "located"
                 || fields
                     .get("quote")

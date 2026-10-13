@@ -274,7 +274,10 @@ export const ContactEvidenceSchema = z.object({
   field_path: evidenceField,
   value: z.unknown().refine(value => value !== undefined && value !== null),
   value_path: text.optional(),
-  source_type: z.enum(['file', 'web', 'manual', 'text']),
+  source_type: z.enum(['file', 'web', 'manual', 'text', 'zoho']),
+  source_connection_id: text.optional(),
+  source_module: z.enum(['Accounts', 'Contacts']).optional(),
+  source_record_id: text.optional(),
   file_name: text.optional(), file_sha256: text.optional(), source_url: httpUrl.optional(),
   text_sha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   quote: text.optional(), page: z.int().positive().optional(),
@@ -282,6 +285,16 @@ export const ContactEvidenceSchema = z.object({
   collected_at: UtcTimestampSchema,
   confirmed_by: text.optional(), confirmed_at: UtcTimestampSchema.optional(),
 }).strict().superRefine((value, context) => {
+  if (value.source_type === 'zoho') {
+    if (!value.source_connection_id || !value.source_module || !value.source_record_id
+      || value.locator_status !== 'not_applicable'
+      || value.file_name !== undefined || value.file_sha256 !== undefined
+      || value.text_sha256 !== undefined || value.page !== undefined || value.quote !== undefined) {
+      context.addIssue({ code: 'custom', message: 'Zoho evidence requires a CRM record locator without document metadata' });
+    }
+  } else if (value.source_connection_id !== undefined || value.source_module !== undefined || value.source_record_id !== undefined) {
+    context.addIssue({ code: 'custom', message: 'CRM record locators require Zoho evidence' });
+  }
   if (value.subject_kind === 'entity' && (value.field_path === '$relation'
     || /^properties\.(major|educationLevel|startDate|endDate)$/u.test(value.field_path)
     || value.field_path.startsWith('properties.role.')

@@ -421,6 +421,38 @@ pub(crate) fn is_import_source(record: &Value) -> bool {
     record["source_type"] == "file" || record["source_type"] == "text"
 }
 
+pub(crate) fn valid_zoho_locator(record: &Value) -> bool {
+    record["source_type"] == "zoho"
+        && ["source_connection_id", "source_record_id"]
+            .iter()
+            .all(|key| {
+                record[*key]
+                    .as_str()
+                    .is_some_and(|value| !value.trim().is_empty())
+            })
+        && matches!(
+            record["source_module"].as_str(),
+            Some("Accounts" | "Contacts")
+        )
+        && record
+            .get("source_url")
+            .is_none_or(|url| url.as_str().is_some_and(absolute_http_url))
+}
+
+pub(crate) fn valid_source_locator_fields(record: &Value) -> bool {
+    if record["source_type"] == "zoho" {
+        valid_zoho_locator(record)
+            && record["locator_status"] == "not_applicable"
+            && ["file_name", "file_sha256", "text_sha256", "page", "quote"]
+                .iter()
+                .all(|key| record.get(*key).is_none())
+    } else {
+        ["source_connection_id", "source_module", "source_record_id"]
+            .iter()
+            .all(|key| record.get(*key).is_none())
+    }
+}
+
 pub fn ensure_value_evidence(
     properties: &Value,
     extensions: Option<&Value>,
@@ -440,6 +472,7 @@ pub fn ensure_value_evidence(
     fn supports_value(record: &Value, value: &Value) -> bool {
         match record.get("source_type").and_then(Value::as_str) {
             Some("manual") => record["locator_status"] == "not_applicable",
+            Some("zoho") => valid_source_locator_fields(record),
             // Quote location is checked by Node against parsed/pasted blocks.
             // Rust validates provenance and value binding; it does not hold that text.
             Some("file" | "text") => {

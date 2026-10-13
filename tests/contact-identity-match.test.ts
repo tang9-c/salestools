@@ -13,6 +13,20 @@ const existing = (name: string, telephone: string[], contactPoint: object[] = []
 });
 
 describe('identity suggestions', () => {
+  it('keeps different CRM record locators visible in duplicate review sources', () => {
+    const proof = { evidence_id: 'crm-e1', subject_kind: 'entity', subject_id: 'p1',
+      field_path: 'properties.name', value: '陈晓', source_type: 'zoho',
+      source_connection_id: 'connection-a', source_module: 'Contacts', source_record_id: 'contact-a',
+      locator_status: 'not_applicable', collected_at: '2026-10-13T00:00:00.000Z' };
+    const matches = suggestMatches(candidate('陈晓', []), [existing('陈晓', [])], {
+      existingEvidenceById: { p1: [ContactEvidenceSchema.parse(proof),
+        ContactEvidenceSchema.parse({ ...proof, evidence_id: 'crm-e2', source_connection_id: 'connection-b' })] },
+    });
+    expect(matches[0].existingSources).toEqual([
+      { sourceType: 'zoho', collectedAt: '2026-10-13T00:00:00.000Z', sourceConnectionId: 'connection-a', sourceModule: 'Contacts', sourceRecordId: 'contact-a' },
+      { sourceType: 'zoho', collectedAt: '2026-10-13T00:00:00.000Z', sourceConnectionId: 'connection-b', sourceModule: 'Contacts', sourceRecordId: 'contact-a' },
+    ]);
+  });
   it('shows conflicting single values for review without changing either profile', () => {
     const incoming = candidate('陈晓', []), old = existing('陈晓', []);
     if (incoming.label !== 'Person' || old.label !== 'Person') throw new Error('Expected person fixture');
