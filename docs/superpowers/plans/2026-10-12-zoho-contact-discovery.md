@@ -105,6 +105,8 @@ private serial<T>(context: ZohoCallContext, operation: () => Promise<T>): Promis
 
 **接口：** `ZohoContactService.get(input: ZohoQuery)` 返回任务 1 的 Zoho 输出；依赖任务 2 客户端、可注入时间源。服务不依赖 ContactLibrary、快照仓库或 Ark。
 
+最终修复澄清：截止定时器与工作路径检查共用一次性收尾；回归须覆盖定时器尚未执行时保留联系人/候选及截止错误。显式记录选择后的连接状态只覆盖实际选择的连接，未知声明连接仍拒绝。
+
 - [ ] 用客户端替身写测试：唯一完整名称匹配、简称候选、多客户、无匹配、0 人、201 人、2001 人、重复页、第二连接失败、第二页失败、过期排队、记录选择与 query 不符。
 - [ ] 增加搜索完整性测试：第二页同名客户不判唯一；到 2000 条仍 moreRecords 时 search_complete=false，不自动获取联系人；搜索失败有候选则允许用户选择，无候选明确 failed。
 - [ ] 运行 `npx vitest run tests/zoho-contacts.test.ts` 验证失败。
@@ -116,6 +118,8 @@ private serial<T>(context: ZohoCallContext, operation: () => Promise<T>): Promis
 - [ ] 日志只包含连接标识、阶段、页数、数量、耗时及脱敏错误码。通过测试、类型检查后提交此任务。
 
 ## 任务 4：接入工具与端到端验收
+
+最终修复澄清：全局需要确认时展示每连接状态，以及包含已唯一匹配记录在内的候选确认参数；提示显式选择限制后续范围。以真实服务→渲染→工具重试验证 A 唯一匹配、B 歧义时可保留 A+B。
 
 **文件：** 修改 `src/index.ts`、`src/mcp/tools.ts`、`README.md`、`docs/PRD.md`；新增 `src/contacts/zoho-contact-renderer.ts`、`tests/zoho-contact-renderer.test.ts`、`tests/zoho-discover-tools.test.ts`；补充 `tests/contacts.test.ts`。
 

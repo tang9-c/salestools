@@ -7,6 +7,7 @@ import { loadConfig } from '../src/config.js';
 import { createApplication } from '../src/index.js';
 import { buildMcpServer, type McpServices } from '../src/mcp/tools.js';
 import type { ZohoContactsOutput } from '../src/contracts/zoho-contact.js';
+import { ZohoContactService } from '../src/contacts/zoho-contact-service.js';
 
 const at = '2026-10-12T00:00:00.000Z';
 const web = { companies: [{ companyName: '网页公司', contacts: [{ name: '网页人员', title: '经理', sourceUrl: 'https://example.com', publishedAt: null }], historicalContacts: [] }], warnings: [], collectedAt: at };
@@ -65,6 +66,33 @@ it('reuses exact candidate IDs copied from text in a successful second tool call
   expect(second.isError).not.toBe(true);
   expect(second.structuredContent).toMatchObject({ zoho: { status: 'completed',
     companies: [{ contacts: [{ name: 'CRM人员' }] }] } });
+});
+
+it('carries an exact match and an ambiguous connection from rendered confirmation into a real tool retry', async () => {
+  const account = (id: string, name: string) => ({ account_id: id, company_name: name, account_owner: null });
+  const records = { a: [account('1', 'Acme')], b: [account('2', 'Acme Holdings'), account('3', 'Acme Manufacturing')] };
+  const reads: string[] = [];
+  const service = new ZohoContactService({
+    searchAccountsPage: async id => ({ accounts: records[id as keyof typeof records], moreRecords: false }),
+    getAccount: async (id, recordId) => records[id as keyof typeof records].find(record => record.account_id === recordId)!,
+    getContactsPage: async (id, recordId) => {
+      reads.push(`${id}:${recordId}`);
+      return { contacts: [{ record_id: '99', name: `Person ${id}`, title: null, contact_owner: null, modified_at: null }], moreRecords: false, nextPageToken: null };
+    },
+  }, [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]);
+  const s = services({ zohoContacts: { connectionIds: ['a', 'b'], get: input => service.get(input) } });
+  const first = await call(s, { query: 'Acme', source: 'zoho' });
+  expect(reads).toEqual([]);
+  const text = first.content[0]?.type === 'text' ? first.content[0].text : '';
+  const choices = [...text.matchAll(/确认参数：`(\{"connection_id":"[^"]+","account_id":"[^"]+"\})`/gu)].map(match => JSON.parse(match[1]!));
+  expect(choices).toEqual([{ connection_id: 'a', account_id: '1' }, { connection_id: 'b', account_id: '2' }, { connection_id: 'b', account_id: '3' }]);
+  expect(text).toContain('连接 A：completed');
+  expect(text).toContain('连接 B：needs_confirmation');
+  expect(text).toContain('后续仅查询显式选择的记录及连接');
+  const second = await call(s, { query: 'Acme', source: 'zoho', zoho_account_records: choices.filter(choice => choice.account_id !== '3') });
+  expect(second.structuredContent).toMatchObject({ zoho: { status: 'completed', complete: true,
+    companies: [{ connection_id: 'a', contacts: [{ name: 'Person a' }] }, { connection_id: 'b', contacts: [{ name: 'Person b' }] }] } });
+  expect(reads).toEqual(['a:1', 'b:2']);
 });
 
 it('preserves web result when Zoho fails and rejects unknown connection', async () => {

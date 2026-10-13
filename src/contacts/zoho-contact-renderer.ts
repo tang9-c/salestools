@@ -18,10 +18,12 @@ export function renderZohoContacts(result: ZohoContactsOutput): string {
     `来源：Zoho CRM 实时只读记录；完整性：${result.complete ? '已完成选定连接的全部分页' : '未完成或需要确认' }。CRM 负责人仅表示系统内记录归属，联系人任职未另行核实。`];
   if (result.status === 'failed') lines.push('查询失败或 Zoho 不可用。');
   else if (result.status === 'partial') lines.push('仅返回已取得的部分结果，不能视为全部联系人。');
-  else if (result.status === 'needs_confirmation') lines.push('需要确认客户记录后重新查询；本次未开始联系人全量获取。');
+  else if (result.status === 'needs_confirmation') lines.push('需要确认客户记录后重新查询；本次未开始联系人全量获取。',
+    '请将所有要保留的客户记录（包括已唯一匹配的记录）一并放入 zoho_account_records；后续仅查询显式选择的记录及连接。completed 表示该连接搜索已完成，本次尚未读取联系人。');
   for (const state of result.connections) {
+    if (result.status === 'needs_confirmation') lines.push(`连接 ${safe(state.name)}：${state.status}；搜索${state.search_complete ? '已完成' : '未完成'}。`);
     if (state.error_code) lines.push(`连接 ${safe(state.name)}：${safe(state.error_code)}。`);
-    if (state.candidates.length && (state.status === 'needs_confirmation' || !state.search_complete)) {
+    if (state.candidates.length && (result.status === 'needs_confirmation' || state.status === 'needs_confirmation' || !state.search_complete)) {
       lines.push(`### ${safe(state.name)} 的客户候选`,
         '请确认后将对应确认参数放入 zoho_account_records：');
       for (const item of state.candidates) lines.push(`- 客户：${safe(item.company_name)}；客户负责人：${safe(item.account_owner?.name)}`,

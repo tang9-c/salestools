@@ -33,14 +33,16 @@ export class ZohoContactService {
     const deadlineAt = now() + 120000;
     const controller = new AbortController();
     const context: ZohoCallContext = { deadlineAt, signal: controller.signal };
-    const states: ZohoConnectionStatus[] = ids.map(id => ({ connection_id: id, name: known.get(id)!.name, status: 'completed', search_complete: Boolean(input.accountRecords), candidates: [], error_code: null }));
+    const scopedIds = input.accountRecords ? ids.filter(id => selections.some(record => record.connectionId === id)) : ids;
+    const states: ZohoConnectionStatus[] = scopedIds.map(id => ({ connection_id: id, name: known.get(id)!.name, status: 'completed', search_complete: Boolean(input.accountRecords), candidates: [], error_code: null }));
     const companies: ZohoCompany[] = [];
     const warnings: string[] = [];
     const selected = new Map<string, ZohoAccountCandidate[]>();
     const finished = new Set<string>();
     let timedOut = false;
     const active = () => !controller.signal.aborted && now() < deadlineAt;
-    const assertActive = () => { if (!active()) fail('ZOHO_DEADLINE_EXCEEDED'); };
+    const deadlineError = new Error('ZOHO_DEADLINE_EXCEEDED');
+    const assertActive = () => { if (!active()) throw deadlineError; };
     const log = (id: string, phase: string, pages: number, count: number, start: number, errorCode: string | null) => {
       this.options.logger?.({ connection_id: id, phase, pages, count, duration_ms: Math.max(0, now() - start), error_code: errorCode });
     };
@@ -52,9 +54,9 @@ export class ZohoContactService {
       const status = timedOut ? (hasResult ? 'partial' : 'failed') : needs ? 'needs_confirmation' : complete ? 'completed' : states.every(state => state.status === 'failed') ? 'failed' : 'partial';
       return structuredClone({ status, complete: timedOut ? false : complete, connections: states, companies, warnings, collected_at: new Date(now()).toISOString() });
     };
-    let timer!: ReturnType<typeof setTimeout>;
-    const timeout = new Promise<ZohoContactsOutput>(resolve => {
-      timer = setTimeout(() => {
+    let deadlineResult: ZohoContactsOutput | undefined;
+    const finishDeadline = (): ZohoContactsOutput => {
+      if (!deadlineResult) {
         timedOut = true;
         controller.abort();
         for (const state of states) if (state.status === 'completed' && !finished.has(state.connection_id)) {
@@ -62,8 +64,13 @@ export class ZohoContactService {
           state.error_code = 'ZOHO_DEADLINE_EXCEEDED';
         }
         warnings.push('ZOHO_DEADLINE_EXCEEDED');
-        resolve(snapshot());
-      }, Math.max(0, deadlineAt - now()));
+        deadlineResult = snapshot();
+      }
+      return deadlineResult;
+    };
+    let timer!: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<ZohoContactsOutput>(resolve => {
+      timer = setTimeout(() => resolve(finishDeadline()), Math.max(0, deadlineAt - now()));
     });
     const work = (async () => {
       const query = normalize(input.query);
@@ -158,7 +165,10 @@ export class ZohoContactService {
         finished.add(state.connection_id);
       }
       return snapshot();
-    })();
+    })().catch((error: unknown) => {
+      if (error === deadlineError) return finishDeadline();
+      throw error;
+    });
     try { return await Promise.race([work, timeout]); }
     finally { clearTimeout(timer); controller.abort(); }
   }

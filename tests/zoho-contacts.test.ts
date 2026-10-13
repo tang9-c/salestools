@@ -14,6 +14,56 @@ const service = (client: ReturnType<typeof fake>, selected = connections) => new
 afterEach(() => vi.useRealTimers());
 
 describe('ZohoContactService', () => {
+  it('preserves contacts and candidates when the work path reaches the deadline before the timer', async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    const client = fake();
+    client.getContactsPage.mockImplementation(async (_id, _account, cursor) => {
+      if ('page' in cursor && cursor.page === 1) return { contacts: [contact('1')], moreRecords: true, nextPageToken: null };
+      now = 120000;
+      return { contacts: [contact('2')], moreRecords: true, nextPageToken: null };
+    });
+    const result = await new ZohoContactService(client, connections, { now: () => now }).get({ query: 'Acme Inc' });
+    expect(result).toMatchObject({ status: 'partial', complete: false, warnings: ['ZOHO_DEADLINE_EXCEEDED'] });
+    expect(result.companies[0].contacts.map(person => person.record_id)).toEqual(['1']);
+    expect(result.connections[0]).toMatchObject({ error_code: 'ZOHO_DEADLINE_EXCEEDED', candidates: [{ account_id: '1', company_name: 'Acme Inc' }] });
+    expect(client.getContactsPage).toHaveBeenCalledTimes(2);
+    await vi.runAllTimersAsync();
+    expect(result.companies[0].contacts).toHaveLength(1);
+  });
+
+  it('reports only explicitly selected connections while still validating all declared connections', async () => {
+    const client = fake();
+    const input = { query: 'Acme', connectionIds: ['a', 'b'], accountRecords: [{ connectionId: 'b', accountId: '9' }] };
+    const result = await service(client).get(input);
+    expect(result.connections.map(state => state.connection_id)).toEqual(['b']);
+    expect(result).toMatchObject({ status: 'completed', complete: true });
+    expect(client.getContactsPage).toHaveBeenCalledTimes(1);
+    expect(client.getContactsPage).toHaveBeenCalledWith('b', '9', { page: 1 }, expect.any(Object));
+    await expect(service(client).get({ ...input, connectionIds: ['missing', 'b'] })).rejects.toThrow('ZOHO_UNKNOWN_CONNECTION');
+  });
+
+  it.each([false, true])('freezes search results at a work-path deadline (prior candidates: %s)', async priorCandidates => {
+    vi.useFakeTimers();
+    let now = 0;
+    const client = fake();
+    client.searchAccountsPage.mockImplementation(async (_id, _query, page) => {
+      if (!priorCandidates || page === 2) now = 120000;
+      return { accounts: [account(String(page))], moreRecords: true };
+    });
+    const result = await new ZohoContactService(client, connections, { now: () => now }).get({ query: 'Acme' });
+    expect(result).toMatchObject({ status: priorCandidates ? 'partial' : 'failed', complete: false, warnings: ['ZOHO_DEADLINE_EXCEEDED'] });
+    expect(result.connections[0].candidates.map(item => item.account_id)).toEqual(priorCandidates ? ['1'] : []);
+    expect(client.searchAccountsPage).toHaveBeenCalledTimes(priorCandidates ? 2 : 1);
+    expect(client.getContactsPage).not.toHaveBeenCalled();
+  });
+
+  it('does not convert unexpected work errors into deadline snapshots', async () => {
+    const failure = new Error('unexpected logger failure');
+    await expect(new ZohoContactService(fake(), connections, { logger: () => { throw failure; } })
+      .get({ query: 'Acme Inc' })).rejects.toBe(failure);
+  });
+
   it('confirms one normalized full name and preserves same named people from distinct connections', async () => {
     const client = fake();
     const result = await service(client).get({ query: '  ACME  INC ' });
