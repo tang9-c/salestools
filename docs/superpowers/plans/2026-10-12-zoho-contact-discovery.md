@@ -26,6 +26,8 @@
 
 ## 任务 1：配置与结果契约
 
+执行状态：已实现，本地验证与任务审查通过。
+
 **文件：** 修改 `src/config.ts`、`.env.example`、`src/mcp/tool-schemas.ts`；新增 `src/contracts/zoho-contact.ts`、`tests/zoho-contact-contracts.test.ts`；补充 `tests/config.test.ts`。
 
 **接口：**
@@ -52,6 +54,8 @@ type ZohoQuery = {
 - [ ] 同组测试通过后运行类型检查；只暂存本任务明确修改的文件，提交一个独立契约改动。
 
 ## 任务 2：SDK 只读适配器与账号隔离
+
+执行状态：已实现，本地真实SDK/合成HTTP验证与任务审查通过；远程CI仍待验收。经用户授权对锁定SDK作最小依赖修补，未改为REST或新增进程。
 
 **文件：** 新增 `src/upstream/zoho/client.ts`、`tests/zoho-client.test.ts`；修改 `package.json`、`package-lock.json`。
 
@@ -99,6 +103,8 @@ private serial<T>(context: ZohoCallContext, operation: () => Promise<T>): Promis
 
 ## 任务 3：公司确认、全量分页与部分失败
 
+执行状态：已实现，本地验证与任务审查通过；已修正跨客户组归属、截止快照及确认范围。
+
 任务2接口已提供`ZohoClient`、`ZohoAccount`、`ZohoCallContext`、`ZohoCursor`和不联网的`verifyZohoSDKPatch()`。客户/联系人使用任务1 snakecase契约；生产生命周期创建/关闭与启动校验在任务4接入。每次SDK内部传输均从同一deadline读取剩余时间，业务重试最多一次，等待者取消不会释放实际SDK串行锁。
 
 **文件：** 新增 `src/contacts/zoho-contact-service.ts`、`tests/zoho-contacts.test.ts`。
@@ -118,6 +124,8 @@ private serial<T>(context: ZohoCallContext, operation: () => Promise<T>): Promis
 - [ ] 日志只包含连接标识、阶段、页数、数量、耗时及脱敏错误码。通过测试、类型检查后提交此任务。
 
 ## 任务 4：接入工具与端到端验收
+
+执行状态：工具、渲染及文档已实现，本地HTTP与定向测试通过；完整远程CI、真实CRM数量对照和真实MCP宿主验收未完成。下方涉及外部验收的步骤不能视为完成，执行证据见 ../../validation/2026-10-12-zoho-contact-discovery.md。
 
 最终修复澄清：全局需要确认时展示每连接状态，以及包含已唯一匹配记录在内的候选确认参数；提示显式选择限制后续范围。以真实服务→渲染→工具重试验证 A 唯一匹配、B 歧义时可保留 A+B。
 
