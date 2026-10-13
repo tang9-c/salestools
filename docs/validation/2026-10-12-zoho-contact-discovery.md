@@ -1,6 +1,6 @@
 # Zoho 联系人接入验证记录
 
-实现分支：`feat/zoho-contact-discovery`。代码验证提交：`ec48da34249c31e4c9f32bcb2a2c3b183e653990`。
+实现分支：`feat/zoho-contact-discovery`，已快进合并到本地 `main`。远程CI验证提交：`e74f315be0e817db4f0e874ce07f5032d320cb34`。
 
 ## 已验证
 
@@ -14,9 +14,16 @@
 
 ## 未验证与边界
 
-- 尚未推送或运行远程完整CI；本地未构建原生程序、浏览器bundle或容器。
+- 功能分支已推送，远程完整CI已通过；本地未构建原生程序、浏览器bundle或容器。
 - 尚未使用真实CRM授权、对照CRM UI人数和负责人，也未验证真实宿主响应容量。
-- 未合并、发布或执行真实CRM查询；不读取真实.env或凭证。
+- 已合并到本地main，未推送main、发布或执行真实CRM查询；不读取真实.env或凭证。
 - 本轮覆盖设计第1–10节；第11节联系方式遮蔽不在本次范围。Zoho字段投影不包含联系人或负责人电话邮箱。
 
-下一步需获得功能分支推送/现有CI运行授权，以及专用测试连接和获准查询公司的信息。凭证应在服务环境配置，不粘贴到聊天。
+## 远程CI结果（2026-10-13）
+
+- 首次CI失败：只读SDK测试以contact-ci运行，尝试chmod runner所有的安装目录，导致EPERM。已修正为校验外部所有者目录不可写；仅修改当前用户拥有的测试目录权限，不放宽非root要求，不跳过只读验证。
+- [重跑CI](https://github.com/tang9-c/salestools/actions/runs/38402477884)：两个job均success；93个Vitest文件、1653项测试通过；Python 37项及3个subtests通过；Rust测试、服务端与两个App构建均通过。
+- production-container完成生产镜像构建、真实PDF、普通容器隔离与后代进程清理检查；未发布镜像。
+- main以快进方式包含被测试的代码提交，后续提交仅更新验收文档。原有未提交README修改已恢复，旧版未跟踪设计/计划备份到 `/Users/tang-codeing/code/salestools-zoho-premerge.vxpggs/`。
+
+下一步仍需专用测试连接和获准查询公司的信息。凭证应在服务环境配置，不粘贴到聊天。
