@@ -7,7 +7,7 @@ import { ContactGraphClient } from '../src/contacts/graph-client.js';
 import { queryRuntime } from './helpers/zoho-graph-query.js';
 
 // Only the remote workflow builds this binary from the checked-out source.
-it.skipIf(process.env.GITHUB_ACTIONS !== 'true')('queries synthetic CRM into the real Rust graph and preserves idempotence', async () => {
+it.skipIf(process.env.CONTACT_UPLOAD_BUNDLE_REQUIRED !== '1')('queries synthetic CRM into the real Rust graph and preserves idempotence', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zoho-graph-native-'));
   const graph = new ContactGraphClient({ command: fileURLToPath(new URL('../rust/contact-graph/target/debug/contact-graph', import.meta.url)), dbPath: join(directory, 'graph.sqlite') });
   const { client, runtime, query } = await queryRuntime(graph, true);
