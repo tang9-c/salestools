@@ -53,6 +53,254 @@ fn detail(s: &Store, id: &str) -> Value {
     call(s, "get_contact", json!({"entity_id":id}))["result"].clone()
 }
 
+fn zoho_source() -> Value {
+    json!({"source_type":"zoho","source_connection_id":"connection-a",
+        "source_module":"Contacts","source_record_id":"contact-a"})
+}
+
+fn insert_crm_claim(
+    s: &Store,
+    id: &str,
+    subject: &str,
+    target: &str,
+    source: &Value,
+    relation: &str,
+) -> rusqlite::Result<usize> {
+    s.graph.connection().execute(
+        "INSERT INTO contact_claims(claim_id,subject_id,target_id,kind,relation_type,value_json,source_json,status,reason,import_id,candidate_id,created_at,updated_at)
+         VALUES(?1,?2,?3,'relation',?4,'{\"reasons\":[\"same_name\"]}',?5,'unverified','possible_duplicate',NULL,'contact-a','2026-10-13T00:00:00Z','2026-10-13T00:00:00Z')",
+        params![id,subject,target,relation,source.to_string()],
+    )
+}
+
+#[test]
+fn zoho_duplicate_without_import_is_visible_on_both_sides_and_reviewable() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path().join("g.db")).unwrap();
+    let a = entity(&s, "Person", "CRM甲");
+    let b = entity(&s, "Person", "CRM乙");
+    let inserted = insert_crm_claim(
+        &s,
+        "crm-reject",
+        &a,
+        &b,
+        &zoho_source(),
+        "possible_duplicate",
+    );
+    assert!(
+        inserted.is_ok(),
+        "CRM duplicate needs no import job: {inserted:?}"
+    );
+    for id in [&a, &b] {
+        let response = call(&s, "get_contact", json!({"entity_id":id}));
+        assert_eq!(response["ok"], true, "{response}");
+        let claims = response["result"]["unverified_claims"].as_array().unwrap();
+        assert_eq!(claims.len(), 1);
+        assert!(claims[0]["import_id"].is_null());
+        assert_eq!(claims[0]["source"], zoho_source());
+    }
+    assert_eq!(
+        call(
+            &s,
+            "review_contact_claim",
+            review("crm-reject", "confirm", 1)
+        )["error"]["code"],
+        "VALIDATION_ERROR"
+    );
+    assert_eq!(
+        call(
+            &s,
+            "review_contact_claim",
+            review("crm-reject", "reject", 1)
+        )["ok"],
+        true
+    );
+    assert_eq!(status(&s, "crm-reject"), "rejected");
+    assert_eq!(audit_count(&s), 1);
+    assert_eq!(
+        s.graph
+            .connection()
+            .query_row("SELECT count(*) FROM import_jobs", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn null_import_duplicate_can_be_closed_by_manual_merge() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path().join("g.db")).unwrap();
+    let a = entity(&s, "Person", "合并甲");
+    let b = entity(&s, "Person", "合并乙");
+    let inserted = insert_crm_claim(
+        &s,
+        "crm-merge",
+        &a,
+        &b,
+        &zoho_source(),
+        "possible_duplicate",
+    );
+    assert!(inserted.is_ok(), "{inserted:?}");
+    let result = call(
+        &s,
+        "merge_contacts",
+        json!({"operation_id":"merge-crm","actor":"tester",
+        "source_id":a,"target_id":b,"expected_source_version":1,"expected_target_version":1}),
+    );
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(status(&s, "crm-merge"), "confirmed");
+    assert_eq!(detail(&s, &b)["unverified_claims"], json!([]));
+}
+
+#[test]
+fn null_import_rejects_file_unknown_or_unlocated_source_and_non_duplicate_relations() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path().join("g.db")).unwrap();
+    let a = entity(&s, "Person", "校验甲");
+    let b = entity(&s, "Person", "校验乙");
+    let mut invalid = vec![
+        json!({"source_type":"file","quote":"file excerpt"}),
+        json!({"source_type":"crm"}),
+        json!({}),
+    ];
+    for key in ["source_connection_id", "source_module", "source_record_id"] {
+        let mut missing = zoho_source();
+        missing.as_object_mut().unwrap().remove(key);
+        invalid.push(missing);
+        let mut blank = zoho_source();
+        blank[key] = json!(" ");
+        invalid.push(blank);
+    }
+    let mut module = zoho_source();
+    module["source_module"] = json!("Leads");
+    invalid.push(module);
+    let mut private = zoho_source();
+    private["email"] = json!("private@example.test");
+    invalid.push(private);
+    for (index, source) in invalid.iter().enumerate() {
+        assert!(
+            insert_crm_claim(
+                &s,
+                &format!("invalid-{index}"),
+                &a,
+                &b,
+                source,
+                "possible_duplicate"
+            )
+            .is_err(),
+            "accepted {source}"
+        );
+    }
+    assert!(insert_crm_claim(&s, "invalid-relation", &a, &b, &zoho_source(), "worksFor").is_err());
+}
+
+#[test]
+fn legacy_claim_migration_preserves_rows_indexes_and_foreign_keys_after_reopen() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("legacy.db");
+    let (a, b, old_import) = {
+        let s = Store::open(&path).unwrap();
+        // Materialize the actual pre-Zoho table shape, regardless of the current Store migration.
+        s.graph.connection().execute_batch("DROP TABLE contact_claims;
+            CREATE TABLE contact_claims (
+                claim_id TEXT PRIMARY KEY,subject_id TEXT NOT NULL REFERENCES entity_ids(entity_id),
+                kind TEXT NOT NULL CHECK(kind IN ('field','relation')),field_path TEXT,relation_type TEXT,
+                target_id TEXT REFERENCES entity_ids(entity_id),value_json TEXT NOT NULL CHECK(length(CAST(value_json AS BLOB)) <= 2048),
+                source_json TEXT NOT NULL CHECK(length(CAST(source_json AS BLOB)) <= 2048),
+                status TEXT NOT NULL CHECK(status IN ('unverified','confirmed','rejected')),reason TEXT NOT NULL,
+                import_id TEXT NOT NULL REFERENCES import_jobs(import_id),candidate_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+            CREATE INDEX contact_claims_subject_status ON contact_claims(subject_id,status,claim_id);
+            CREATE INDEX legacy_claim_reason ON contact_claims(reason);").unwrap();
+        let a = entity(&s, "Person", "旧文件甲");
+        let b = entity(&s, "Person", "旧文件乙");
+        claim(&s, "legacy", &a, "properties.skills", json!("Rust"));
+        let import: String = s
+            .graph
+            .connection()
+            .query_row(
+                "SELECT import_id FROM contact_claims WHERE claim_id='legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (a, b, import)
+    };
+    for _ in 0..2 {
+        let s = Store::open(&path).unwrap();
+        let legacy = detail(&s, &a);
+        assert_eq!(legacy["unverified_claims"][0]["import_id"], old_import);
+        assert_eq!(legacy["unverified_claims"][0]["value"], "Rust");
+        for name in ["contact_claims_subject_status", "legacy_claim_reason"] {
+            assert_eq!(
+                s.graph
+                    .connection()
+                    .query_row(
+                        "SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                        [name],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                1
+            );
+        }
+        assert_eq!(
+            s.graph
+                .connection()
+                .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
+        assert!(s
+            .graph
+            .connection()
+            .execute(
+                "UPDATE contact_claims SET import_id=NULL WHERE claim_id='legacy'",
+                []
+            )
+            .is_err());
+        assert!(s
+            .graph
+            .connection()
+            .execute(
+                "UPDATE contact_claims SET import_id='missing-import' WHERE claim_id='legacy'",
+                []
+            )
+            .is_err());
+        assert!(s
+            .graph
+            .connection()
+            .execute(
+                "UPDATE contact_claims SET subject_id='missing-person' WHERE claim_id='legacy'",
+                []
+            )
+            .is_err());
+    }
+    let s = Store::open(&path).unwrap();
+    let inserted = insert_crm_claim(
+        &s,
+        "migrated-crm",
+        &a,
+        &b,
+        &zoho_source(),
+        "possible_duplicate",
+    );
+    assert!(
+        inserted.is_ok(),
+        "migrated table must accept CRM claims: {inserted:?}"
+    );
+    let reviewed = call(&s, "review_contact_claim", review("legacy", "confirm", 1));
+    assert_eq!(reviewed["ok"], true, "{reviewed}");
+    assert_eq!(
+        detail(&s, &a)["entity"]["properties"]["skills"],
+        json!(["Rust"])
+    );
+}
+
 #[test]
 fn duplicate_review_requires_merge_or_an_explained_rejection() {
     let d = tempfile::tempdir().unwrap();

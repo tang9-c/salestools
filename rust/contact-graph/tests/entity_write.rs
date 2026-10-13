@@ -19,6 +19,88 @@ fn manual(field_path: &str, value: Value) -> Value {
     })
 }
 
+fn zoho(field_path: &str, value: Value, module: &str) -> Value {
+    json!({"field_path":field_path,"value":value,"source_type":"zoho",
+        "source_connection_id":"connection-a","source_module":module,"source_record_id":"record-a",
+        "collected_at":"2026-10-13T00:00:00Z","locator_status":"not_applicable"})
+}
+
+#[test]
+fn zoho_entity_and_relation_evidence_round_trips_without_a_fake_url() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("contacts.sqlite")).unwrap();
+    let person = request(
+        &store,
+        "save_contact",
+        json!({"operation_id":"crm-person","actor":"system","label":"Person",
+        "set_properties":{"name":"CRM Person"},"evidence":[zoho("properties.name",json!("CRM Person"),"Contacts")]}),
+    );
+    assert_eq!(person["ok"], true, "{person}");
+    let org = request(
+        &store,
+        "save_contact",
+        json!({"operation_id":"crm-org","actor":"system","label":"Organization",
+        "set_properties":{"name":"CRM Company"},"evidence":[zoho("properties.name",json!("CRM Company"),"Accounts")]}),
+    );
+    assert_eq!(org["ok"], true, "{org}");
+    let p = person["result"]["entity_id"].as_str().unwrap();
+    let o = org["result"]["entity_id"].as_str().unwrap();
+    let relation = request(
+        &store,
+        "save_relation",
+        json!({"operation_id":"crm-role","actor":"system",
+        "source_id":p,"target_id":o,"relation_type":"worksFor",
+        "properties":{"role":{"@type":"OrganizationRole","roleName":"经理"}},"metadata":{},
+        "evidence":[zoho("$relation",json!({"relation_type":"worksFor","source_id":p,"target_id":o}),"Contacts"),
+            zoho("properties.role.roleName",json!("经理"),"Contacts")]}),
+    );
+    assert_eq!(relation["ok"], true, "{relation}");
+    let detail = request(&store, "get_contact", json!({"entity_id":p}));
+    assert_eq!(detail["ok"], true, "{detail}");
+    for evidence in detail["result"]["evidence"].as_array().unwrap() {
+        assert_eq!(evidence["source_type"], "zoho");
+        assert_eq!(evidence["source_connection_id"], "connection-a");
+        assert!(evidence.get("source_url").is_none());
+    }
+    assert_eq!(
+        detail["result"]["relations"][0]["metadata"]["employment_status"],
+        "unknown"
+    );
+}
+
+#[test]
+fn zoho_evidence_rejects_missing_location_unknown_modules_and_extra_source_data() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("contacts.sqlite")).unwrap();
+    let mut invalid = Vec::new();
+    for key in ["source_connection_id", "source_module", "source_record_id"] {
+        for value in [Value::Null, json!(" ")] {
+            let mut proof = zoho("properties.name", json!("CRM Person"), "Contacts");
+            proof[key] = value;
+            invalid.push(proof);
+        }
+    }
+    for (key, value) in [
+        ("source_module", json!("Leads")),
+        ("source_type", json!("crm")),
+        ("source_url", json!("zoho://Contacts/record-a")),
+        ("email", json!("private@example.test")),
+    ] {
+        let mut proof = zoho("properties.name", json!("CRM Person"), "Contacts");
+        proof[key] = value;
+        invalid.push(proof);
+    }
+    for (index, evidence) in invalid.into_iter().enumerate() {
+        let result = request(
+            &store,
+            "save_contact",
+            json!({"operation_id":format!("invalid-crm-{index}"),"actor":"system",
+            "label":"Person","set_properties":{"name":"CRM Person"},"evidence":[evidence]}),
+        );
+        assert_eq!(result["error"]["code"], "VALIDATION_ERROR", "{result}");
+    }
+}
+
 fn person_create(operation_id: &str) -> Value {
     json!({
         "operation_id": operation_id,

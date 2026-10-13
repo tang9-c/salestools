@@ -18,6 +18,32 @@ function fixture(name: string): unknown {
 }
 
 describe('shared contact graph contract', () => {
+  const zohoProof = { evidence_id: 'ev_crm', subject_kind: 'entity', subject_id: 'p_crm',
+    field_path: 'properties.name', value: 'CRM Person', source_type: 'zoho',
+    source_connection_id: 'connection-a', source_module: 'Contacts', source_record_id: 'contact-a',
+    locator_status: 'not_applicable', collected_at: '2026-10-13T00:00:00.000Z' };
+
+  it('accepts located Zoho records without inventing a source URL', () => {
+    expect(ContactEvidenceSchema.safeParse(zohoProof).success).toBe(true);
+    expect(ContactEvidenceSchema.safeParse({ ...zohoProof, source_module: 'Accounts' }).success).toBe(true);
+    expect(ContactEvidenceSchema.safeParse({ ...zohoProof, subject_kind: 'relation',
+      subject_id: 'r_crm', field_path: 'properties.role.roleName', value: '经理' }).success).toBe(true);
+  });
+
+  it('rejects missing or invalid Zoho locators and unapproved source fields', () => {
+    for (const key of ['source_connection_id', 'source_module', 'source_record_id']) {
+      for (const invalid of [undefined, '', ' ']) {
+        expect(ContactEvidenceSchema.safeParse({ ...zohoProof, [key]: invalid }).success).toBe(false);
+      }
+    }
+    for (const extra of [{ source_module: 'Leads' }, { source_type: 'crm' },
+      { source_url: 'zoho://Contacts/contact-a' }, { email: 'private@example.test' },
+      { phone: '123' }, { source_owner: 'owner' }]) {
+      expect(ContactEvidenceSchema.safeParse({ ...zohoProof, ...extra }).success).toBe(false);
+    }
+    expect(ContactEvidenceSchema.safeParse({ ...zohoProof, source_type: 'manual' }).success).toBe(false);
+  });
+
   it('requires a located quote and content hash for pasted-text evidence', () => {
     const proof = { evidence_id: 'ev_text', subject_kind: 'entity', subject_id: 'p_1',
       field_path: 'properties.name', value: '林知远', source_type: 'text', text_sha256: 'a'.repeat(64),
