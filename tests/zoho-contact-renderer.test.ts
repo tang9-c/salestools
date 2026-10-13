@@ -26,9 +26,23 @@ describe('Zoho contact Markdown', () => {
     const candidate = { ...base, status: 'needs_confirmation' as const, complete: false,
       connections: [{ ...base.connections[0]!, status: 'needs_confirmation' as const,
         candidates: [{ account_id: '123', company_name: '测试制造', account_owner: null }] }] };
-    expect(renderZohoContacts(candidate)).toMatch(/crm\\_a.*123/su);
+    expect(renderZohoContacts(candidate)).toContain('确认参数：`{"connection_id":"crm_a","account_id":"123"}`');
     expect(renderZohoContacts({ ...base, status: 'partial', complete: false, warnings: ['ZOHO_DEADLINE_EXCEEDED'] })).toMatch(/部分|未完成/u);
     expect(renderZohoContacts({ ...base, status: 'failed', complete: false, warnings: ['ZOHO_UNAVAILABLE'] })).toMatch(/失败|不可用/u);
+  });
+
+  it('does not claim zero associated contacts when the first page failed', () => {
+    const partial: ZohoContactsOutput = { ...base, status: 'partial', complete: false,
+      connections: [{ ...base.connections[0]!, status: 'partial', error_code: 'ZOHO_UPSTREAM_ERROR' }],
+      companies: [{ connection_id: 'crm_a', account_id: '123', company_name: '测试制造',
+        account_owner: null, contacts: [] }], warnings: ['ZOHO_UPSTREAM_ERROR'] };
+    const text = renderZohoContacts(partial);
+    expect(text).toContain('本次未获取到联系人，不能确认该客户没有联系人');
+    expect(text).not.toContain('关联联系人：0 人');
+    expect(text).not.toContain('该客户没有关联联系人。');
+    const complete = renderZohoContacts({ ...partial, status: 'completed', complete: true,
+      connections: base.connections, warnings: [] });
+    expect(complete).toContain('该客户没有关联联系人。');
   });
 
   it('escapes pipes, line breaks and Markdown links in untrusted fields', () => {

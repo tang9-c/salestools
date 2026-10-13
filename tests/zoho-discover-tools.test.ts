@@ -47,6 +47,26 @@ it('returns Zoho only with empty web base and full structured IDs', async () => 
   expect(JSON.stringify(result.content)).not.toContain('456');
 });
 
+it('reuses exact candidate IDs copied from text in a successful second tool call', async () => {
+  const candidate: ZohoContactsOutput = { ...zoho, status: 'needs_confirmation', complete: false,
+    connections: [{ ...zoho.connections[0]!, status: 'needs_confirmation',
+      candidates: [{ account_id: '123', company_name: 'CRM公司', account_owner: null }] }], companies: [] };
+  const s = services({ zohoContacts: { connectionIds: ['crm_a'],
+    get: async input => input.accountRecords?.[0]?.connectionId === 'crm_a'
+      && input.accountRecords[0]?.accountId === '123' ? zoho : candidate } });
+  const first = await call(s, { query: 'CRM公司', source: 'zoho' });
+  const text = first.content[0]?.type === 'text' ? first.content[0].text : '';
+  const raw = text.match(/确认参数：`(\{"connection_id":"[^"]+","account_id":"[^"]+"\})`/u)?.[1];
+  expect(raw).toBeDefined();
+  const chosen = JSON.parse(raw!) as { connection_id: string; account_id: string };
+  expect(chosen).toEqual({ connection_id: 'crm_a', account_id: '123' });
+  const second = await call(s, { query: 'CRM公司', source: 'zoho',
+    zoho_accounts: [chosen.connection_id], zoho_account_records: [chosen] });
+  expect(second.isError).not.toBe(true);
+  expect(second.structuredContent).toMatchObject({ zoho: { status: 'completed',
+    companies: [{ contacts: [{ name: 'CRM人员' }] }] } });
+});
+
 it('preserves web result when Zoho fails and rejects unknown connection', async () => {
   const s = services({ zohoContacts: { get: async () => { throw new Error('secret token'); }, connectionIds: ['crm_a'] } });
   const combined = await call(s, { query: '公司', source: 'all' });

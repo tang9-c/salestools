@@ -5,6 +5,13 @@ function safe(value: string | null | undefined): string {
   return value.replace(/[\r\n\t]+/gu, ' ').replace(/[\\`*_{}\[\]()#+.!|<>~-]/gu, '\\$&').trim() || '未提供';
 }
 
+function confirmationCode(connectionId: string, accountId: string): string {
+  const json = JSON.stringify({ connection_id: connectionId, account_id: accountId });
+  const longest = Math.max(0, ...[...json.matchAll(/`+/gu)].map(match => match[0].length));
+  const fence = '`'.repeat(longest + 1);
+  return `${fence}${json}${fence}`;
+}
+
 /** Deterministic, complete display; record IDs appear only where confirmation needs them. */
 export function renderZohoContacts(result: ZohoContactsOutput): string {
   const lines = ['## Zoho CRM 联系人',
@@ -16,16 +23,19 @@ export function renderZohoContacts(result: ZohoContactsOutput): string {
     if (state.error_code) lines.push(`连接 ${safe(state.name)}：${safe(state.error_code)}。`);
     if (state.candidates.length && (state.status === 'needs_confirmation' || !state.search_complete)) {
       lines.push(`### ${safe(state.name)} 的客户候选`,
-        '请确认后以 zoho_account_records 提交 connection_id 和 account_id：',
-        '| 客户 | 客户负责人 | connection_id | account_id |', '| --- | --- | --- | --- |');
-      for (const item of state.candidates) lines.push(`| ${safe(item.company_name)} | ${safe(item.account_owner?.name)} | ${safe(state.connection_id)} | ${safe(item.account_id)} |`);
+        '请确认后将对应确认参数放入 zoho_account_records：');
+      for (const item of state.candidates) lines.push(`- 客户：${safe(item.company_name)}；客户负责人：${safe(item.account_owner?.name)}`,
+        `  确认参数：${confirmationCode(state.connection_id, item.account_id)}`);
     }
   }
   if (!result.companies.length && result.status === 'completed') lines.push('未找到匹配客户或关联联系人。');
   for (const company of result.companies) {
     lines.push(`### ${safe(company.company_name)}（${safe(result.connections.find(state => state.connection_id === company.connection_id)?.name ?? company.connection_id)}）`,
-      `客户负责人：${safe(company.account_owner?.name)}`, `关联联系人：${company.contacts.length} 人`);
-    if (!company.contacts.length) { lines.push('该客户没有关联联系人。'); continue; }
+      `客户负责人：${safe(company.account_owner?.name)}`, `${result.complete ? '关联联系人' : '已获取联系人'}：${company.contacts.length} 人`);
+    if (!company.contacts.length) {
+      lines.push(result.complete ? '该客户没有关联联系人。' : '本次未获取到联系人，不能确认该客户没有联系人。');
+      continue;
+    }
     lines.push('| 姓名 | 职位 | 联系人负责人 |', '| --- | --- | --- |');
     for (const contact of company.contacts) lines.push(`| ${safe(contact.name)} | ${safe(contact.title)} | ${safe(contact.contact_owner?.name)} |`);
   }
