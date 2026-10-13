@@ -68,6 +68,81 @@ fn count(store: &Store, table: &str) -> i64 {
         .unwrap()
 }
 
+fn contact_source_snapshots(store: &Store) -> Vec<Value> {
+    let mut query = store
+        .graph
+        .connection()
+        .prepare(
+            "SELECT source_json FROM source_mapping
+         WHERE json_extract(source_json,'$.source_connection_id')='crm_a'
+           AND json_extract(source_json,'$.source_module')='Contacts'
+           AND json_extract(source_json,'$.source_record_id')='contact-a'
+         ORDER BY relation_id",
+        )
+        .unwrap();
+    query
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|row| serde_json::from_str(&row.unwrap()).unwrap())
+        .collect()
+}
+
+fn assert_collection_watermark_survives_older_delivery(newer_modified: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.db")).unwrap();
+    let mut data = company("crm_a", "account-a", "contact-a", json!("A"));
+    sync(&store, "latest-collection", T3, vec![data.clone()]);
+    let (id, _) = mapped(&store, "crm_a", "Contacts", "contact-a");
+    let before = detail(&store, &id);
+    let mut expected_sources = contact_source_snapshots(&store);
+    assert_eq!(
+        expected_sources.len(),
+        2,
+        "Person and employment each have a source snapshot"
+    );
+    if newer_modified {
+        data["contacts"][0]["modified_at"] = json!(T2);
+        for source in &mut expected_sources {
+            source["modified_at"] = json!(T2);
+        }
+    }
+    let delivery = sync(&store, "older-collection", T1, vec![data.clone()]);
+    if newer_modified {
+        counts(&delivery, 0, 1, 0, 0);
+    } else {
+        counts(&delivery, 0, 0, 1, 0);
+    }
+    assert_eq!(
+        detail(&store, &id),
+        before,
+        "time-only delivery must not change evidence or versions"
+    );
+    assert_eq!(contact_source_snapshots(&store),expected_sources,
+        "Neither the Person nor the employment collection watermark may regress, even with a newer modified_at");
+
+    data["contacts"][0]["title"] = json!("旧B");
+    data["contacts"][0]["modified_at"] = Value::Null;
+    let fallback = sync(&store, "older-missing-modified", T2, vec![data]);
+    counts(&fallback, 0, 0, 1, 0);
+    assert_eq!(fallback["entity_ids"], json!([]));
+    assert_eq!(
+        detail(&store, &id),
+        before,
+        "fallback must preserve display, all evidence, entity and index versions"
+    );
+    assert_eq!(contact_source_snapshots(&store), expected_sources);
+}
+
+#[test]
+fn same_modified_at_older_collection_does_not_regress_person_or_employment_watermarks() {
+    assert_collection_watermark_survives_older_delivery(false);
+}
+
+#[test]
+fn newer_modified_at_older_collection_keeps_watermark_for_later_missing_modified_fallback() {
+    assert_collection_watermark_survives_older_delivery(true);
+}
+
 fn counts(result: &Value, created: u64, updated: u64, unchanged: u64, archived: u64) {
     for (key, expected) in [
         ("created", created),
