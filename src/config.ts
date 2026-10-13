@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { isAbsolute, resolve } from 'node:path';
+import { ZohoConnectionIdSchema, ZohoConnectionSchema, type ZohoConnection } from './contracts/zoho-contact.js';
+export type { ZohoConnection } from './contracts/zoho-contact.js';
 
 const CONFIG_KEYS = [
   'TOKEN_ADMIN_KEY_SHA256', 'PORT', 'PUBLIC_MCP_HOST', 'ALLOWED_ORIGINS', 'SQLITE_PATH',
@@ -113,6 +115,7 @@ const configSchema = z.object({
 type ParsedConfig = z.infer<typeof configSchema>;
 
 export type AppConfig = ParsedConfig & {
+  zohoConnections: ZohoConnection[];
   tokenAdminKeySha256?: string;
   port: number;
   publicMcpHost: string;
@@ -172,6 +175,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   const originUrls = parsed.data.ALLOWED_ORIGINS.split(',').map(value => value.trim()).filter(Boolean);
   return {
     ...parsed.data,
+    zohoConnections: loadZohoConnections(env),
     tokenAdminKeySha256: parsed.data.TOKEN_ADMIN_KEY_SHA256,
     port: parsed.data.PORT,
     publicMcpHost: parsed.data.PUBLIC_MCP_HOST,
@@ -217,4 +221,25 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     allowedOriginUrls: new Set(originUrls),
     allowedOriginHostnames: new Set(originUrls.map(value => new URL(value).hostname)),
   };
+}
+
+function loadZohoConnections(env: NodeJS.ProcessEnv): ZohoConnection[] {
+  const list = env.ZOHO_CONNECTIONS?.trim();
+  if (!list) return [];
+  const ids = list.split(',').map(id => id.trim());
+  if (ids.some(id => !ZohoConnectionIdSchema.safeParse(id).success) || new Set(ids).size !== ids.length) {
+    throw new Error('Invalid configuration: ZOHO_CONNECTIONS');
+  }
+  return ids.map(id => {
+    const prefix = `ZOHO_${id.toUpperCase()}`;
+    const fields = { name: 'NAME', region: 'REGION', clientId: 'CLIENT_ID', clientSecret: 'CLIENT_SECRET', refreshToken: 'REFRESH_TOKEN' };
+    const parsed = ZohoConnectionSchema.safeParse({ id,
+      ...Object.fromEntries(Object.entries(fields).map(([key, suffix]) => [key, env[`${prefix}_${suffix}`]])),
+    });
+    if (!parsed.success) {
+      const invalid = [...new Set(parsed.error.issues.map(issue => `${prefix}_${fields[issue.path[0] as keyof typeof fields]}`))];
+      throw new Error(`Invalid configuration: ${invalid.join(', ')}`);
+    }
+    return parsed.data;
+  });
 }

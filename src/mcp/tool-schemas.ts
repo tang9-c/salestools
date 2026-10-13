@@ -1,5 +1,7 @@
 import { ContextCitationSchema } from '../contracts/company-context.js';
 import { z } from 'zod';
+import { ZohoConnectionIdSchema } from '../contracts/zoho-contact.js';
+export * from '../contracts/zoho-contact.js';
 import {
   AssessmentReportOutputSchema,
   AssessmentStatusOutputSchema,
@@ -31,7 +33,26 @@ export const AssessmentReportInputSchema = AssessmentIdInputSchema.extend({
 export const GetContactsInputSchema = z.object({
   query: z.string().trim().min(1).max(48),
   region_hint: z.string().trim().min(1).max(16).optional(),
-}).strict();
+  source: z.enum(['web', 'zoho', 'all']).default('web'),
+  zoho_accounts: z.array(ZohoConnectionIdSchema).min(1).optional(),
+  zoho_account_records: z.array(z.object({ connection_id: ZohoConnectionIdSchema,
+    account_id: z.string().trim().min(1) }).strict()).min(1).optional(),
+}).strict().superRefine((input, context) => {
+  const issue = (path: string, message: string) => context.addIssue({ code: 'custom', path: [path], message });
+  if (input.source === 'web' && (input.zoho_accounts !== undefined || input.zoho_account_records !== undefined)) {
+    issue('source', 'Zoho selections require zoho or all source');
+  }
+  if (input.zoho_accounts && new Set(input.zoho_accounts).size !== input.zoho_accounts.length) {
+    issue('zoho_accounts', 'duplicate connection selection');
+  }
+  const records = input.zoho_account_records;
+  if (records && new Set(records.map(record => JSON.stringify([record.connection_id, record.account_id]))).size !== records.length) {
+    issue('zoho_account_records', 'duplicate account record selection');
+  }
+  if (records && input.zoho_accounts && records.some(record => !input.zoho_accounts!.includes(record.connection_id))) {
+    issue('zoho_account_records', 'account record must belong to a selected connection');
+  }
+});
 
 export const AskCompanyInputSchema = z.object({
   legal_name: z.string().trim().min(1).max(256),

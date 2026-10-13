@@ -161,7 +161,7 @@ describe('MCP tool schemas', () => {
     expect(AssessmentIdInputSchema.safeParse({ assessment_id: assessmentId, user_id: 'other' }).success).toBe(false);
 
     expect(GetContactsInputSchema.parse({ query: '测试公司', region_hint: '上海' }))
-      .toEqual({ query: '测试公司', region_hint: '上海' });
+      .toEqual({ query: '测试公司', region_hint: '上海', source: 'web' });
     expect(GetContactsInputSchema.safeParse({ query: '' }).success).toBe(false);
     expect(GetContactsInputSchema.safeParse({ query: 'x'.repeat(49) }).success).toBe(false);
     expect(GetContactsInputSchema.safeParse({ query: '测试', region_hint: 'x'.repeat(17) }).success).toBe(false);

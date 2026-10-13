@@ -37,6 +37,26 @@ const valid = {
 };
 
 describe('loadConfig', () => {
+  it('defaults Zoho connections to an empty list', () => {
+    expect(loadConfig(valid).zohoConnections).toEqual([]);
+  });
+
+  const zoho = { ZOHO_CONNECTIONS: 'crm_a', ZOHO_CRM_A_NAME: '团队A', ZOHO_CRM_A_REGION: 'CN',
+    ZOHO_CRM_A_CLIENT_ID: 'fake-client', ZOHO_CRM_A_CLIENT_SECRET: 'fake-secret', ZOHO_CRM_A_REFRESH_TOKEN: 'fake-token' };
+  it('maps configured connection IDs to environment prefixes', () => {
+    expect(loadConfig({ ...valid, ...zoho }).zohoConnections).toEqual([{ id: 'crm_a', name: '团队A', region: 'CN',
+      clientId: 'fake-client', clientSecret: 'fake-secret', refreshToken: 'fake-token' }]);
+  });
+  it.each([
+    { ZOHO_CONNECTIONS: 'crm_a,crm_a' }, { ZOHO_CONNECTIONS: 'CRM_A' },
+    { ZOHO_CONNECTIONS: 'crm-a' }, { ZOHO_CONNECTIONS: '1crm' }, { ZOHO_CONNECTIONS: 'crm_a,' },
+    { ZOHO_CRM_A_REGION: 'XX' }, { ZOHO_CRM_A_CLIENT_SECRET: '' }, { ZOHO_CRM_A_NAME: '' },
+  ])('rejects invalid Zoho config without leaking credentials %j', override => {
+    expect(() => loadConfig({ ...valid, ...zoho, ...override })).toThrow(/Invalid configuration: ZOHO_/);
+    try { loadConfig({ ...valid, ...zoho, ...override }); } catch (error) {
+      expect(String(error)).not.toMatch(/fake-client|fake-secret|fake-token/);
+    }
+  });
   const contactLimits = {
     CONTACT_MAX_PENDING_FILES: 10,
     CONTACT_MAX_FILE_BYTES: 20_971_520,
