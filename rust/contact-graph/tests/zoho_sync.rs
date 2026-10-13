@@ -844,3 +844,271 @@ fn invalid_fields_and_late_database_failure_leave_no_partial_batch() {
         .unwrap();
     counts(&sync(&store, "rollback", T1, vec![good]), 1, 0, 0, 0);
 }
+
+#[test]
+fn empty_account_persists_updates_and_repeats_without_extra_facts() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.db")).unwrap();
+    let mut data = company("crm_a", "account-a", "unused", Value::Null);
+    data["contacts"] = json!([]);
+    let first = sync(&store, "empty-account", T1, vec![data.clone()]);
+    counts(&first, 0, 0, 0, 0);
+    assert_eq!(first["entity_ids"], json!([]));
+    let (org, _) = mapped(&store, "crm_a", "Accounts", "account-a");
+    assert_eq!(
+        detail(&store, &org)["entity"]["properties"]["name"],
+        "甲公司"
+    );
+    assert_eq!(count(&store, "entity_ids"), 1);
+    assert_eq!(count(&store, "relation_ids"), 0);
+    data["company_name"] = json!("新公司名");
+    data["account_owner"] = json!({"id":"new-owner","name":"新负责人"});
+    counts(
+        &sync(&store, "empty-account-update", T2, vec![data.clone()]),
+        0,
+        0,
+        0,
+        0,
+    );
+    let before = detail(&store, &org);
+    assert_eq!(before["entity"]["properties"]["name"], "新公司名");
+    let source = mapped(&store, "crm_a", "Accounts", "account-a").1;
+    assert_eq!(source["account_owner"]["id"], "new-owner");
+    assert_eq!(source["collected_at"], T2);
+    let evidence_count = count(&store, "evidence");
+    sync(&store, "empty-account-repeat", T3, vec![data]);
+    assert_eq!(detail(&store, &org), before);
+    assert_eq!(count(&store, "evidence"), evidence_count);
+    assert_eq!(
+        mapped(&store, "crm_a", "Accounts", "account-a").1["collected_at"],
+        T3
+    );
+}
+
+#[test]
+fn empty_account_writes_roll_back_when_another_contact_fails_late_in_the_batch() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.db")).unwrap();
+    let mut empty = company("crm_a", "account-a", "unused", Value::Null);
+    empty["contacts"] = json!([]);
+    store.graph.connection().execute_batch("CREATE TRIGGER fail_person BEFORE INSERT ON kg_entities WHEN NEW.entity_type='Person' BEGIN SELECT RAISE(ABORT,'person rejected'); END;").unwrap();
+    let result = call(
+        &store,
+        "sync_zoho_contacts",
+        input(
+            "empty-rollback",
+            T1,
+            vec![
+                empty,
+                company("crm_b", "account-b", "contact-b", json!("经理")),
+            ],
+        ),
+    );
+    assert_eq!(result["ok"], false);
+    assert!(
+        result["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("person rejected"),
+        "{result}"
+    );
+    for table in [
+        "kg_entities",
+        "entity_ids",
+        "evidence",
+        "source_mapping",
+        "operation_results",
+        "vector_meta",
+    ] {
+        assert_eq!(count(&store, table), 0, "{table}");
+    }
+}
+
+fn assert_account_employment_has_independent_clock(existing_b: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.db")).unwrap();
+    let mut b = company("crm_a", "account-b", "contact-a", json!("B旧职位"));
+    b["company_name"] = json!("乙公司");
+    if existing_b {
+        sync(&store, "b-old", T1, vec![b.clone()]);
+    }
+    let mut a = company("crm_a", "account-a", "contact-a", json!("Person最新职位"));
+    a["contacts"][0]["modified_at"] = json!(T3);
+    sync(&store, "a-latest", T3, vec![a]);
+    let (person, person_source) = mapped(&store, "crm_a", "Contacts", "contact-a");
+    let before = detail(&store, &person);
+    let person_evidence = |view: &Value| {
+        view["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["subject_kind"] == "entity")
+            .cloned()
+            .collect::<Vec<Value>>()
+    };
+    b["contacts"][0]["title"] = json!("B新职位");
+    b["contacts"][0]["modified_at"] = json!(T2);
+    let result = sync(&store, "b-middle", T2, vec![b.clone()]);
+    counts(&result, 0, 1, 0, 0);
+    assert_eq!(result["entity_ids"], json!([person]));
+    assert_eq!(
+        mapped(&store, "crm_a", "Contacts", "contact-a").1,
+        person_source
+    );
+    let after = detail(&store, &person);
+    assert_eq!(after["entity"], before["entity"]);
+    assert_eq!(person_evidence(&after), person_evidence(&before));
+    assert_eq!(after["relations"].as_array().unwrap().len(), 2);
+    let (org_b, _) = mapped(&store, "crm_a", "Accounts", "account-b");
+    let relation_b = after["relations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["target_id"] == org_b)
+        .unwrap();
+    assert_eq!(relation_b["properties"]["role"]["roleName"], "B新职位");
+    assert_eq!(relation_b["metadata"]["employment_status"], "unknown");
+    b["contacts"][0]["title"] = json!("迟到B职位");
+    b["contacts"][0]["modified_at"] = json!(T1);
+    counts(&sync(&store, "b-too-old", T1, vec![b]), 0, 0, 1, 0);
+    assert_eq!(detail(&store, &person), after);
+}
+
+#[test]
+fn newer_person_from_account_a_does_not_block_first_employment_for_account_b() {
+    assert_account_employment_has_independent_clock(false);
+}
+
+#[test]
+fn newer_person_from_account_a_does_not_block_newer_existing_account_b_employment() {
+    assert_account_employment_has_independent_clock(true);
+}
+
+#[test]
+fn explicitly_restored_person_applies_fields_skipped_while_archived_without_accepting_late_values()
+{
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.db")).unwrap();
+    let mut data = company("crm_a", "account-a", "contact-a", json!("A"));
+    sync(&store, "first", T1, vec![data.clone()]);
+    let (person, _) = mapped(&store, "crm_a", "Contacts", "contact-a");
+    let archived = call(
+        &store,
+        "archive_contact",
+        json!({"operation_id":"archive","actor":"reviewer","entity_id":person,
+        "expected_version":detail(&store,&person)["entity"]["metadata"]["version"]}),
+    );
+    assert_eq!(archived["ok"], true, "{archived}");
+    let evidence_count = count(&store, "evidence");
+    data["contacts"][0]["title"] = json!("B");
+    data["contacts"][0]["modified_at"] = json!(T3);
+    counts(
+        &sync(&store, "while-archived", T3, vec![data.clone()]),
+        0,
+        0,
+        0,
+        1,
+    );
+    assert!(detail(&store, &person).is_null());
+    assert_eq!(count(&store, "evidence"), evidence_count);
+    let restored = call(
+        &store,
+        "restore_contact",
+        json!({"operation_id":"restore","actor":"reviewer","entity_id":person,
+        "expected_version":archived["result"]["version"]}),
+    );
+    assert_eq!(restored["ok"], true, "{restored}");
+    let after_restore = detail(&store, &person);
+    let mut late = data.clone();
+    late["contacts"][0]["title"] = json!("迟到旧职位");
+    late["contacts"][0]["modified_at"] = json!(T2);
+    sync(&store, "late-after-restore", T2, vec![late]);
+    assert_eq!(detail(&store, &person)["entity"], after_restore["entity"]);
+    let result = sync(&store, "apply-after-restore", T3, vec![data]);
+    counts(&result, 0, 1, 0, 0);
+    let final_view = detail(&store, &person);
+    assert_eq!(final_view["entity"]["properties"]["jobTitle"], "B");
+    for title in ["A", "B"] {
+        assert!(final_view["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["subject_kind"] == "entity"
+                && e["field_path"] == "properties.jobTitle"
+                && e["value"] == title));
+    }
+    assert_eq!(count(&store, "relation_ids"), 1);
+}
+
+#[test]
+fn explicitly_restored_organization_applies_skipped_name_and_employment_title() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path().join("graph.db")).unwrap();
+    let mut data = company("crm_a", "account-a", "contact-a", json!("A"));
+    sync(&store, "first", T1, vec![data.clone()]);
+    let (person, _) = mapped(&store, "crm_a", "Contacts", "contact-a");
+    let (org, _) = mapped(&store, "crm_a", "Accounts", "account-a");
+    let archived = call(
+        &store,
+        "archive_contact",
+        json!({"operation_id":"archive-org","actor":"reviewer","entity_id":org,
+        "expected_version":detail(&store,&org)["entity"]["metadata"]["version"]}),
+    );
+    assert_eq!(archived["ok"], true, "{archived}");
+    data["company_name"] = json!("恢复后公司名");
+    data["contacts"][0]["title"] = json!("B");
+    data["contacts"][0]["modified_at"] = json!(T3);
+    counts(
+        &sync(&store, "while-org-archived", T3, vec![data.clone()]),
+        0,
+        1,
+        0,
+        1,
+    );
+    assert!(detail(&store, &org).is_null());
+    assert_eq!(detail(&store, &person)["relations"], json!([]));
+    let restored = call(
+        &store,
+        "restore_contact",
+        json!({"operation_id":"restore-org","actor":"reviewer","entity_id":org,
+        "expected_version":archived["result"]["version"]}),
+    );
+    assert_eq!(restored["ok"], true, "{restored}");
+    let mut late = data.clone();
+    late["company_name"] = json!("迟到公司名");
+    late["contacts"][0]["title"] = json!("迟到职位");
+    late["contacts"][0]["modified_at"] = json!(T2);
+    sync(&store, "late-org-after-restore", T2, vec![late]);
+    assert_eq!(
+        detail(&store, &org)["entity"]["properties"]["name"],
+        "甲公司"
+    );
+    assert_eq!(
+        detail(&store, &person)["relations"][0]["properties"]["role"]["roleName"],
+        "A"
+    );
+    counts(
+        &sync(&store, "apply-org-after-restore", T3, vec![data]),
+        0,
+        1,
+        0,
+        0,
+    );
+    assert_eq!(
+        detail(&store, &org)["entity"]["properties"]["name"],
+        "恢复后公司名"
+    );
+    let final_view = detail(&store, &person);
+    assert_eq!(
+        final_view["relations"][0]["properties"]["role"]["roleName"],
+        "B"
+    );
+    assert_eq!(count(&store, "relation_ids"), 1);
+    assert!(final_view["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["subject_kind"] == "relation"
+            && e["field_path"] == "properties.role.roleName"
+            && e["value"] == "B"));
+}
