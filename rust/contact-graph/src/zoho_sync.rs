@@ -132,6 +132,19 @@ fn put_mapping(
     relation: Option<&str>,
     source: &Value,
 ) -> Result<(), AppError> {
+    let mut source = source.clone();
+    if let Some(previous) = mapping(tx, key)? {
+        if let (Some(incoming), Some(stored)) = (
+            source["collected_at"].as_str(),
+            previous.source["collected_at"].as_str(),
+        ) {
+            // A newer CRM modification can arrive in an older collection. Accept its
+            // content without lowering the fallback clock for later undated records.
+            if date(incoming)? < date(stored)? {
+                source["collected_at"] = json!(stored);
+            }
+        }
+    }
     tx.execute("INSERT INTO source_mapping(source_key,entity_id,relation_id,source_json) VALUES(?1,?2,?3,?4)
         ON CONFLICT(source_key) DO UPDATE SET entity_id=excluded.entity_id,relation_id=excluded.relation_id,source_json=excluded.source_json",
         params![key,entity,relation,source.to_string()]).map_err(AppError::internal)?;
@@ -139,16 +152,18 @@ fn put_mapping(
 }
 
 fn older(incoming: &Value, previous: &Value) -> Result<bool, AppError> {
-    let times = match (
+    if let (Some(a), Some(b)) = (
         incoming["modified_at"].as_str(),
         previous["modified_at"].as_str(),
     ) {
-        (Some(a), Some(b)) => Some((a, b)),
-        _ => incoming["collected_at"]
-            .as_str()
-            .zip(previous["collected_at"].as_str()),
-    };
-    times
+        let order = date(a)?.cmp(&date(b)?);
+        if order != std::cmp::Ordering::Equal {
+            return Ok(order == std::cmp::Ordering::Less);
+        }
+    }
+    incoming["collected_at"]
+        .as_str()
+        .zip(previous["collected_at"].as_str())
         .map(|(a, b)| Ok(date(a)? < date(b)?))
         .unwrap_or(Ok(false))
 }
