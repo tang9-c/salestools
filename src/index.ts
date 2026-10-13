@@ -20,6 +20,8 @@ import { TokenRepository } from './db/token-repository.js';
 import { ContactSnapshotRepository } from './db/contact-snapshot-repository.js';
 import { JsonlLogger, type LogSink } from './logging/logger.js';
 import { ContactService, type ContactExtractorDependency } from './contacts/contact-service.js';
+import { ZohoContactService } from './contacts/zoho-contact-service.js';
+import { ZohoClient, verifyZohoSDKPatch } from './upstream/zoho/client.js';
 import { ContactGraphClient, type GraphClient } from './contacts/graph-client.js';
 import { ContactLibraryService } from './contacts/library-service.js';
 import { SnapshotSync } from './contacts/snapshot-sync.js';
@@ -67,6 +69,8 @@ export interface ApplicationOverrides {
   logSink?: LogSink;
   now?: () => Date;
   graphClient?: GraphClient;
+  zohoClient?: Pick<ZohoClient, 'searchAccountsPage' | 'getAccount' | 'getContactsPage' | 'close'>;
+  verifyZohoPatch?: () => Promise<void>;
 }
 
 export interface RunningApplication {
@@ -118,7 +122,18 @@ export function createApplication(
 
   const profiles = new ProfileRepository(database);
   const contactSnapshots = new ContactSnapshotRepository(database);
-  const logger = new JsonlLogger(overrides.logSink ?? stdoutSink, overrides.now);
+  const logSink = overrides.logSink ?? stdoutSink;
+  const logger = new JsonlLogger(logSink, overrides.now);
+  // The check reads installed patch bytes only. No adapter or SDK is created
+  // until it succeeds; a failure degrades only the Zoho source.
+  const zohoReady = config.zohoConnections.length === 0 ? undefined :
+    Promise.resolve().then(() => (overrides.verifyZohoPatch ?? verifyZohoSDKPatch)()).then(() => {
+      const client = overrides.zohoClient ?? new ZohoClient(config.zohoConnections);
+      const service = new ZohoContactService(client, config.zohoConnections, {
+        logger: event => logSink.write(`${JSON.stringify({ event: 'zoho_contacts', ...event })}\n`),
+      });
+      return { client, service };
+    }).catch(() => null);
   const tokenService = new TokenService(new TokenRepository(database), overrides.now);
   const ephemeralUploads = config.sqlitePath === ':memory:';
   const uploadDirectory = ephemeralUploads
@@ -318,6 +333,14 @@ export function createApplication(
     graph: graphClient, links: companyLinkRepository, profiles, now: overrides.now ?? (() => new Date()),
   }) : undefined;
   const servicesFor = (userId: string, token: string): McpServices => ({
+    zohoContacts: zohoReady === undefined ? undefined : {
+      connectionIds: config.zohoConnections.map(connection => connection.id),
+      get: input => activity.track(async () => {
+        const ready = await zohoReady;
+        if (!ready) throw new Error('ZOHO_UNAVAILABLE');
+        return ready.service.get(input);
+      }),
+    },
     contactUpload: contactImport ? { actor: userId, sessions: uploadSessions, sourceTokenHash: tokenService.hash(token),
       baseUrl, html: uploadHtml } : undefined,
     companyContext, companyLinks,
@@ -350,6 +373,7 @@ export function createApplication(
       qccGateway.close(),
       searchClient.close?.() ?? Promise.resolve(),
       ark.close?.() ?? Promise.resolve(),
+      zohoReady?.then(ready => ready?.client.close()) ?? Promise.resolve(),
       graphClient?.close() ?? Promise.resolve(),
     ]).then(() => undefined);
     return upstreamClosing;

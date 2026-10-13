@@ -20,6 +20,12 @@ import type {
 } from '../src/db/contact-snapshot-repository.js';
 
 describe('contact contracts and search plan', () => {
+  it('keeps the legacy web result schema strict while Zoho uses a separate MCP area', () => {
+    const web = { companies: [], warnings: [], collected_at: '2026-09-04T12:00:00.000Z' };
+    expect(GetContactsOutputSchema.parse(web)).toEqual(web);
+    expect(GetContactsOutputSchema.safeParse({ ...web, zoho: { status: 'completed' } }).success).toBe(false);
+  });
+
   it('builds exactly two bounded public-source queries', () => {
     const plan = buildContactSearchPlan('测试制造', '上海');
 

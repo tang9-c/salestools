@@ -10,6 +10,9 @@ import { z } from 'zod';
 import type { UploadSessions } from '../contacts/upload-session.js';
 import type { OpportunityLevel, ProductKey, ResearchSourceStatus } from '../contracts/index.js';
 import type { ContactServiceOutput } from '../contacts/contact-service.js';
+import type { ZohoContactsOutput, ZohoQuery } from '../contracts/zoho-contact.js';
+import { ZohoContactsOutputSchema } from '../contracts/zoho-contact.js';
+import { renderZohoContacts } from '../contacts/zoho-contact-renderer.js';
 import type { ContactLibraryService } from '../contacts/library-service.js';
 import type { ContactImportService } from '../contacts/import-service.js';
 import type { ContactSearch } from '../contacts/contact-search.js';
@@ -128,6 +131,7 @@ export type AssessmentReportServiceOutput = {
 };
 
 export interface McpServices {
+  zohoContacts?: { get(input: ZohoQuery): Awaitable<ZohoContactsOutput>; connectionIds: readonly string[] };
   contactUpload?: {
     actor: string;
     sessions: UploadSessions;
@@ -266,6 +270,29 @@ function contactsOutput(output: ContactServiceOutput) {
   });
 }
 
+const DiscoverContactsOutputSchema = GetContactsOutputSchema.extend({ zoho: ZohoContactsOutputSchema.optional() }).strict();
+
+function unavailableZoho(ids: readonly string[] = []): ZohoContactsOutput {
+  return { status: 'failed', complete: false, connections: ids.map(id => ({
+    connection_id: id, name: id, status: 'failed', search_complete: false,
+    candidates: [], error_code: 'ZOHO_UNAVAILABLE',
+  })), companies: [], warnings: ['ZOHO_UNAVAILABLE'], collected_at: new Date().toISOString() };
+}
+
+function renderWebContacts(output: ReturnType<typeof contactsOutput>): string {
+  const safe = (value: string) => value.replace(/[\r\n\t]+/gu, ' ')
+    .replace(/[\\`*_{}\[\]()#+.!|<>~-]/gu, '\\$&');
+  const lines = ['## 公开网页联系人', '来源：公开网页；历史证据不代表已离职。'];
+  for (const company of output.companies) {
+    lines.push(`### ${safe(company.company_name)}`);
+    for (const contact of company.contacts) lines.push(`- ${safe(contact.name)}：${safe(contact.title)}（${safe(contact.source_url)}）`);
+    for (const contact of company.historical_contacts) lines.push(`- 历史网页证据：${safe(contact.name)}：${safe(contact.title)}（${safe(contact.source_url)}；首次见于 ${safe(contact.first_seen_at)}，最近见于 ${safe(contact.last_seen_at)}；不代表已离职）`);
+  }
+  if (!output.companies.length) lines.push('未找到网页联系人。');
+  for (const warning of output.warnings) lines.push(`警告：${safe(warning)}`);
+  return lines.join('\n');
+}
+
 export function buildMcpServer(services: McpServices): McpServer {
   const server = new McpServer({ name: 'target-customer-assessment', version: '0.1.0' });
 
@@ -352,13 +379,42 @@ export function buildMcpServer(services: McpServices): McpServer {
   }))));
 
   server.registerTool('discover_contacts', {
-    description: '从公开网页发现企业关键岗位人员和历史任职证据；不是 search_contacts 的共享图谱搜索或 get_contact 的档案读取。历史证据不代表已离职，不返回邮箱或电话，也不保证法人主体已确认。',
+    description: '按 source 从公开网页、Zoho CRM 或两者发现联系人。默认 web 保留旧结果；zoho 实时只读、需核对客户候选与 complete，返回选定客户全部已取得联系人。不是共享图谱搜索；不返回邮箱或电话，历史网页证据不代表已离职。',
     inputSchema: GetContactsInputSchema,
-    outputSchema: GetContactsOutputSchema,
-  }, async input => toolResult(contactsOutput(await services.getContacts({
-    query: input.query,
-    ...(input.region_hint === undefined ? {} : { regionHint: input.region_hint }),
-  }))));
+    outputSchema: DiscoverContactsOutputSchema,
+  }, async input => {
+    const webInput = { query: input.query,
+      ...(input.region_hint === undefined ? {} : { regionHint: input.region_hint }) };
+    if (input.source === 'web') return toolResult(contactsOutput(await services.getContacts(webInput)));
+    const ids = input.zoho_accounts ?? services.zohoContacts?.connectionIds;
+    const configuredIds = services.zohoContacts?.connectionIds ?? [];
+    if (input.zoho_accounts?.some(id => !configuredIds.includes(id))) {
+      throw new Error('ZOHO_UNKNOWN_CONNECTION');
+    }
+    if (input.zoho_account_records?.some(record => !configuredIds.includes(record.connection_id))) {
+      throw new Error('ZOHO_UNKNOWN_CONNECTION');
+    }
+    const query: ZohoQuery = { query: input.query,
+      ...(ids === undefined ? {} : { connectionIds: [...ids] }),
+      ...(input.zoho_account_records === undefined ? {} : { accountRecords: input.zoho_account_records.map(record => ({
+        connectionId: record.connection_id, accountId: record.account_id,
+      })) }) };
+    const [webResult, zohoResult] = await Promise.all([
+      input.source === 'all' ? Promise.resolve().then(() => services.getContacts(webInput)).then(output => contactsOutput(output)).catch(() => ({
+        companies: [], warnings: ['WEB_SOURCE_FAILED'], collected_at: new Date().toISOString(),
+      })) : Promise.resolve({ companies: [], warnings: [], collected_at: new Date().toISOString() }),
+      services.zohoContacts ? Promise.resolve().then(() => services.zohoContacts!.get(query))
+        .catch((error: unknown) => {
+          if (error instanceof Error && /^ZOHO_(UNKNOWN_CONNECTION|INVALID_INPUT|INVALID_SELECTION)$/u.test(error.message)) throw error;
+          return unavailableZoho(ids);
+        }) : Promise.resolve(unavailableZoho(ids)),
+    ]);
+    const output = DiscoverContactsOutputSchema.parse({ ...webResult, zoho: zohoResult });
+    return { content: [{ type: 'text' as const, text: [
+      ...(input.source === 'all' ? [renderWebContacts(webResult)] : []),
+      renderZohoContacts(output.zoho!),
+    ].join('\n\n') }], structuredContent: output };
+  });
 
   server.registerTool('ask_company', {
     description: '针对已确认的单个法定主体追问具体销售研究问题；优先引用报告证据，必要时定向补查，不修改原评估。',

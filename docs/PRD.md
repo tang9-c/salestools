@@ -6,7 +6,7 @@
 
 面向通过 MCP 客户端工作的 B2B 销售人员：先用企业名称了解基本情况；确认法定主体后，可追问具体问题，也可按需生成有来源依据的中文销售评估报告。找人时可以搜索公开网页的关键岗位人员；启用共享联系人库后，还可从简历、名片建立人物、组织及项目档案，按公司、学校、技能或项目客户检索，并逐步核实与维护资料。产品帮助销售选择值得访谈的方向，不预测成交概率，也不把招聘或融资直接视作采购意向。
 
-当前交付形态是远程 MCP 服务，客户端通过 HTTPS `/mcp` 访问。已开发专用于联系人文件导入的 MCP App／外部网页入口；它不是完整联系人管理后台。ChatGPT 内嵌 App、Codex 外部页面及手机拍照的真实宿主兼容性仍待验收。当前没有飞书或 Zoho CRM 集成。
+当前交付形态是远程 MCP 服务，客户端通过 HTTPS `/mcp` 访问。已开发专用于联系人文件导入的 MCP App／外部网页入口；它不是完整联系人管理后台。ChatGPT 内嵌 App、Codex 外部页面及手机拍照的真实宿主兼容性仍待验收。Zoho CRM 只读联系人来源已完成本地接入，真实 CRM、远程 CI 与宿主大响应仍待验收；当前没有飞书集成。
 
 ## 2. 用户流程
 
@@ -24,7 +24,7 @@
 | 工具 | 关键输入 | 当前输出与边界 |
 | --- | --- | --- |
 | `get_company_profile` | `query`，可选 `region_hint` | `candidates`、`basic_profile`、`source_status`、`cache_hit`；只用企查查，唯一且名称匹配的主体才补充基础画像；上游不可用时明确失败。 |
-| `discover_contacts` | `query`，可选 `region_hint` | 最多 3 家企业、每家最多 10 名当前联系人及最多 10 条历史任职证据；返回来源 URL、发布时间、采集时间及警告。 |
+| `discover_contacts` | `query`，可选 `region_hint`、`source=web/zoho/all`、`zoho_accounts`、`zoho_account_records` | 默认网页结果维持最多 3 家、每家 10 名当前联系人及 10 条历史证据；Zoho 独立区域实时返回已选 CRM 客户的全部已取得关联联系人、两类负责人、候选、连接状态与完整性，不受网页人数上限约束。 |
 | `submit_assessment` | `legal_name`、`credit_code`，可选 `force_refresh` | 新建或复用任务，返回 `assessment_id`、`status`、`cache_hit`；新任务附预计时间，缓存命中附 `cached_at`。 |
 | `get_assessment_status` | `assessment_id` | 返回三态及简短进度或失败消息。 |
 | `get_assessment_report` | `assessment_id` | 完成时返回 Markdown、综合机会、推荐产品、采集时间、动态信号新鲜度与来源状态；其他状态只返回状态消息。 |
@@ -61,6 +61,10 @@
 方舟按输入字节预算将去重材料拆批处理，成功批次合并，失败或未处理材料计入审计缺口。材料不会因首批装不下就默默消失；仍可能受批次、调用预算或上游失败限制。行业由方舟给出带证据的自由文本标签，仅用于展示，不参与产品机会等级、推荐产品或置信度。
 
 `discover_contacts` 使用豆包搜索和方舟查找公开披露的企业负责人、研发/技术、数字化/IT、采购和质量负责人。只有姓名、职位、公司与来源页面能相互核对的候选才返回；无明确职位的专利发明人或招投标联系人不返回。该工具不返回邮箱、电话，也不保证仅凭网页就已确认法人主体。
+
+可选 Zoho 来源按连接只读搜索 CRM `Accounts`，名称包含匹配或多候选时要求用户确认 `connection_id/account_id`，重新核验所选记录后读取关联 `Contacts` 全部分页。仅展示客户与联系人姓名、职位、各自 CRM 记录负责人及来源；不请求电话、邮箱或 Owner 对象中的联系方式。`source=all` 保留网页与 CRM 两组结果，单源失败不抹去另一源，跨来源或跨连接同名人员不自动合并。`complete=false`、`partial`、`failed` 或 `needs_confirmation` 明确表示未获得全量。CRM 记录不等于已核实法定主体或当前任职；不写入网页快照、SQLite、图谱或 Zoho。所有 MCP 用户共享服务端已授权连接及其 CRM 可见范围。
+
+内部 CRM 首次授权采用所在区域 API Console 的 Self Client 短期授权码，再通过 POST 请求体换取 Refresh Token。最小 scopes 为 `ZohoCRM.modules.accounts.READ`、`ZohoCRM.modules.contacts.READ`、`ZohoSearch.securesearch.READ`、`ZohoCRM.settings.fields.READ`、`ZohoCRM.settings.modules.READ`、`ZohoCRM.settings.related_lists.READ`；不申请 users/org、settings.ALL 或写权限。服务端环境变量配置连接，SDK 在内存中按需刷新 Token；撤销后须重新授权。SDK 补丁由 postinstall 应用并在启用 Zoho 前校验，元数据使用可清理的临时 resourcePath；补丁不符或临时目录不可写时 Zoho 降级而网页继续。外部客户接入应改用 Server-based OAuth；真实 CRM 和宿主全量响应验收仍待专用测试授权。
 
 共享联系人库与公开搜索分开：本地文件由 Python/Docling 读取正文与来源定位，LLM 归纳人物、机构、经历和关系，Node 校验结构与引文，提交后由 Rust 图谱进程持久化。实体包括 `Person`、`Organization`、`Project`；字段和关系遵循[联系人数据契约](superpowers/specs/contact-data-contract.md)。模型判断与文件来源可定位均不等于人工核实。共享库对所有有效 Token 可见和可维护，导入任务预览只对提交者可见，写操作记录操作者。
 

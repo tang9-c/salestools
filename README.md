@@ -43,12 +43,24 @@ codex mcp add salestools \
 ## 五个 MCP 工具
 
 - `get_company_profile`：默认用于“看一下”“了解基本情况”或意图不明确的请求；只查询基础画像。
-- `discover_contacts`：按企业关键词和可选地域，从公开网页中同步查找企业负责人、研发/技术、数字化/IT、采购和质量负责人；最多返回 3 家企业、每家 10 人。
+- `discover_contacts`：默认从公开网页按企业关键词和可选地域查找关键岗位人员（最多 3 家、每家 10 人）；配置 Zoho 后可用 `source=zoho` 或 `source=all` 实时读取 CRM 客户及全部已取得的关联联系人。
 - `submit_assessment`：仅在用户确认法定名称和统一社会信用代码，并明确要求正式销售评估后调用。
 - `get_assessment_status`：轮询 `processing`、`completed` 或 `failed`。
 - `get_assessment_report`：读取完成后的 Markdown 报告，或返回当前处理/失败状态。
 
 公开网页发现工具已由 `get_contacts` 改名为 `discover_contacts`，不保留旧工具别名。升级后请重新加载 MCP 工具列表，并更新脚本中的调用名称；输入、输出、缓存和快照同步行为不变。图谱搜索仍使用 `search_contacts`，单个档案读取仍使用 `get_contact`。
+
+### Zoho CRM 只读联系人来源（可选）
+
+在服务端环境中设置 `ZOHO_CONNECTIONS=crm_a,crm_b`，并为各连接设置 `ZOHO_CRM_A_NAME`、`ZOHO_CRM_A_REGION`、`ZOHO_CRM_A_CLIENT_ID`、`ZOHO_CRM_A_CLIENT_SECRET`、`ZOHO_CRM_A_REFRESH_TOKEN`（B 连接相应使用 `ZOHO_CRM_B_*`）。连接 ID 使用小写 ASCII 字母、数字、下划线且以字母开头；区域为 `CN/US/EU/IN/AU/CA`，目前只连接生产环境。未配置时网页路径照常运行，Zoho 查询会明确返回不可用。Sealos 部署时注入同名服务端环境变量；不要将真实 `.env` 放入 Git、构建上下文或镜像。
+
+`discover_contacts` 新增 `source=web|zoho|all`（默认 `web`）、可选 `zoho_accounts` 连接 ID 数组和 `zoho_account_records` 客户记录选择数组。未知连接是输入错误。CRM 客户名称搜索可能包含匹配；有候选需先核对，再用候选的 `connection_id` 与 `account_id` 重新调用。简称不属于全名子串时，将实际候选全名作为 `query` 重新提交。选定记录会重新核验，随后连续读取其关联联系人；Zoho 不受网页每家公司 10 人上限约束。`source=all` 将两种来源分别返回，不合并同名人员。网页结果保留原 `companies/warnings/collected_at`，CRM 结果在独立 `zoho` 区域；Zoho/all 的文本响应按公司列出所有已取得联系人，结构化响应保留连接和记录 ID。`status`、`complete`、`warnings` 必须一起阅读：`partial` 或 `failed` 不能当作全量，`needs_confirmation` 尚未开始联系人全量读取；120 秒同步期限内无法完成的超大客户也会如实标记。
+
+只请求客户和联系人姓名、职位、两类 CRM 记录负责人、修改时间及来源 ID，不请求电话、邮箱、备注、附件或其他关联资料；Owner 表示 CRM 内部记录归属，不代表客户企业所有者或人员上级。所有有效 MCP 用户共享已配置连接及该账号在 CRM 中的可见范围；这里不按销售用户绑定 Zoho 权限。Zoho 实时只读，不写 CRM、网页快照、SQLite 或联系人图谱。
+
+首次授权由对应 CRM 授权人员在所在区域的 Zoho API Console 创建 Self Client，选择目标组织和生产环境，申请最小只读 scopes：`ZohoCRM.modules.accounts.READ`、`ZohoCRM.modules.contacts.READ`、`ZohoSearch.securesearch.READ`、`ZohoCRM.settings.fields.READ`、`ZohoCRM.settings.modules.READ`、`ZohoCRM.settings.related_lists.READ`。关闭 SDK 的 findUser，不申请 users/org、`settings.ALL` 或写权限。生成短期授权码后，在有效期内用对应区域的 Accounts Token endpoint，以 POST 请求体交换 Refresh Token；凭证不放入 URL、终端命令历史、聊天或日志。仅把 Client ID、Client Secret、Refresh Token 放入服务端配置，授权码不作为运行配置。SDK 按需刷新 Access Token 并只在内存保存；授权被撤销或 Refresh Token 失效时，需由授权人员重新授权、更新环境并重启。外部客户自有 CRM 应另行采用 Server-based OAuth 流程，不要求客户交付 Refresh Token。
+
+锁定的 Zoho SDK 在 `npm ci` 的 `postinstall` 中应用经校验的最小补丁；使用 `--ignore-scripts` 安装后需显式执行 `npm run postinstall`。已配置连接在创建适配器前检查安装字节，校验失败仅禁用 Zoho，不中断网页来源。SDK 元数据写入系统临时目录中的独立连接目录，权限为 0700；不存 Token 或联系人数据，应用关闭时等待在途操作并清理。临时目录不可写会令 Zoho 查询返回不可用。首次 SDK 元数据初始化需要上述三个 settings 只读 scope。真实 CRM 字段权限、远程 CI 与 MCP 宿主大响应容量尚需获授权后验收。
 
 ## 共享联系人图谱（可选）
 
