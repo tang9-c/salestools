@@ -168,6 +168,18 @@ fn older(incoming: &Value, previous: &Value) -> Result<bool, AppError> {
         .unwrap_or(Ok(false))
 }
 
+fn observed_time_only(previous: &Value, incoming: &Value) -> Value {
+    // Archived records were observed, not applied. Retain their last applied
+    // fields so an explicit restore can apply the same CRM values later.
+    let mut source = previous.clone();
+    for field in ["modified_at", "collected_at"] {
+        if let Some(value) = incoming.get(field) {
+            source[field] = value.clone();
+        }
+    }
+    source
+}
+
 fn source_changed(a: &Value, b: &Value) -> bool {
     let without_collection = |value: &Value| {
         let mut value = value.clone();
@@ -291,7 +303,9 @@ impl SyncContext<'_, '_> {
         if let Some(state) = &existing {
             if stale || state.archived() {
                 if !stale {
-                    put_mapping(self.tx, input.key, &state.id, None, input.source)?;
+                    let observed =
+                        observed_time_only(&previous.as_ref().unwrap().source, input.source);
+                    put_mapping(self.tx, input.key, &state.id, None, &observed)?;
                 }
                 return Ok(EntityOutcome {
                     state: existing.take().unwrap(),
@@ -406,7 +420,8 @@ impl SyncContext<'_, '_> {
                     .transpose()?
                     .unwrap_or(false)
             {
-                put_mapping(self.tx, key, &person.id, relation, source)?;
+                let observed = observed_time_only(&previous.as_ref().unwrap().source, source);
+                put_mapping(self.tx, key, &person.id, relation, &observed)?;
             }
             return Ok((false, true));
         }
@@ -598,9 +613,6 @@ impl Store {
         let mut counts: BTreeMap<String, ContactCount> = BTreeMap::new();
         let mut indexed = BTreeSet::new();
         for company in &input.companies {
-            if company.contacts.is_empty() {
-                continue;
-            }
             let org_key = key(
                 "organization",
                 &[&company.connection_id, &company.account_id],
@@ -647,13 +659,9 @@ impl Store {
                 let count = counts.entry(person_key).or_default();
                 count.created |= person.created;
                 count.archived |= person.state.archived() || org.state.archived();
-                if person.state.archived() {
-                    continue;
+                if !person.state.archived() {
+                    count.updated |= (person.changed || org.changed) && !person.created;
                 }
-                if person.stale {
-                    continue;
-                }
-                count.updated |= (person.changed || org.changed) && !person.created;
                 if person.content_changed {
                     indexed.insert(person.state.id.clone());
                 }
@@ -665,7 +673,8 @@ impl Store {
                         &company.account_id,
                     ],
                 )?;
-                // The employment map has its own clock, independent of a contact's other accounts.
+                // Employment has its own clock even when another account made the
+                // Person newer. Archived endpoints still advance observed time only.
                 let mut employment_source = source.clone();
                 employment_source["account_id"] = json!(company.account_id);
                 let (relation_changed, archived) = context.employment(
@@ -679,7 +688,9 @@ impl Store {
                 if relation_changed {
                     indexed.insert(person.state.id.clone());
                 }
-                context.duplicates(&person.state, &source)?;
+                if !person.state.archived() && !person.stale {
+                    context.duplicates(&person.state, &source)?;
+                }
             }
         }
         for entity in &indexed {
