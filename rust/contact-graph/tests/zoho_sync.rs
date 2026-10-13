@@ -1023,7 +1023,7 @@ fn explicitly_restored_person_applies_fields_skipped_while_archived_without_acce
     late["contacts"][0]["title"] = json!("迟到旧职位");
     late["contacts"][0]["modified_at"] = json!(T2);
     sync(&store, "late-after-restore", T2, vec![late]);
-    assert_eq!(detail(&store, &person)["entity"], after_restore["entity"]);
+    assert_eq!(detail(&store, &person), after_restore);
     let result = sync(&store, "apply-after-restore", T3, vec![data]);
     counts(&result, 0, 1, 0, 0);
     let final_view = detail(&store, &person);
