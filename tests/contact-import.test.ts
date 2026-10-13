@@ -133,6 +133,32 @@ it('finds same-name people without contact details and compares confirmed employ
   expect(h.state.lastCommit?.duplicate_matches).toEqual([{ candidate_id: 'c_1', target_id: 'p1', reasons: ['name_with_organization'] }]);
 });
 
+it('keeps prior persisted Zoho name evidence in duplicate review after reopening the source record', async () => {
+  const h = harness();
+  h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'ready_for_review', version: 3,
+    data: { candidates: [candidate], warnings: [], processed_block_ids: [], unprocessed_block_ids: [] } };
+  const request = h.graph.request;
+  const priorEvidence = { evidence_id: 'prior-crm-name', subject_kind: 'entity', subject_id: 'p1',
+    field_path: 'properties.name', value: '陈晓', source_type: 'zoho',
+    source_connection_id: 'connection-a', source_module: 'Contacts', source_record_id: 'contact-a',
+    source_url: 'https://crm.example.test/Contacts/contact-a', locator_status: 'not_applicable',
+    collected_at: '2026-10-13T00:00:00.000Z' };
+  h.graph.request = async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+    if (op === 'search_keyword') return { items: [{ entity_id: 'p1', label: 'Person', name: '陈晓' }], total: 1 } as T;
+    if (op === 'get_contact') return { entity: { entity_id: 'p1', label: 'Person', properties: { name: '陈晓' },
+      extensions: { hobbies: [], instantMessaging: [] }, metadata: { version: 1,
+        created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z' } },
+      evidence: [priorEvidence], relations: [] } as T;
+    return request<T>(op, payload);
+  };
+  const preview = await h.service.get('ci_1', 'reviewer', 0, 1);
+  expect(preview?.match_suggestions).toMatchObject([{ entityId: 'p1', existingSources: [{
+    sourceType: 'zoho', sourceConnectionId: 'connection-a', sourceModule: 'Contacts',
+    sourceRecordId: 'contact-a', collectedAt: '2026-10-13T00:00:00.000Z',
+  }] }]);
+  expect(priorEvidence.source_url).toBe('https://crm.example.test/Contacts/contact-a');
+});
+
 it('does not treat an unreadable same-name profile as proof that no duplicate exists', async () => {
   const h = harness();
   h.state.job = { import_id: 'ci_1', actor: 'reviewer', status: 'ready_for_review', version: 3,

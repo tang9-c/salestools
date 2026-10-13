@@ -25,6 +25,122 @@ fn zoho(field_path: &str, value: Value, module: &str) -> Value {
         "collected_at":"2026-10-13T00:00:00Z","locator_status":"not_applicable"})
 }
 
+fn prior_zoho_person(store: &Store) -> (String, String) {
+    let created = request(
+        store,
+        "save_contact",
+        json!({"operation_id":"prior-crm-person","actor":"system","label":"Person",
+        "set_properties":{"name":"Prior CRM Person"},"evidence":[zoho("properties.name",json!("Prior CRM Person"),"Contacts")]}),
+    );
+    assert_eq!(created["ok"], true, "{created}");
+    let person = created["result"]["entity_id"].as_str().unwrap().to_owned();
+    // The prior release persisted a URL in otherwise identical located CRM proof.
+    store.graph.connection().execute(
+        "UPDATE evidence SET record_json=json_set(record_json,'$.source_url','https://crm.example.test/Contacts/record-a') WHERE subject_id=?1",
+        [&person],
+    ).unwrap();
+    let proof_id = store
+        .graph
+        .connection()
+        .query_row(
+            "SELECT evidence_id FROM evidence WHERE subject_id=?1",
+            [&person],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    (person, proof_id)
+}
+
+#[test]
+fn prior_zoho_evidence_survives_reopen_read_and_unrelated_manual_update() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("prior-evidence.sqlite");
+    let (person, proof_id) = {
+        let store = Store::open(&path).unwrap();
+        prior_zoho_person(&store)
+    };
+    let store = Store::open(&path).unwrap();
+    let before = request(&store, "get_contact", json!({"entity_id":person}));
+    assert_eq!(before["ok"], true, "{before}");
+    assert_eq!(before["result"]["evidence"][0]["evidence_id"], proof_id);
+    assert_eq!(
+        before["result"]["evidence"][0]["source_connection_id"],
+        "connection-a"
+    );
+    assert_eq!(
+        before["result"]["evidence"][0]["source_url"],
+        "https://crm.example.test/Contacts/record-a"
+    );
+    let updated = request(
+        &store,
+        "save_contact",
+        json!({"operation_id":"manual-update-prior","actor":"reviewer",
+        "entity_id":person,"label":"Person","expected_version":1,"set_properties":{"description":"Manual detail"},
+        "evidence":[manual("properties.description",json!("Manual detail"))]}),
+    );
+    assert_eq!(updated["ok"], true, "{updated}");
+    let after = request(&store, "get_contact", json!({"entity_id":person}));
+    assert_eq!(
+        after["result"]["entity"]["properties"]["name"],
+        "Prior CRM Person"
+    );
+    assert_eq!(
+        after["result"]["entity"]["properties"]["description"],
+        "Manual detail"
+    );
+    assert!(after["result"]["evidence"]
+        .as_array()
+        .unwrap()
+        .contains(&before["result"]["evidence"][0]));
+}
+
+#[test]
+fn prior_zoho_name_evidence_supports_manual_merge_with_field_choices_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("prior-merge.sqlite");
+    let (target, proof_id) = {
+        let store = Store::open(&path).unwrap();
+        prior_zoho_person(&store)
+    };
+    let store = Store::open(&path).unwrap();
+    let source = request(
+        &store,
+        "save_contact",
+        json!({"operation_id":"merge-source","actor":"reviewer","label":"Person",
+        "set_properties":{"name":"Source Person","description":"Merged manual detail"},
+        "evidence":[manual("properties.name",json!("Source Person")),manual("properties.description",json!("Merged manual detail"))]}),
+    );
+    assert_eq!(source["ok"], true, "{source}");
+    let merged = request(
+        &store,
+        "merge_contacts",
+        json!({"operation_id":"merge-prior","actor":"reviewer",
+        "source_id":source["result"]["entity_id"],"target_id":target,"expected_source_version":1,"expected_target_version":1,
+        "field_choices":{"properties.description":"source"}}),
+    );
+    assert_eq!(merged["ok"], true, "{merged}");
+    let after = request(&store, "get_contact", json!({"entity_id":target}));
+    assert_eq!(
+        after["result"]["entity"]["properties"]["name"],
+        "Prior CRM Person"
+    );
+    assert_eq!(
+        after["result"]["entity"]["properties"]["description"],
+        "Merged manual detail"
+    );
+    let prior = after["result"]["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["evidence_id"] == proof_id)
+        .unwrap();
+    assert_eq!(
+        prior["source_url"],
+        "https://crm.example.test/Contacts/record-a"
+    );
+    assert_eq!(prior["source_record_id"], "record-a");
+}
+
 #[test]
 fn zoho_entity_and_relation_evidence_round_trips_without_a_fake_url() {
     let directory = tempfile::tempdir().unwrap();
