@@ -56,8 +56,17 @@ pub(crate) fn migrate_import_link(store: &Store) -> rusqlite::Result<()> {
     }
     // Guard direct SQL writers too: legacy file claims retain their import foreign key.
     for event in ["INSERT", "UPDATE"] {
-        tx.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS contact_claims_zoho_{} BEFORE {event} ON contact_claims
-            WHEN NEW.import_id IS NULL BEGIN
+        let changed = if event == "UPDATE" {
+            "AND (NEW.import_id IS NOT OLD.import_id OR NEW.source_json IS NOT OLD.source_json
+                OR NEW.kind IS NOT OLD.kind OR NEW.relation_type IS NOT OLD.relation_type
+                OR NEW.field_path IS NOT OLD.field_path OR NEW.target_id IS NULL)"
+        } else {
+            ""
+        };
+        // Refresh guards on existing databases while preserving historical records for review/merge.
+        tx.execute_batch(&format!("DROP TRIGGER IF EXISTS contact_claims_zoho_{};
+            CREATE TRIGGER contact_claims_zoho_{} BEFORE {event} ON contact_claims
+            WHEN NEW.import_id IS NULL {changed} BEGIN
                 SELECT CASE WHEN NOT COALESCE(NEW.kind='relation' AND NEW.relation_type='possible_duplicate'
                     AND NEW.field_path IS NULL AND NEW.target_id IS NOT NULL
                     AND CASE WHEN json_valid(NEW.source_json) THEN
@@ -69,13 +78,10 @@ pub(crate) fn migrate_import_link(store: &Store) -> rusqlite::Result<()> {
                         AND json_type(NEW.source_json,'$.source_record_id')='text'
                         AND length(trim(json_extract(NEW.source_json,'$.source_record_id'),char(9)||char(10)||char(13)||' '))>0
                         AND NOT EXISTS(SELECT 1 FROM json_each(NEW.source_json) WHERE key NOT IN
-                            ('source_type','source_connection_id','source_module','source_record_id','source_url','collected_at','modified_at'))
-                        AND (json_type(NEW.source_json,'$.source_url') IS NULL OR
-                            (json_type(NEW.source_json,'$.source_url')='text' AND
-                                (json_extract(NEW.source_json,'$.source_url') GLOB 'https://?*' OR json_extract(NEW.source_json,'$.source_url') GLOB 'http://?*')))
+                            ('source_type','source_connection_id','source_module','source_record_id','collected_at','modified_at'))
                     ELSE 0 END,0)
                 THEN RAISE(ABORT,'Null import_id requires a located Zoho duplicate claim') END;
-            END;", event.to_lowercase()))?;
+            END;", event.to_lowercase(), event.to_lowercase()))?;
     }
     tx.commit()
 }

@@ -84,6 +84,11 @@ fn zoho_evidence_rejects_missing_location_unknown_modules_and_extra_source_data(
         ("source_module", json!("Leads")),
         ("source_type", json!("crm")),
         ("source_url", json!("zoho://Contacts/record-a")),
+        (
+            "source_url",
+            json!("https://crm.example.test/Contacts/record-a"),
+        ),
+        ("source_url", json!("https://[broken")),
         ("email", json!("private@example.test")),
     ] {
         let mut proof = zoho("properties.name", json!("CRM Person"), "Contacts");

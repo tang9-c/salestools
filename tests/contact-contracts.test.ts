@@ -30,6 +30,18 @@ describe('shared contact graph contract', () => {
       subject_id: 'r_crm', field_path: 'properties.role.roleName', value: '经理' }).success).toBe(true);
   });
 
+  it.each(['https://crm.example.test/Contacts/contact-a', 'https://[broken'])('rejects source_url on Zoho evidence even for %s', source_url => {
+    expect(ContactEvidenceSchema.safeParse({ ...zohoProof, source_url }).success).toBe(false);
+  });
+
+  it('preserves the existing HTTP URL contract for web evidence', () => {
+    const proof = { evidence_id: 'ev_web', subject_kind: 'entity', subject_id: 'p_web',
+      field_path: 'properties.name', value: 'Web Person', source_type: 'web',
+      locator_status: 'located', quote: 'Web Person', collected_at: '2026-10-13T00:00:00.000Z' };
+    expect(ContactEvidenceSchema.safeParse({ ...proof, source_url: 'https://example.test/person' }).success).toBe(true);
+    expect(ContactEvidenceSchema.safeParse({ ...proof, source_url: 'https://[broken' }).success).toBe(false);
+  });
+
   it('rejects missing or invalid Zoho locators and unapproved source fields', () => {
     for (const key of ['source_connection_id', 'source_module', 'source_record_id']) {
       for (const invalid of [undefined, '', ' ']) {

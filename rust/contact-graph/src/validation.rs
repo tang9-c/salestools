@@ -434,9 +434,7 @@ pub(crate) fn valid_zoho_locator(record: &Value) -> bool {
             record["source_module"].as_str(),
             Some("Accounts" | "Contacts")
         )
-        && record
-            .get("source_url")
-            .is_none_or(|url| url.as_str().is_some_and(absolute_http_url))
+        && record.get("source_url").is_none()
 }
 
 pub(crate) fn valid_source_locator_fields(record: &Value) -> bool {

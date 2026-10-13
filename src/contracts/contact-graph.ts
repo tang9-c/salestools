@@ -288,6 +288,7 @@ export const ContactEvidenceSchema = z.object({
   if (value.source_type === 'zoho') {
     if (!value.source_connection_id || !value.source_module || !value.source_record_id
       || value.locator_status !== 'not_applicable'
+      || value.source_url !== undefined
       || value.file_name !== undefined || value.file_sha256 !== undefined
       || value.text_sha256 !== undefined || value.page !== undefined || value.quote !== undefined) {
       context.addIssue({ code: 'custom', message: 'Zoho evidence requires a CRM record locator without document metadata' });

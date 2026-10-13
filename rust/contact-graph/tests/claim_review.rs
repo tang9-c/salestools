@@ -178,6 +178,14 @@ fn null_import_rejects_file_unknown_or_unlocated_source_and_non_duplicate_relati
     let mut private = zoho_source();
     private["email"] = json!("private@example.test");
     invalid.push(private);
+    for url in [
+        "https://crm.example.test/Contacts/record-a",
+        "https://[broken",
+    ] {
+        let mut source = zoho_source();
+        source["source_url"] = json!(url);
+        invalid.push(source);
+    }
     for (index, source) in invalid.iter().enumerate() {
         assert!(
             insert_crm_claim(
@@ -193,6 +201,85 @@ fn null_import_rejects_file_unknown_or_unlocated_source_and_non_duplicate_relati
         );
     }
     assert!(insert_crm_claim(&s, "invalid-relation", &a, &b, &zoho_source(), "worksFor").is_err());
+}
+
+#[test]
+fn reopening_prior_zoho_database_refreshes_url_guards_without_losing_old_claims() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("prior-zoho.db");
+    let (a, b, historical_source) = {
+        let s = Store::open(&path).unwrap();
+        let a = entity(&s, "Person", "历史CRM甲");
+        let b = entity(&s, "Person", "历史CRM乙");
+        // Prior release accepted URLs; materialize its trigger behavior and persisted record.
+        for event in ["INSERT", "UPDATE"] {
+            s.graph
+                .connection()
+                .execute_batch(&format!(
+                    "DROP TRIGGER contact_claims_zoho_{};
+                 CREATE TRIGGER contact_claims_zoho_{} BEFORE {event} ON contact_claims
+                 WHEN NEW.import_id IS NULL BEGIN
+                     SELECT CASE WHEN json_extract(NEW.source_json,'$.source_type')!='zoho'
+                     THEN RAISE(ABORT,'invalid source') END;
+                 END;",
+                    event.to_lowercase(),
+                    event.to_lowercase()
+                ))
+                .unwrap();
+        }
+        let mut source = zoho_source();
+        source["source_url"] = json!("https://[broken");
+        assert!(
+            insert_crm_claim(&s, "historical-url", &a, &b, &source, "possible_duplicate").is_ok()
+        );
+        (a, b, source)
+    };
+    let s = Store::open(&path).unwrap();
+    assert_eq!(
+        detail(&s, &a)["unverified_claims"][0]["source"],
+        historical_source
+    );
+    assert!(insert_crm_claim(
+        &s,
+        "new-url",
+        &a,
+        &b,
+        &historical_source,
+        "possible_duplicate"
+    )
+    .is_err());
+    assert!(insert_crm_claim(
+        &s,
+        "new-clean",
+        &a,
+        &b,
+        &zoho_source(),
+        "possible_duplicate"
+    )
+    .is_ok());
+    assert!(s
+        .graph
+        .connection()
+        .execute(
+            "UPDATE contact_claims SET source_json=?1 WHERE claim_id='new-clean'",
+            [historical_source.to_string()]
+        )
+        .is_err());
+    let rejected = call(
+        &s,
+        "review_contact_claim",
+        review("historical-url", "reject", 1),
+    );
+    assert_eq!(rejected["ok"], true, "{rejected}");
+    assert_eq!(status(&s, "historical-url"), "rejected");
+    assert_eq!(
+        s.graph
+            .connection()
+            .query_row("SELECT count(*) FROM contact_claims", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
 }
 
 #[test]
