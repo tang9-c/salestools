@@ -21,7 +21,7 @@
 
 ## 接口边界
 
-新增内部图谱操作sync_zoho_contacts，不新增公共MCP工具。输入为operation_id、actor、collected_at、companies（现有ZohoCompany白名单结构）。输出created/updated/unchanged/archived（联系人计数）及entity_ids（需索引的Person）。共享图谱写入失败警告使用ZOHO_GRAPH_SYNC_FAILED；部分批次已成功用ZOHO_GRAPH_SYNC_PARTIAL。不扩展MCP顶层结构，正常同步摘要置于warnings/Markdown。源查询本身的status/complete含义保持不变，图谱失败不能伪装为CRM失败。
+新增内部图谱操作sync_zoho_contacts，不新增公共MCP工具。输入为operation_id、actor、collected_at、companies（现有ZohoCompany白名单结构）。输出created/updated/unchanged/archived（记录处理计数）及entity_ids（需索引的Person）。archived指跳过的归档相关写入；可保存或更新活跃Person，但不建立/恢复归档公司或任职关系。该记录可同时计入created/updated和archived，各计数内同批同来源身份最多一次，不承诺计数之和为唯一人数。Node遇archived>0提示部分关联未同步，不因合法归档使整批其他资料失败。共享图谱写入失败警告使用ZOHO_GRAPH_SYNC_FAILED；部分批次已成功用ZOHO_GRAPH_SYNC_PARTIAL。不扩展MCP顶层结构，正常同步摘要置于warnings/Markdown。源查询本身的status/complete含义保持不变，图谱失败不能伪装为CRM失败。
 
 ## 验收
 
