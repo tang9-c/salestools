@@ -2,7 +2,7 @@
 
 日期：2026-10-12
 
-状态：设计待审阅，尚未开发。
+状态：任务1契约与任务2适配器已本地验证；服务接入、远程CI及真实CRM验收待后续任务。
 
 ## 1. 目标与边界
 
@@ -51,6 +51,8 @@ SDK 使用要点：
 - SDK 可根据 Refresh Token 刷新 Access Token。静态凭证从 `.env` 加载；使用最小内存 TokenStore 保存运行期 Token，重启后重新刷新，不新增凭证数据库或落盘 Token 文件。
 - 关闭非必要的 SDK 用户身份查询及后台字段刷新，避免隐式扩大权限、调用和跨账号上下文。相关配置名称及行为须在实现时通过 SDK 测试确认。
 - 使用并精确锁定经验证的 SDK npm 版本。SDK 首次调用仍可能获取字段、模块和关联列表元数据；关闭后台刷新不能代替首次元数据初始化。
+- 2026-10-12用户批准SDK 4.0.0最小依赖修补：关闭CRM/OAuth隐式got重试、隔离SDK专用logger、SDK范围override升级form-data至3.0.5。控制器进一步裁决元数据文件名从可逆Token片段Base64改为SHA-256、查询参数值从encodeURI改为encodeURIComponent，均属于原隔离/特殊字符要求的必要修复。使用已检入文本替换清单和原文件SHA-256，安装时幂等修补，版本或文件不符失败；启动校验只检查字节，不联网、不修改依赖。
+- SDK `switchUser()`继承store/resourcePath，适配器逐次用官方`initialize()`重建当前上下文以保持每连接目录及内存TokenStore独立；调用保持进程全局串行。SDK配置实例的`getTimeout()`按共享deadline动态读取剩余时间，约束冷启动内部各次metadata/CRM传输，不修改任何全局原型。
 - 应用启动时在系统临时目录用 `mkdtemp` 建立 SDK 运行根目录，每个连接使用独立子目录和 `resourcePath`，禁止使用 node_modules 或工作目录的默认路径。目录权限为 0700，关闭应用时清理；目录不可写时禁用 Zoho 并返回明确错误，不影响原网页功能。目录只保存 SDK 元数据，不保存 Token 或 CRM 联系人数据。
 - SDK 日志采用关闭请求明细的配置，不沿用默认请求日志；冷启动验证同时检查元数据 scopes、路径隔离和无 Token 泄露。元数据读权限限定 `ZohoCRM.settings.fields.READ`、`ZohoCRM.settings.modules.READ`、`ZohoCRM.settings.related_lists.READ`，不申请 settings.ALL 或任何写权限。
 
@@ -170,6 +172,7 @@ ZOHO_CRM_B_REFRESH_TOKEN=
 - Sealos 使用同名环境变量注入；真实 `.env` 不进入 Git、Docker build context 或镜像。
 - 不建设 OAuth 回调页面或连接授权 UI。将来接入外部客户自有 CRM 时须另行设计 Server-based OAuth 授权流程，不要求外部客户直接提供 Refresh Token。
 - 共用授权账号的 CRM 可见范围不是各 MCP 用户的 Zoho 权限；本版不声称继承每位销售的 CRM 权限。
+- 普通npm ci通过postinstall自动修补；两处Docker npm ci之前复制补丁脚本及清单。ignore-scripts开发安装后显式执行`npm run postinstall`。任务4创建已配置的Zoho适配器前应调用`verifyZohoSDKPatch()`；失败只禁用Zoho并报告脱敏错误，不影响web-only。适配器首次SDK初始化也强制校验，未修补不能发CRM请求。
 
 `.env` 不提交 Git；示例文件只放空值。日志仅记录连接标识、阶段、耗时、数量、页数与脱敏错误码，不记录 Token、完整 CRM 响应、联系人列表或负责人邮箱。
 

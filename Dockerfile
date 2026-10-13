@@ -8,6 +8,8 @@ RUN cargo build --locked --release --manifest-path rust/contact-graph/Cargo.toml
 FROM node:24-bookworm-slim AS node-build
 WORKDIR /app
 COPY package.json package-lock.json ./
+COPY scripts/patch-zoho-sdk.mjs ./scripts/patch-zoho-sdk.mjs
+COPY patches/zoho-sdk-4.0.0.json ./patches/zoho-sdk-4.0.0.json
 RUN npm ci
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
@@ -48,6 +50,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
+COPY scripts/patch-zoho-sdk.mjs ./scripts/patch-zoho-sdk.mjs
+COPY patches/zoho-sdk-4.0.0.json ./patches/zoho-sdk-4.0.0.json
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=node-build /app/dist ./dist
 COPY --from=node-build /app/web/dist ./web/dist

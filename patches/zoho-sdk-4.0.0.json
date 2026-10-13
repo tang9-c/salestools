@@ -1,0 +1,15 @@
+{
+  "version": "4.0.0",
+  "files": [
+    { "path": "lib/utils/util/converter.js", "sha256": "e03ba28a26aabbcad7b6200972103cb8b73fc71acbc63488cca0b4dd995d3a47", "replacements": [["var str = Buffer.from(input).toString('base64');", "var str = (await import('node:crypto')).createHash('sha256').update(Buffer.from(input).toString('base64')).digest('hex');"]] },
+    { "path": "lib/utils/util/utility.js", "sha256": "6165e1f6e5ecfbfbe471696e66cb1b1156757f92f3980955ffc36658323f517f", "replacements": [["import Logger from \"winston\";", "import pkg from \"winston\";\nimport { createHash } from 'node:crypto';\nconst Logger = pkg.loggers.get('salestools-zoho-sdk');"], ["return str + \".json\";", "return createHash('sha256').update(str).digest('hex') + '.json';"]] },
+    { "path": "lib/utils/util/module_fields_handler.js", "sha256": "f54435c5815efe688f81e1c405d7e706e1955f325d9e8b08f7589a7b6e6ed111", "replacements": [["const Logger = pkg;", "const Logger = pkg.loggers.get('salestools-zoho-sdk');"]] },
+    { "path": "lib/routes/controllers/api_http_connector.js", "sha256": "23228dcb81b69271c1a45ec91187d73fa7df6eeee0fd65265ea096138b9250b0", "replacements": [["let Logger = pkg;", "let Logger = pkg.loggers.get('salestools-zoho-sdk');"], ["return got(this.url, requestDetails);", "return got(this.url, { ...requestDetails, retry: { limit: 0 } });"], ["encodeURI(value)", "encodeURIComponent(value)"]] },
+    { "path": "lib/routes/parameter_map.js", "sha256": "3c55874815b33701ebc3feae1a1c1aa4a10eedd34603f6d4d8dd707e6c3df90a", "replacements": [["let Logger = pkg;", "let Logger = pkg.loggers.get('salestools-zoho-sdk');"]] },
+    { "path": "lib/routes/initializer.js", "sha256": "e6c6b56d8637e3f21a272d235f12170345798318f83ee0e203950cd3fee7db14", "replacements": [["let Logger = pkg;", "let Logger = pkg.loggers.get('salestools-zoho-sdk');"]] },
+    { "path": "lib/routes/header_map.js", "sha256": "81927afcae11f681a8f20f4bd1180b50d9cb9d6a2506f03bac8799f3f015a17a", "replacements": [["let Logger = pkg;", "let Logger = pkg.loggers.get('salestools-zoho-sdk');"]] },
+    { "path": "lib/routes/middlewares/common_api_handler.js", "sha256": "eeffb09656e4354937b65593ba624d2bbb72295faa5d1efb773005d264690731", "replacements": [["let Logger = pkg;", "let Logger = pkg.loggers.get('salestools-zoho-sdk');"]] },
+    { "path": "lib/models/authenticator/oauth_token.js", "sha256": "03554da6e1b13e98dc8e637d7f5ca8e8ca98e52f1382b60fd60778c55794f9cf", "replacements": [["let Logger = pkg;", "let Logger = pkg.loggers.get('salestools-zoho-sdk');"], ["return got(url, requestDetails);", "return got(url, { ...requestDetails, retry: { limit: 0 } });"]] },
+    { "path": "lib/routes/logger/sdk_logger.js", "sha256": "39b427338c64311a1359be0d19a11a02d5aedf792573853b897acd210efee27e", "replacements": [["winston.configure({", "winston.loggers.get('salestools-zoho-sdk').configure({"]] }
+  ]
+}

@@ -22,6 +22,7 @@
 - 总时限固定 120 秒，包含串行等待；不设 10 人或其他应用总人数截断。
 - 不逐人拉详情，不查询电话、邮箱、备注、附件、邮件、子表等额外资料；不透传 SDK 原对象。
 - 不新增数据库、任务、管理页面或持久化 CRM 缓存。完成本计划不自动发布、部署或提交用户无关改动。
+- 2026-10-12恢复任务2：用户批准锁定SDK 4.0.0的最小依赖修补（CRM/OAuth retry.limit=0、SDK独立logger、SDK范围form-data 3.0.5 override）；控制器裁决同步修复Token片段文件名SHA-256及仅参数值encodeURIComponent。补丁原文件hash/version精确校验、安装幂等、失配失败，生产/CI安装自动应用。禁止REST替换、全局原型补丁或新进程。
 
 ## 任务 1：配置与结果契约
 
@@ -97,6 +98,8 @@ private serial<T>(context: ZohoCallContext, operation: () => Promise<T>): Promis
 - [ ] 增加 SDK TokenStore 测试：有效 Access Token 复用、过期刷新一次、重启后基于配置 Refresh Token 刷新、同 Client ID 的不同连接不串 Token、授权撤销不循环刷新、不触发默认凭证文件落盘。
 
 ## 任务 3：公司确认、全量分页与部分失败
+
+任务2接口已提供`ZohoClient`、`ZohoAccount`、`ZohoCallContext`、`ZohoCursor`和不联网的`verifyZohoSDKPatch()`。客户/联系人使用任务1 snakecase契约；生产生命周期创建/关闭与启动校验在任务4接入。每次SDK内部传输均从同一deadline读取剩余时间，业务重试最多一次，等待者取消不会释放实际SDK串行锁。
 
 **文件：** 新增 `src/contacts/zoho-contact-service.ts`、`tests/zoho-contacts.test.ts`。
 

@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Target customer assessment MCP service",
   "scripts": {
+    "postinstall": "node scripts/patch-zoho-sdk.mjs --apply",
     "build": "tsc -p tsconfig.build.json && node scripts/build-contact-upload.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
@@ -31,6 +32,11 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "zod": "^4.5.4"
+  },
+  "overrides": {
+    "@zohocrm/nodejs-sdk-8.0": {
+      "form-data": "3.0.5"
+    }
   },
   "devDependencies": {
     "@types/busboy": "^1.5.4",
