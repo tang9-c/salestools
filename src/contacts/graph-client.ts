@@ -1,7 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 
-const maxFrameBytes = 256 * 1024;
+export const maxGraphFrameBytes = 256 * 1024;
+const maxFrameBytes = maxGraphFrameBytes;
 const maxQueuedRequests = 32;
 const graphOps = new Set([
   'health', 'get_contact', 'list_relations', 'save_contact', 'save_relation',
@@ -9,7 +10,7 @@ const graphOps = new Set([
   'commit_import', 'sync_snapshots', 'get_sync_cursor', 'put_import_job',
   'get_import_job', 'get_import_start', 'recover_import_jobs', 'search_keyword', 'search_vector', 'put_vector', 'set_vector_state',
   'find_identity_candidates', 'review_contact_claim',
-  'company_organizations', 'company_relations', 'company_recent_records',
+  'company_organizations', 'company_relations', 'company_recent_records', 'sync_zoho_contacts',
 ]);
 
 export type GraphOp = 'health' | 'get_contact' | 'list_relations' | 'save_contact'
@@ -17,7 +18,11 @@ export type GraphOp = 'health' | 'get_contact' | 'list_relations' | 'save_contac
   | 'archive_relation' | 'commit_import' | 'sync_snapshots' | 'get_sync_cursor'
   | 'put_import_job' | 'get_import_job' | 'get_import_start' | 'search_keyword' | 'search_vector' | 'put_vector'
   | 'set_vector_state' | 'recover_import_jobs' | 'find_identity_candidates' | 'review_contact_claim'
-  | 'company_organizations' | 'company_relations' | 'company_recent_records';
+  | 'company_organizations' | 'company_relations' | 'company_recent_records' | 'sync_zoho_contacts';
+
+export function serializeGraphRequest(requestId: string, op: GraphOp, payload: unknown): string {
+  return `${JSON.stringify({ version: 1, request_id: requestId, op, payload })}\n`;
+}
 
 export interface GraphClient {
   request<T>(op: GraphOp, payload: unknown, signal?: AbortSignal): Promise<T>;
@@ -194,7 +199,7 @@ export class ContactGraphClient implements GraphClient {
       const plainPayload = JSON.parse(JSON.stringify(payload)) as unknown;
       if (plainPayload === null || typeof plainPayload !== 'object' || Array.isArray(plainPayload) ||
           hasPathField(plainPayload)) throw new Error('invalid payload');
-      frame = `${JSON.stringify({ version: 1, request_id: id, op, payload: plainPayload })}\n`;
+      frame = serializeGraphRequest(id, op, plainPayload);
     }
     catch { return Promise.reject(new GraphClientError('GRAPH_INVALID_PAYLOAD')); }
     if (Buffer.byteLength(frame, 'utf8') > maxFrameBytes) {
