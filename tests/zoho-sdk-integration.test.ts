@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { constants } from 'node:fs';
 import { access, readFile, readdir, chmod, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect, test } from 'vitest';
@@ -23,9 +24,15 @@ const send = (response: ServerResponse, payload: unknown, status = 200) => { res
 async function makeReadOnly(path: string): Promise<() => Promise<void>> {
   const modes: Array<[string, number]> = [];
   async function visit(target: string) {
-    const info = await stat(target); modes.push([target, info.mode & 0o777]);
+    const info = await stat(target);
     if (info.isDirectory()) for (const name of await readdir(target)) await visit(join(target, name));
-    await chmod(target, info.isDirectory() ? 0o555 : 0o444);
+    // CI installs as runner but executes tests as contact-ci: verify the existing
+    // read-only boundary instead of attempting chmod on another user's files.
+    if (info.uid === process.getuid?.()) {
+      await chmod(target, info.isDirectory() ? 0o555 : 0o444);
+      modes.push([target, info.mode & 0o777]);
+    }
+    await expect(access(target, constants.W_OK)).rejects.toMatchObject({ code: expect.stringMatching(/^(EACCES|EROFS)$/) });
   }
   try { await visit(path); } catch (error) { for (const [target, mode] of modes) await chmod(target, mode); throw error; }
   return async () => { for (const [target, mode] of modes) await chmod(target, mode); };
@@ -128,9 +135,11 @@ test('cold startup works with the real SDK installation read-only', async () => 
     else send(response, { data: [{ id: '1', Account_Name: 'Read only install' }], info: { more_records: false } });
   });
   const client = new ZohoClient(connections, new LocalBridge(local.base));
-  const restore = await makeReadOnly(installation);
-  try { expect((await client.getAccount('a', '1', context())).company_name).toBe('Read only install'); }
-  finally { await restore(); await client.close(); await local.close(); }
+  let restore: (() => Promise<void>) | undefined;
+  try {
+    restore = await makeReadOnly(installation);
+    expect((await client.getAccount('a', '1', context())).company_name).toBe('Read only install');
+  } finally { try { await restore?.(); } finally { await client.close(); await local.close(); } }
 });
 
 test('SDK refreshes expired access once and restarts from configured refresh token', async () => {
