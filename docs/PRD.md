@@ -62,7 +62,9 @@
 
 `discover_contacts` 使用豆包搜索和方舟查找公开披露的企业负责人、研发/技术、数字化/IT、采购和质量负责人。只有姓名、职位、公司与来源页面能相互核对的候选才返回；无明确职位的专利发明人或招投标联系人不返回。该工具不返回邮箱、电话，也不保证仅凭网页就已确认法人主体。
 
-可选 Zoho 来源按连接只读搜索 CRM `Accounts`，名称包含匹配或多候选时要求用户确认 `connection_id/account_id`，重新核验所选记录后读取关联 `Contacts` 全部分页。仅展示客户与联系人姓名、职位、各自 CRM 记录负责人及来源；不请求电话、邮箱或 Owner 对象中的联系方式。`source=all` 保留网页与 CRM 两组结果，单源失败不抹去另一源，跨来源或跨连接同名人员不自动合并。`complete=false`、`partial`、`failed` 或 `needs_confirmation` 明确表示未获得全量。CRM 记录不等于已核实法定主体或当前任职；不写入网页快照、SQLite、图谱或 Zoho。所有 MCP 用户共享服务端已授权连接及其 CRM 可见范围。
+可选 Zoho 来源按连接只读搜索 CRM `Accounts`，名称包含匹配或多候选时要求用户确认 `connection_id/account_id`，重新核验所选记录后读取关联 `Contacts` 全部分页。仅展示客户与联系人姓名、职位、各自 CRM 记录负责人及来源；不请求电话、邮箱或 Owner 对象中的联系方式。`source=all` 保留网页与 CRM 两组结果，单源失败不抹去另一源，跨来源或跨连接同名人员不自动合并。`complete=false`、`partial`、`failed` 或 `needs_confirmation` 明确表示未获得全量。CRM 记录不等于已核实法定主体或当前任职；不写入网页快照或 Zoho。所有 MCP 用户共享服务端已授权连接及其 CRM 可见范围。
+
+`CONTACT_GRAPH_ENABLED` 是 Zoho 自动入共享图谱的唯一开关。查询后仅同步 completed/partial 中实际取得的客户和联系人，待确认、failed 或空结果不写入；无需额外上传或保存工具。来源身份按长期稳定的连接 ID、Accounts/Contacts 模块、记录 ID 定位，不接收或生成 source_url。同步记录可由现有 search_contacts/get_contact 查询和图谱 App 展示，任职为 unknown，负责人仅是 CRM 记录归属。同源重复读取不增长节点、关系、证据或内容版本，归档关联跳过且不自动恢复。图谱失败或超时只追加 warnings，不修改 CRM status/complete 或丢失返回记录；archived 与新增/更新计数可能重叠，提示关联部分未同步。完整序列化 UTF-8 请求帧按 256 KiB 分批，单条过大单独警告并继续其他记录；每批请求和索引回读各 30 秒，不新增总查询预算或配置。成功事务返回的实质 Person 变化复用现有向量索引器，负责人变化不索引，失败事务不索引。远程只读 CI 用合成 CRM 结果验证查询→入图→检索与重复查询无增长；native/App/容器 gate 由 controller 执行，真实 CRM 和真实宿主不以模拟代替。
 
 内部 CRM 首次授权采用所在区域 API Console 的 Self Client 短期授权码，再通过 POST 请求体换取 Refresh Token。最小 scopes 为 `ZohoCRM.modules.accounts.READ`、`ZohoCRM.modules.contacts.READ`、`ZohoSearch.securesearch.READ`、`ZohoCRM.settings.fields.READ`、`ZohoCRM.settings.modules.READ`、`ZohoCRM.settings.related_lists.READ`；不申请 users/org、settings.ALL 或写权限。服务端环境变量配置连接，SDK 在内存中按需刷新 Token；撤销后须重新授权。SDK 补丁由 postinstall 应用并在启用 Zoho 前校验，元数据使用可清理的临时 resourcePath；补丁不符或临时目录不可写时 Zoho 降级而网页继续。外部客户接入应改用 Server-based OAuth；真实 CRM 和宿主全量响应验收仍待专用测试授权。
 

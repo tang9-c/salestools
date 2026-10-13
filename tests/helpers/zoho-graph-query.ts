@@ -22,11 +22,15 @@ export async function queryRuntime(graph: GraphClient, enabled: boolean) {
       getAccount: async () => ({ account_id: 'a', company_name: '合成公司', account_owner: null }),
       getContactsPage: async () => ({ contacts: [{ record_id: 'p', name: '合成人员', title: '经理', modified_at: null, contact_owner: null }], moreRecords: false, nextPageToken: null }),
       close: async () => undefined } });
-  const listener = await runtime.listen(0, '127.0.0.1');
   const client = new Client({ name: 'synthetic-zoho-graph', version: '1' }, { versionNegotiation: { mode: 'auto' } });
-  const token = runtime.tokenService.create('sales');
-  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(listener.address() as AddressInfo).port}/mcp`),
-    { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
-  return { runtime, client, query: () => client.callTool({ name: 'discover_contacts', arguments: { query: '合成公司', source: 'zoho' } }) };
+  try {
+    const listener = await runtime.listen(0, '127.0.0.1');
+    const token = runtime.tokenService.create('sales');
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(listener.address() as AddressInfo).port}/mcp`),
+      { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+    return { runtime, client, query: () => client.callTool({ name: 'discover_contacts', arguments: { query: '合成公司', source: 'zoho' } }) };
+  } catch (error) {
+    await client.close(); await runtime.close(); throw error;
+  }
 }
 

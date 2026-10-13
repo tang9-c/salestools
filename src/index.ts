@@ -21,6 +21,7 @@ import { ContactSnapshotRepository } from './db/contact-snapshot-repository.js';
 import { JsonlLogger, type LogSink } from './logging/logger.js';
 import { ContactService, type ContactExtractorDependency } from './contacts/contact-service.js';
 import { ZohoContactService } from './contacts/zoho-contact-service.js';
+import { ZohoGraphSync } from './contacts/zoho-graph-sync.js';
 import { ZohoClient, verifyZohoSDKPatch } from './upstream/zoho/client.js';
 import { ContactGraphClient, type GraphClient } from './contacts/graph-client.js';
 import { ContactLibraryService } from './contacts/library-service.js';
@@ -164,6 +165,7 @@ export function createApplication(
       credential: config.embeddingCredential! }) : undefined;
   const vectorIndexer = graphClient && embedding
     ? new VectorIndexer({ graph: graphClient, embedding, model: config.embeddingModel! }) : undefined;
+  const zohoGraphSync = graphClient ? new ZohoGraphSync(graphClient, vectorIndexer) : undefined;
   const contactSearch = graphClient ? new ContactSearch(graphClient, embedding) : undefined;
   const companyLinkRepository = graphClient ? new CompanyLinkRepository(database) : undefined;
   const companyContext = companyLinkRepository ? new CompanyContextService({
@@ -338,7 +340,9 @@ export function createApplication(
       get: input => activity.track(async () => {
         const ready = await zohoReady;
         if (!ready) throw new Error('ZOHO_UNAVAILABLE');
-        return ready.service.get(input);
+        const result = await ready.service.get(input);
+        await zohoGraphSync?.sync(result, userId);
+        return result;
       }),
     },
     contactUpload: contactImport ? { actor: userId, sessions: uploadSessions, sourceTokenHash: tokenService.hash(token),

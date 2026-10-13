@@ -10,8 +10,10 @@ import { queryRuntime } from './helpers/zoho-graph-query.js';
 it.skipIf(process.env.CONTACT_UPLOAD_BUNDLE_REQUIRED !== '1')('queries synthetic CRM into the real Rust graph and preserves idempotence', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'zoho-graph-native-'));
   const graph = new ContactGraphClient({ command: fileURLToPath(new URL('../rust/contact-graph/target/debug/contact-graph', import.meta.url)), dbPath: join(directory, 'graph.sqlite') });
-  const { client, runtime, query } = await queryRuntime(graph, true);
+  let session: Awaited<ReturnType<typeof queryRuntime>> | undefined;
   try {
+    session = await queryRuntime(graph, true);
+    const { client, query } = session;
     const first = await query();
     expect(first.structuredContent).toMatchObject({ zoho: { status: 'completed', complete: true } });
     const search = await client.callTool({ name: 'search_contacts', arguments: { name: '合成人员', mode: 'keyword' } });
@@ -21,13 +23,18 @@ it.skipIf(process.env.CONTACT_UPLOAD_BUNDLE_REQUIRED !== '1')('queries synthetic
     const loaded = await client.callTool({ name: 'get_contact', arguments: { entity_id: id } });
     const detail = loaded.structuredContent as Record<string, unknown>;
     expect(detail).toMatchObject({ entity: { properties: { name: '合成人员', jobTitle: '经理' } } });
-    expect(JSON.stringify(detail)).toContain('unknown');
-    expect(JSON.stringify(detail)).toContain('zoho');
+    expect(detail.relations).toEqual(expect.arrayContaining([expect.objectContaining({ relation_type: 'worksFor',
+      metadata: expect.objectContaining({ employment_status: 'unknown' }) })]));
+    expect(detail.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ source_type: 'zoho',
+      source_connection_id: 'crm_a', source_module: 'Contacts', source_record_id: 'p' })]));
     const before = await graph.request('get_contact', { entity_id: id });
     const second = await query();
     expect(JSON.stringify(second.content)).toContain('未变化 1');
     expect(await graph.request('get_contact', { entity_id: id })).toEqual(before);
     const repeated = await client.callTool({ name: 'search_contacts', arguments: { name: '合成人员', mode: 'keyword' } });
     expect(repeated.structuredContent).toMatchObject({ items: [{ entity_id: id }] });
-  } finally { await client.close(); await runtime.close(); await rm(directory, { recursive: true, force: true }); }
+  } finally {
+    await Promise.allSettled([session?.client.close(), session?.runtime.close(), graph.close()]);
+    await rm(directory, { recursive: true, force: true });
+  }
 });

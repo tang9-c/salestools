@@ -11,7 +11,9 @@ description: Use when a user wants to find contacts across the Salestools librar
 
 `search_contacts` 可附带“联系人图谱”MCP App，由宿主展示或让用户展开，不调用新的 opener。App 自行读取当前搜索页命中节点的全部一跳职业关系及名称；只为展示不要在聊天重复批量 `get_contact`。用户请求核对或结论时，仍按下面的真实 ID、状态和证据流程读取，不能用图像代替证据。点击详情不递归扩图，加载失败或未完成不表示没有关系；虚线仅为原查询显式开启的职业待核实项。详情通过原 `get_contact` 单独显示双向 `possible_duplicate` 身份提示，不受 `include_unverified` 开关影响，且不画成关系边；共用 `unverified_claims` 分页。其他 claim 仍归属于实际主体。正式边不等于人工核实，unknown 任职不能称现任。不支持 App 的宿主继续文字/表格；不要提供普通网页查询链接，也不擅自打开上传 App。
 
-先根据用户表述确定查找环节。说“综合查找”“完整查找”而未限定范围时，默认依次执行：① `search_contacts` 查共享库；② 有招聘目标公司时 `discover_contacts` 查公开网页岗位线索；③ 对相关的库内 `entity_id` 用 `get_contact` 核对档案和证据。项目客户名是库内检索条件，不自动视为招聘目标公司。用户指定仅查公开网页、仅查库、仅看档案，或指定多个环节与顺序时，只执行指定环节；查询本身不触发导入、合并或其他写入。`ask_contacts` 用于既有直接正式关系；项目客户问题走下述项目路径。
+先根据用户表述确定查找环节。说“综合查找”“完整查找”而未限定范围时，默认依次执行：① `search_contacts` 查共享库；② 有招聘目标公司时 `discover_contacts` 查公开网页岗位线索；③ 对相关的库内 `entity_id` 用 `get_contact` 核对档案和证据。项目客户名是库内检索条件，不自动视为招聘目标公司。用户指定仅查公开网页、仅查库、仅看档案，或指定多个环节与顺序时，只执行指定环节。Zoho 查询有下述服务端自动同步边界；其他查询不触发导入或合并。`ask_contacts` 用于既有直接正式关系；项目客户问题走下述项目路径。
+
+用户要求 CRM 时使用 `discover_contacts(source:"zoho"|"all")`，只选择实际配置的连接。needs_confirmation 时核对候选，用完整的 zoho_account_records 重查。启用 CONTACT_GRAPH_ENABLED 后，completed/partial 已取得的客户与联系人自动同步共享库，无需另请用户保存或上传；待确认、failed、空结果和关闭开关不写入。CRM status/complete 表示查询完整性，图谱同步计数与 warnings 独立，失败、超时或超大记录仍保留 CRM 返回；不可把 CRM completed 解释为全部入图。归档关联可能只跳过一部分，必须报告关联部分未同步。负责人只表示 CRM 记录归属，任职为 unknown，不能称现任；不请求或保存电话、邮箱或其他联系方式。连接 ID 必须长期稳定，来源以连接、Accounts/Contacts 模块、记录 ID 定位，不伪造 CRM URL；同名、跨连接或跨来源不自动合并。重复查询无内容变化不增长证据或版本，实质内容变化自动索引，负责人变化不索引。查询后需要查库时重新用 search_contacts 定位真实 entity_id，再用 get_contact 核对来源和关系；不虚构同步 ID，不改用旧网页快照同步。
 
 1. **库内检索**：把姓名、公司、岗位等已知条件交给 `search_contacts`；综合查找且给出公司或学校关键词时，使用 `mode:"keyword",include_unverified:true` 同时查正式事实与简历线索，分别标出 `confirmed` 和 `unverified`，并对线索命中用 `get_contact` 读取来源。用户明确只要已确认资料时不包含未核实线索。有 `next_offset` 且仍需更多候选时继续翻页。记录实际命中范围及警告，语义/混合检索回退为关键词时如实说明。姓名相同不能直接选定一人。
 2. **公开线索**：有招聘目标公司时用公司名及已知地区调用 `discover_contacts`；仅有学校或项目客户名不算已提供招聘目标公司。按返回的线索、来源、`collected_at` 和警告呈现；结果可能来自缓存，不能称为实时全网结果，也不单凭岗位描述断言现任。缺少招聘目标公司时跳过公开环节，继续执行已请求且可执行的档案核对。公开阶段返回一次结果即结束；无结果不证明此人或岗位不存在。

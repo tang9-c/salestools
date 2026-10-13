@@ -56,7 +56,9 @@ codex mcp add salestools \
 
 `discover_contacts` 新增 `source=web|zoho|all`（默认 `web`）、可选 `zoho_accounts` 连接 ID 数组和 `zoho_account_records` 客户记录选择数组。未知连接是输入错误。CRM 客户名称搜索可能包含匹配；有候选需先核对，再用候选的 `connection_id` 与 `account_id` 重新调用。简称不属于全名子串时，将实际候选全名作为 `query` 重新提交。选定记录会重新核验，随后连续读取其关联联系人；Zoho 不受网页每家公司 10 人上限约束。`source=all` 将两种来源分别返回，不合并同名人员。网页结果保留原 `companies/warnings/collected_at`，CRM 结果在独立 `zoho` 区域；Zoho/all 的文本响应按公司列出所有已取得联系人，结构化响应保留连接和记录 ID。`status`、`complete`、`warnings` 必须一起阅读：`partial` 或 `failed` 不能当作全量，`needs_confirmation` 尚未开始联系人全量读取；120 秒同步期限内无法完成的超大客户也会如实标记。
 
-只请求客户和联系人姓名、职位、两类 CRM 记录负责人、修改时间及来源 ID，不请求电话、邮箱、备注、附件或其他关联资料；Owner 表示 CRM 内部记录归属，不代表客户企业所有者或人员上级。所有有效 MCP 用户共享已配置连接及该账号在 CRM 中的可见范围；这里不按销售用户绑定 Zoho 权限。Zoho 实时只读，不写 CRM、网页快照、SQLite 或联系人图谱。
+只请求客户和联系人姓名、职位、两类 CRM 记录负责人、修改时间及来源 ID，不请求电话、邮箱、备注、附件或其他关联资料；Owner 表示 CRM 内部记录归属，不代表客户企业所有者或人员上级。所有有效 MCP 用户共享已配置连接及该账号在 CRM 中的可见范围；这里不按销售用户绑定 Zoho 权限。Zoho 实时只读，不写 CRM 或网页快照。
+
+启用 `CONTACT_GRAPH_ENABLED` 后，已取得的 Zoho 客户和联系人会在查询后自动同步到共享联系人图谱；无需另行上传。关闭开关、待确认、失败及无客户结果不触发同步，partial 只同步实际取得的记录。连接 ID 必须长期稳定：身份按连接、模块和记录 ID 定位，同名或跨连接记录不自动合并；`get_contact` 的结构化来源详情保留这三个定位值，不构造 CRM 链接，图谱 App 继续展示关系和任职状态。重复查询不增加节点、关系、证据或内容版本。任职关系为 `employment_status=unknown`，不能称为现任。归档记录不会自动恢复，关联部分跳过时明确提示。CRM `status/complete` 仍表示查询完整性；图谱计数、失败、超时、超大记录和索引调度警告独立显示（部分为 `ZOHO_GRAPH_SYNC_PARTIAL`，全部未确认同步为 `ZOHO_GRAPH_SYNC_FAILED`），不能据 CRM 查询成功推断全部已入库。每批完整 UTF-8 请求帧最多 256 KiB，单条过大仍保留 CRM 结果，其他可处理记录继续同步；每批和索引回读各限时 30 秒。成功的实质 Person 内容变化复用已有向量索引器，只有负责人变化不触发索引。图谱、App、容器端到端验证使用远程只读 CI 的合成数据，真实 CRM 和宿主验收仍待授权。
 
 首次授权由对应 CRM 授权人员在所在区域的 Zoho API Console 创建 Self Client，选择目标组织和生产环境，申请最小只读 scopes：`ZohoCRM.modules.accounts.READ`、`ZohoCRM.modules.contacts.READ`、`ZohoSearch.securesearch.READ`、`ZohoCRM.settings.fields.READ`、`ZohoCRM.settings.modules.READ`、`ZohoCRM.settings.related_lists.READ`。关闭 SDK 的 findUser，不申请 users/org、`settings.ALL` 或写权限。生成短期授权码后，在有效期内用对应区域的 Accounts Token endpoint，以 POST 请求体交换 Refresh Token；凭证不放入 URL、终端命令历史、聊天或日志。仅把 Client ID、Client Secret、Refresh Token 放入服务端配置，授权码不作为运行配置。SDK 按需刷新 Access Token 并只在内存保存；授权被撤销或 Refresh Token 失效时，需由授权人员重新授权、更新环境并重启。外部客户自有 CRM 应另行采用 Server-based OAuth 流程，不要求客户交付 Refresh Token。
 

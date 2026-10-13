@@ -55,16 +55,17 @@ export class ZohoGraphSync {
     await flush();
     summary.entity_ids = [...new Set(summary.entity_ids)];
     if (committed) result.warnings.push(`图谱同步：新增 ${summary.created}、更新 ${summary.updated}、未变化 ${summary.unchanged}；任职状态未核实（unknown）。`);
-    if (summary.archived) result.warnings.push(`图谱同步：${summary.archived} 条归档关联部分未同步。`);
-    if (oversized) result.warnings.push(`图谱同步：${oversized} 条记录请求帧过大，未同步；CRM 查询结果已保留。`);
-    if (failed) result.warnings.push(`图谱同步：${failed} 批失败或超时，未确认同步；CRM 查询状态和结果已保留，可重新查询。`);
+    const code = committed ? 'ZOHO_GRAPH_SYNC_PARTIAL' : 'ZOHO_GRAPH_SYNC_FAILED';
+    if (summary.archived) result.warnings.push(`ZOHO_GRAPH_SYNC_PARTIAL：图谱同步 ${summary.archived} 条归档关联部分未同步。`);
+    if (oversized) result.warnings.push(`${code}：图谱同步 ${oversized} 条记录请求帧过大，未同步；CRM 查询结果已保留。`);
+    if (failed) result.warnings.push(`${code}：图谱同步 ${failed} 批失败或超时，未确认同步；CRM 查询状态和结果已保留，可重新查询。`);
     if (this.indexer) {
       for (const id of summary.entity_ids) {
         try {
           const detail = await this.graph.request<{ entity?: { label?: string }; index_status?: string; index_content_version?: number } | null>(
             'get_contact', { entity_id: id }, AbortSignal.timeout(30_000));
           if (detail?.entity?.label === 'Person' && detail.index_status === 'unindexed' && detail.index_content_version) {
-            this.indexer.index(id, detail.index_content_version);
+            await this.indexer.index(id, detail.index_content_version);
           }
         } catch { result.warnings.push('图谱同步已提交，向量索引调度失败；关键词查询仍可使用。'); }
       }
