@@ -117,21 +117,35 @@ describe('ZohoContactService', () => {
     expect(result.connections[1].error_code).toBe('ZOHO_AUTH_FAILED');
   });
 
-  it('deduplicates by connection and record ID across selected companies without passing extra fields', async () => {
+  it('keeps each selected company relationship while deduplicating repeated pages within it', async () => {
     const client = fake();
     client.getAccount.mockImplementation(async (_id, id) => account(id));
-    client.getContactsPage.mockResolvedValue({ contacts: [{ ...contact('1'), Email: 'secret@example.com' } as ReturnType<typeof contact>], moreRecords: false, nextPageToken: null });
+    client.getContactsPage.mockImplementation(async (_id, _account, cursor) => ({ contacts: [{ ...contact('1'), Email: 'secret@example.com' } as ReturnType<typeof contact>], moreRecords: 'page' in cursor && cursor.page === 1, nextPageToken: null }));
     const result = await service(client, connections.slice(0, 1)).get({ query: 'Acme Inc', accountRecords: [{ connectionId: 'a', accountId: '1' }, { connectionId: 'a', accountId: '2' }] });
-    expect(result.companies.map(company => company.contacts.length)).toEqual([1, 0]);
+    expect(result.companies.map(company => company.contacts.length)).toEqual([1, 1]);
+    expect(result.companies.map(company => company.contacts[0]?.record_id)).toEqual(['1', '1']);
     expect(JSON.stringify(result)).not.toContain('secret@example.com');
   });
 
-  it('returns partial for a repeated cursor without looping', async () => {
+  it('returns partial when a changing cursor yields no new contact IDs', async () => {
     const client = fake();
-    client.getContactsPage.mockResolvedValue({ contacts: [contact('1')], moreRecords: true, nextPageToken: 'stuck' });
+    let calls = 0;
+    client.getContactsPage.mockImplementation(async (_id, _account, cursor) => {
+      if (++calls > 3) throw new Error('ZOHO_UPSTREAM_ERROR');
+      return { contacts: [contact('1')], moreRecords: true, nextPageToken: 'page' in cursor ? `next-${cursor.page}` : `${cursor.pageToken}-next` };
+    });
     const result = await service(client, connections.slice(0, 1)).get({ query: 'Acme Inc' });
     expect(result.status).toBe('partial');
-    expect(client.getContactsPage).toHaveBeenCalledTimes(11);
+    expect(result.companies[0].contacts.map(person => person.record_id)).toEqual(['1']);
+    expect(client.getContactsPage).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows a terminal page with no new contact IDs', async () => {
+    const client = fake();
+    client.getContactsPage.mockImplementation(async (_id, _account, cursor) => ({ contacts: [contact('1')], moreRecords: 'page' in cursor && cursor.page === 1, nextPageToken: null }));
+    const result = await service(client, connections.slice(0, 1)).get({ query: 'Acme Inc' });
+    expect(result).toMatchObject({ status: 'completed', complete: true });
+    expect(result.companies[0].contacts).toHaveLength(1);
   });
 
   it('returns at 120 seconds even if an SDK promise remains unsettled, then freezes results', async () => {
@@ -168,5 +182,24 @@ describe('ZohoContactService', () => {
     await Promise.resolve();
     expect(result.companies[0].contacts).toHaveLength(1);
     expect(client.getContactsPage).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports deadline over an earlier confirmation need while preserving candidates', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const client = fake();
+    let resolve!: (value: { accounts: ReturnType<typeof account>[]; moreRecords: boolean }) => void;
+    client.searchAccountsPage.mockImplementation(async id => id === 'a'
+      ? { accounts: [account('1', 'Acme Holdings')], moreRecords: false }
+      : new Promise(r => { resolve = r; }));
+    const resultPromise = service(client).get({ query: 'Acme' });
+    await vi.advanceTimersByTimeAsync(120000);
+    const result = await resultPromise;
+    expect(result).toMatchObject({ status: 'partial', complete: false });
+    expect(result.connections[0].candidates.map(item => item.account_id)).toEqual(['1']);
+    expect(result.warnings).toContain('ZOHO_DEADLINE_EXCEEDED');
+    resolve({ accounts: [account('2')], moreRecords: false });
+    await Promise.resolve();
+    expect(client.getContactsPage).not.toHaveBeenCalled();
   });
 });

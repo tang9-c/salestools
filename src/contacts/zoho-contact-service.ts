@@ -38,7 +38,7 @@ export class ZohoContactService {
     const warnings: string[] = [];
     const selected = new Map<string, ZohoAccountCandidate[]>();
     const finished = new Set<string>();
-    const seenContacts = new Set<string>();
+    let timedOut = false;
     const active = () => !controller.signal.aborted && now() < deadlineAt;
     const assertActive = () => { if (!active()) fail('ZOHO_DEADLINE_EXCEEDED'); };
     const log = (id: string, phase: string, pages: number, count: number, start: number, errorCode: string | null) => {
@@ -48,12 +48,14 @@ export class ZohoContactService {
       const needs = states.some(state => state.status === 'needs_confirmation');
       const bad = states.some(state => state.status === 'partial' || state.status === 'failed');
       const complete = !needs && !bad && states.every(state => state.search_complete);
-      const status = needs ? 'needs_confirmation' : complete ? 'completed' : states.every(state => state.status === 'failed') ? 'failed' : 'partial';
-      return structuredClone({ status, complete, connections: states, companies, warnings, collected_at: new Date(now()).toISOString() });
+      const hasResult = companies.length > 0 || states.some(state => state.candidates.length > 0 || (!input.accountRecords && state.search_complete));
+      const status = timedOut ? (hasResult ? 'partial' : 'failed') : needs ? 'needs_confirmation' : complete ? 'completed' : states.every(state => state.status === 'failed') ? 'failed' : 'partial';
+      return structuredClone({ status, complete: timedOut ? false : complete, connections: states, companies, warnings, collected_at: new Date(now()).toISOString() });
     };
     let timer!: ReturnType<typeof setTimeout>;
     const timeout = new Promise<ZohoContactsOutput>(resolve => {
       timer = setTimeout(() => {
+        timedOut = true;
         controller.abort();
         for (const state of states) if (state.status === 'completed' && !finished.has(state.connection_id)) {
           state.status = companies.some(company => company.connection_id === state.connection_id) ? 'partial' : 'failed';
@@ -119,6 +121,7 @@ export class ZohoContactService {
           assertActive();
           const start = now(); let pages = 0; let cursor: ZohoCursor = { page: 1 };
           const seenCursors = new Set<string>();
+          const seenContacts = new Set<string>();
           const company: ZohoCompany = { ...item, connection_id: state.connection_id, contacts: [] };
           companies.push(company);
           for (;;) {
@@ -130,6 +133,7 @@ export class ZohoContactService {
               const page = await this.client.getContactsPage(state.connection_id, item.account_id, cursor, context);
               assertActive();
               pages++;
+              const before = company.contacts.length;
               for (const raw of page.contacts) {
                 const id = `${state.connection_id}:${raw.record_id}`;
                 if (seenContacts.has(id)) continue;
@@ -141,6 +145,7 @@ export class ZohoContactService {
                 });
               }
               if (!page.moreRecords) break;
+              if (company.contacts.length === before) { state.status = 'partial'; state.error_code = 'ZOHO_PAGINATION_STALLED'; break; }
               if (pages >= 10) {
                 if (!page.nextPageToken) { state.status = 'partial'; state.error_code = 'ZOHO_PAGINATION_STALLED'; break; }
                 cursor = { pageToken: page.nextPageToken };
