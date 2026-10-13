@@ -80,11 +80,12 @@ fn contact_source_snapshots(store: &Store) -> Vec<Value> {
          ORDER BY relation_id",
         )
         .unwrap();
-    query
+    let snapshots = query
         .query_map([], |row| row.get::<_, String>(0))
         .unwrap()
         .map(|row| serde_json::from_str(&row.unwrap()).unwrap())
-        .collect()
+        .collect();
+    snapshots
 }
 
 fn assert_collection_watermark_survives_older_delivery(newer_modified: bool) {
@@ -194,10 +195,11 @@ fn first_sync_creates_located_facts_unknown_employment_and_searchable_person() {
     assert_eq!(count(&store, "relation_ids"), 1);
     assert_eq!(count(&store, "import_jobs"), 0);
     let found = detail(&store, &id);
-    assert_eq!(
-        found["entity"]["properties"],
-        json!({"name":"张明","jobTitle":"研发总监"})
-    );
+    assert_eq!(found["entity"]["properties"]["name"], "张明");
+    assert_eq!(found["entity"]["properties"]["jobTitle"], "研发总监");
+    for key in ["email", "telephone", "contactPoint"] {
+        assert_eq!(found["entity"]["properties"][key], json!([]));
+    }
     assert_eq!(
         found["relations"][0]["metadata"]["employment_status"],
         "unknown"
