@@ -5,22 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>导入联系人文件</title>
   <style>
-    :root{font-family:system-ui,-apple-system,sans-serif;color:#172b29;background:#f7faf8}
-    body{max-width:640px;margin:0 auto;padding:24px 18px 60px}
-    h1{font-size:1.5rem;margin:0 0 8px}p{line-height:1.5}
-    .card{background:white;border:1px solid #dce7e2;border-radius:16px;padding:20px;margin:16px 0;box-shadow:0 4px 20px #16382a0a}
-    .actions{display:flex;gap:10px;flex-wrap:wrap}button,.pick{display:inline-block;border:0;border-radius:10px;background:#096b55;color:white;padding:12px 16px;font:inherit;cursor:pointer}
-    button:disabled{background:#9aa9a3;cursor:not-allowed}.pick input{display:none}
-    .secondary{background:#e4f1eb;color:#125944}#status{min-height:24px}#preview{white-space:pre-wrap;overflow-wrap:anywhere}
-    .item{border-top:1px solid #e5ebe8;padding:12px 0}.muted{color:#52645d;font-size:.9rem}
-    h2{font-size:1.2rem}h3{font-size:1rem}#task-id,#file-name{overflow-wrap:anywhere}
-    [hidden]{display:none!important}.pick:has(input:disabled){opacity:.55;cursor:not-allowed}
+    :root{color-scheme:light;--ink:#20252b;--muted:#59636e;--line:#dce1e6;--paper:#f7f8fa;--accent:#245fbd}
+    *{box-sizing:border-box}body{max-width:720px;margin:0 auto;padding:16px 20px 40px;background:var(--paper);color:var(--ink);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    h1{font-size:20px;line-height:1.4;margin:0 0 8px;font-weight:650;letter-spacing:-.02em}p{margin:8px 0}h2{font-size:16px;margin:0 0 12px;font-weight:600}h3{font-size:14px;margin:8px 0;font-weight:600}
+    .card{background:#fff;border:1px solid var(--line);border-radius:6px;padding:18px;margin:16px 0}
+    .actions{display:flex;gap:8px;flex-wrap:wrap}button,.pick{display:inline-flex;align-items:center;justify-content:center;min-height:40px;border:1px solid var(--accent);border-radius:4px;background:var(--accent);color:#fff;padding:7px 14px;font:inherit;cursor:pointer;transition:background-color .15s,border-color .15s}
+    button:hover:not(:disabled),.pick:hover:not(:has(input:disabled)){background:#1c4f9f;border-color:#1c4f9f}button:disabled,.pick:has(input:disabled){background:#f4f5f7;border-color:var(--line);color:#929aa4;cursor:default}
+    .pick{position:relative}.pick input{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}button:focus-visible,.pick:focus-within{outline:2px solid var(--accent);outline-offset:3px}
+    .secondary{background:#fff;border-color:var(--line);color:var(--ink)}.secondary:hover:not(:disabled),.pick.secondary:hover:not(:has(input:disabled)){background:#f0f3f7;border-color:#a9b4c0}
+    #status{min-height:24px;margin:16px 0 8px}body[data-state=failed] #status{padding:8px 12px;color:#784614;background:#fff6e9;border-left:3px solid #b27b24}#preview{white-space:pre-wrap;overflow-wrap:anywhere}
+    .item{border-top:1px solid var(--line);padding:12px 0}.muted{color:var(--muted);font-size:13px}.privacy{font-size:12px;padding-left:10px;border-left:2px solid var(--line)}#task-id,#file-name{overflow-wrap:anywhere}#task-id{font-size:12px;color:var(--muted)}#review>button{margin:8px 4px 0 0}
+    [hidden]{display:none!important}@media(max-width:760px){body{padding:12px 12px 28px}.card{padding:14px}}@media(prefers-reduced-motion:reduce){button,.pick{transition:none}}
   </style>
 </head>
 <body data-state="waiting">
   <h1>导入联系人</h1>
   <p class="muted">选择一份 PDF，或拍摄一张名片。上传后先核对识别结果，再决定是否入库。</p>
-  <p class="muted">原始文件会临时存储，提取的文字会发送给服务配置的模型。您确认后，正式记录将写入共享联系人库。</p>
+  <p class="muted privacy">原始文件会临时存储，提取的文字会发送给服务配置的模型。您确认后，正式记录将写入共享联系人库。</p>
   <section class="card">
     <div class="actions">
       <label class="pick">选择 PDF／图片<input id="file" type="file" accept=".pdf,application/pdf,image/jpeg,image/png" disabled></label>

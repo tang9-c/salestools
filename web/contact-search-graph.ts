@@ -21,6 +21,7 @@ let reportVersion = 0;
 let searching = false;
 let waitingResult = false, searchedOffsets: number[] = [];
 let view = { x: 0, y: 0, width: 1000, height: 510 }, extent = { width: 1000, height: 510 };
+let initialView = true;
 let selectedEdge: GraphEdge | undefined;
 const limit = { evidence: 10, relations: 20, unverified_claims: 20 };
 
@@ -118,7 +119,15 @@ function svg(tag: string, attrs: Record<string, string> = {}): SVGElement {
   for (const [k, v] of Object.entries(attrs)) item.setAttribute(k, v);
   return item;
 }
-function applyView() { graph.setAttribute('viewBox', `${view.x} ${view.y} ${view.width} ${view.height}`); }
+function applyView() {
+  const box = graph.getBoundingClientRect();
+  if (initialView && box.width > 0 && box.height > 0) {
+    // Start at readable size; the full graph remains accessible by panning.
+    view = { x: 0, y: 0, width: box.width / .9, height: box.height / .9 };
+    initialView = false;
+  }
+  graph.setAttribute('viewBox', `${view.x} ${view.y} ${view.width} ${view.height}`);
+}
 function render() {
   if (!page) return;
   addClaims();
@@ -151,36 +160,41 @@ function render() {
     ['search-next', !input || page.next_offset == null || !!pendingSearch || searching || waitingResult || !connected]] as const) el<HTMLButtonElement>(id).disabled = disabled;
   graph.replaceChildren();
   const defs = svg('defs'), marker = svg('marker', { id: 'arrow', viewBox: '0 0 10 10', refX: '10', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' });
-  marker.append(svg('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: '#71887e' })); defs.append(marker); graph.append(defs);
+  marker.append(svg('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: '#74808d' })); defs.append(marker); graph.append(defs);
   const counts = [0, 0, 0], positions = new Map<string, { x: number; y: number }>();
   for (const node of state.nodes) {
     const col = node.label === 'Person' ? 0 : node.label === 'Organization' ? 1 : 2;
-    positions.set(node.id, { x: 170 + col * 320, y: 55 + counts[col]++ * 95 });
+    positions.set(node.id, { x: 170 + col * 360, y: 55 + counts[col]++ * 110 });
   }
-  extent = { width: 1000, height: Math.max(510, Math.max(...counts) * 95 + 40) };
+  extent = { width: 1060, height: Math.max(510, Math.max(...counts) * 110 + 40) };
   for (const edge of state.edges) {
     const from = positions.get(edge.source)!, to = positions.get(edge.target)!;
     const line = svg('path', { d: `M ${from.x} ${from.y} Q ${(from.x + to.x) / 2 + (from.x === to.x ? 80 : 0)} ${(from.y + to.y) / 2 - 28} ${to.x} ${to.y}`,
-      fill: 'none', stroke: edge.status === 'unverified' ? '#b18340' : '#71887e', 'stroke-width': '2',
+      fill: 'none', stroke: edge.status === 'unverified' ? '#946018' : '#74808d', 'stroke-width': '2',
       'stroke-dasharray': edge.status === 'unverified' ? '6 5' : '', 'marker-end': 'url(#arrow)',
-      'data-edge': edge.id, 'data-status': edge.status, tabindex: '0', role: 'button', 'aria-label': relationText(edge) });
+      'data-edge': edge.id, 'data-source': edge.source, 'data-target': edge.target,
+      'data-status': edge.status, tabindex: '0', role: 'button', 'aria-label': relationText(edge) });
     const choose = () => selectNode(rootsFor(edge), edge);
     line.addEventListener('click', choose); line.addEventListener('keydown', e => { if (['Enter', ' '].includes((e as KeyboardEvent).key)) { e.preventDefault(); choose(); } });
     const title = svg('title'); title.textContent = relationText(edge); line.append(title); graph.append(line);
     const caption = svg('text', { x: String((from.x + to.x) / 2), y: String((from.y + to.y) / 2 - 18),
-      fill: edge.status === 'unverified' ? '#996e2c' : '#5a716a', 'font-size': '11', 'text-anchor': 'middle', 'pointer-events': 'none' });
+      fill: edge.status === 'unverified' ? '#805010' : '#59636e', 'font-size': '13', 'text-anchor': 'middle', 'pointer-events': 'none' });
     caption.textContent = `${labels[edge.type]}${edge.status === 'unverified' ? '（待核实）' : ''}`; graph.append(caption);
   }
   const list = el('node-list'); list.replaceChildren();
   for (const node of state.nodes) {
     const pos = positions.get(node.id)!;
-    const g = svg('g', { transform: `translate(${pos.x - 125} ${pos.y - 30})`, 'data-node': node.id });
-    g.append(svg('rect', { width: '250', height: '60', rx: '8', fill: node.label === 'Person' ? '#e9f4ef' : node.label === 'Organization' ? '#eff1e2' : '#edf0f5', stroke: '#bacdc3' }));
-    const t = svg('text', { x: '12', y: '25', fill: '#153b35', 'font-size': '14' }); t.textContent = node.title.length > 16 ? `${node.title.slice(0, 16)}…` : node.title;
+    const g = svg('g', { transform: `translate(${pos.x - 125} ${pos.y - 30})`, 'data-node': node.id,
+      tabindex: '0', role: 'button', 'aria-label': `${nodeLabels[node.label]}：${node.title}` });
+    g.append(svg('rect', { width: '250', height: '60', rx: '4', fill: '#ffffff', stroke: '#a7b1be', 'stroke-width': '1.5' }));
+    const t = svg('text', { x: '12', y: '25', fill: '#20252b', 'font-size': '16', 'font-weight': '600' }); t.textContent = node.title.length > 14 ? `${node.title.slice(0, 14)}…` : node.title;
     const full = svg('title'); full.textContent = node.title; t.append(full); g.append(t);
-    const hint = svg('text', { x: '12', y: '46', fill: '#5a716a', 'font-size': '11' }); hint.textContent = `${nodeLabels[node.label]} · ${node.matched ? '搜索命中' : '关联补充'}`; g.append(hint);
-    g.addEventListener('click', () => selectNode(node.id)); graph.append(g);
+    const hint = svg('text', { x: '12', y: '46', fill: '#59636e', 'font-size': '13' }); hint.textContent = `${nodeLabels[node.label]} · ${node.matched ? '搜索命中' : '关联补充'}`; g.append(hint);
+    g.addEventListener('click', () => selectNode(node.id));
+    g.addEventListener('keydown', e => { if (['Enter', ' '].includes((e as KeyboardEvent).key)) { e.preventDefault(); selectNode(node.id); } });
+    graph.append(g);
     const li = document.createElement('li'); const b = button(li, node.title, () => selectNode(node.id));
+    b.dataset.nodeId = node.id; b.setAttribute('aria-pressed', String(selection?.id === node.id));
     const rootLoads = active.filter(l => l.id === node.id && l.collection !== 'name');
     const loadState = rootLoads.some(l => l.failed) ? '部分失败' : rootLoads.every(l => l.done) ? '加载完成' : paused ? '已停止' : '加载中';
     text(b, 'small', `${nodeLabels[node.label]} · ${node.matched ? `搜索命中 · ${loadState}` : '关联补充'}`); list.append(li);
@@ -194,7 +208,7 @@ function rootsFor(edge: GraphEdge): string {
 }
 function safeField(path: unknown) { return typeof path === 'string' && /^(properties\.)?(name|legalName|jobTitle|skills)(\[\d+\])?$/.test(path); }
 function source(parent: Element, record: Record<string, unknown>) {
-  text(parent, 'p', record.quote, 'quote');
+  if (readable(record.quote)) text(parent, 'p', record.quote, 'quote');
   text(parent, 'p', `${readable(record.source_type)} ${readable(record.file_name)} ${readable(record.collected_at)}`, 'quote');
   const value = record.source_url ?? record.url;
   if (typeof value !== 'string') return;
@@ -207,6 +221,11 @@ function source(parent: Element, record: Record<string, unknown>) {
 function renderDetail() {
   if (!selected || !selection) return;
   panel.replaceChildren(); const entity = object(selected.entity), props = object(entity.properties);
+  for (const node of graph.querySelectorAll('[data-node]')) node.classList.toggle('selected', node.getAttribute('data-node') === selection.id);
+  for (const edge of graph.querySelectorAll('[data-edge]')) edge.classList.toggle('selected', selectedEdge
+    ? edge.getAttribute('data-edge') === selectedEdge.id
+    : edge.getAttribute('data-source') === selection.id || edge.getAttribute('data-target') === selection.id);
+  for (const b of el('node-list').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.nodeId === selection.id));
   const names = new Map(toGraph(page ?? { items: [], total: 0, mode_used: 'keyword', warnings: [] },
     [...materials, selected], input?.include_unverified === true).nodes.map(n => [n.id, n.title]));
   names.set(selection.id, displayTitle(entity, page?.items.find(i => i.entity_id === selection!.id)));
@@ -228,7 +247,19 @@ function renderDetail() {
       || e.subject_kind === 'relation' && allowed.has(e.subject_id));
   if (selectedEdge?.status === 'unverified') { text(panel, 'p', selectedEdge.record.reason); source(panel, object(selectedEdge.record.source)); }
   if (selectedEdge?.status === 'recorded' && !evidence.length) text(panel, 'p', '当前证据页未包含该关系的证据');
-  for (const e of evidence) { const box = text(panel, 'div', '', 'record'); text(box, 'p', fieldLabel(e.field_path)); source(box, e); }
+  const zoho = evidence.filter(e => e.source_type === 'zoho');
+  if (zoho.length) {
+    const box = text(panel, 'details', '', 'record');
+    text(box, 'summary', '来源：Zoho CRM · 展开字段依据');
+    const times = [...new Set(zoho.map(e => readable(e.collected_at)).filter(Boolean))];
+    if (times.length) text(box, 'p', `同步时间：${times.join('、')}`, 'quote');
+    for (const e of zoho) {
+      const value = readable(e.value);
+      if (value) text(box, 'p', `${fieldLabel(e.field_path)}：${value}`);
+      else if (e.field_path === '$relation') text(box, 'p', '任职关系：来自 CRM 客户与联系人关联，当前任职未核实。');
+    }
+  }
+  for (const e of evidence.filter(e => e.source_type !== 'zoho')) { const box = text(panel, 'div', '', 'record'); text(box, 'p', fieldLabel(e.field_path)); source(box, e); }
   for (const c of records(selected.conflicts)) if (c.subject_kind === 'entity' && c.subject_id === selection.id && safeField(c.field_path)) {
     const box = text(panel, 'div', '字段冲突', 'record'); text(box, 'p', `${fieldLabel(c.field_path)}：${readable(c.value)}`); source(box, c);
   }
@@ -333,7 +364,7 @@ function accept(p: SearchPage, args: SearchInput | null) {
   materials = []; loads = p.items.map(i => ({ id: i.entity_id, collection: 'relations', offset: 0, done: false, failed: false }));
   selected = null; selection = pendingDetail = null; selectedEdge = undefined;
   panel.textContent = '选择节点或关系查看来源。'; notice.textContent = '';
-  view = { x: 0, y: 0, width: 1000, height: 510 }; render(); void pump();
+  initialView = true; view = { x: 0, y: 0, width: 1000, height: 510 }; render(); void pump();
 }
 function addClaims() {
   if (!page || !input?.include_unverified) return;

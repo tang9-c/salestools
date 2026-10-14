@@ -163,6 +163,75 @@ it('shows endpoint names, distinct jobs and Chinese evidence labels instead of i
   expect(await h.ui.locator('#detail .record').count()).toBe(3);
 });
 
+it('collapses Zoho provenance and displays stored values without requiring quotes', async () => {
+  const h = await open(call => {
+    const d = detail(String(call.arguments.entity_id), [edge(0)]);
+    if (call.arguments.evidence_limit === 10) d.evidence = [
+      { subject_kind: 'entity', subject_id: 'o1', field_path: 'properties.name', value: '云杉智造' },
+      { subject_kind: 'relation', subject_id: 'r0', field_path: 'properties.role.roleName', value: '研发组长' },
+      { subject_kind: 'relation', subject_id: 'r0', field_path: '$relation', value: { relation_type: 'worksFor' } },
+    ].map(e => ({ ...e, source_type: 'zoho', collected_at: '2026-10-14T09:56:30Z', source_record_id: 'private-record' })) as never[];
+    return result(d);
+  });
+  await completed(h.ui);
+  await h.ui.locator('#node-list button').filter({ hasText: '云杉智造' }).click();
+  const provenance = h.ui.locator('#detail details');
+  await expect.poll(() => provenance.locator('summary').textContent()).toBe('来源：Zoho CRM · 展开字段依据');
+  expect(await provenance.getAttribute('open')).toBeNull();
+  await provenance.locator('summary').click();
+  expect(await provenance.innerText()).toContain('名称：云杉智造');
+  expect(await provenance.innerText()).toContain('职位：研发组长');
+  expect(await provenance.innerText()).toContain('当前任职未核实');
+  expect(await provenance.innerText()).not.toContain('private-record');
+  expect(await provenance.locator('p').allTextContents()).not.toContain('字段依据');
+});
+
+it('keeps a large graph readable by default and leaves overview fitting explicit', async () => {
+  const h = await open(call => result(detail(String(call.arguments.entity_id),
+    call.arguments.entity_id === 'o1' ? Array.from({ length: 21 }, (_, i) => edge(i)) : [])));
+  await completed(h.ui);
+  const displayedFont = await h.ui.locator('#graph [data-node] text').first().evaluate(el => {
+    const matrix = (el as SVGGraphicsElement).getScreenCTM()!;
+    return Number(el.getAttribute('font-size')) * Math.hypot(matrix.a, matrix.b);
+  });
+  expect(displayedFont).toBeGreaterThanOrEqual(14);
+  await h.ui.locator('#fit').click();
+  const overview = await h.ui.locator('#graph').getAttribute('viewBox');
+  expect(Number(overview!.split(' ')[3])).toBeGreaterThan(2000);
+  await h.ui.locator('#node-list button').filter({ hasText: '云杉智造' }).click();
+  await expect.poll(() => h.ui.locator('#graph [data-node="o1"]').getAttribute('class')).toBe('selected');
+});
+
+it('keeps the graph and archive usable at compact and wide viewport sizes', async () => {
+  const names = ['林知远', '陈嘉宁', '周启明', '赵亦安', '许文清'];
+  const h = await open(call => {
+    const id = String(call.arguments.entity_id);
+    const d = detail(id, id === 'o1' ? names.map((_, i) => edge(i)) : [edge(Number(id.slice(1)))]);
+    if (id !== 'o1') d.entity.properties.name = names[Number(id.slice(1))] ?? '联系人';
+    if (call.arguments.evidence_limit === 10) d.evidence = [{ subject_kind: 'entity', subject_id: id,
+      field_path: 'properties.name', value: d.entity.properties.name, source_type: 'zoho', collected_at: '2026-10-14T09:00:00Z' }] as never[];
+    return result(d);
+  }, { query: '云杉智造', mode: 'keyword' });
+  await completed(h.ui);
+  for (const width of [375, 768, 1024, 1440]) {
+    await h.page.setViewportSize({ width, height: 1000 });
+    await h.notify('ui/notifications/tool-result', { content: [], structuredContent: root });
+    await completed(h.ui);
+    const sizes = await h.ui.evaluate(() => ({ content: document.documentElement.scrollWidth, viewport: innerWidth }));
+    expect(sizes.content).toBeLessThanOrEqual(sizes.viewport);
+    const node = h.ui.locator('#graph [data-node="o1"]');
+    await node.focus(); await node.press('Enter');
+    await expect.poll(() => h.ui.locator('#detail').innerText()).toContain('云杉智造');
+    await expect.poll(() => node.getAttribute('class')).toBe('selected');
+    expect(await h.ui.locator('#graph [data-edge].selected').count()).toBe(names.length);
+    if (process.env.SALESTOOLS_GRAPH_PREVIEW_DIR && [375, 1440].includes(width)) {
+      await h.ui.locator('#node-list button').filter({ hasText: '林知远' }).click();
+      await expect.poll(() => h.ui.locator('#notice').textContent()).toBe('');
+      await h.page.screenshot({ path: resolve(process.env.SALESTOOLS_GRAPH_PREVIEW_DIR, `contact-graph-${width}.png`), fullPage: true });
+    }
+  }
+});
+
 it('uses unnamed labels without exposing ID suffixes when endpoint names are unavailable', async () => {
   const personId = 'p_00112233445566778899aabbccddeeff';
   const h = await open(call => {
