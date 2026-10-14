@@ -1,71 +1,31 @@
 ---
 name: salestools-customer-assessment
-description: Use when a user wants to look up a Chinese company, ask evidence-backed questions about a confirmed company, run or check a seven-product sales assessment, or read its report through the Salestools MCP. Contact discovery and imports use the contact-management skill.
+description: Look up a Chinese company, answer evidence-backed questions about it, or run and read a seven-product sales assessment through Salestools MCP. Use for company research and sales assessment; contact search and imports belong to salestools-contact-management.
 ---
 
-# 使用 Salestools 客户体检
+# Salestools 客户体检
 
-## 核心原则
+以当前连接实际提供的 MCP 工具和返回结果为准。只编排调用、解释证据，不自行补算产品等级；缺少工具时说明缺失环节，不模拟结果。用户未明确要求正式评估时，先提供基础画像。
 
-先区分“初步了解”“单企业定向追问”“正式销售评估”和“查询关键岗位”。Skill 只编排 MCP 工具并解释结果；事实、证据和产品机会均以服务端返回为准，不自行补算或改写等级。
+## 按意图选择工具
 
-当前工具提供 MCP App 时优先在聊天展示 UI，并用简短文字补充结论与警告；用户明确只要文字时除外。联系人搜索图谱和文件导入遵循联系人管理 skill 的 UI 优先流程。没有对应 App 的画像、追问和报告仍使用可读文字，不把工具可供 App 调用误认为它自带界面，也不宣称用户已看到尚未展开的 App。
+| 用户意图 | 工具与必要动作 |
+| --- | --- |
+| 初步了解、公司基本情况 | `get_company_profile`；简称可用于候选搜索，多候选请用户选定。 |
+| 问具体问题、解释招聘证据、查近期变化 | `ask_company`；不要求先生成完整报告。调用前读 [定向追问](references/company-questions.md)。 |
+| 正式体检、七产品机会、销售切入点 | 先用画像工具核验法定主体，再 `submit_assessment`。调用前读 [评估与报告](references/assessment-reports.md)。 |
+| 查进度、读报告 | 用已有 `assessment_id` 调用状态或报告工具；结果含义与恢复见 [评估与报告](references/assessment-reports.md)。 |
+| 找联系人、查 CRM、导入资料或看关系 | 使用 [联系人管理 skill](../salestools-contact-management/SKILL.md)，不为找人启动评估。 |
 
-## 调用路由
+## 呈现与解释
 
-| 用户意图 | 行为 |
-|---|---|
-| 看一下、了解公司、基本情况，或意图不明确 | 调用 `get_company_profile`，不要启动正式评估 |
-| 针对已确认主体问具体问题、解释某条报告证据、查近期产品/招聘/扩张信号 | 调用 `ask_company`；无需先生成或重读完整评估报告 |
-| 正式评估、客户体检、产品机会、销售切入点 | 先调用 `get_company_profile` 校验并保存主体，再确认后调用 `submit_assessment` |
-| 查看进度 | 使用已有 `assessment_id` 调用 `get_assessment_status` |
-| 查看报告 | 调用 `get_assessment_report`；若仍在处理，只报告当前状态 |
-| 查负责人、研发、技术、IT、采购或质量岗位，或 CRM 联系人 | 转到 [联系人管理 skill](../salestools-contact-management/SKILL.md)，按共享库、网页或 Zoho 来源选择工具；不为找人启动正式评估 |
+- 有对应 MCP App 且宿主支持时优先展示 UI，聊天补充结论和警告。用户只要文字时遵从；没有 App 的工具使用可读文字，不把工具可供 App 调用误认为它自带界面。
+- 基础画像先给确认主体、行业标签、规模与经营线索；正式报告先给综合机会、推荐产品及有证据的理由，再概括产品机会、阻碍和销售行动。
+- 保留来源、采集时间、冲突与缺口。`partial` 只表示对应来源部分可用；失败原因按返回值说明，不猜测。
+- 招聘可证明岗位或软件场景，不能单独证明采购意向；融资是公司活跃度或时机信号，不代表项目预算；行业标签只展示。
+- 机会等级是销售适配判断，置信度是证据可靠性，均不是成交概率。“待核实”不强行改为推荐。
+- 需要图谱中的企业资料、历史报告或报告生成后的关联更新时，读 [企业关联与历史](../salestools-contact-management/references/company-context.md)。
 
-若所需 Salestools 工具不可用，明确说明 MCP 尚未连接或当前客户端未提供这些工具，不模拟结果。
+## 完成标准
 
-以当前连接的工具声明为准，不能用本地源码已实现来证明远程已部署。用户要结合图谱中的企业资料时，可在工具支持时传 `include_company_context:true`；仅 `confirmed` 关联用于跨库结论，候选同名不证明同一主体。报告可用 `include_related_updates:true` 获取生成后的关联更新，但原报告正文不会改写；区分入库时间与事件时间，保留截断及来源警告。
-
-## 定向追问
-
-- `ask_company` 需要 `legal_name`、18 位 `credit_code` 和用户的具体 `question`。两项主体信息齐备时可直接调用，由服务端核验有效画像；若缺少其中一项，先调用 `get_company_profile`，多候选时请用户选定，不猜测。服务端提示主体未确认时，重新调用画像工具核对，不把用户口头确认当成缓存仍有效。
-- 已有对应报告 UUID 时可传 `assessment_id`，以便解释该报告证据；没有 UUID 也可直接追问，不要求先提交正式评估，但不能声称结果一定来自用户此前看过的某份特定报告。用户要求核对特定历史报告而未给 UUID 时，请其提供 ID。指定报告不属于该主体、未完成或不存在时，按服务端失败提示处理，不改用其它主体资料。
-- 追问是同步的一次性研究，不修改原报告或七产品评级。回答优先呈现服务端的“资料直接支持”“可能的解释”“仍需核实”和“尚未回答”，保留实际引用来源及缺口。不要用 `get_assessment_report` 代替证据级追问。
-- `answered` 表示本次已给出有依据的回答；`insufficient` 可包含部分已核实事实，应连同未答问题一起呈现；`failed` 或超时表示本次未完成，不自行补造结论或声称后台会继续完成。`used_fresh_research` 只说明是否补查，不等于资料完整。
-- 招聘可支持岗位/技能需求，不能单独证明软件采购计划；单一来源失败、证据被容量限制或没有直达链接时，按原样保留限定语。不要把“本次未查到”表述成“企业不存在”。
-
-## 主体与正式评估
-
-- 简称或品牌名可用于 `get_company_profile` 候选检索，但不能直接用于正式评估。
-- 正式评估前始终调用 `get_company_profile`，确保主体画像已经校验并保存。
-- 返回候选中若只有一个同时匹配用户提供的法定名称和信用代码，可直接使用；否则列出候选的名称、信用代码、状态和地域，让用户选择，不得猜测。
-- 用户已明确提供法定名称和信用代码时，仍需调用画像工具核对；唯一双字段匹配后无需再次要求确认，不匹配则停止提交并说明差异。
-- 只有用户明确要求正式评估时才能提交任务。
-- 默认复用缓存。仅当用户明确要求重新采集、刷新或忽略缓存时设置 `force_refresh=true`。
-- 提交后展示服务端返回的 `assessment_id`；仅在响应包含预计耗时时展示它，不自行估算。
-- 每次用户明确要求查看进度时最多调用一次状态工具；仍为 `processing` 就返回 ID，不自循环。只有已成功创建并验证能查询该任务且能通知用户的持久机制，才可承诺会话结束后的自动通知。
-
-## 解释结果
-
-- `processing` 是正常异步状态，不是错误。
-- `partial` 表示该来源部分可用；只说明具体缺口，不把它描述为整个来源或报告失效。
-- `failed` 按工具返回说明，不猜测凭证、配额或服务故障根因。
-- 产品机会等级表示销售适配程度，不是成交概率；置信度表示证据可靠性，不是机会等级。
-- “待核实”表示关键证据不足或冲突，不要强行推荐产品。
-- 融资只可解释为企业活跃度、扩张或时机信号，不代表项目预算已落实。
-- 招聘直接出现产品名可支持软件生态或使用场景，不能单独证明采购意向。
-- 行业标签只作展示，不参与机会等级、推荐产品或置信度。
-- 关键结论应随报告已有的来源链接和简短依据呈现；不得补造链接或来源。
-
-## 输出方式
-
-基础画像先给主体、行业标签、规模与经营线索，再列来源缺口。正式报告先给整体机会、推荐产品和三条关键理由，再概括七产品机会、主要阻碍、销售问题和下一步行动。保留服务端的限定语和失败标记。
-
-## 常见错误
-
-- 用户只说“了解一下”却提交正式评估。
-- 使用简称或品牌名跳过法定主体确认。
-- 自动设置 `force_refresh=true`，造成重复上游调用。
-- 声称会在未来自动查询，但没有持续任务或自动化能力。
-- 把 `qcc=partial` 说成企查查整体不可用。
-- 根据融资、招聘、行业或公司规模自行提高机会等级。
+画像已明确主体或列出待选候选；追问已给出有依据的回答及未答部分；评估提交已返回真实任务 ID。只有读取到完成报告才称报告已生成。等待、失败、来源缺口和未完成环节都应明确，不能承诺没有实际机制支持的后续自动通知。
