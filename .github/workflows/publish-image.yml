@@ -11,15 +11,7 @@ env:
 
 jobs:
   smoke:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -39,21 +31,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Build and smoke native architecture
+      - name: Build and smoke amd64 image
         run: |
           set -euo pipefail
-          image="$REGISTRY/$IMAGE_NAME:${GITHUB_REF_NAME}-${{ matrix.arch }}"
-          docker buildx build --platform "linux/${{ matrix.arch }}" --load \
+          image="$REGISTRY/$IMAGE_NAME:${GITHUB_REF_NAME}-amd64"
+          docker buildx build --platform linux/amd64 --load \
             --tag "$image" \
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --cache-from "type=gha,scope=salestools-${{ matrix.arch }}" \
-            --cache-to "type=gha,mode=max,scope=salestools-${{ matrix.arch }}" .
-          timeout 30m docker run --rm --network none --platform "linux/${{ matrix.arch }}" \
+            --cache-from "type=gha,scope=salestools-amd64" \
+            --cache-to "type=gha,mode=max,scope=salestools-amd64" .
+          timeout 30m docker run --rm --network none --platform linux/amd64 \
             --read-only --tmpfs /tmp:rw,uid=1000,gid=1000,size=1g \
             --tmpfs /data:rw,uid=1000,gid=1000,size=64m \
             "$image" /opt/contact-worker/.venv/bin/python /usr/local/bin/contact-runtime-smoke.py
-          timeout 20m docker run --rm --network none --platform "linux/${{ matrix.arch }}" \
+          timeout 20m docker run --rm --network none --platform linux/amd64 \
             --init --read-only --cap-drop ALL --security-opt no-new-privileges \
             --memory 4g --cpus 2 --pids-limit 64 \
             --tmpfs /tmp:rw,uid=1000,gid=1000,size=1g \
@@ -66,8 +58,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push tested architecture
-        run: docker push "$REGISTRY/$IMAGE_NAME:${GITHUB_REF_NAME}-${{ matrix.arch }}"
+      - name: Push tested amd64 image
+        run: docker push "$REGISTRY/$IMAGE_NAME:${GITHUB_REF_NAME}-amd64"
 
   publish:
     needs: smoke
@@ -93,8 +85,7 @@ jobs:
           image="$REGISTRY/$IMAGE_NAME"
           docker buildx imagetools create \
             -t "$image:$GITHUB_REF_NAME" -t "$image:latest" \
-            "$image:${GITHUB_REF_NAME}-amd64" "$image:${GITHUB_REF_NAME}-arm64"
+            "$image:${GITHUB_REF_NAME}-amd64"
           manifest="$(docker buildx imagetools inspect "$image:$GITHUB_REF_NAME")"
           printf '%s\n' "$manifest"
           grep -q 'linux/amd64' <<< "$manifest"
-          grep -q 'linux/arm64' <<< "$manifest"

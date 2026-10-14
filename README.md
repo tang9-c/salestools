@@ -117,7 +117,7 @@ docker run --rm -p 3000:3000 \
   salestools-mcp:v0.1
 ```
 
-镜像使用非 root 用户，SQLite 固定写入挂载的 `/data/salestools.sqlite`，可选图谱写入同卷的 `/data/contact-graph.sqlite`；镜像中不包含 `.env`。运行前可用 `docker run --rm salestools-mcp:v0.1 /opt/contact-worker/.venv/bin/python /usr/local/bin/contact-runtime-smoke.py` 验证真实 Docling OCR 和 Rust 图谱临时读写。发布 workflow 在推送 GHCR 前分别构建并 smoke `linux/amd64`、`linux/arm64`。SQLite 是单副本、单进程队列设计：一个数据库文件只能由一个服务副本拥有；不要运行多个副本共享同一个 SQLite 文件。如需横向扩展，必须先迁移到具备并发协调能力的存储和队列方案。
+镜像使用非 root 用户，SQLite 固定写入挂载的 `/data/salestools.sqlite`，可选图谱写入同卷的 `/data/contact-graph.sqlite`；镜像中不包含 `.env`。运行前可用 `docker run --rm salestools-mcp:v0.1 /opt/contact-worker/.venv/bin/python /usr/local/bin/contact-runtime-smoke.py` 验证真实 Docling OCR 和 Rust 图谱临时读写。发布 workflow 仅构建并 smoke `linux/amd64`，通过后推送 GHCR，并更新版本标签和 `latest`；新发布的镜像面向 Sealos 的 x86_64 节点，不提供原生 ARM64 镜像。SQLite 是单副本、单进程队列设计：一个数据库文件只能由一个服务副本拥有；不要运行多个副本共享同一个 SQLite 文件。如需横向扩展，必须先迁移到具备并发协调能力的存储和队列方案。
 
 反向代理必须：
 
