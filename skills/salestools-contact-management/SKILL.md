@@ -19,6 +19,7 @@ description: Find contacts in the Salestools library, Zoho CRM or public web; br
 | 从文字提取/保存联系人 | `import_contacts_text`，复用预览与确认。 | 同上；不需要上传或 Docling。 |
 | 修改、合并、归档、恢复或审核线索 | 先 `get_contact` 核对版本，再调用对应写工具。 | 操作前读 [维护与身份核对](references/record-maintenance.md)。 |
 | 企业关联、背景或历史报告 | 现有工具的企业上下文功能。 | 读 [企业关联与历史](references/company-context.md)。 |
+| 客户开发简报、拜访或会前准备 | 转到客户体检 skill 的准备场景；这里只提供所需人物与 CRM 资料。 | 读 [客户开发简报与拜访准备](../salestools-customer-assessment/references/sales-briefs.md)。 |
 
 只读取当前任务需要的参考，不默认加载全部文档。企业研究或产品评估使用 [客户体检 skill](../salestools-customer-assessment/SKILL.md)。
 
