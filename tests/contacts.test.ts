@@ -115,6 +115,31 @@ describe('contact contracts and search plan', () => {
 
 const collectedAt = '2026-09-04T12:00:00.000Z';
 
+it('omits whole optional aliases when complete query region and intent reach Query100', () => {
+  const profile: IdentityProfile = { legalName: '测试', creditCode: '123', aliases: ['别'.repeat(12)],
+    formerNames: [], englishNames: [], brands: [], officialDomains: [], registeredAddress: null,
+    parentLegalName: null, subsidiaryLegalNames: [] };
+  const query = '企'.repeat(48);
+  const region = '地'.repeat(16);
+  const plan = buildContactSearchPlan(query, region, profile);
+  expect(plan).toHaveLength(4);
+  expect(plan[3]?.Query).toBe(`${query} ${region} 企业活动 员工代表 培训 竞赛 部门 供应商 客户交流`);
+  expect(plan.every(item => item.Query.length <= 100)).toBe(true);
+});
+
+it('uses existing cached observations when plan construction fails', async () => {
+  const snapshots = new MemoryContactSnapshots([storedSnapshot(1, collectedAt, [])]);
+  const instance = new ContactService({ snapshots, now: () => new Date('2026-10-15T00:00:00Z'),
+    findIdentity: () => ({ legalName: '测试制造', creditCode: '123',
+      get aliases(): string[] { throw new Error('plan alias unavailable'); },
+      formerNames: [], englishNames: [], brands: [], officialDomains: [], registeredAddress: null,
+      parentLegalName: null, subsidiaryLegalNames: [] }),
+    searchClient: { searchWeb: async () => { throw new Error('must not search'); } },
+    extractor: { extract: async () => { throw new Error('must not extract'); } } });
+  await expect(instance.get({ query: '测试制造', regionHint: '上海' })).resolves.toMatchObject({ companies: [] });
+  expect(snapshots.rows).toHaveLength(1);
+});
+
 function storedSnapshot(
   snapshotId: number,
   storedAt: string,
@@ -780,19 +805,29 @@ describe('ContactService', () => {
     expect(JSON.stringify(result)).not.toContain('foo_123');
   });
 
-  it('maps a confirmed alias only when the source also matches the cached official domain', async () => {
+  it('preserves alias observation identity when a local profile appears after cache expiry', async () => {
     const profile = { legalName: '测试制造有限公司', creditCode: '123', aliases: ['测试制造'],
       formerNames: [], englishNames: [], brands: [], officialDomains: ['example.cn'],
       registeredAddress: null, parentLegalName: null, subsidiaryLegalNames: [] };
-    const quote = '测试制造研发总监张三介绍研发规划。';
-    const result = await new ContactService({
-      findIdentity: () => profile,
-      snapshots: new MemoryContactSnapshots(),
+    const quote = '测试制造研发总监张三介绍研发规划。' + '背景资料。'.repeat(500);
+    let confirmed = false;
+    let now = new Date('2026-09-01T00:00:00Z');
+    const snapshots = new MemoryContactSnapshots();
+    const instance = new ContactService({
+      now: () => now,
+      findIdentity: () => confirmed ? profile : undefined,
+      snapshots,
       searchClient: { searchWeb: async () => [webResult({ summary: quote, content: null })] },
       extractor: { extract: async () => ({ contacts: [candidate({ companyName: '测试制造', evidenceQuote: quote })],
         selection: { totalPages: 1, includedPages: 1, textTruncated: false } }) },
-    }).get({ query: profile.legalName });
-    expect(result.companies[0]?.companyName).toBe(profile.legalName);
+    });
+    await instance.get({ query: profile.legalName });
+    confirmed = true;
+    now = new Date('2026-10-15T00:00:00Z');
+    const result = await instance.get({ query: profile.legalName });
+    expect(snapshots.rows.map(row => row.payload.companies[0]?.company_name)).toEqual(['测试制造', '测试制造']);
+    expect(result.companies[0]?.companyName).toBe('测试制造');
+    expect(snapshots.rows[1]?.payload.companies[0]?.contacts[0]?.evidence_quote).toBe(quote);
   });
 
   it('stops dispatch after 120 seconds and retains completed observations', async () => {
@@ -853,6 +888,16 @@ describe('ContactService', () => {
 });
 
 describe('ContactExtractor', () => {
+  it('warns once per body-unavailable URL without over-warning duplicates with a body', async () => {
+    const extract = new ContactExtractor({ url: 'https://ark.example', model: 'test', credential: 'test',
+      fetchFn: async () => new Response(JSON.stringify({ choices: [{ message: { content: '{"contacts":[]}' } }] })) });
+    const summary = { ...webResult({ content: null }), queryIndex: 0 };
+    const onlySummary = await extract.extract([summary, summary]);
+    expect(onlySummary.coverage?.complete).toBe(true);
+    expect(onlySummary.warnings).toContain('1 个页面未取得正文，仅处理标题或摘要');
+    const withBody = await extract.extract([summary, { ...summary, content: '可用正文' }]);
+    expect(withBody.warnings).not.toContain('1 个页面未取得正文，仅处理标题或摘要');
+  });
   function extractor(fetchFn: typeof fetch, requestMaxBytes = 6144) {
     return new ContactExtractor({ url: 'https://ark.example.cn/chat', model: 'test-model', credential: 'secret', fetchFn, requestMaxBytes });
   }

@@ -193,8 +193,14 @@ export class ContactService {
         },
         { reserveArkCalls: Math.min(2, limits?.ark ?? 8, limits?.total ?? 16) },
       );
-      const profile = this.options.findIdentity?.(input.query);
-      const plan = buildContactSearchPlan(input.query, input.regionHint, profile);
+      let profile: ReturnType<NonNullable<ContactServiceOptions['findIdentity']>>;
+      let plan: ReturnType<typeof buildContactSearchPlan>;
+      try {
+        profile = this.options.findIdentity?.(input.query);
+        plan = buildContactSearchPlan(input.query, input.regionHint, profile);
+      } catch (error) {
+        throw new ContactLookupError({ cause: error });
+      }
       const searches: Array<{ status: 'completed'; value: { queryIndex: number; items: DoubaoWebResult[] } } | { status: 'failed' }> = [];
       let next = 0;
       const worker = async () => {
@@ -273,13 +279,7 @@ export class ContactService {
       const companyByName = new Map<string, ContactServiceOutput['companies'][number]>();
       const seen = new Set<string>();
       for (const { contact, source } of supported) {
-        const originalName = contact.companyName.normalize('NFKC').trim().replace(/\s+/gu, ' ');
-        const officialDomain = profile?.officialDomains.some(domain => {
-          const host = new URL(source.url).hostname.toLowerCase();
-          return host === domain.toLowerCase() || host.endsWith(`.${domain.toLowerCase()}`);
-        }) ?? false;
-        const confirmedAlias = profile?.aliases.some(alias => alias.normalize('NFKC').trim() === originalName) ?? false;
-        const companyName = profile && officialDomain && confirmedAlias ? profile.legalName : originalName;
+        const companyName = contact.companyName.normalize('NFKC').trim().replace(/\s+/gu, ' ');
         const companyKey = companyName;
         const contactKey = JSON.stringify([
           companyKey, contact.name.trim(), contact.title?.trim() ?? null,

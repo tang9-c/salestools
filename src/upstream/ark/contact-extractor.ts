@@ -182,6 +182,8 @@ export class ContactExtractor {
     const pending = all.filter(chunk => !processed.has(chunk.id));
     const pendingPages = [...new Set([...pending.map(x => x.url), ...packed.unpackable.map(x => x.url)])];
     const complete = pendingPages.length === 0;
+    const bodyUrls = new Set(items.filter(item => item.content?.trim()).map(item => item.url));
+    const bodyUnavailable = new Set(items.filter(item => !bodyUrls.has(item.url)).map(item => item.url)).size;
     return {
       contacts,
       selection: {
@@ -198,6 +200,7 @@ export class ContactExtractor {
         complete,
       },
       warnings: [
+        ...(bodyUnavailable ? [`${bodyUnavailable} 个页面未取得正文，仅处理标题或摘要`] : []),
         ...(rejected ? [`${rejected} 条人物证据未通过原文验证`] : []),
         ...(!complete ? ['部分页面或片段尚未处理'] : []),
       ],

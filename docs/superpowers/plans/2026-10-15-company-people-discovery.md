@@ -72,7 +72,7 @@ it('stores more than ten observations without truncation', () => {
 - [ ] 运行 `npx vitest run tests/contact-discovery-contracts.test.ts`，确认因旧 Schema 拒绝空职位/十二条而失败。
 - [ ] 更新持久化 Schema 和 TS 类型；保留 DirectContactPattern 等边界。同步接通 ContactServiceOutput 的空职位和可选新字段、tools 映射及空值显示，使所有调用者可编译，但先不改变旧抽取流程。新记录短证据必须可安全保存，电话/邮箱不得通过 quote 混入。
 - [ ] 修改 `contact-cache.ts` 的观察键，包含来源、引用、归属，删除历史 `.slice(0,10)`；兼容旧记录缺少新字段，历史状态仍为 historical_evidence。增加 12 条历史观察、多来源同名不丢失、null 与真实职位不混同、旧快照读取测试。
-- [ ] 同时删除快照/输出 Schema 的公司数组 `.max(3)`、ContactService 的第三组后 continue，以及历史投影的第三组后 break。测试四组原文公司名各有有效观察的保存/投影，及最新快照不足三组但历史存在第四组的情况；均不得截断。分组不是人物合并，已确认名称映射才可归到同一法定名称。
+- [ ] 同时删除快照/输出 Schema 的公司数组 `.max(3)`、ContactService 的第三组后 continue，以及历史投影的第三组后 break。测试四组原文公司名各有有效观察的保存/投影，及最新快照不足三组但历史存在第四组的情况；均不得截断。所有 company_name 保留原文规范化分组；Profile 仅作上下文与校验，不归到法定名称或改变稳定观察身份，分组不是人物合并。
 - [ ] 运行两份定向测试和 `npm run typecheck`，更新受新类型影响的旧测试桩。预期通过；不得以删除隐私或历史行为测试来消除类型错误。
 - [ ] 在执行获准后按本任务文件提交一个独立契约变更，不自动推送。
 

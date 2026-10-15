@@ -18,6 +18,13 @@ export class SnapshotSyncFrameError extends Error {
   }
 }
 
+interface SnapshotSyncRejection {
+  code: 'SNAPSHOT_SYNC_REJECTED';
+  firstSnapshotId: number;
+  lastSnapshotId: number;
+}
+type SnapshotSyncFailure = SnapshotSyncFrameError | SnapshotSyncRejection;
+
 function graphSnapshot(snapshot: StoredContactSnapshot) {
   return {
     snapshot_id: snapshot.snapshotId,
@@ -34,16 +41,18 @@ function graphSnapshot(snapshot: StoredContactSnapshot) {
 export class SnapshotSync {
   private running: Promise<void> | null = null;
   private requestedAgain = false;
-  private failure: SnapshotSyncFrameError | null = null;
+  private failure: SnapshotSyncFailure | null = null;
 
   constructor(
     private readonly snapshots: Pick<ContactSnapshotRepository, 'findAfter'>,
     private readonly graph: GraphClient,
-    private readonly reportFailure: (failure: SnapshotSyncFrameError) => void =
-      failure => { process.stderr.write(`${failure.code} snapshot_id=${failure.snapshotId}\n`); },
+    private readonly reportFailure: (failure: SnapshotSyncFailure) => void =
+      failure => { process.stderr.write(failure instanceof SnapshotSyncFrameError
+        ? `${failure.code} snapshot_id=${failure.snapshotId}\n`
+        : `${failure.code} snapshot_ids=${failure.firstSnapshotId}-${failure.lastSnapshotId}\n`); },
   ) {}
 
-  get lastFailure(): SnapshotSyncFrameError | null {
+  get lastFailure(): SnapshotSyncFailure | null {
     return this.failure;
   }
 
@@ -98,7 +107,14 @@ export class SnapshotSync {
       actor: 'system' as const,
       snapshots: selected,
     };
-    await this.graph.request('sync_snapshots', payload);
+    try {
+      await this.graph.request('sync_snapshots', payload);
+    } catch (error) {
+      this.failure = { code: 'SNAPSHOT_SYNC_REJECTED', firstSnapshotId: selected[0]!.snapshot_id,
+        lastSnapshotId: selected.at(-1)!.snapshot_id };
+      try { this.reportFailure(this.failure); } catch { /* Keep the original sync failure. */ }
+      throw error;
+    }
     this.failure = null;
     return selected.length;
   }

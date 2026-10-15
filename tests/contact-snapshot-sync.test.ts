@@ -60,6 +60,21 @@ function fixture() {
   return snapshots;
 }
 
+it('reports ordinary graph rejection with safe batch range and preserves the original rejection', async () => {
+  const snapshots = fixture();
+  const original = new Error('PRIVATE quote credential upstream rejection');
+  const reports: unknown[] = [];
+  const graph: GraphClient = { request: async <T>(op: GraphOp): Promise<T> => {
+    if (op === 'get_sync_cursor') return { initialized: true, last_snapshot_id: 0 } as T;
+    throw original;
+  }, close: async () => {} };
+  const sync = new SnapshotSync(snapshots, graph, failure => { reports.push(failure); });
+  await expect(sync.schedule(2)).rejects.toBe(original);
+  expect(reports).toMatchObject([{ code: 'SNAPSHOT_SYNC_REJECTED', firstSnapshotId: 1, lastSnapshotId: 2 }]);
+  expect(JSON.stringify(reports)).not.toContain('PRIVATE');
+  expect(snapshots.findAfter(0, 10)).toHaveLength(3);
+});
+
 it('previews without sending any graph request', async () => {
   const snapshots = fixture();
   const graph: GraphClient = {
@@ -243,7 +258,7 @@ it('marks a single oversized snapshot instead of retrying the same unsendable fr
   expect(sent).toEqual(['get_sync_cursor']);
   expect(snapshots.findAfter(0, 1)[0]!.payload.companies[0]!.contacts[0]!.source_url)
     .toBe(`https://example.com/${'x'.repeat(270_000)}`);
-  const reports: Array<{ code: string; snapshotId: number }> = [];
+  const reports: unknown[] = [];
   const scheduled = new SnapshotSync(snapshots, graph, failure => { reports.push(failure); });
   await expect(scheduled.schedule()).rejects.toBeInstanceOf(SnapshotSyncFrameError);
   expect(reports).toMatchObject([{ code: 'SNAPSHOT_FRAME_TOO_LARGE', snapshotId: 1 }]);

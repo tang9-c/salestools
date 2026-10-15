@@ -25,8 +25,9 @@ export function buildContactSearchPlan(query: string, regionHint?: string, profi
   return intents.map((intent, index) => {
     const aliases = profile?.aliases ?? [];
     const alias = aliases.length ? aliases[index % aliases.length] : undefined;
+    const withAlias = `${subject}${alias ? ` ${alias}` : ''} ${intent}`;
     return DoubaoWebSearchRequestSchema.parse({
-      Query: `${subject}${alias ? ` ${alias}` : ''} ${intent}`,
+      Query: withAlias.length <= 100 ? withAlias : `${subject} ${intent}`,
       SearchType: 'web',
       Count: 10,
       Filter: { NeedUrl: true, NeedContent: true },
