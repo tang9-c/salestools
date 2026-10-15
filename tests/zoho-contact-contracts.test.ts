@@ -17,12 +17,12 @@ describe('Zoho contracts', () => {
     expect(contracts.ZohoContactSchema.safeParse({ ...contact, [field]: 'private' }).success).toBe(false);
     expect(contracts.ZohoContactSchema.safeParse({ ...contact, contact_owner: { id: 'u', name: '负责人', [field]: 'private' } }).success).toBe(false);
   });
-  it('retains the original web output contract and ten-person ceiling', () => {
+  it('retains the web contract without a ten-person ceiling', () => {
     const webContact = { name: '张三', title: '经理', source_url: 'https://example.com/team', published_at: null };
     const web = { companies: [{ company_name: '公司', contacts: Array.from({ length: 10 }, () => webContact), historical_contacts: [] }],
       warnings: [], collected_at: '2026-10-12T00:00:00.000Z' };
     expect(GetContactsOutputSchema.safeParse(web).success).toBe(true);
-    expect(GetContactsOutputSchema.safeParse({ ...web, companies: [{ ...web.companies[0], contacts: [...web.companies[0].contacts, webContact] }] }).success).toBe(false);
+    expect(GetContactsOutputSchema.safeParse({ ...web, companies: [{ ...web.companies[0], contacts: [...web.companies[0].contacts, webContact] }] }).success).toBe(true);
   });
   it('defaults web input while allowing explicit Zoho selection', () => {
     expect(GetContactsInputSchema.parse({ query: ' 公司 ', region_hint: ' 中国 ' })).toEqual({ query: '公司', region_hint: '中国', source: 'web' });

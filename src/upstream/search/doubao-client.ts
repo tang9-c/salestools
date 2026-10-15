@@ -102,18 +102,19 @@ export class DoubaoSearchClient {
     return mapDoubaoSearchResponse(payload, parsedQuery, this.now());
   }
 
-  async searchWeb(query: DoubaoWebSearchRequest): Promise<DoubaoWebResult[]> {
+  async searchWeb(query: DoubaoWebSearchRequest, signal?: AbortSignal): Promise<DoubaoWebResult[]> {
     const parsedQuery = DoubaoWebSearchRequestSchema.parse(query);
-    const payload = await this.request(parsedQuery);
+    const payload = await this.request(parsedQuery, signal);
     return mapDoubaoWebResponse(payload);
   }
 
-  private async request(query: DoubaoWebSearchRequest): Promise<unknown> {
+  private async request(query: DoubaoWebSearchRequest, requestSignal?: AbortSignal): Promise<unknown> {
+    const signal = requestSignal && this.options.signal ? AbortSignal.any([requestSignal, this.options.signal]) : requestSignal ?? this.options.signal;
     let response: Response;
     try {
       response = await this.fetchFn(this.options.url, {
         method: 'POST',
-        signal: this.options.signal,
+        signal,
         headers: {
           Authorization: `Bearer ${this.options.apiKey}`,
           'Content-Type': 'application/json',
@@ -126,7 +127,7 @@ export class DoubaoSearchClient {
         }),
       });
     } catch (error) {
-      if (this.options.signal?.aborted === true) {
+      if (signal?.aborted === true) {
         throw new UpstreamError('doubao_search', 'ABORTED', 'Doubao search request aborted', { cause: error });
       }
       throw new UpstreamError('doubao_search', 'NETWORK_ERROR', 'Doubao search request failed', { cause: error });

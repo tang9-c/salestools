@@ -11,7 +11,7 @@
 ## 2. 用户流程
 
 1. 用户说“了解这家公司”或意图不明确时，调用 `get_company_profile`。返回候选法定主体及可获得的基础画像；多候选时由用户确认，不自动选择。
-2. 综合找人时，先用 `search_contacts` 查共享库；有招聘目标公司时再用 `discover_contacts` 查公开岗位线索；对库内候选用 `get_contact` 核对档案和证据。用户可只执行其中一个环节。公司、学校或项目客户关键词可显式包含待核实线索；结果必须标明正式记录、待核实线索或公开网页线索，查询不自动触发导入、合并或其他写入。
+2. 综合找人时，先用 `search_contacts` 查共享库；有目标公司时再用 `discover_contacts` 查公开职业人物；对库内候选用 `get_contact` 核对档案和证据。用户可只执行其中一个环节。公司、学校或项目客户关键词可显式包含待核实线索；结果必须标明正式记录、待核实线索或公开网页观察。库内查询不写入；发现工具可按配置保存网页快照、同步网页或 Zoho 图谱，不自动合并身份。
 3. 导入简历或名片有两条路径：上传页面通过 `open_contact_upload` 打开，用户选择文件、等待完整预览并点击确认；有授权的本地文件环境可通过鉴权的 `/contact-files` 或 `contacts:upload` CLI 上传，再用 `import_contacts` 抽取。支持 PDF/JPG/JPEG/PNG，单文件最多 20 MB，PDF 最多 50 页。聊天／CLI 路径在用户明确授权导入且主体唯一时可用 `auto_create:true` 提交，无需逐字段、逐关系选择；页面路径必须由用户点击确认。具体提交与阻断规则见第 4.3 节。
 4. 用户已确认法定名称与 18 位统一社会信用代码，并想了解特定问题时，调用 `ask_company`；无需先生成正式报告。它同步返回带引用的回答或明确的证据不足、失败状态，不改写已有报告。
 5. 用户明确要求正式评估后，调用 `submit_assessment`。评估执行时需要能读取到匹配且未过期的主体画像；如果没有，任务会失败并提示主体信息不可用。任务异步处理；重复主体优先复用进行中任务或 30 天内已完成报告。
@@ -24,7 +24,7 @@
 | 工具 | 关键输入 | 当前输出与边界 |
 | --- | --- | --- |
 | `get_company_profile` | `query`，可选 `region_hint` | `candidates`、`basic_profile`、`source_status`、`cache_hit`；只用企查查，唯一且名称匹配的主体才补充基础画像；上游不可用时明确失败。 |
-| `discover_contacts` | `query`，可选 `region_hint`、`source=web/zoho/all`、`zoho_accounts`、`zoho_account_records` | 默认网页结果维持最多 3 家、每家 10 名当前联系人及 10 条历史证据；Zoho 独立区域实时返回已选 CRM 客户的全部已取得关联联系人、两类负责人、候选、连接状态与完整性，不受网页人数上限约束。 |
+| `discover_contacts` | `query`，可选 `region_hint`、`source=web/zoho/all`、`zoho_accounts`、`zoho_account_records`、`web_offset`、`web_limit`、`web_snapshot_id` | 网页返回职业人物观察、归属证据、覆盖情况及固定快照分页，不设公司/人物十条上限；Zoho 独立区域实时返回已取得关联联系人、两类负责人、候选、连接状态与完整性。 |
 | `submit_assessment` | `legal_name`、`credit_code`，可选 `force_refresh` | 新建或复用任务，返回 `assessment_id`、`status`、`cache_hit`；新任务附预计时间，缓存命中附 `cached_at`。 |
 | `get_assessment_status` | `assessment_id` | 返回三态及简短进度或失败消息。 |
 | `get_assessment_report` | `assessment_id` | 完成时返回 Markdown、综合机会、推荐产品、采集时间、动态信号新鲜度与来源状态；其他状态只返回状态消息。 |
@@ -60,7 +60,11 @@
 
 方舟按输入字节预算将去重材料拆批处理，成功批次合并，失败或未处理材料计入审计缺口。材料不会因首批装不下就默默消失；仍可能受批次、调用预算或上游失败限制。行业由方舟给出带证据的自由文本标签，仅用于展示，不参与产品机会等级、推荐产品或置信度。
 
-`discover_contacts` 使用豆包搜索和方舟查找公开披露的企业负责人、研发/技术、数字化/IT、采购和质量负责人。只有姓名、职位、公司与来源页面能相互核对的候选才返回；无明确职位的专利发明人或招投标联系人不返回。该工具不返回邮箱、电话，也不保证仅凭网页就已确认法人主体。
+`discover_contacts` 使用豆包搜索和方舟发现公开职业人物，包括普通工程师、行政/运营人员、专家和无明确职位人物；不再限定五类负责人、三家公司或每家十人。新版观察保留原文公司分组、姓名、可空职位、来源 URL/日期、evidence_quote 和 affiliation_status。employment_evidence 表示原文支持任职，unverified 表示归属待核实；专利发明人等不因缺职位被删除，也不因此视为员工。明确外部机构的嘉宾或客户人员排除，跨页面/来源同名人物不自动合并。该工具不返回邮箱、电话，不保证法定主体已确认，也不代表当前在职或全体员工。
+
+网页 web_offset 默认 0（非负安全整数），web_limit 默认 50、范围 1–100，web_snapshot_id 为正安全整数。首次返回 web_page.snapshot_id 后，续页保持 query、region_hint，携带首次 ID 和 next_offset；只翻网页使用 source=web，首次为 all 时也切换 web。offset>0 缺 ID、ID 不存在或查询/地域不匹配时报错，需去掉旧 ID 从第 0 页重新开始。固定 ID 的第 0 页与续页仅保证网页侧不搜索/抽取，只读取该快照及之前历史，即使并发刷新也不换锚点。web_page.total 是当前及历史观察条数，不是去重人数，例如 63 条不等于 63 人。source=all 每次仍实时查询 Zoho，网页快照 ID 不锁定 Zoho；用户明确同时刷新 Zoho 才续用 all，网页分页不截断 Zoho 区域。纯 source=zoho 拒绝显式网页分页参数。web_coverage 和 warnings 说明本次所得材料的处理范围，complete 不保证全网或全员覆盖；公众号正文不可读、图片名单、搜索遗漏、预算和超时均可能导致缺口。
+
+启用图谱后快照由系统异步同步，发现成功不等于已入图，须用 search_contacts/get_contact 人物侧回读。新版明确任职写正式 worksFor 时 employment_status=unknown，空职位不写 jobTitle/roleName；unverified 仅存人物侧待核实 claims，不创建正式任职边，不新增机构侧反查。旧格式保持兼容且标旧规则。复用现有库内联系人图谱 App，说明其检索范围不等于本次网页全部结果；discover_contacts 没有新增 App。Node 保留完整 evidence_quote；Rust evidence 仍保存完整引用，仅 claims/source_mapping 的来源受 2048 字节限制并尝试选择安全短句，无法容纳则事务失败、不推进游标。单快照超过 256 KiB 帧时快照仍可分页读，图谱同步明确失败，不以空帧跳过。
 
 可选 Zoho 来源按连接只读搜索 CRM `Accounts`，名称包含匹配或多候选时要求用户确认 `connection_id/account_id`，重新核验所选记录后读取关联 `Contacts` 全部分页。仅展示客户与联系人姓名、职位、各自 CRM 记录负责人及来源；不请求电话、邮箱或 Owner 对象中的联系方式。`source=all` 保留网页与 CRM 两组结果，单源失败不抹去另一源，跨来源或跨连接同名人员不自动合并。`complete=false`、`partial`、`failed` 或 `needs_confirmation` 明确表示未获得全量。CRM 记录不等于已核实法定主体或当前任职；不写入网页快照或 Zoho。所有 MCP 用户共享服务端已授权连接及其 CRM 可见范围。
 
@@ -144,7 +148,7 @@ Docling 负责读出 PDF／图片中的文字及块定位；LLM 负责跨块理�
 
 ## 7. 状态、缓存与失败
 
-基础画像和已完成报告默认各缓存 30 天，分别由 `PROFILE_CACHE_TTL_DAYS` 和 `ASSESSMENT_CACHE_TTL_DAYS` 配置。同一信用代码只允许一个 `processing` 评估任务。新完成报告的精简证据快照可在采集后 30 天内按需复用；旧报告无快照时不会从 Markdown 反推证据。公开网页 `discover_contacts` 按规范化的查询词与地域缓存 30 天，简称和全称不会自动合并；每次实际刷新都追加快照，历史联系人只表示旧快照曾见到的任职证据，不代表已离职。共享联系人库是另一个持久化数据库，不受此 30 天缓存期限影响；旧快照可同步为待核实线索，不能凭同名跨来源自动认定为一人或恢复已归档档案。
+基础画像和已完成报告默认各缓存 30 天，分别由 `PROFILE_CACHE_TTL_DAYS` 和 `ASSESSMENT_CACHE_TTL_DAYS` 配置。同一信用代码只允许一个 `processing` 评估任务。新完成报告的精简证据快照可在采集后 30 天内按需复用；旧报告无快照时不会从 Markdown 反推证据。公开网页按规范化查询词与地域缓存，简称和全称不自动合并；无绑定 ID 的查询仅复用 30 天内 coverage.version=2 的新版快照，旧格式即使未过期也尝试刷新，失败可回退并标明旧规则或历史缓存。每次实际刷新追加快照；固定 ID 可读超过 30 天的历史资料，不更新采集时间或自动刷新。历史观察不代表离职，分页完整不代表材料覆盖完整。共享图谱不受缓存期限影响；旧快照沿用旧格式兼容分支，新版归属待核实写人物侧线索，不凭同名跨来源认定为一人或恢复归档。
 
 企查查或豆包搜索部分失败时，以仍可用的证据生成报告并标记 `partial/failed`。两者都没有可用材料时，只要方舟仍完成一次有效整理，报告可完成并将产品标为“待核实”；所有方舟批次均失败时任务为 `failed`。单个上游请求最多再试一次；确定性不可重试错误直接失败并标注。联系人查询在刷新失败而存在旧快照时返回旧结果与警告，否则返回工具错误。
 

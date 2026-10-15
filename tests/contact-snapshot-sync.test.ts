@@ -12,6 +12,28 @@ import { initializeDatabase } from '../src/db/database.js';
 const databases: DatabaseSync[] = [];
 afterEach(() => databases.splice(0).forEach(database => database.close()));
 
+it('preserves complete observation identity quotes and nullable titles in the Rust frame', async () => {
+  const database = initializeDatabase(new DatabaseSync(':memory:'));
+  databases.push(database);
+  const snapshots = new ContactSnapshotRepository(database);
+  const quote = '甲公司张明参加了活动。'.repeat(300);
+  snapshots.append({ cacheKey: 'd'.repeat(64), normalizedQuery: '甲公司', normalizedRegionHint: null,
+    payload: { companies: [{ company_name: '甲公司', contacts: [{ name: '张明', title: null,
+      affiliation_status: 'unverified', evidence_quote: quote, source_url: 'https://example.com/news', published_at: null }] }],
+    warnings: [], collected_at: '2026-10-15T00:00:00.000Z' }, storedAt: '2026-10-15T00:00:00.000Z' });
+  let received: { snapshots: Array<{ companies: Array<{ contacts: Array<{ title: null; affiliation_status: string; evidence_quote: string }> }> }> } | undefined;
+  const graph: GraphClient = { request: async <T>(op: GraphOp, payload: unknown): Promise<T> => {
+    if (op === 'get_sync_cursor') return { initialized: true, last_snapshot_id: 0 } as T;
+    received = payload as typeof received; return {} as T;
+  }, close: async () => {} };
+  await expect(new SnapshotSync(snapshots, graph).runBatch(1)).resolves.toBe(1);
+  const contact = received!.snapshots[0]!.companies[0]!.contacts[0]!;
+  expect(contact.title).toBeNull();
+  expect(contact.affiliation_status).toBe('unverified');
+  expect(contact.evidence_quote).toBe(quote);
+  expect(snapshots.findAfter(0, 1)[0]!.payload.companies[0]!.contacts[0]!.evidence_quote).toBe(quote);
+});
+
 function fixture() {
   const database = initializeDatabase(new DatabaseSync(':memory:'));
   databases.push(database);
@@ -202,7 +224,7 @@ it('marks a single oversized snapshot instead of retrying the same unsendable fr
   snapshots.append({
     cacheKey: 'c'.repeat(64), normalizedQuery: '甲公司', normalizedRegionHint: null,
     payload: { companies: [{ company_name: '甲公司', contacts: [{
-      name: '张明', title: '总监',
+      name: '张明', title: null, affiliation_status: 'unverified', evidence_quote: '甲公司张明参加活动。',
       source_url: `https://example.com/${'x'.repeat(270_000)}`, published_at: null,
     }] }], warnings: [], collected_at: '2026-09-26T00:00:00.000Z' },
     storedAt: '2026-09-26T00:00:00.000Z',
@@ -219,6 +241,8 @@ it('marks a single oversized snapshot instead of retrying the same unsendable fr
   await expect(sync.runBatch(20)).rejects.toBeInstanceOf(SnapshotSyncFrameError);
   expect(sync.lastFailure).toMatchObject({ code: 'SNAPSHOT_FRAME_TOO_LARGE', snapshotId: 1 });
   expect(sent).toEqual(['get_sync_cursor']);
+  expect(snapshots.findAfter(0, 1)[0]!.payload.companies[0]!.contacts[0]!.source_url)
+    .toBe(`https://example.com/${'x'.repeat(270_000)}`);
   const reports: Array<{ code: string; snapshotId: number }> = [];
   const scheduled = new SnapshotSync(snapshots, graph, failure => { reports.push(failure); });
   await expect(scheduled.schedule()).rejects.toBeInstanceOf(SnapshotSyncFrameError);

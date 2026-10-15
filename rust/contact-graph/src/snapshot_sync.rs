@@ -13,7 +13,9 @@ use crate::store::{canonical_hash, now_utc, AppError, Store};
 #[serde(deny_unknown_fields)]
 struct Contact {
     name: String,
-    title: String,
+    title: Option<String>,
+    affiliation_status: Option<String>,
+    evidence_quote: Option<String>,
     source_url: String,
     published_at: Option<String>,
 }
@@ -111,7 +113,18 @@ fn validate(input: &SyncInput) -> Result<(), AppError> {
             }
             for contact in &company.contacts {
                 if contact.name.trim().is_empty()
-                    || contact.title.trim().is_empty()
+                    || contact
+                        .title
+                        .as_ref()
+                        .is_some_and(|title| title.trim().is_empty())
+                    || (contact.affiliation_status.is_none() && contact.title.is_none())
+                    || contact.affiliation_status.as_ref().is_some_and(|status| {
+                        !["employment_evidence", "unverified"].contains(&status.as_str())
+                            || contact
+                                .evidence_quote
+                                .as_ref()
+                                .is_none_or(|quote| quote.trim().is_empty())
+                    })
                     || !(contact.source_url.starts_with("https://")
                         || contact.source_url.starts_with("http://"))
                     || contact
@@ -257,13 +270,17 @@ fn new_relation(
     tx: &Transaction<'_>,
     person_kg: i64,
     organization_kg: i64,
-    title: &str,
+    title: Option<&str>,
     now: &str,
 ) -> Result<String, AppError> {
     let id = format!("r_{}", Uuid::new_v4().as_simple());
     let mut relation =
         Relation::new(person_kg, organization_kg, "worksFor", 1.0).map_err(AppError::internal)?;
-    relation.set_property("role", json!({"@type":"OrganizationRole","roleName":title}));
+    let mut role = json!({"@type":"OrganizationRole"});
+    if let Some(title) = title {
+        role["roleName"] = json!(title);
+    }
+    relation.set_property("role", role);
     let kg_id = store
         .graph
         .insert_relation(&relation)
@@ -304,16 +321,195 @@ fn evidence(
     field: EvidenceField<'_>,
     source: &EvidenceSource<'_>,
 ) -> Result<(), AppError> {
-    let record = json!({
+    let mut record = json!({
         "evidence_id":format!("ev_{}", Uuid::new_v4().as_simple()),
         "subject_kind":field.subject_kind,"subject_id":field.subject_id,
         "field_path":field.path,"value":field.value,"source_type":"web",
         "source_url":source.contact.source_url,"locator_status":"located",
         "collected_at":source.collected_at,"confirmed_by":"system","confirmed_at":source.now
     });
+    if let Some(quote) = &source.contact.evidence_quote {
+        record["quote"] = json!(quote);
+    }
     tx.execute("INSERT INTO evidence(evidence_id,subject_kind,subject_id,field_path,value_json,record_json) VALUES(?1,?2,?3,?4,?5,?6)",
         params![record["evidence_id"].as_str(),field.subject_kind,field.subject_id,field.path,
             json!(field.value).to_string(),record.to_string()]).map_err(AppError::internal)?;
+    Ok(())
+}
+
+fn apply_observation(
+    store: &Store,
+    tx: &Transaction<'_>,
+    snapshot: &Snapshot,
+    company: &Company,
+    contact: &Contact,
+    now: &str,
+) -> Result<(), AppError> {
+    let quote = contact.evidence_quote.as_deref().unwrap_or_default();
+    let key = source_key(
+        "snapshot-web-observation",
+        &[
+            &snapshot.normalized_query,
+            snapshot
+                .normalized_region_hint
+                .as_deref()
+                .unwrap_or_default(),
+            &company.company_name,
+            &contact.source_url,
+            &contact.name,
+            quote,
+        ],
+    );
+    // A processed observation remains processed even if extraction later changes its status.
+    // Resolve user merges/archives, but never rewrite their facts or reopen reviewed claims.
+    if let Some((person, _)) = mapped(tx, &key)? {
+        let (resolved, _) = resolved_entity(tx, &person)?;
+        tx.execute(
+            "UPDATE source_mapping SET entity_id=?1 WHERE source_key=?2",
+            params![resolved, key],
+        )
+        .map_err(AppError::internal)?;
+        return Ok(());
+    }
+    // Identity uses the full quote above. Only shorten to a complete sentence that
+    // retains the person, company and stated title; never blindly clip its prefix.
+    let make_source = |quote: &str| {
+        json!({"source_type":"web","snapshot_id":snapshot.snapshot_id,
+        "source_url":contact.source_url,"quote":quote,"collected_at":snapshot.collected_at})
+    };
+    let mut source = make_source(quote);
+    if source.to_string().len() > 2048 {
+        source = quote
+            .split_inclusive(|c| matches!(c, '。' | '！' | '？' | '\n'))
+            .filter(|sentence| {
+                sentence.contains(&contact.name)
+                    && sentence.contains(&company.company_name)
+                    && contact
+                        .title
+                        .as_ref()
+                        .is_none_or(|title| sentence.contains(title))
+            })
+            .map(make_source)
+            .find(|source| source.to_string().len() <= 2048)
+            .ok_or_else(|| {
+                AppError::validation("Web snapshot source cannot safely fit 2048 bytes")
+            })?;
+    }
+    let organization_key = source_key(
+        "snapshot-organization",
+        &[&snapshot.cache_key, &normalized(&company.company_name)],
+    );
+    let (organization_id, organization_kg) = if let Some((id, _)) = mapped(tx, &organization_key)? {
+        let (resolved, archived) = resolved_entity(tx, &id)?;
+        if archived {
+            return Ok(());
+        }
+        let kg = entity_kg_id(tx, &resolved)?;
+        (resolved, kg)
+    } else {
+        let (id, kg) = new_entity(
+            store,
+            tx,
+            "Organization",
+            &company.company_name,
+            json!({"name":company.company_name}),
+            now,
+        )?;
+        tx.execute(
+            "INSERT INTO source_mapping(source_key,entity_id) VALUES(?1,?2)",
+            params![organization_key, id],
+        )
+        .map_err(AppError::internal)?;
+        (id, kg)
+    };
+    let employment = contact.affiliation_status.as_deref() == Some("employment_evidence");
+    let mut properties = json!({"name":contact.name});
+    if employment {
+        if let Some(title) = &contact.title {
+            properties["jobTitle"] = json!(title);
+        }
+    }
+    let (person, person_kg) = new_entity(store, tx, "Person", &contact.name, properties, now)?;
+    let evidence_source = EvidenceSource {
+        contact,
+        collected_at: &snapshot.collected_at,
+        now,
+    };
+    for (id, name) in [
+        (&person, &contact.name),
+        (&organization_id, &company.company_name),
+    ] {
+        evidence(
+            tx,
+            EvidenceField {
+                subject_kind: "entity",
+                subject_id: id,
+                path: "properties.name",
+                value: name,
+            },
+            &evidence_source,
+        )?;
+    }
+    let relation = if employment {
+        Some(new_relation(
+            store,
+            tx,
+            person_kg,
+            organization_kg,
+            contact.title.as_deref(),
+            now,
+        )?)
+    } else {
+        None
+    };
+    if let Some(relation_id) = &relation {
+        evidence(
+            tx,
+            EvidenceField {
+                subject_kind: "relation",
+                subject_id: relation_id,
+                path: "$relation",
+                value: &organization_id,
+            },
+            &evidence_source,
+        )?;
+        if let Some(title) = &contact.title {
+            evidence(
+                tx,
+                EvidenceField {
+                    subject_kind: "entity",
+                    subject_id: &person,
+                    path: "properties.jobTitle",
+                    value: title,
+                },
+                &evidence_source,
+            )?;
+            evidence(
+                tx,
+                EvidenceField {
+                    subject_kind: "relation",
+                    subject_id: relation_id,
+                    path: "properties.role.roleName",
+                    value: title,
+                },
+                &evidence_source,
+            )?;
+        }
+    }
+    let mut located = source.clone();
+    located["target_id"] = json!(organization_id);
+    located["affiliation_status"] = json!(contact.affiliation_status);
+    tx.execute("INSERT INTO source_mapping(source_key,entity_id,relation_id,source_json) VALUES(?1,?2,?3,?4)",
+        params![key,person,relation,located.to_string()]).map_err(AppError::internal)?;
+    if !employment {
+        let mut value = json!({"properties":{"role":{"@type":"OrganizationRole"}},"metadata":{"employment_status":"unknown"}});
+        if let Some(title) = &contact.title {
+            value["properties"]["role"]["roleName"] = json!(title);
+        }
+        tx.execute("INSERT INTO contact_claims(claim_id,subject_id,kind,relation_type,target_id,value_json,source_json,status,reason,import_id,candidate_id,created_at,updated_at)
+            VALUES(?1,?2,'relation','worksFor',?3,?4,?5,'unverified','Web source does not establish employment',NULL,?6,?7,?7)",
+            params![format!("cl_{}",Uuid::new_v4().as_simple()),person,organization_id,value.to_string(),source.to_string(),key,now]).map_err(AppError::internal)?;
+    }
     Ok(())
 }
 
@@ -330,6 +526,10 @@ fn apply_snapshot(
             &[&snapshot.cache_key, &company_name],
         );
         for (contact_index, contact) in company.contacts.iter().enumerate() {
+            if contact.affiliation_status.is_some() {
+                apply_observation(store, tx, snapshot, company, contact, now)?;
+                continue;
+            }
             let source = EvidenceSource {
                 contact,
                 collected_at: &snapshot.collected_at,
@@ -343,7 +543,7 @@ fn apply_snapshot(
                 continue;
             }
             let person_name = normalized(&contact.name);
-            let title = normalized(&contact.title);
+            let title = normalized(contact.title.as_deref().unwrap_or_default());
             let identity_key = source_key(
                 "snapshot-identity",
                 &[&snapshot.cache_key, &company_name, &person_name, &title],
@@ -410,8 +610,14 @@ fn apply_snapshot(
                     },
                     &source,
                 )?;
-                let relation =
-                    new_relation(store, tx, person_kg, organization_kg, &contact.title, now)?;
+                let relation = new_relation(
+                    store,
+                    tx,
+                    person_kg,
+                    organization_kg,
+                    contact.title.as_deref(),
+                    now,
+                )?;
                 tx.execute(
                     "INSERT INTO source_mapping(source_key,entity_id,relation_id) VALUES(?1,?2,?3)",
                     params![identity_key, id, relation],
@@ -426,7 +632,7 @@ fn apply_snapshot(
                         subject_kind: "entity",
                         subject_id: &person_id,
                         path: "properties.jobTitle",
-                        value: &contact.title,
+                        value: contact.title.as_deref().unwrap_or_default(),
                     },
                     &source,
                 )?;
@@ -437,7 +643,7 @@ fn apply_snapshot(
                             subject_kind: "relation",
                             subject_id: relation,
                             path: "properties.role.roleName",
-                            value: &contact.title,
+                            value: contact.title.as_deref().unwrap_or_default(),
                         },
                         &source,
                     )?;

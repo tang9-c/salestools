@@ -117,8 +117,9 @@ const fakeContact: ContactExtractionCandidate = {
   companyName: LEGAL_NAME,
   name: '李四',
   title: '研发总监',
-  roleCategory: 'research_and_development',
-  sourceType: 'official_website',
+  affiliationStatus: 'employment_evidence',
+  evidenceQuote: `${LEGAL_NAME}研发总监李四负责机器人平台研发。`,
+  sourceChunkId: 'q0-p0-c0',
   sourceUrl: fakeContactPage.url,
 };
 

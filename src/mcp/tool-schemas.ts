@@ -34,11 +34,16 @@ export const GetContactsInputSchema = z.object({
   query: z.string().trim().min(1).max(48),
   region_hint: z.string().trim().min(1).max(16).optional(),
   source: z.enum(['web', 'zoho', 'all']).default('web'),
+  web_offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  web_limit: z.number().int().min(1).max(100).optional(),
+  web_snapshot_id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   zoho_accounts: z.array(ZohoConnectionIdSchema).min(1).optional(),
   zoho_account_records: z.array(z.object({ connection_id: ZohoConnectionIdSchema,
     account_id: z.string().trim().min(1) }).strict()).min(1).optional(),
 }).strict().superRefine((input, context) => {
   const issue = (path: string, message: string) => context.addIssue({ code: 'custom', path: [path], message });
+  if (input.source === 'zoho' && [input.web_offset, input.web_limit, input.web_snapshot_id].some(value => value !== undefined)) issue('source', '纯 Zoho 不支持网页分页参数');
+  if ((input.web_offset ?? 0) > 0 && input.web_snapshot_id === undefined) issue('web_snapshot_id', '网页分页缺少快照 ID，请从第 0 页重新发起');
   if (input.source === 'web' && (input.zoho_accounts !== undefined || input.zoho_account_records !== undefined)) {
     issue('source', 'Zoho selections require zoho or all source');
   }

@@ -9,7 +9,8 @@ import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@model
 import { z } from 'zod';
 import type { UploadSessions } from '../contacts/upload-session.js';
 import type { OpportunityLevel, ProductKey, ResearchSourceStatus } from '../contracts/index.js';
-import type { ContactServiceOutput } from '../contacts/contact-service.js';
+import type { ContactServiceOutput, GetContactsServiceInput } from '../contacts/contact-service.js';
+import { ContactPaginationError } from '../contacts/contact-service.js';
 import type { ZohoContactsOutput, ZohoQuery } from '../contracts/zoho-contact.js';
 import { ZohoContactsOutputSchema } from '../contracts/zoho-contact.js';
 import { renderZohoContacts } from '../contacts/zoho-contact-renderer.js';
@@ -143,7 +144,7 @@ export interface McpServices {
   submitAssessment(input: SubmitAssessmentServiceInput, userId: string): Awaitable<SubmitAssessmentServiceOutput>;
   getAssessmentStatus(input: AssessmentServiceInput): Awaitable<AssessmentStatusServiceOutput>;
   getAssessmentReport(input: AssessmentServiceInput & { includeRelatedUpdates?: boolean }): Awaitable<AssessmentReportServiceOutput>;
-  getContacts(input: CompanyProfileServiceInput): Awaitable<ContactServiceOutput>;
+  getContacts(input: GetContactsServiceInput): Awaitable<ContactServiceOutput>;
   askCompany(input: CompanyQuestionInput): Awaitable<CompanyQuestionResult>;
   companyContext?: Pick<CompanyContextService, 'detail' | 'summaries' | 'overview' | 'relatedUpdates'>;
   companyLinks?: Pick<CompanyLinkService, 'change'>;
@@ -247,6 +248,9 @@ function assessmentReportOutput(output: AssessmentReportServiceOutput) {
 
 function contactsOutput(output: ContactServiceOutput) {
   return GetContactsOutputSchema.parse({
+    web_page: output.webPage ? { snapshot_id: output.webPage.snapshotId, offset: output.webPage.offset,
+      limit: output.webPage.limit, total: output.webPage.total, next_offset: output.webPage.nextOffset } : undefined,
+    web_coverage: output.webCoverage,
     companies: output.companies.map(company => ({
       company_name: company.companyName,
       contacts: company.contacts.map(contact => ({
@@ -254,12 +258,16 @@ function contactsOutput(output: ContactServiceOutput) {
         title: contact.title,
         source_url: contact.sourceUrl,
         published_at: contact.publishedAt,
+        ...(contact.affiliationStatus === undefined ? {} : { affiliation_status: contact.affiliationStatus }),
+        ...(contact.evidenceQuote === undefined ? {} : { evidence_quote: contact.evidenceQuote }),
       })),
       historical_contacts: company.historicalContacts.map(contact => ({
         name: contact.name,
         title: contact.title,
         source_url: contact.sourceUrl,
         published_at: contact.publishedAt,
+        ...(contact.affiliationStatus === undefined ? {} : { affiliation_status: contact.affiliationStatus }),
+        ...(contact.evidenceQuote === undefined ? {} : { evidence_quote: contact.evidenceQuote }),
         first_seen_at: contact.firstSeenAt,
         last_seen_at: contact.lastSeenAt,
         status: contact.status,
@@ -280,13 +288,14 @@ function unavailableZoho(ids: readonly string[] = []): ZohoContactsOutput {
 }
 
 function renderWebContacts(output: ReturnType<typeof contactsOutput>): string {
-  const safe = (value: string) => value.replace(/[\r\n\t]+/gu, ' ')
+  const safe = (value: string | null) => (value ?? '职位未知').replace(/[\r\n\t]+/gu, ' ')
     .replace(/[\\`*_{}\[\]()#+.!|<>~-]/gu, '\\$&');
   const lines = ['## 公开网页联系人', '来源：公开网页；历史证据不代表已离职。'];
+  if (output.web_page) lines.push(`网页观察记录共 ${output.web_page.total} 条；本页从第 ${Math.min(output.web_page.offset + 1, output.web_page.total)} 条开始，每页最多 ${output.web_page.limit} 条；${output.web_page.next_offset === null ? '已到末页' : '还有下一页'}`);
   for (const company of output.companies) {
     lines.push(`### ${safe(company.company_name)}`);
-    for (const contact of company.contacts) lines.push(`- ${safe(contact.name)}：${safe(contact.title)}（${safe(contact.source_url)}）`);
-    for (const contact of company.historical_contacts) lines.push(`- 历史网页证据：${safe(contact.name)}：${safe(contact.title)}（${safe(contact.source_url)}；首次见于 ${safe(contact.first_seen_at)}，最近见于 ${safe(contact.last_seen_at)}；不代表已离职）`);
+    for (const contact of company.contacts) lines.push(`- ${safe(contact.name)}：${safe(contact.title)}${contact.affiliation_status === 'unverified' ? '；归属待核实' : ''}（来源 ${safe(contact.source_url)}；日期 ${safe(contact.published_at ?? '未知')}）${contact.evidence_quote ? `；依据 ${safe(contact.evidence_quote)}` : ''}`);
+    for (const contact of company.historical_contacts) lines.push(`- 历史网页证据：${safe(contact.name)}：${safe(contact.title)}${contact.affiliation_status === 'unverified' ? '；归属待核实' : ''}（来源 ${safe(contact.source_url)}；日期 ${safe(contact.published_at ?? '未知')}；首次见于 ${safe(contact.first_seen_at)}，最近见于 ${safe(contact.last_seen_at)}；不代表已离职）${contact.evidence_quote ? `；依据 ${safe(contact.evidence_quote)}` : ''}`);
   }
   if (!output.companies.length) lines.push('未找到网页联系人。');
   for (const warning of output.warnings) lines.push(`警告：${safe(warning)}`);
@@ -379,13 +388,18 @@ export function buildMcpServer(services: McpServices): McpServer {
   }))));
 
   server.registerTool('discover_contacts', {
-    description: '按 source 从公开网页、Zoho CRM 或两者发现联系人。默认 web 保留旧结果；zoho 实时只读、需核对客户候选与 complete，返回选定客户全部已取得联系人。不是共享图谱搜索；不返回邮箱或电话，历史网页证据不代表已离职。',
+    description: '按 source 从公开网页、Zoho CRM 或两者发现职业人物。网页默认每页50条观察，续页使用返回的 web_page.snapshot_id 与 next_offset，source=web 可避免重复读取 CRM。zoho 实时只读、需核对客户候选与 complete，返回选定客户全部已取得联系人。不是共享图谱搜索；不返回邮箱或电话，历史网页证据不代表已离职。',
     inputSchema: GetContactsInputSchema,
     outputSchema: DiscoverContactsOutputSchema,
   }, async input => {
     const webInput = { query: input.query,
+      webOffset: input.web_offset ?? 0, webLimit: input.web_limit ?? 50,
+      ...(input.web_snapshot_id === undefined ? {} : { webSnapshotId: input.web_snapshot_id }),
       ...(input.region_hint === undefined ? {} : { regionHint: input.region_hint }) };
-    if (input.source === 'web') return toolResult(contactsOutput(await services.getContacts(webInput)));
+    if (input.source === 'web') {
+      const output = contactsOutput(await services.getContacts(webInput));
+      return { content: [{ type: 'text' as const, text: renderWebContacts(output) }], structuredContent: output };
+    }
     const ids = input.zoho_accounts ?? services.zohoContacts?.connectionIds;
     const configuredIds = services.zohoContacts?.connectionIds ?? [];
     if (input.zoho_accounts?.some(id => !configuredIds.includes(id))) {
@@ -400,8 +414,9 @@ export function buildMcpServer(services: McpServices): McpServer {
         connectionId: record.connection_id, accountId: record.account_id,
       })) }) };
     const [webResult, zohoResult] = await Promise.all([
-      input.source === 'all' ? Promise.resolve().then(() => services.getContacts(webInput)).then(output => contactsOutput(output)).catch(() => ({
-        companies: [], warnings: ['WEB_SOURCE_FAILED'], collected_at: new Date().toISOString(),
+      input.source === 'all' ? Promise.resolve().then(() => services.getContacts(webInput)).then(output => contactsOutput(output)).catch((error: unknown) => ({
+        companies: [], warnings: [error instanceof ContactPaginationError
+          ? new ContactPaginationError(error.code).message : 'WEB_SOURCE_FAILED'], collected_at: new Date().toISOString(),
       })) : Promise.resolve({ companies: [], warnings: [], collected_at: new Date().toISOString() }),
       services.zohoContacts ? Promise.resolve().then(() => services.zohoContacts!.get(query))
         .catch((error: unknown) => {

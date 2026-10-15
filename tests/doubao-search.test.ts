@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { IdentityProfile } from '../src/contracts/index.js';
 import { UpstreamError } from '../src/orchestration/retry.js';
 import { DoubaoSearchClient } from '../src/upstream/search/doubao-client.js';
+import { buildContactSearchPlan } from '../src/upstream/search/contact-search-plan.js';
 import { buildQuestionSearchPlan, buildSearchPlan, questionTopics, SearchQuerySchema } from '../src/upstream/search/search-plan.js';
 import { mapDoubaoSearchResponse } from '../src/upstream/search/mapper.js';
 
@@ -18,6 +19,27 @@ const identity: IdentityProfile = {
   parentLegalName: null,
   subsidiaryLegalNames: [],
 };
+
+it.each(['request', 'shutdown'] as const)('composes contact request and shutdown cancellation (%s)', async reason => {
+  const request = new AbortController();
+  const shutdown = new AbortController();
+  const client = new DoubaoSearchClient({
+    url: 'https://search.example.cn', apiKey: 'secret', signal: shutdown.signal,
+    fetchFn: async (_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('private body')), { once: true });
+    }),
+  });
+  const pending = client.searchWeb(buildContactSearchPlan('测试公司')[0]!, request.signal);
+  (reason === 'request' ? request : shutdown).abort();
+  await expect(pending).rejects.toMatchObject({ code: 'ABORTED' });
+});
+
+it('uses only confirmed aliases in the same four contact queries', () => {
+  const plan = buildContactSearchPlan(identity.legalName, undefined, { ...identity, aliases: ['简称甲', '简称乙'] });
+  expect(plan).toHaveLength(4);
+  expect(plan.map(x => x.Query.includes('简称甲'))).toEqual([true, false, true, false]);
+  expect(plan.every(x => !x.Query.includes('不应使用'))).toBe(true);
+});
 
 function fixture(name = 'doubao-search.json'): unknown {
   return JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));

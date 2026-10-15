@@ -74,6 +74,76 @@ fn insert_crm_claim(
 }
 
 #[test]
+fn web_snapshot_claim_guard_requires_real_mapping_and_narrow_value_and_source() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path().join("g.db")).unwrap();
+    s.sync_snapshots(&json!({"operation_id":"snapshot-sync:initialize","actor":"system","initialize":true,"snapshots":[]})).unwrap();
+    s.sync_snapshots(&json!({"operation_id":"snapshot-sync:1-1","actor":"system","snapshots":[{
+        "snapshot_id":1,"cache_key":"query-a","normalized_query":"甲公司","normalized_region_hint":null,
+        "collected_at":"2026-10-15T00:00:00Z","stored_at":"2026-10-15T00:00:00Z",
+        "companies":[{"company_name":"甲公司","contacts":[{"name":"张明","title":null,
+            "source_url":"https://example.com/news","published_at":null,"affiliation_status":"unverified","evidence_quote":"甲公司张明参加活动。"}]}]
+    }]})).unwrap();
+    let (source, value): (String, String) = s
+        .graph
+        .connection()
+        .query_row(
+            "SELECT source_json,value_json FROM contact_claims",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let source: Value = serde_json::from_str(&source).unwrap();
+    let value: Value = serde_json::from_str(&value).unwrap();
+    for (index, field, replacement) in [
+        (0, "source_type", json!("file")),
+        (1, "source_type", json!("text")),
+        (2, "snapshot_id", json!(999)),
+        (3, "snapshot_id", Value::Null),
+        (4, "source_url", json!("https://example.com/forged")),
+        (5, "quote", json!(" ")),
+        (6, "quote", json!("x".repeat(2049))),
+        (7, "collected_at", json!("invalid")),
+    ] {
+        let mut invalid = source.clone();
+        invalid[field] = replacement;
+        let result = s.graph.connection().execute("INSERT INTO contact_claims
+            SELECT ?1,subject_id,kind,field_path,relation_type,target_id,value_json,?2,status,reason,import_id,candidate_id,created_at,updated_at FROM contact_claims LIMIT 1",
+            params![format!("bad-{index}"),invalid.to_string()]);
+        assert!(result.is_err(), "accepted invalid {field}: {invalid}");
+    }
+    for (index, change) in [
+        "relation_type='alumniOf'", "field_path='properties.name'", "candidate_id='forged'",
+        "value_json='{\"role\":{\"@type\":\"OrganizationRole\"}}'",
+        "value_json='{\"properties\":{\"role\":{\"@type\":\"OrganizationRole\"}},\"metadata\":{\"employment_status\":\"current\"}}'",
+    ].iter().enumerate() {
+        assert!(s.graph.connection().execute(&format!("UPDATE contact_claims SET {change}"),[]).is_err(),"accepted case {index}");
+    }
+    for (index, subject, target, status) in [
+        (0, "target_id", "target_id", "unverified"),
+        (1, "subject_id", "subject_id", "unverified"),
+        (2, "subject_id", "target_id", "confirmed"),
+    ] {
+        let result = s.graph.connection().execute(&format!("INSERT INTO contact_claims
+            SELECT ?1,{subject},kind,field_path,relation_type,{target},value_json,source_json,?2,reason,import_id,candidate_id,created_at,updated_at FROM contact_claims LIMIT 1"),params![format!("bad-shape-{index}"),status]);
+        assert!(
+            result.is_err(),
+            "invalid web subject/target/status accepted: {index}"
+        );
+    }
+    assert_eq!(value["metadata"]["employment_status"], "unknown");
+    // Existing databases refresh the same triggers and preserve the legitimate claim.
+    drop(s);
+    let s = Store::open(d.path().join("g.db")).unwrap();
+    let n: i64 = s
+        .graph
+        .connection()
+        .query_row("SELECT count(*) FROM contact_claims", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1);
+}
+
+#[test]
 fn zoho_duplicate_without_import_is_visible_on_both_sides_and_reviewable() {
     let d = tempfile::tempdir().unwrap();
     let s = Store::open(d.path().join("g.db")).unwrap();

@@ -46,7 +46,7 @@ import { ArkEvidenceService } from './upstream/ark/client.js';
 import { ContactExtractor } from './upstream/ark/contact-extractor.js';
 import { QccResearchCollector } from './upstream/qcc/assessment-research.js';
 import { QccGateway } from './upstream/qcc/client.js';
-import { CompanyProfileService } from './upstream/qcc/profile-service.js';
+import { CompanyProfileService, normalizeLegalName } from './upstream/qcc/profile-service.js';
 import { DoubaoSearchClient } from './upstream/search/doubao-client.js';
 import { UpstreamError } from './orchestration/retry.js';
 import { CompanyQuestionService } from './orchestration/company-question-service.js';
@@ -254,10 +254,11 @@ export function createApplication(
     credential: config.arkCredential,
     requestMaxBytes: config.arkRequestMaxBytes,
     signal: abortController.signal,
+    onBatch: event => logger.logContactExtraction(event),
   });
   const contactService = new ContactService({
     searchClient: {
-      searchWeb: query => {
+      searchWeb: (query, signal) => {
         if (searchClient.searchWeb === undefined) {
           throw new UpstreamError(
             'doubao_search',
@@ -265,11 +266,18 @@ export function createApplication(
             'Contact web search is unavailable',
           );
         }
-        return searchClient.searchWeb(query);
+        return searchClient.searchWeb(query, signal);
       },
     },
     extractor: contactExtractor,
     snapshots: contactSnapshots,
+    findIdentity: query => {
+      const key = normalizeLegalName(query);
+      const rows = profiles.findByNormalizedNames([key]);
+      return rows.length === 1 && normalizeLegalName(rows[0]!.identity.legalName) === key
+        ? rows[0]!.identity : undefined;
+    },
+    limits: { search: config.maxSearchCalls, ark: config.maxArkCalls, total: config.maxTotalUpstreamCalls },
     onSnapshotAppended: snapshotSync === undefined ? undefined : () => snapshotSync.schedule(),
     cacheLogger: logger,
     now: overrides.now,

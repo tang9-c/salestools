@@ -26,6 +26,7 @@ function graphSnapshot(snapshot: StoredContactSnapshot) {
     normalized_region_hint: snapshot.normalizedRegionHint,
     collected_at: snapshot.payload.collected_at,
     stored_at: snapshot.storedAt,
+    // Preserve the full quote: Rust uses it as part of the stable observation identity.
     companies: snapshot.payload.companies,
   };
 }

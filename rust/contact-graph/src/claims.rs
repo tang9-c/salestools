@@ -59,7 +59,9 @@ pub(crate) fn migrate_import_link(store: &Store) -> rusqlite::Result<()> {
         let changed = if event == "UPDATE" {
             "AND (NEW.import_id IS NOT OLD.import_id OR NEW.source_json IS NOT OLD.source_json
                 OR NEW.kind IS NOT OLD.kind OR NEW.relation_type IS NOT OLD.relation_type
-                OR NEW.field_path IS NOT OLD.field_path OR NEW.target_id IS NULL)"
+                OR NEW.field_path IS NOT OLD.field_path OR NEW.target_id IS NULL
+                OR (NEW.relation_type='worksFor' AND (NEW.value_json IS NOT OLD.value_json
+                    OR NEW.candidate_id IS NOT OLD.candidate_id)))"
         } else {
             ""
         };
@@ -80,7 +82,47 @@ pub(crate) fn migrate_import_link(store: &Store) -> rusqlite::Result<()> {
                         AND NOT EXISTS(SELECT 1 FROM json_each(NEW.source_json) WHERE key NOT IN
                             ('source_type','source_connection_id','source_module','source_record_id','collected_at','modified_at'))
                     ELSE 0 END,0)
-                THEN RAISE(ABORT,'Null import_id requires a located Zoho duplicate claim') END;
+                    AND NOT COALESCE(NEW.kind='relation' AND NEW.relation_type='worksFor'
+                        AND NEW.field_path IS NULL AND NEW.status='unverified'
+                        AND CASE WHEN json_valid(NEW.source_json) AND json_valid(NEW.value_json) THEN
+                            json_type(NEW.source_json)='object'
+                            AND json_extract(NEW.source_json,'$.source_type')='web'
+                            AND json_type(NEW.source_json,'$.snapshot_id')='integer'
+                            AND json_extract(NEW.source_json,'$.snapshot_id')>0
+                            AND json_type(NEW.source_json,'$.source_url')='text'
+                            AND (json_extract(NEW.source_json,'$.source_url') LIKE 'https://_%'
+                                OR json_extract(NEW.source_json,'$.source_url') LIKE 'http://_%')
+                            AND json_type(NEW.source_json,'$.quote')='text'
+                            AND length(trim(json_extract(NEW.source_json,'$.quote'),char(9)||char(10)||char(13)||' '))>0
+                            AND json_type(NEW.source_json,'$.collected_at')='text'
+                            AND julianday(json_extract(NEW.source_json,'$.collected_at')) IS NOT NULL
+                            AND NOT EXISTS(SELECT 1 FROM json_each(NEW.source_json) WHERE key NOT IN
+                                ('source_type','snapshot_id','source_url','quote','collected_at'))
+                            AND json_extract(NEW.value_json,'$.properties.role.@type')='OrganizationRole'
+                            AND json_extract(NEW.value_json,'$.metadata.employment_status')='unknown'
+                            AND NOT EXISTS(SELECT 1 FROM json_each(NEW.value_json) WHERE key NOT IN ('properties','metadata'))
+                            AND NOT EXISTS(SELECT 1 FROM json_each(NEW.value_json,'$.properties') WHERE key!='role')
+                            AND NOT EXISTS(SELECT 1 FROM json_each(NEW.value_json,'$.metadata') WHERE key!='employment_status')
+                            AND NOT EXISTS(SELECT 1 FROM json_each(NEW.value_json,'$.properties.role') WHERE key NOT IN ('@type','roleName'))
+                            AND (json_type(NEW.value_json,'$.properties.role.roleName') IS NULL OR
+                                (json_type(NEW.value_json,'$.properties.role.roleName')='text'
+                                AND length(trim(json_extract(NEW.value_json,'$.properties.role.roleName')))>0))
+                            AND EXISTS(SELECT 1 FROM source_mapping sm
+                                JOIN entity_ids p ON p.entity_id=NEW.subject_id
+                                JOIN kg_entities pe ON pe.id=p.kg_id AND pe.entity_type='Person'
+                                JOIN entity_ids o ON o.entity_id=NEW.target_id
+                                JOIN kg_entities oe ON oe.id=o.kg_id AND oe.entity_type='Organization'
+                                WHERE sm.source_key=NEW.candidate_id
+                                AND sm.source_key LIKE 'snapshot-web-observation:%'
+                                AND sm.entity_id=NEW.subject_id AND sm.relation_id IS NULL
+                                AND json_extract(sm.source_json,'$.affiliation_status')='unverified'
+                                AND json_extract(sm.source_json,'$.target_id')=NEW.target_id
+                                AND json_extract(sm.source_json,'$.snapshot_id')=json_extract(NEW.source_json,'$.snapshot_id')
+                                AND json_extract(sm.source_json,'$.source_url')=json_extract(NEW.source_json,'$.source_url')
+                                AND json_extract(sm.source_json,'$.quote')=json_extract(NEW.source_json,'$.quote')
+                                AND json_extract(sm.source_json,'$.collected_at')=json_extract(NEW.source_json,'$.collected_at'))
+                        ELSE 0 END,0)
+                THEN RAISE(ABORT,'Null import_id requires a located Zoho duplicate or web snapshot claim') END;
             END;", event.to_lowercase(), event.to_lowercase()))?;
     }
     tx.commit()

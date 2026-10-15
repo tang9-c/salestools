@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it } from 'vitest';
+import { ContactService } from '../src/contacts/contact-service.js';
 import {
   AssessmentIdInputSchema,
   AssessmentReportInputSchema,
@@ -74,6 +75,8 @@ const expectedReport = {
   markdown: '# 报告',
 };
 const contacts: ContactServiceOutput = {
+  webPage: { snapshotId: 7, offset: 0, limit: 50, total: 2, nextOffset: null },
+  webCoverage: null,
   companies: [{
     companyName: '测试制造有限公司',
     contacts: [{
@@ -90,6 +93,8 @@ const contacts: ContactServiceOutput = {
   collectedAt,
 };
 const expectedContacts = {
+  web_page: { snapshot_id: 7, offset: 0, limit: 50, total: 2, next_offset: null },
+  web_coverage: null,
   companies: [{
     company_name: '测试制造有限公司',
     contacts: [{
@@ -138,6 +143,89 @@ async function connectedClient(toolServices: McpServices) {
 }
 
 describe('MCP tool schemas', () => {
+  it('shows a safe bound-page recovery error in all while retaining every Zoho contact', async () => {
+    let calls = 0;
+    const subject = new ContactService({ snapshots: { append: () => undefined, findFresh: () => null,
+      findLatest: () => null, findAll: () => [], findThroughSnapshot: () => null },
+      searchClient: { searchWeb: async () => { calls++; throw new Error('private upstream'); } },
+      extractor: { extract: async () => { calls++; throw new Error('private model'); } } });
+    const zoho = { status: 'completed' as const, complete: true, connections: [], warnings: [], collected_at: collectedAt,
+      companies: [{ connection_id: 'crm_a', account_id: 'account', company_name: '另一公司', account_owner: null,
+        contacts: Array.from({ length: 63 }, (_, i) => ({ record_id: String(i), name: `人物${i}`, title: null, contact_owner: null, modified_at: null })) }] };
+    const connection = await connectedClient(services({ getContacts: input => subject.get(input),
+      zohoContacts: { connectionIds: ['crm_a'], get: async () => zoho } }));
+    try {
+      const result = await connection.client.callTool({ name: 'discover_contacts', arguments: { query: '另一公司', source: 'all', web_snapshot_id: 7, web_offset: 50 } });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ zoho });
+      expect(JSON.stringify(result.content)).toContain('查询/地域不匹配');
+      expect(JSON.stringify(result.content)).toContain('第 0 页重新发起');
+      expect(JSON.stringify(result)).not.toMatch(/private upstream|private model/);
+      expect(calls).toBe(0);
+    } finally { await connection.client.close(); await connection.server.close(); }
+  });
+  it.each([false, true])('keeps all 63 Zoho contacts independent of web pagination (web fails: %s)', async fails => {
+    const zoho = { status: 'completed' as const, complete: true, connections: [], warnings: [], collected_at: collectedAt,
+      companies: [{ connection_id: 'crm_a', account_id: 'account', company_name: '示例公司', account_owner: null,
+        contacts: Array.from({ length: 63 }, (_, i) => ({ record_id: String(i), name: `人物${i}`, title: null, contact_owner: null, modified_at: null })) }] };
+    const connection = await connectedClient(services({ getContacts: async () => { if (fails) throw new Error('private'); return { ...contacts, webPage: { snapshotId: 7, offset: 50, limit: 1, total: 63, nextOffset: 51 } }; },
+      zohoContacts: { connectionIds: ['crm_a'], get: async () => zoho } }));
+    try {
+      const result = await connection.client.callTool({ name: 'discover_contacts', arguments: { query: '示例公司', source: 'all', web_snapshot_id: 7, web_offset: 50, web_limit: 1 } });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ zoho });
+      if (fails) {
+        expect(result.structuredContent).toMatchObject({ warnings: ['WEB_SOURCE_FAILED'], companies: [] });
+        expect(JSON.stringify(result)).not.toContain('private');
+      }
+      expect(JSON.stringify(result.content)).toContain('公开网页联系人');
+      expect(JSON.stringify(result.content)).toContain('Zoho');
+    } finally { await connection.client.close(); await connection.server.close(); }
+  });
+  it('passes the bound continuation through MCP with readable observations and coverage', async () => {
+    let observed: unknown;
+    const connection = await connectedClient(services({ getContacts: async input => {
+      observed = input;
+      return { companies: [{ companyName: '示例公司', contacts: Array.from({ length: 13 }, (_, i) => ({
+        name: `人物${i}`, title: null, sourceUrl: 'https://example.cn/team', publishedAt: null,
+        affiliationStatus: 'unverified', evidenceQuote: '示例公司活动记录',
+      })), historicalContacts: [] }], warnings: [], collectedAt,
+      webPage: { snapshotId: 7, offset: 50, limit: 50, total: 63, nextOffset: null },
+      webCoverage: { version: 2, total_pages: 4, total_chunks: 4, processed_chunks: 4, pending_pages: [], complete: true } };
+    } }));
+    try {
+      const result = await connection.client.callTool({ name: 'discover_contacts', arguments: { query: '示例公司', source: 'web', web_snapshot_id: 7, web_offset: 50, web_limit: 50 } });
+      expect(observed).toEqual({ query: '示例公司', webSnapshotId: 7, webOffset: 50, webLimit: 50 });
+      expect(result.structuredContent).toMatchObject({ web_page: { snapshot_id: 7, offset: 50, limit: 50, total: 63, next_offset: null }, web_coverage: { version: 2, complete: true } });
+      expect((result.structuredContent as { companies: Array<{ contacts: unknown[] }> }).companies[0]!.contacts).toHaveLength(13);
+      const text = JSON.stringify(result.content);
+      expect(text).toContain('观察记录共 63 条');
+      expect(text).toContain('归属待核实');
+      expect(text).toContain('职位未知');
+      expect(text).toContain('依据');
+    } finally { await connection.client.close(); await connection.server.close(); }
+  });
+
+  it.each([{ web_offset: 0 }, { web_limit: 50 }, { web_snapshot_id: 7 }])('rejects explicit web pagination for Zoho %j', page => {
+    expect(GetContactsInputSchema.safeParse({ query: '公司', source: 'zoho', ...page }).success).toBe(false);
+    expect(GetContactsInputSchema.safeParse({ query: '公司', source: 'zoho' }).success).toBe(true);
+  });
+  it('returns nullable titles and observation evidence through MCP', async () => {
+    const connection = await connectedClient(services({ getContacts: async () => ({
+      companies: [{ companyName: '示例公司', contacts: [{ name: '林知远', title: null,
+        sourceUrl: 'https://example.test/team', publishedAt: null,
+        affiliationStatus: 'unverified', evidenceQuote: '示例公司的林知远参加活动。' }],
+      historicalContacts: [] }], warnings: [], collectedAt,
+    }) }));
+    try {
+      const result = await connection.client.callTool({ name: 'discover_contacts', arguments: { query: '示例公司', source: 'all' } });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ companies: [{ contacts: [{
+        name: '林知远', title: null, affiliation_status: 'unverified', evidence_quote: '示例公司的林知远参加活动。',
+      }] }] });
+      expect(JSON.stringify(result.content)).toContain('职位未知');
+    } finally { await connection.client.close(); await connection.server.close(); }
+  });
   it('uses strict bounded input schemas and defaults force_refresh to false', () => {
     expect(CompanyProfileInputSchema.parse({ query: '测试公司' })).toEqual({ query: '测试公司', include_company_context: false });
     expect(CompanyProfileInputSchema.safeParse({ query: '', unknown: true }).success).toBe(false);
@@ -248,7 +336,8 @@ describe('MCP tool schemas', () => {
       const result = await connection.client.callTool({ name, arguments: args });
       expect(result.isError).not.toBe(true);
       expect(result.structuredContent).toEqual(expected);
-      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(expected) }]);
+      if (name === 'discover_contacts') expect(result.content).toEqual([{ type: 'text', text: expect.stringContaining('公开网页联系人') }]);
+      else expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(expected) }]);
     }
     expect(observedInputs).toEqual([
       { query: '测试公司', regionHint: '上海' },
@@ -256,7 +345,7 @@ describe('MCP tool schemas', () => {
       '',
       { assessmentId },
       { assessmentId, includeRelatedUpdates: false },
-      { query: '测试制造', regionHint: '上海' },
+      { query: '测试制造', regionHint: '上海', webOffset: 0, webLimit: 50 },
       { legalName: '测试制造有限公司', creditCode: '91310000TEST000001', question: 'SolidWorks 招聘说明什么？', assessmentId },
     ]);
 

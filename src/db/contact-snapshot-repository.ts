@@ -31,6 +31,7 @@ export interface ContactSnapshotStore {
   findFresh(cacheKey: string, now: Date, ttlDays: number): StoredContactSnapshot | null;
   findLatest(cacheKey: string): StoredContactSnapshot | null;
   findAll(cacheKey: string): StoredContactSnapshot[];
+  findThroughSnapshot(cacheKey: string, snapshotId: number): StoredContactSnapshot[] | null;
 }
 
 export class ContactSnapshotDataError extends Error {
@@ -74,6 +75,15 @@ function toStoredSnapshot(row: ContactSnapshotRow): StoredContactSnapshot {
 
 export class ContactSnapshotRepository implements ContactSnapshotStore {
   constructor(private readonly database: DatabaseSync) {}
+
+  findThroughSnapshot(cacheKey: string, snapshotId: number): StoredContactSnapshot[] | null {
+    if (!Number.isSafeInteger(snapshotId) || snapshotId < 1) throw new Error('Invalid contact snapshot ID');
+    const rows = this.database.prepare(`SELECT snapshot_id, cache_key, normalized_query, normalized_region_hint,
+      result_json, collected_at, stored_at FROM contact_query_snapshots
+      WHERE cache_key = ? AND snapshot_id <= ? ORDER BY stored_at ASC, snapshot_id ASC`)
+      .all(validateCacheKey(cacheKey), snapshotId) as unknown as ContactSnapshotRow[];
+    return rows.some(row => row.snapshot_id === snapshotId) ? rows.map(toStoredSnapshot) : null;
+  }
 
   append(input: AppendContactSnapshotInput): void {
     const cacheKey = validateCacheKey(input.cacheKey);

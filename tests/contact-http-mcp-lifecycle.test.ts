@@ -98,7 +98,7 @@ it('travels through authenticated HTTP upload, MCP and the real graph without ex
       }] },
       contactExtractor: { extract: async () => ({ contacts: [{
         companyName: 'Alpha Studio', name: 'Lin Xiang', title: '研发总监',
-        roleCategory: 'research_and_development', sourceType: 'official_website',
+        affiliationStatus: 'employment_evidence', evidenceQuote: 'Alpha Studio 的 Lin Xiang 担任研发总监。', sourceChunkId: 'q0-p0-c0',
         sourceUrl: 'https://alpha.example/team',
       }], selection: { totalPages: 1, includedPages: 1, textTruncated: false } }) },
       logSink: { write: () => undefined },

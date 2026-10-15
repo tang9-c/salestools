@@ -6,6 +6,7 @@ import {
 import type { RetryAttemptEvent } from '../orchestration/retry.js';
 import type { ImportEvent } from '../contacts/import-service.js';
 import { safeCode } from '../contacts/import-diagnostics.js';
+import type { ContactExtractionEvent } from '../upstream/ark/contact-extractor.js';
 
 export interface LogSink {
   write(line: string): void;
@@ -52,6 +53,10 @@ export class JsonlLogger {
     private readonly sink: LogSink,
     private readonly now: () => Date = () => new Date(),
   ) {}
+
+  logContactExtraction(event: ContactExtractionEvent): void {
+    this.sink.write(`${JSON.stringify({ event: 'contact_extraction', timestamp: this.now().toISOString(), ...event })}\n`);
+  }
 
   logAdminTokenOperation(event: AdminAudit): void {
     this.sink.write(`${JSON.stringify({ event: 'admin_token_operation', timestamp: this.now().toISOString(),

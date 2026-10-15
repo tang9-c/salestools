@@ -14,7 +14,7 @@ description: Find contacts in the Salestools library, Zoho CRM or public web; br
 | 在联系人库找姓名、公司、岗位或技能 | `search_contacts`，优先展示联系人图谱 App。 | 要翻页、核对证据、查未核实线索或项目客户时读 [库内搜索与图谱](references/library-search.md)。 |
 | 看某人档案、问已有关系 | 用真实 `entity_id` 调用 `get_contact`；关系问答用 `ask_contacts`。 | 同上；多候选无法区分时先请用户选定。 |
 | 查 Zoho CRM 公司联系人 | `discover_contacts(source:"zoho")`。 | 调用前读 [Zoho 查询与入库](references/zoho-discovery.md)。 |
-| 查公开网页联系人 | `discover_contacts(source:"web")`；明确要两源才用 `all`。 | 结果可能缓存或同步入库；只称公开线索，保留来源、时间与警告。 |
+| 查公开网页联系人 | `discover_contacts(source:"web")`；明确要两源才用 `all`。 | 调用或续页前读 [网页发现与快照分页](references/web-discovery.md)。 |
 | 导入简历或名片 | `open_contact_upload`，在 App 选文件、预览和确认。 | 操作前读 [导入与恢复](references/import-workflow.md)。 |
 | 从文字提取/保存联系人 | `import_contacts_text`，复用预览与确认。 | 同上；不需要上传或 Docling。 |
 | 修改、合并、归档、恢复或审核线索 | 先 `get_contact` 核对版本，再调用对应写工具。 | 操作前读 [维护与身份核对](references/record-maintenance.md)。 |

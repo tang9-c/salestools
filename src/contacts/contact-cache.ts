@@ -44,8 +44,13 @@ export function contactCacheIdentity(input: { query: string; regionHint?: string
   return { cacheKey, normalizedQuery, normalizedRegionHint };
 }
 
-function contactKey(companyName: string, name: string, title: string): string {
-  return [companyName, name, title].map(normalizeContactCachePart).join('\0');
+function companyKey(value: string): string {
+  return value.normalize('NFKC').trim().replace(/\s+/gu, ' ');
+}
+
+function contactKey(companyName: string, contact: HistoricalObservation['contact']): string {
+  return JSON.stringify([companyKey(companyName), contact.name, contact.title,
+    contact.source_url, contact.evidence_quote ?? null, contact.affiliation_status ?? null]);
 }
 
 function historyContact(observation: HistoricalObservation): HistoricalContact {
@@ -61,33 +66,35 @@ function compareHistory(left: HistoricalObservation, right: HistoricalObservatio
   return right.lastSeenAt.localeCompare(left.lastSeenAt)
     || normalizeContactCachePart(left.contact.name)
       .localeCompare(normalizeContactCachePart(right.contact.name))
-    || normalizeContactCachePart(left.contact.title)
-      .localeCompare(normalizeContactCachePart(right.contact.title));
+    || normalizeContactCachePart(left.contact.title ?? '')
+      .localeCompare(normalizeContactCachePart(right.contact.title ?? ''));
 }
 
 export function projectContactHistory(
   inputSnapshots: readonly StoredContactSnapshot[],
+  anchorSnapshotId?: number,
 ): GetContactsOutput {
   if (inputSnapshots.length === 0) throw new Error('At least one contact snapshot is required');
-  const snapshots = [...inputSnapshots].sort((left, right) => (
+  const snapshots = inputSnapshots.filter(row => anchorSnapshotId === undefined || row.snapshotId <= anchorSnapshotId).sort((left, right) => (
     left.storedAt.localeCompare(right.storedAt) || left.snapshotId - right.snapshotId
   ));
-  const latest = snapshots.at(-1)!;
+  const latest = anchorSnapshotId === undefined ? snapshots.at(-1)! : snapshots.find(row => row.snapshotId === anchorSnapshotId);
+  if (!latest) throw new Error('Contact snapshot anchor not found');
   const currentKeys = new Set(latest.payload.companies.flatMap(company => (
-    company.contacts.map(contact => contactKey(company.company_name, contact.name, contact.title))
+    company.contacts.map(contact => contactKey(company.company_name, contact))
   )));
   const observations = new Map<string, HistoricalObservation>();
 
-  for (const snapshot of snapshots.slice(0, -1)) {
+  for (const snapshot of snapshots.filter(row => row.snapshotId !== latest.snapshotId)) {
     for (const company of snapshot.payload.companies) {
-      const companyKey = normalizeContactCachePart(company.company_name);
+      const normalizedCompanyKey = companyKey(company.company_name);
       for (const contact of company.contacts) {
-        const key = contactKey(company.company_name, contact.name, contact.title);
+        const key = contactKey(company.company_name, contact);
         if (currentKeys.has(key)) continue;
         const existing = observations.get(key);
         if (existing === undefined) {
           observations.set(key, {
-            companyKey,
+            companyKey: normalizedCompanyKey,
             companyName: company.company_name,
             contact,
             firstSeenAt: snapshot.payload.collected_at,
@@ -110,11 +117,11 @@ export function projectContactHistory(
   }
 
   const companies: GetContactsOutput['companies'] = latest.payload.companies.map(company => {
-    const history = observationsByCompany.get(normalizeContactCachePart(company.company_name)) ?? [];
-    observationsByCompany.delete(normalizeContactCachePart(company.company_name));
+    const history = observationsByCompany.get(companyKey(company.company_name)) ?? [];
+    observationsByCompany.delete(companyKey(company.company_name));
     return {
       ...company,
-      historical_contacts: history.sort(compareHistory).slice(0, 10).map(historyContact),
+      historical_contacts: history.sort(compareHistory).map(historyContact),
     };
   });
 
@@ -128,12 +135,11 @@ export function projectContactHistory(
         ))
     ));
   for (const history of historicalOnly) {
-    if (companies.length >= 3) break;
     history.sort(compareHistory);
     companies.push({
       company_name: history[0]!.companyName,
       contacts: [],
-      historical_contacts: history.slice(0, 10).map(historyContact),
+      historical_contacts: history.map(historyContact),
     });
   }
 
@@ -141,5 +147,6 @@ export function projectContactHistory(
     companies,
     warnings: latest.payload.warnings,
     collected_at: latest.payload.collected_at,
+    ...(anchorSnapshotId === undefined ? {} : { web_coverage: latest.payload.coverage ?? null }),
   });
 }
