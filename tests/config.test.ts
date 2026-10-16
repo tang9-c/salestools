@@ -285,10 +285,18 @@ it('defaults the admin API off and validates its independent key digest', () => 
   expect(() => loadConfig({...valid,TOKEN_ADMIN_KEY_SHA256:'invalid'})).toThrow();
 });
 
-it('requires an expected numeric organization ID for qx/st without leaking credentials',()=>{
-  const crm={ZOHO_CONNECTIONS:'qx',ZOHO_QX_NAME:'QX',ZOHO_QX_REGION:'CN',ZOHO_QX_CLIENT_ID:'secret-client',
-    ZOHO_QX_CLIENT_SECRET:'secret-value',ZOHO_QX_REFRESH_TOKEN:'secret-refresh'};
-  expect(()=>loadConfig({...valid,...crm})).toThrow('ZOHO_QX_ORG_ID');
-  expect(()=>loadConfig({...valid,...crm,ZOHO_QX_ORG_ID:'not-an-id'})).toThrow('ZOHO_QX_ORG_ID');
-  expect(loadConfig({...valid,...crm,ZOHO_QX_ORG_ID:'100'}).zohoConnections[0]).toMatchObject({id:'qx',orgId:'100'});
+it('loads QX connections without requiring an organization ID configuration',()=>{
+  const crm={ZOHO_CONNECTIONS:'qx',ZOHO_QX_NAME:'QX',ZOHO_QX_REGION:'CN',ZOHO_QX_CLIENT_ID:'fake-client',
+    ZOHO_QX_CLIENT_SECRET:'fake-value',ZOHO_QX_REFRESH_TOKEN:'fake-refresh'};
+  expect(loadConfig({...valid,...crm}).zohoConnections[0]).toEqual({id:'qx',name:'QX',region:'CN',
+    clientId:'fake-client',clientSecret:'fake-value',refreshToken:'fake-refresh'});
+});
+
+it('uses normalized NAME values for stable legacy connection IDs and rejects duplicate organization names',()=>{
+  const legacy={ZOHO_CONNECTIONS:'crm_a,crm_b',ZOHO_CRM_A_NAME:' Qx ',ZOHO_CRM_A_REGION:'CN',
+    ZOHO_CRM_A_CLIENT_ID:'fake',ZOHO_CRM_A_CLIENT_SECRET:'fake',ZOHO_CRM_A_REFRESH_TOKEN:'fake',
+    ZOHO_CRM_B_NAME:' sT ',ZOHO_CRM_B_REGION:'CN',
+    ZOHO_CRM_B_CLIENT_ID:'fake',ZOHO_CRM_B_CLIENT_SECRET:'fake',ZOHO_CRM_B_REFRESH_TOKEN:'fake'};
+  expect(loadConfig({...valid,...legacy}).zohoConnections).toMatchObject([{id:'crm_a',name:'Qx'},{id:'crm_b',name:'sT'}]);
+  expect(()=>loadConfig({...valid,...legacy,ZOHO_CRM_B_NAME:' qX '})).toThrow('Invalid configuration');
 });

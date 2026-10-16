@@ -37,8 +37,8 @@ salestools-admin token disable sales-a --all
 ```
 
 - 每个 `userId` 一行、一个 Token；邮箱全局唯一，每人仅属一个 CRM 组织。重复 userId、邮箱或 CRM 用户返回冲突，包括已禁用记录。
-- create 必须提供邮箱和组织代号 `qx` 或 `st`；仅查询指定连接，分页按规范化邮箱匹配，唯一且 active、confirm=true 后才写入。12 秒内未完成、无匹配、多匹配或实际组织不符均不创建。stdout 仅输出新 Token，明文之后不可查询。
-- update-identity 使用相同匹配规则，成功整体更新；失败保留旧信息。支持给旧用户补绑定或由管理员明确更换邮箱、组织，保留原 Token；需要撤销原持有者时另行 rotate。并发变更会返回冲突，应先 list 核对。
+- create 必须提供邮箱和组织代号 `qx` 或 `st`；先从指定连接读取实际组织 ID，再分页按规范化邮箱匹配，唯一且 active、confirm=true 后将组织 ID、用户 ID 和 Token 哈希一起写入。12 秒内未完成、组织读取失败、无匹配或多匹配均不创建。stdout 仅输出新 Token，明文之后不可查询。
+- update-identity 对已有同组织代号的绑定，先将 Zoho 当前组织 ID 与 `tokens` 保存的组织 ID 比较；不一致时返回 `CRM_ORG_MISMATCH`，保留旧信息及 Token。未绑定的旧用户按首次绑定处理；管理员显式切换组织代号（如 qx 改为 st）时重新匹配目标组织并保存其 ID。成功整体更新，查询失败不改旧记录；需要撤销原持有者时另行 rotate。并发变更会返回冲突，应先 list 核对。
 - rotate 只替换哈希，立即撤销旧 Token 及其来源上传会话，保留邮箱、绑定和 enabled；禁用用户重发后仍禁用。stdout 仅输出新 Token。
 - enable 恢复现有 Token 的可用状态，不生成新 Token。
 - list 输出 JSON 元数据和 nextOffset；字段为 userId、enabled、createdAt、email、crmConnectionId、crmOrgId、crmUserId、updatedAt。老用户新增身份字段为 null。分页不是数据库变更期间的快照，不返回明文或哈希。
@@ -50,7 +50,7 @@ salestools-admin token disable sales-a --all
 
 退出码：0成功，2参数/配置错误，1明确HTTP拒绝或查询失败，3写操作结果未知。
 
-创建发生超时、网络中断、HTTP5xx或成功回执损坏时，可能已经写入数据库；CLI不会自动重试。先运行list，查看服务端 `admin_token_operation` 审计并结合时间/requestId核对。无法恢复丢失的明文；确认需要替换后使用 rotate，不能重复 create，也无需删除用户记录。重发请求结果未知时也不要盲目重复，先查日志。
+已验证的 `503 CRM_ORG_NOT_CONFIGURED` 是写入前的明确拒绝，CLI 返回退出码 1，显示 HTTP 状态、固定错误码和 requestId。其他 HTTP 5xx、超时、网络中断或成功回执损坏仍可能已写入，CLI 返回退出码 3，不自动重试；能取得的状态和 requestId 会保留。先运行list，查看服务端 `admin_token_operation` 审计并结合时间/requestId核对。无法恢复丢失的明文；确认需要替换后使用 rotate，不能重复 create，也无需删除用户记录。重发请求结果未知时也不要盲目重复，先查日志。
 
 HTTP401：管理员摘要与本机密钥不匹配/未授权。404：管理API未启用或未部署该版本。403：Host不匹配或请求携带Origin。429：按Retry-After等待。配置读取失败：核对目录0700、文件0600、所有权，无符号链接；不要放宽权限绕过检查。
 
@@ -73,10 +73,20 @@ HTTP401：管理员摘要与本机密钥不匹配/未授权。404：管理API未
 
 ## CRM 连接与权限
 
-使用 `ZOHO_CONNECTIONS=qx,st`，分别配置 `ZOHO_QX_*`、`ZOHO_ST_*` 凭证和 `ORG_ID`。
-`ORG_ID` 必须为 `GET /crm/v8/org` 返回的 `org[0].id`，不是 zgid、primary_zuid 或组织名称。
+使用 `ZOHO_CONNECTIONS=crm_a,crm_b`，分别配置 `ZOHO_CRM_A_*`、`ZOHO_CRM_B_*` 凭证，将两个连接的 `NAME` 设置为 `QX`、`ST`。
+无需配置组织 ID。首次绑定自动读取 `GET /crm/v8/org` 返回的 `org[0].id`，与用户映射一起保存到 `tokens.crm_org_id`；不是 zgid、primary_zuid 或组织名称。首次绑定依赖管理员正确配对名称与凭证；以后同组织更新及本人负责人判断都与该用户已保存的组织 ID 核验，不自动覆盖不一致的绑定。
 增加 `ZohoCRM.users.READ`、`ZohoCRM.org.READ` 只读 scope，并重新完成授权。保留原有联系人、客户和 SDK 元数据 scopes，findUser 继续关闭。
-现有其他连接代号仍可用于原联系人查询，但用户绑定仅接受 qx/st；不要直接重命名已用于图谱同步的连接，否则来源键会改变，应先确认并迁移既有来源数据。
+直接按连接的 `NAME` 选择组织：去除首尾空白并转为小写后匹配 `qx`、`st`。保留 `crm_a`、`crm_b` 连接 ID 和已有凭证，图谱来源键不变。用户命令和 tokens 表仍保存 qx/st 组织代号，服务端按名称找到实际连接后查询，Owner 判断也使用实际连接。
+
+```dotenv
+ZOHO_CONNECTIONS=crm_a,crm_b
+ZOHO_CRM_A_NAME=QX
+ZOHO_CRM_B_NAME=ST
+```
+
+原 `REGION`、`CLIENT_ID`、`CLIENT_SECRET`、`REFRESH_TOKEN` 配置继续使用；需要扩展 scopes 时由授权人员重新授权并更新 Refresh Token。`NAME` 同时用于显示和组织匹配，只匹配规范化后的 QX/ST；改成其他名称后不能再通过 qx/st 绑定，且不会回退到连接 ID。一个组织名称只能匹配一个连接，QX/ST 重复会在启动时报错。组织 API 无权限或不可用时，绑定失败且不写入；已绑定用户的负责人判断返回未知并给出警告。
+
+Zoho 的 `401 OAUTH_SCOPE_MISMATCH` 表示访问令牌缺少接口 scope，适配器返回 `ZOHO_PERMISSION_DENIED`；不应把它当成管理员 Token 错误或断言 Refresh Token 过期。
 
 绑定是身份对应，不改变所有有效 MCP 用户共享 CRM 数据的权限。客户及联系人 Owner 返回可选 `is_current_user`：组织核验成功且 ID 一致为 true，不一致为 false，未绑定、其他组织或核验失败为 null；Owner 本身缺失时仍为 null。核验失败保留联系人查询结果并给出 `CRM_IDENTITY_UNVERIFIED`，不把标记写入共享图谱。
 

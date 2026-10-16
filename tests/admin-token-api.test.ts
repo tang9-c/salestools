@@ -17,7 +17,7 @@ let closeHandler: (()=>Promise<void>) | undefined;
 afterEach(async () => { if(server) await new Promise<void>(resolve=>server.close(()=>resolve())); if(closeHandler) await closeHandler();closeHandler=undefined;db?.close(); db=undefined; });
 async function start(audit: (event: unknown)=>void = ()=>{}, now?: ()=>number) {
   db=new DatabaseSync(':memory:'); db.exec(SCHEMA_SQL); const service=new TokenService(new TokenRepository(db));
-  const administration=new TokenAdministration(service, { getOrganization:async()=> '100', getUsersPage:async()=>({users:[{id:'9',email:'sales@example.com',status:'active',confirmed:true},{id:'10',email:'audit-user@example.com',status:'active',confirmed:true}],moreRecords:false}) }, [{id:'qx',orgId:'100'}]);
+  const administration=new TokenAdministration(service, { getOrganization:async()=> '100', getUsersPage:async()=>({users:[{id:'9',email:'sales@example.com',status:'active',confirmed:true},{id:'10',email:'audit-user@example.com',status:'active',confirmed:true}],moreRecords:false}) }, [{id:'qx',name:'QX'}]);
   const app=createHttpApp({publicMcpHost:'127.0.0.1',allowedOriginUrls:new Set(),allowedOriginHostnames:new Set()},
     token=>service.verify(token),()=>{throw new Error('not used');},undefined,undefined,
     createTokenAdminRouter({keyHash:hash,publicMcpHost:'127.0.0.1',service:administration,audit,now}));

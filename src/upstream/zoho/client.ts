@@ -223,6 +223,13 @@ export class OfficialZohoSDKBridge implements ZohoSDKBridge {
       const status = response.getStatusCode();
       if (status === 204) return { records: [], moreRecords: false, nextPageToken: null };
       if (status >= 500 || status === 429) return fail('ZOHO_TRANSIENT_ERROR');
+      if (status >= 400) {
+        const code = response.getObject()?.getCode?.();
+        const name = typeof code === 'string' ? code : code?.getValue?.();
+        // Zoho returns scope mismatch as HTTP 401 even when the access token is valid.
+        if (['OAUTH_SCOPE_MISMATCH', 'NO_PERMISSION', 'AUTHORIZATION_FAILED'].includes(name))
+          return fail('ZOHO_PERMISSION_DENIED');
+      }
       if (status === 401) return fail('ZOHO_AUTH_FAILED');
       if (status === 403) return fail('ZOHO_PERMISSION_DENIED');
       if (status === 404) return fail('ZOHO_RECORD_NOT_FOUND');

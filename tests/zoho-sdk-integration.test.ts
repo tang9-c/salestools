@@ -209,3 +209,17 @@ test('real SDK reads organization and paginated users using their distinct wrapp
     expect(query.searchParams.get('per_page')).toBe('200');
   } finally {await client.close();await local.close();}
 });
+
+test.each(['org','users'])('real %s scope mismatch on HTTP 401 is permission denied, not invalid authentication',async endpoint=>{
+  let calls=0;
+  const local=await serverFor((request,response)=>{
+    if(request.url==='/oauth/v2/token') send(response,{access_token:'fake-access',expires_in:3600});
+    else {calls++;send(response,{code:'OAUTH_SCOPE_MISMATCH',status:'error',message:'private-upstream-message'},401);}
+  });
+  const client=new ZohoClient(connections,new LocalBridge(local.base));
+  try {
+    const request=endpoint==='org'?client.getOrganization('a',context()):client.getUsersPage('a',1,context());
+    await expect(request).rejects.toThrow('ZOHO_PERMISSION_DENIED');
+    expect(calls).toBe(1);
+  } finally {await client.close();await local.close();}
+});

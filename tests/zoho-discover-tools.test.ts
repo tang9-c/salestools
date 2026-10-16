@@ -194,20 +194,20 @@ it('uses the authenticated HTTP MCP path, waits for patch check, and closes the 
   } finally { await second?.close(); await degraded.close(); }
 });
 
-it('creates a bound user through the real admin route and projects owner identity per authenticated MCP request',async()=>{
-  const {createHash}=await import('node:crypto');const key='A'.repeat(43);
+it.each(['qx','crm_a'])('creates a bound user through the real admin route and projects owner identity on %s',async sourceId=>{
+  const {createHash}=await import('node:crypto');const key='A'.repeat(43),prefix=`ZOHO_${sourceId.toUpperCase()}`;
   const config=loadConfig({PUBLIC_MCP_HOST:'127.0.0.1',ALLOWED_ORIGINS:'https://example.com',SQLITE_PATH:':memory:',
     TOKEN_ADMIN_KEY_SHA256:createHash('sha256').update(key).digest('hex'),
     QCC_MCP_COMPANY_URL:'https://example.com/company',QCC_MCP_RISK_URL:'https://example.com/risk',
     QCC_MCP_IPR_URL:'https://example.com/ipr',QCC_MCP_OPERATION_URL:'https://example.com/operation',QCC_API_KEY:'fake',
     DOUBAO_SEARCH_API_URL:'https://example.com/search',DOUBAO_SEARCH_API_KEY:'fake',
     ARK_API_URL:'https://example.com/ark',ARK_MODEL:'fake',ARK_CREDENTIAL:'fake',
-    ZOHO_CONNECTIONS:'qx',ZOHO_QX_NAME:'QX',ZOHO_QX_REGION:'CN',ZOHO_QX_ORG_ID:'100',
-    ZOHO_QX_CLIENT_ID:'fake',ZOHO_QX_CLIENT_SECRET:'fake',ZOHO_QX_REFRESH_TOKEN:'fake'});
+    ZOHO_CONNECTIONS:sourceId,[`${prefix}_NAME`]:' qX ',[`${prefix}_REGION`]:'CN',
+    [`${prefix}_CLIENT_ID`]:'fake',[`${prefix}_CLIENT_SECRET`]:'fake',[`${prefix}_REFRESH_TOKEN`]:'fake'});
   let actualOrg='100';const logs:string[]=[];
   const runtime=createApplication(config,{logSink:{write:line=>logs.push(line)},verifyZohoPatch:async()=>{},
     searchClient:{search:async()=>[],searchWeb:async()=>[]},
-    zohoClient:{getOrganization:async()=>actualOrg,
+    zohoClient:{getOrganization:async id=>{expect(id).toBe(sourceId);return actualOrg;},
       getUsersPage:async()=>({users:[{id:'9',email:'sales@example.com',status:'active',confirmed:true}],moreRecords:false}),
       searchAccountsPage:async()=>({accounts:[{account_id:'1',company_name:'CRM公司',account_owner:{id:'9',name:'甲'}}],moreRecords:false}),
       getAccount:async()=>({account_id:'1',company_name:'CRM公司',account_owner:{id:'9',name:'甲'}}),
@@ -224,7 +224,7 @@ it('creates a bound user through the real admin route and projects owner identit
     const args={query:'CRM公司',source:'zoho'};
     const first=await client.callTool({name:'discover_contacts',arguments:args});
     expect(first.isError).not.toBe(true);
-    expect(first.structuredContent).toMatchObject({zoho:{companies:[{account_owner:{is_current_user:true},contacts:[{contact_owner:{is_current_user:false}}]}]}});
+    expect(first.structuredContent).toMatchObject({zoho:{companies:[{connection_id:sourceId,account_owner:{is_current_user:true},contacts:[{contact_owner:{is_current_user:false}}]}]}});
     actualOrg='200';
     const second=await client.callTool({name:'discover_contacts',arguments:args});
     expect(second.structuredContent).toMatchObject({zoho:{complete:true,companies:[{account_owner:{is_current_user:null}}],warnings:expect.arrayContaining([expect.stringContaining('CRM_IDENTITY_UNVERIFIED')])}});

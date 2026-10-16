@@ -115,3 +115,35 @@ it('validates and displays the extended identity metadata, rejecting hidden toke
   f.fetch.mockResolvedValue(new Response(JSON.stringify({items:[{...item,tokenHash:'secret'}],nextOffset:null,requestId}),{status:200}));
   expect(await f.run(['token','list'])).toBe(1);expect(f.out).toHaveLength(0);
 });
+
+it('reports a known pre-write CRM configuration rejection instead of an ambiguous write',async()=>{
+  const f=await fixture();await f.run(['setup','--url','https://example.com']);f.out.length=0;f.err.length=0;
+  f.fetch.mockResolvedValue(new Response(JSON.stringify({error:{code:'CRM_ORG_NOT_CONFIGURED'},requestId}),{status:503}));
+  expect(await f.run(['token','create','sales','--email','sales@example.com','--crm','qx'])).toBe(1);
+  expect(f.err.join('')).toContain('HTTP 503');expect(f.err.join('')).toContain('CRM_ORG_NOT_CONFIGURED');
+  expect(f.err.join('')).toContain(requestId);expect(f.err.join('')).not.toContain('结果未知');
+  expect(f.fetch).toHaveBeenCalledTimes(1);expect(f.out).toEqual([]);
+});
+
+it('retains status and request ID for an unknown server failure without reflecting private payloads',async()=>{
+  const f=await fixture();await f.run(['setup','--url','https://example.com']);f.out.length=0;f.err.length=0;
+  f.fetch.mockResolvedValue(new Response(JSON.stringify({error:{code:'ADMIN_OPERATION_FAILED'},requestId}),{status:500}));
+  expect(await f.run(['token','create','sales','--email','sales@example.com','--crm','qx'])).toBe(3);
+  expect(f.err.join('')).toContain('HTTP 500');expect(f.err.join('')).toContain('ADMIN_OPERATION_FAILED');expect(f.err.join('')).toContain(requestId);
+  expect(f.err.join('')).toContain('结果未知');
+});
+
+it.each(['CRM_ORG_NOT_CONFIGURED-private-secret','PRIVATE_SECRET'])('never prints arbitrary upstream error codes: %s',async code=>{
+  const f=await fixture();await f.run(['setup','--url','https://example.com']);f.out.length=0;f.err.length=0;
+  f.fetch.mockResolvedValue(new Response(JSON.stringify({error:{code},requestId}),{status:503}));
+  expect(await f.run(['token','create','sales','--email','sales@example.com','--crm','qx'])).toBe(3);
+  expect(f.err.join('')).not.toContain(code);expect(f.err.join('')).toContain('HTTP 503');expect(f.out).toEqual([]);
+});
+
+it('shows actionable structured 4xx errors, without retrying or exposing unknown response fields',async()=>{
+  const f=await fixture();await f.run(['setup','--url','https://example.com']);f.out.length=0;f.err.length=0;
+  f.fetch.mockResolvedValue(new Response(JSON.stringify({error:{code:'CRM_USER_NOT_FOUND'},requestId}),{status:422}));
+  expect(await f.run(['token','create','sales','--email','sales@example.com','--crm','qx'])).toBe(1);
+  expect(f.err.join('')).toContain('CRM_USER_NOT_FOUND');expect(f.err.join('')).toContain(requestId);
+  expect(f.fetch).toHaveBeenCalledTimes(1);
+});

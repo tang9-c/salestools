@@ -25,6 +25,7 @@ import { ZohoGraphSync } from './contacts/zoho-graph-sync.js';
 import { ZohoClient, verifyZohoSDKPatch } from './upstream/zoho/client.js';
 import { annotateZohoOwners } from './contacts/zoho-owner-identity.js';
 import { TokenAdministration } from './auth/token-administration.js';
+import { findCrmConnection } from './auth/token-identity.js';
 import { ContactGraphClient, type GraphClient } from './contacts/graph-client.js';
 import { ContactLibraryService } from './contacts/library-service.js';
 import { SnapshotSync } from './contacts/snapshot-sync.js';
@@ -366,17 +367,18 @@ export function createApplication(
         const result = await ready.service.get(input);
         await zohoGraphSync?.sync(result, userId);
         const binding = tokenService.get(userId);
+        const bindingConnection = binding?.crmConnectionId ? findCrmConnection(config.zohoConnections, binding.crmConnectionId) : undefined;
         let identity: { connectionId: string; userId: string } | null = null;
         if (binding?.crmConnectionId && binding.crmOrgId && binding.crmUserId
-          && result.connections.some(connection => connection.connection_id === binding.crmConnectionId)) {
+          && result.connections.some(connection => connection.connection_id === bindingConnection?.id)) {
           try {
-            const connection = config.zohoConnections.find(item => item.id === binding.crmConnectionId);
-            if (!connection?.orgId || connection.orgId !== binding.crmOrgId || !ready.client.getOrganization)
+            const connection = bindingConnection;
+            if (!connection || !ready.client.getOrganization)
               throw new Error('CRM_IDENTITY_UNVERIFIED');
-            const orgId = await ready.client.getOrganization(binding.crmConnectionId,
+            const orgId = await ready.client.getOrganization(connection.id,
               {deadlineAt:Date.now()+5000,signal:AbortSignal.timeout(5000)});
             if(orgId !== binding.crmOrgId) throw new Error('CRM_IDENTITY_UNVERIFIED');
-            identity = { connectionId: binding.crmConnectionId, userId: binding.crmUserId };
+            identity = { connectionId: connection.id, userId: binding.crmUserId };
           } catch { result.warnings.push('CRM_IDENTITY_UNVERIFIED：无法核验当前用户的 CRM 组织，负责人是否本人未知。'); }
         }
         return annotateZohoOwners(result, identity);

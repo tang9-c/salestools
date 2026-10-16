@@ -5,7 +5,6 @@ export const ZohoRegionSchema = z.enum(['CN', 'US', 'EU', 'IN', 'AU', 'CA']);
 export const ZohoConnectionSchema = z.object({
   id: ZohoConnectionIdSchema, name: z.string().trim().min(1), region: ZohoRegionSchema,
   clientId: z.string().trim().min(1), clientSecret: z.string().trim().min(1), refreshToken: z.string().trim().min(1),
-  orgId: z.string().regex(/^\d+$/).optional(),
 }).strict();
 export type ZohoConnection = z.infer<typeof ZohoConnectionSchema>;
 export type ZohoQuery = {

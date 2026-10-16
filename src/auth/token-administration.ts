@@ -1,26 +1,26 @@
 import type { TokenService } from './token-service.js';
-import { CrmCodeSchema, EmailSchema, UserIdSchema, type TokenIdentity } from './token-identity.js';
+import { CrmCodeSchema, EmailSchema, UserIdSchema, findCrmConnection, type CrmIdentityConnection, type TokenIdentity } from './token-identity.js';
 import type { ZohoCallContext, ZohoClient } from '../upstream/zoho/client.js';
 
 export class TokenAdministration {
   constructor(readonly tokens: TokenService,
     private readonly client: Pick<ZohoClient, 'getOrganization' | 'getUsersPage'>,
-    private readonly connections: readonly { id: string; orgId?: string }[]) {}
+    private readonly connections: readonly CrmIdentityConnection[]) {}
 
-  private async resolve(email: string, crm: string): Promise<TokenIdentity> {
+  private async resolve(email: string, crm: string, expectedOrgId?: string | null): Promise<TokenIdentity> {
     email = EmailSchema.parse(email); CrmCodeSchema.parse(crm);
-    const connection = this.connections.find(item => item.id === crm);
-    if (!connection?.orgId) throw new Error('CRM_ORG_NOT_CONFIGURED');
+    const connection = findCrmConnection(this.connections, crm);
+    if (!connection) throw new Error('CRM_ORG_NOT_CONFIGURED');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 12000);
     const context: ZohoCallContext = { deadlineAt: Date.now() + 12000, signal: controller.signal };
     try {
-      const orgId = await this.client.getOrganization(crm, context);
-      if (orgId !== connection.orgId) throw new Error('CRM_ORG_MISMATCH');
+      const orgId = await this.client.getOrganization(connection.id, context);
+      if (expectedOrgId && orgId !== expectedOrgId) throw new Error('CRM_ORG_MISMATCH');
       const matches = new Map<string, { id: string; status: string; confirmed: boolean }>();
       for (let page = 1; ; page++) {
         if (controller.signal.aborted || Date.now() >= context.deadlineAt) throw new Error('ZOHO_DEADLINE_EXCEEDED');
-        const result = await this.client.getUsersPage(crm, page, context);
+        const result = await this.client.getUsersPage(connection.id, page, context);
         for (const user of result.users) {
           if (user.email?.trim().toLowerCase() === email) matches.set(user.id, user);
         }
@@ -45,7 +45,7 @@ export class TokenAdministration {
     if (!expected) throw new Error('TOKEN_USER_NOT_FOUND');
     const owner = this.tokens.emailOwner(email);
     if (owner && owner.userId !== userId) throw new Error('TOKEN_IDENTITY_CONFLICT');
-    const identity = await this.resolve(email, crm);
+    const identity = await this.resolve(email, crm, expected.crmConnectionId === crm ? expected.crmOrgId : null);
     this.tokens.updateIdentity(expected, identity);
     return true;
   }

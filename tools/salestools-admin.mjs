@@ -109,6 +109,12 @@ function keys(data, expected) {
   return data!==null && typeof data==='object' && !Array.isArray(data)
     && Object.keys(data).sort().join(',')===[...expected].sort().join(',');
 }
+// Only fixed server codes are printable; upstream messages may contain credentials.
+const errorCodes=new Set(['INVALID_ADMIN_REQUEST','ADMIN_HOST_DENIED','ADMIN_UNAUTHORIZED','ADMIN_ORIGIN_DENIED',
+  'ADMIN_RATE_LIMITED','ADMIN_CONTENT_TYPE_UNSUPPORTED','ADMIN_BODY_TOO_LARGE','ADMIN_NOT_FOUND','ADMIN_OPERATION_FAILED',
+  'TOKEN_IDENTITY_CONFLICT','TOKEN_IDENTITY_CHANGED','TOKEN_USER_NOT_FOUND','CRM_ORG_NOT_CONFIGURED','CRM_ORG_MISMATCH',
+  'CRM_USER_NOT_FOUND','CRM_EMAIL_AMBIGUOUS','CRM_USER_INACTIVE','ZOHO_UNAVAILABLE','ZOHO_DEADLINE_EXCEEDED',
+  'ZOHO_PERMISSION_DENIED','ZOHO_AUTH_FAILED','ZOHO_TRANSIENT_ERROR','ZOHO_INVALID_RESPONSE','ZOHO_UPSTREAM_ERROR']);
 function validated(data, command) {
   if(!validId(data?.requestId)) throw new Error('response');
   if(['create','rotate'].includes(command.action)) {
@@ -153,7 +159,8 @@ export async function runAdminCli(args, io) {
   }
   let config;
   try {config=await readConfig(io.home);} catch {await stderr('配置不可用：先运行 setup；检查目录 0700、文件 0600、所有权与符号链接。\n');return 2;}
-  const writing=command.action!=='list';let requestId;
+  const writing=command.action!=='list';let requestId,httpStatus,errorCode;
+  const details=()=>[httpStatus?`HTTP ${httpStatus}`:null,errorCode,requestId?`requestId=${requestId}`:null].filter(Boolean).join(' ');
   try {
     const paths={create:'tokens',list:'tokens',disable:'tokens/disable-user',enable:'tokens/enable-user',rotate:'tokens/rotate','update-identity':'tokens/update-identity'};
     const path=paths[command.action];
@@ -163,10 +170,23 @@ export async function runAdminCli(args, io) {
       headers:{Authorization:`Bearer ${config.adminKey}`,...(writing?{'Content-Type':'application/json'}:{})},
       ...(writing?{body:JSON.stringify({userId:command.userId,...(['create','update-identity'].includes(command.action)?{email:command.email,crm:command.crm}:{})})}:{}),
     });
-    if(response.status>=400 && response.status<500) {
+    httpStatus=response.status;
+    if(response.status>=400) {
       const delay=response.headers.get('retry-after');
-      await response.body?.cancel();
-      await stderr(`服务拒绝请求（HTTP ${response.status}）。${response.status===429 && /^\d{1,6}$/.test(delay??'')?`请等待 ${delay} 秒。`:''}\n`);return 1;
+      try {
+        const data=await readResponse(response);
+        if(validId(data?.requestId)) requestId=data.requestId;
+        if(keys(data,['error','requestId']) && keys(data.error,['code']) && validId(data.requestId) && errorCodes.has(data.error.code))
+          errorCode=data.error.code;
+      } catch {/* Keep status; never print unvalidated HTML, JSON or exception text. */}
+      // This fixed application error is raised before CRM lookup or any database write.
+      const unconfigured=['create','update-identity'].includes(command.action)
+        && httpStatus===503 && errorCode==='CRM_ORG_NOT_CONFIGURED';
+      if(response.status<500 || unconfigured) {
+        const hint=unconfigured?'所选 CRM 组织未配置，请检查 ZOHO_CONNECTIONS、对应连接的 NAME（QX/ST）和凭证。':'';
+        await stderr(`服务拒绝请求（${details()}）。${hint}${response.status===429 && /^\d{1,6}$/.test(delay??'')?`请等待 ${delay} 秒。`:''}\n`);return 1;
+      }
+      throw new Error('response');
     }
     if(response.status!==(command.action==='create'?201:200)) throw new Error('response');
     const data=await readResponse(response);if(validId(data?.requestId)) requestId=data.requestId;
@@ -175,7 +195,7 @@ export async function runAdminCli(args, io) {
     if(['create','rotate'].includes(command.action)) await stderr('业务 Token 已创建，请保存；明文不能再次查询。\n');
     return 0;
   } catch {
-    await stderr(writing?`结果未知：操作可能已完成，请勿盲目重复写入或重发 Token。请用 list 和审计日志核对。${requestId?` requestId=${requestId}`:''}\n`:'查询失败，请检查网络与服务状态后重试。\n');
+    await stderr(writing?`结果未知：操作可能已完成，请勿盲目重复写入或重发 Token。请用 list 和审计日志核对。${details()?` ${details()}`:''}\n`:`查询失败，请检查网络与服务状态后重试。${details()?` ${details()}`:''}\n`);
     return writing?3:1;
   }
 }

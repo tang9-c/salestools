@@ -55,7 +55,7 @@ codex mcp add salestools \
 
 ### Zoho CRM 只读联系人来源（可选）
 
-在服务端环境中设置 `ZOHO_CONNECTIONS=qx,st`，并为各连接设置 `ZOHO_QX_NAME`、`ZOHO_QX_REGION`、`ZOHO_QX_CLIENT_ID`、`ZOHO_QX_CLIENT_SECRET`、`ZOHO_QX_REFRESH_TOKEN`、`ZOHO_QX_ORG_ID`（ST 连接使用 `ZOHO_ST_*`）。连接 ID 使用小写 ASCII 字母、数字、下划线且以字母开头；区域为 `CN/US/EU/IN/AU/CA`，目前只连接生产环境。未配置时网页路径照常运行，Zoho 查询会明确返回不可用。Sealos 部署时注入同名服务端环境变量；不要将真实 `.env` 放入 Git、构建上下文或镜像。
+在服务端环境中设置 `ZOHO_CONNECTIONS=crm_a,crm_b`，通过 `ZOHO_CRM_A_NAME=QX`、`ZOHO_CRM_B_NAME=ST` 指定组织；分别配置各连接的 `REGION`、`CLIENT_ID`、`CLIENT_SECRET` 和 `REFRESH_TOKEN`。首次绑定时自动从 Zoho 读取组织 ID 并保存到 `tokens.crm_org_id`，以后与保存的 ID 核验，无需手填组织 ID。用户绑定将 `NAME` 去除首尾空白、转为小写后匹配 `--crm qx`／`--crm st`，不按连接 ID 或其他字段匹配。QX／ST 名称重复会导致启动失败。连接 ID 使用小写 ASCII 字母、数字、下划线且以字母开头；区域为 `CN/US/EU/IN/AU/CA`，目前只连接生产环境。未配置时网页路径照常运行，Zoho 查询会明确返回不可用。Sealos 部署时注入同名服务端环境变量；不要将真实 `.env` 放入 Git、构建上下文或镜像。
 
 `discover_contacts` 新增 `source=web|zoho|all`（默认 `web`）、可选 `zoho_accounts` 连接 ID 数组和 `zoho_account_records` 客户记录选择数组。未知连接是输入错误。CRM 客户名称搜索可能包含匹配；有候选需先核对，再用候选的 `connection_id` 与 `account_id` 重新调用。简称不属于全名子串时，将实际候选全名作为 `query` 重新提交。选定记录会重新核验，随后连续读取其关联联系人；Zoho 不受网页每家公司 10 人上限约束。`source=all` 将两种来源分别返回，不合并同名人员。网页结果保留原 `companies/warnings/collected_at`，CRM 结果在独立 `zoho` 区域；Zoho/all 的文本响应按公司列出所有已取得联系人，结构化响应保留连接和记录 ID。`status`、`complete`、`warnings` 必须一起阅读：`partial` 或 `failed` 不能当作全量，`needs_confirmation` 尚未开始联系人全量读取；120 秒同步期限内无法完成的超大客户也会如实标记。
 
@@ -170,5 +170,7 @@ salestools-admin token list --limit 100 --offset 100
 ```
 
 新命令需要配套服务端版本及 CRM 配置。已有管理员配置可继续使用，无需重新运行 `setup`；另存的旧脚本需手动更新。创建和重发只输出一次 Token 明文，请妥善保存；请求结果未知时先核对列表和审计，不要盲目重试。
+
+已有 `crm_a`／`crm_b` 连接应保留原 ID，直接使用 `ZOHO_CRM_A_NAME=QX`、`ZOHO_CRM_B_NAME=ST` 匹配组织；组织 ID 在首次绑定时自动读取并保存，具体配置见 [CRM 配置说明](docs/operations/token-admin.md#crm-连接与权限)。`503 CRM_ORG_NOT_CONFIGURED` 表示所选组织未配置，创建尚未写入；CLI 会显示错误码和 requestId。
 
 首次升级前使用 `tools/token-migration.mjs preflight` 检查重复用户；有重复时需停服、备份并明确选择保留记录，启动不会自动撤销旧 Token。具体步骤见 [Token 管理与迁移](docs/operations/token-admin.md)。
