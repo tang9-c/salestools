@@ -244,12 +244,16 @@ describe('MCP HTTP simulated end-to-end', () => {
         company_name: LEGAL_NAME,
         contacts: [{
           name: '李四', title: '研发总监', source_url: fakeContactPage.url,
+          affiliation_status: 'employment_evidence',
+          evidence_quote: '测试机器人有限公司研发总监李四负责机器人平台研发。',
           published_at: fakeContactPage.publishedAt,
         }],
         historical_contacts: [],
       }],
-      warnings: [],
+      warnings: ['主体未完全确认，保留原文企业名称'],
       collected_at: expect.any(String),
+      web_coverage: null,
+      web_page: { snapshot_id: 1, offset: 0, limit: 50, total: 1, next_offset: null },
     });
     expect(JSON.stringify(contacts)).not.toMatch(/email|phone|邮箱|电话/iu);
 
@@ -367,7 +371,10 @@ describe('MCP HTTP simulated end-to-end', () => {
         query: ' 测试机器人 ', region_hint: '上海',
       });
 
-      expect(second).toEqual(first);
+      expect(second).toEqual({
+        ...first,
+        warnings: [...first.warnings, '旧发现规则的历史资料，尚未完成增强搜索'],
+      });
       expect(upstreamCalls).toBe(0);
     } finally {
       await Promise.allSettled(clients.splice(0).map(client => client.close()));

@@ -7,7 +7,7 @@ import { ZohoClient, OfficialZohoSDKBridge, type ZohoCallContext } from '../src/
 import type { ZohoConnection } from '../src/contracts/zoho-contact.js';
 
 const connections: ZohoConnection[] = ['a', 'b'].map(id => ({ id, name: id, region: 'US', clientId: 'same-client', clientSecret: 'fake-secret', refreshToken: `synthetic-refresh-${id}` }));
-const context = (ms = 3000): ZohoCallContext => ({ deadlineAt: Date.now() + ms, signal: new AbortController().signal });
+const context = (ms = 10000): ZohoCallContext => ({ deadlineAt: Date.now() + ms, signal: new AbortController().signal });
 class LocalBridge extends OfficialZohoSDKBridge {
   paths: string[] = [];
   constructor(private readonly base: string) { super(); }

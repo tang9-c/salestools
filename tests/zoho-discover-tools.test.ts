@@ -34,10 +34,15 @@ async function call(s: McpServices, args: Record<string, unknown>) {
   finally { await client.close(); await server.close(); }
 }
 
-it('keeps web-only legacy JSON and strict output unchanged', async () => {
+it('keeps structured web output and renders readable text', async () => {
   const result = await call(services(), { query: '网页公司' });
   expect(result.structuredContent).toEqual({ companies: [{ company_name: '网页公司', contacts: [{ name: '网页人员', title: '经理', source_url: 'https://example.com', published_at: null }], historical_contacts: [] }], warnings: [], collected_at: at });
-  expect(result.content[0]).toEqual({ type: 'text', text: JSON.stringify(result.structuredContent) });
+  expect(result.content[0]).toEqual({ type: 'text', text: [
+    '## 公开网页联系人',
+    '来源：公开网页；历史证据不代表已离职。',
+    '### 网页公司',
+    '- 网页人员：经理（来源 https://example\\.com；日期 未知）',
+  ].join('\n') });
 });
 
 it('returns Zoho only with empty web base and full structured IDs', async () => {
