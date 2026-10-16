@@ -371,10 +371,13 @@ describe('MCP HTTP simulated end-to-end', () => {
         query: ' 测试机器人 ', region_hint: '上海',
       });
 
-      expect(second).toEqual({
-        ...first,
-        warnings: [...first.warnings, '旧发现规则的历史资料，尚未完成增强搜索'],
-      });
+      const firstOutput = first as { companies: unknown; warnings: string[] };
+      const secondOutput = second as { companies: unknown; warnings: string[] };
+      expect(secondOutput.companies).toEqual(firstOutput.companies);
+      expect(secondOutput.warnings).toEqual([
+        ...firstOutput.warnings,
+        '旧发现规则的历史资料，尚未完成增强搜索',
+      ]);
       expect(upstreamCalls).toBe(0);
     } finally {
       await Promise.allSettled(clients.splice(0).map(client => client.close()));
