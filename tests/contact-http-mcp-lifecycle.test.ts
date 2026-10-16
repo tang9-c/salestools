@@ -1,3 +1,4 @@
+import { createTestToken } from './helpers/token.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createHash } from 'node:crypto';
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -103,8 +104,8 @@ it('travels through authenticated HTTP upload, MCP and the real graph without ex
       }], selection: { totalPages: 1, includedPages: 1, textTruncated: false } }) },
       logSink: { write: () => undefined },
     });
-    const tokenA = runtime.tokenService.create('owner-a');
-    const tokenB = runtime.tokenService.create('owner-b');
+    const tokenA = createTestToken(runtime.tokenService, 'owner-a');
+    const tokenB = createTestToken(runtime.tokenService, 'owner-b');
     const server = await runtime.listen(0, '127.0.0.1');
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const badUpload = await fetch(`${base}/contact-files`, { method: 'POST',

@@ -40,7 +40,7 @@ it('refuses loose config permissions and symlinks',async()=>{
 it('outputs only the business token and rejects redirects without retry',async()=>{
   const f=await fixture();await f.run(['setup','--url','https://example.com']);f.out.length=0;f.err.length=0;
   f.fetch.mockResolvedValue(new Response(JSON.stringify({userId:'sales',token:'B'.repeat(43),requestId}),{status:201}));
-  expect(await f.run(['token','create','sales'])).toBe(0);expect(f.out.join('')).toBe('B'.repeat(43)+'\n');
+  expect(await f.run(['token','create','sales','--email','sales@example.com','--crm','qx'])).toBe(0);expect(f.out.join('')).toBe('B'.repeat(43)+'\n');
   expect(f.fetch.mock.calls[0][0]).toBe('https://example.com/admin/v1/tokens');expect(f.fetch.mock.calls[0][1].redirect).toBe('error');
   expect(f.err.join('')).not.toContain('B'.repeat(43));
 });
@@ -48,7 +48,7 @@ it.each(['network','server','malformed','redirect'])('marks an ambiguous write a
   const f=await fixture();await f.run(['setup','--url','https://example.com']);f.out.length=0;f.err.length=0;
   if(failure==='network')f.fetch.mockRejectedValue(new Error('private-key'));
   else f.fetch.mockResolvedValue(new Response('private-key',{status:failure==='server'?500:failure==='redirect'?302:201}));
-  expect(await f.run(['token','create','sales'])).toBe(3);expect(f.fetch).toHaveBeenCalledTimes(1);expect(f.err.join('')).toContain('结果未知');expect(f.err.join('')).not.toContain('private-key');expect(f.out).toHaveLength(0);
+  expect(await f.run(['token','create','sales','--email','sales@example.com','--crm','qx'])).toBe(3);expect(f.fetch).toHaveBeenCalledTimes(1);expect(f.err.join('')).toContain('结果未知');expect(f.err.join('')).not.toContain('private-key');expect(f.out).toHaveLength(0);
 });
 it('reports rejection safely and writes metadata only for list/disable',async()=>{
   const f=await fixture();await f.run(['setup','--url','https://example.com']);f.out.length=0;
@@ -59,15 +59,15 @@ it('reports rejection safely and writes metadata only for list/disable',async()=
 });
 it('does not claim success when stdout fails after creating the token',async()=>{
   const f=await fixture();await f.run(['setup','--url','https://example.com']);f.fetch.mockResolvedValue(new Response(JSON.stringify({userId:'sales',token:'B'.repeat(43),requestId}),{status:201}));
-  expect(await runAdminCli(['token','create','sales'],{...f.io,stdout:()=>{throw new Error('write failed');}})).toBe(3);
+  expect(await runAdminCli(['token','create','sales','--email','sales@example.com','--crm','qx'],{...f.io,stdout:()=>{throw new Error('write failed');}})).toBe(3);
 });
 
 it('rejects oversized or extra-field success payloads without leaking them',async()=>{
   const f=await fixture();await f.run(['setup','--url','https://example.com']);f.out.length=0;
   f.fetch.mockResolvedValue(new Response('s'.repeat(1024*1024+1),{status:201}));
-  expect(await f.run(['token','create','sales'])).toBe(3);
+  expect(await f.run(['token','create','sales','--email','sales@example.com','--crm','qx'])).toBe(3);
   f.fetch.mockResolvedValue(new Response(JSON.stringify({userId:'sales',token:'B'.repeat(43),requestId,private:'secret'}),{status:201}));
-  expect(await f.run(['token','create','sales'])).toBe(3);expect(f.out).toHaveLength(0);expect(f.err.join('')).not.toContain('secret');
+  expect(await f.run(['token','create','sales','--email','sales@example.com','--crm','qx'])).toBe(3);expect(f.out).toHaveLength(0);expect(f.err.join('')).not.toContain('secret');
 });
 it('accepts a validated paginated list',async()=>{
   const f=await fixture();await f.run(['setup','--url','https://example.com']);f.out.length=0;
@@ -87,4 +87,31 @@ it('saves no config if setup URL carries query/fragment or a non-root path',asyn
     expect(await f.run(['setup','--url',url])).toBe(2);
   }
   expect(f.fetch).not.toHaveBeenCalled();
+});
+
+it('sends the selected organization and email, and supports token rotation',async()=>{
+  const f=await fixture();await f.run(['setup','--url','https://example.com']);f.out.length=0;
+  f.fetch.mockResolvedValue(new Response(JSON.stringify({userId:'sales',token:'B'.repeat(43),requestId}),{status:201}));
+  expect(await f.run(['token','create','sales','--email','Sales@Example.com','--crm','st'])).toBe(0);
+  expect(JSON.parse(f.fetch.mock.calls[0][1].body)).toEqual({userId:'sales',email:'sales@example.com',crm:'st'});
+  f.fetch.mockResolvedValue(new Response(JSON.stringify({userId:'sales',token:'C'.repeat(43),requestId}),{status:200}));
+  expect(await f.run(['token','rotate','sales'])).toBe(0);
+  expect(f.fetch.mock.calls[1][0]).toContain('/tokens/rotate');
+});
+it('requires identity for create and update, rejects unsupported organizations',async()=>{
+  const f=await fixture();
+  for(const args of [['token','create','sales'],['token','update-identity','sales'],['token','create','sales','--email','sales@example.com','--crm','other']])
+    expect(await f.run(args)).toBe(2);
+  expect(f.fetch).not.toHaveBeenCalled();
+});
+
+it('validates and displays the extended identity metadata, rejecting hidden token fields',async()=>{
+  const f=await fixture();await f.run(['setup','--url','https://example.com']);f.out.length=0;
+  const item={userId:'sales',enabled:true,createdAt:'2026-10-16T00:00:00.000Z',email:'sales@example.com',
+    crmConnectionId:'qx',crmOrgId:'100',crmUserId:'9',updatedAt:'2026-10-16T00:00:00.000Z'};
+  f.fetch.mockResolvedValue(new Response(JSON.stringify({items:[item],nextOffset:null,requestId}),{status:200}));
+  expect(await f.run(['token','list'])).toBe(0);expect(JSON.parse(f.out[0]).items[0]).toEqual(item);
+  f.out.length=0;
+  f.fetch.mockResolvedValue(new Response(JSON.stringify({items:[{...item,tokenHash:'secret'}],nextOffset:null,requestId}),{status:200}));
+  expect(await f.run(['token','list'])).toBe(1);expect(f.out).toHaveLength(0);
 });

@@ -1,3 +1,4 @@
+import { createTestToken } from './token.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { AddressInfo } from 'node:net';
 import { createApplication } from '../../src/index.js';
@@ -25,7 +26,7 @@ export async function queryRuntime(graph: GraphClient, enabled: boolean) {
   const client = new Client({ name: 'synthetic-zoho-graph', version: '1' }, { versionNegotiation: { mode: 'auto' } });
   try {
     const listener = await runtime.listen(0, '127.0.0.1');
-    const token = runtime.tokenService.create('sales');
+    const token = createTestToken(runtime.tokenService, 'sales');
     await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(listener.address() as AddressInfo).port}/mcp`),
       { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
     return { runtime, client, query: () => client.callTool({ name: 'discover_contacts', arguments: { query: '合成公司', source: 'zoho' } }) };

@@ -5,6 +5,7 @@ export const ZohoRegionSchema = z.enum(['CN', 'US', 'EU', 'IN', 'AU', 'CA']);
 export const ZohoConnectionSchema = z.object({
   id: ZohoConnectionIdSchema, name: z.string().trim().min(1), region: ZohoRegionSchema,
   clientId: z.string().trim().min(1), clientSecret: z.string().trim().min(1), refreshToken: z.string().trim().min(1),
+  orgId: z.string().regex(/^\d+$/).optional(),
 }).strict();
 export type ZohoConnection = z.infer<typeof ZohoConnectionSchema>;
 export type ZohoQuery = {
@@ -13,7 +14,7 @@ export type ZohoQuery = {
   accountRecords?: Array<{ connectionId: string; accountId: string }>;
 };
 
-export const ZohoOwnerSchema = z.object({ id: z.string().nullable(), name: z.string().nullable() }).strict();
+export const ZohoOwnerSchema = z.object({ id: z.string().nullable(), name: z.string().nullable(), is_current_user: z.boolean().nullable().optional() }).strict();
 export const ZohoContactSchema = z.object({
   record_id: z.string().min(1), name: z.string().min(1), title: z.string().nullable(),
   contact_owner: ZohoOwnerSchema.nullable(), modified_at: z.iso.datetime({ offset: true }).nullable(),

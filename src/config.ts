@@ -232,7 +232,7 @@ function loadZohoConnections(env: NodeJS.ProcessEnv): ZohoConnection[] {
   }
   return ids.map(id => {
     const prefix = `ZOHO_${id.toUpperCase()}`;
-    const fields = { name: 'NAME', region: 'REGION', clientId: 'CLIENT_ID', clientSecret: 'CLIENT_SECRET', refreshToken: 'REFRESH_TOKEN' };
+    const fields = { name: 'NAME', region: 'REGION', clientId: 'CLIENT_ID', clientSecret: 'CLIENT_SECRET', refreshToken: 'REFRESH_TOKEN', orgId: 'ORG_ID' };
     const parsed = ZohoConnectionSchema.safeParse({ id,
       ...Object.fromEntries(Object.entries(fields).map(([key, suffix]) => [key, env[`${prefix}_${suffix}`]])),
     });
@@ -240,6 +240,7 @@ function loadZohoConnections(env: NodeJS.ProcessEnv): ZohoConnection[] {
       const invalid = [...new Set(parsed.error.issues.map(issue => `${prefix}_${fields[issue.path[0] as keyof typeof fields]}`))];
       throw new Error(`Invalid configuration: ${invalid.join(', ')}`);
     }
+    if (['qx', 'st'].includes(id) && !parsed.data.orgId) throw new Error(`Invalid configuration: ${prefix}_ORG_ID`);
     return parsed.data;
   });
 }

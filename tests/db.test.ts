@@ -365,8 +365,8 @@ describe('SQLite repositories', () => {
     const tokens = new TokenRepository(db);
     tokens.insert({ userId: 'user-1', tokenHash: 'secret-hash', enabled: true, createdAt: now.toISOString() });
     expect(tokens.findByHash('secret-hash')).toMatchObject({ userId: 'user-1', tokenHash: 'secret-hash', enabled: true });
-    expect(tokens.list()).toEqual([{ userId: 'user-1', enabled: true, createdAt: now.toISOString() }]);
-    expect(tokens.disableByUserId('user-1')).toBe(1);
+    expect(tokens.list()).toMatchObject([{ userId: 'user-1', enabled: true, createdAt: now.toISOString() }]);
+    expect(tokens.setEnabled('user-1', false, now.toISOString())).toBe(1);
     expect(tokens.findByHash('secret-hash')?.enabled).toBe(false);
   });
 

@@ -19,12 +19,15 @@ npm start
 
 ## 用户 Token
 
-每位用户使用独立 Bearer Token。明文只在创建时输出一次，服务端 SQLite 只保存 SHA-256 哈希。
+每个 `userId` 只有一个 Bearer Token，一个邮箱只对应一个人，每人只属于 `qx` 或 `st` 中的一个 CRM 组织。`tokens` 表同时保存邮箱、CRM 连接代号、实际组织 ID 和用户 ID；明文只在创建或重发时输出一次，服务端只保存 SHA-256 哈希。老用户可暂时未绑定。
 
-Token 命令使用构建后的 `dist/cli/tokens.js`，执行前先运行 `npm run build`；生产镜像已包含该编译产物，不依赖开发依赖 `tsx`。
+Token 命令使用远程 CI 构建后的 `dist/cli/tokens.js`；生产镜像已包含该编译产物。本项目禁止本地构建。管理员创建时按指定组织中的邮箱匹配 CRM 用户，唯一匹配、有效且已确认才创建；查询失败不写入。
 
 ```bash
-npm run tokens -- tokens:create --user sales-a
+npm run tokens -- tokens:create --user sales-a --email sales-a@example.com --crm qx
+npm run tokens -- tokens:update-identity --user sales-a --email sales-a@example.com --crm st
+npm run tokens -- tokens:rotate --user sales-a
+npm run tokens -- tokens:enable --user sales-a
 npm run tokens -- tokens:list
 npm run tokens -- tokens:disable --user sales-a
 ```
@@ -52,15 +55,15 @@ codex mcp add salestools \
 
 ### Zoho CRM 只读联系人来源（可选）
 
-在服务端环境中设置 `ZOHO_CONNECTIONS=crm_a,crm_b`，并为各连接设置 `ZOHO_CRM_A_NAME`、`ZOHO_CRM_A_REGION`、`ZOHO_CRM_A_CLIENT_ID`、`ZOHO_CRM_A_CLIENT_SECRET`、`ZOHO_CRM_A_REFRESH_TOKEN`（B 连接相应使用 `ZOHO_CRM_B_*`）。连接 ID 使用小写 ASCII 字母、数字、下划线且以字母开头；区域为 `CN/US/EU/IN/AU/CA`，目前只连接生产环境。未配置时网页路径照常运行，Zoho 查询会明确返回不可用。Sealos 部署时注入同名服务端环境变量；不要将真实 `.env` 放入 Git、构建上下文或镜像。
+在服务端环境中设置 `ZOHO_CONNECTIONS=qx,st`，并为各连接设置 `ZOHO_QX_NAME`、`ZOHO_QX_REGION`、`ZOHO_QX_CLIENT_ID`、`ZOHO_QX_CLIENT_SECRET`、`ZOHO_QX_REFRESH_TOKEN`、`ZOHO_QX_ORG_ID`（ST 连接使用 `ZOHO_ST_*`）。连接 ID 使用小写 ASCII 字母、数字、下划线且以字母开头；区域为 `CN/US/EU/IN/AU/CA`，目前只连接生产环境。未配置时网页路径照常运行，Zoho 查询会明确返回不可用。Sealos 部署时注入同名服务端环境变量；不要将真实 `.env` 放入 Git、构建上下文或镜像。
 
 `discover_contacts` 新增 `source=web|zoho|all`（默认 `web`）、可选 `zoho_accounts` 连接 ID 数组和 `zoho_account_records` 客户记录选择数组。未知连接是输入错误。CRM 客户名称搜索可能包含匹配；有候选需先核对，再用候选的 `connection_id` 与 `account_id` 重新调用。简称不属于全名子串时，将实际候选全名作为 `query` 重新提交。选定记录会重新核验，随后连续读取其关联联系人；Zoho 不受网页每家公司 10 人上限约束。`source=all` 将两种来源分别返回，不合并同名人员。网页结果保留原 `companies/warnings/collected_at`，CRM 结果在独立 `zoho` 区域；Zoho/all 的文本响应按公司列出所有已取得联系人，结构化响应保留连接和记录 ID。`status`、`complete`、`warnings` 必须一起阅读：`partial` 或 `failed` 不能当作全量，`needs_confirmation` 尚未开始联系人全量读取；120 秒同步期限内无法完成的超大客户也会如实标记。
 
-只请求客户和联系人姓名、职位、两类 CRM 记录负责人、修改时间及来源 ID，不请求电话、邮箱、备注、附件或其他关联资料；Owner 表示 CRM 内部记录归属，不代表客户企业所有者或人员上级。所有有效 MCP 用户共享已配置连接及该账号在 CRM 中的可见范围；这里不按销售用户绑定 Zoho 权限。Zoho 实时只读，不写 CRM 或网页快照。
+只请求客户和联系人姓名、职位、两类 CRM 记录负责人、修改时间及来源 ID，不请求电话、邮箱、备注、附件或其他关联资料；Owner 表示 CRM 内部记录归属，不代表客户企业所有者或人员上级。所有有效 MCP 用户共享已配置连接及该账号在 CRM 中的可见范围；这里不按销售用户隔离 Zoho 权限。已绑定用户经实际组织核验后，Owner 增加 `is_current_user=true|false|null`（未知为 null），分别判断客户和联系人负责人；这是每次请求的投影，不持久化到共享图谱。Zoho 实时只读，不写 CRM 或网页快照。
 
 启用 `CONTACT_GRAPH_ENABLED` 后，已取得的 Zoho 客户和联系人会在查询后自动同步到共享联系人图谱；无需另行上传。关闭开关、待确认、失败及无客户结果不触发同步，partial 只同步实际取得的记录。连接 ID 必须长期稳定：身份按连接、模块和记录 ID 定位，同名或跨连接记录不自动合并；`get_contact` 的结构化来源详情保留这三个定位值，不构造 CRM 链接，图谱 App 继续展示关系和任职状态。重复查询不增加节点、关系、证据或内容版本。任职关系为 `employment_status=unknown`，不能称为现任。归档记录不会自动恢复，关联部分跳过时明确提示。CRM `status/complete` 仍表示查询完整性；图谱计数、失败、超时、超大记录和索引调度警告独立显示（部分为 `ZOHO_GRAPH_SYNC_PARTIAL`，全部未确认同步为 `ZOHO_GRAPH_SYNC_FAILED`），不能据 CRM 查询成功推断全部已入库。每批完整 UTF-8 请求帧最多 256 KiB，单条过大仍保留 CRM 结果，其他可处理记录继续同步；每批和索引回读各限时 30 秒。成功的实质 Person 内容变化复用已有向量索引器，只有负责人变化不触发索引。图谱、App、容器端到端验证使用远程只读 CI 的合成数据，真实 CRM 和宿主验收仍待授权。
 
-首次授权由对应 CRM 授权人员在所在区域的 Zoho API Console 创建 Self Client，选择目标组织和生产环境，申请最小只读 scopes：`ZohoCRM.modules.accounts.READ`、`ZohoCRM.modules.contacts.READ`、`ZohoSearch.securesearch.READ`、`ZohoCRM.settings.fields.READ`、`ZohoCRM.settings.modules.READ`、`ZohoCRM.settings.related_lists.READ`。关闭 SDK 的 findUser，不申请 users/org、`settings.ALL` 或写权限。生成短期授权码后，在有效期内用对应区域的 Accounts Token endpoint，以 POST 请求体交换 Refresh Token；凭证不放入 URL、终端命令历史、聊天或日志。仅把 Client ID、Client Secret、Refresh Token 放入服务端配置，授权码不作为运行配置。SDK 按需刷新 Access Token 并只在内存保存；授权被撤销或 Refresh Token 失效时，需由授权人员重新授权、更新环境并重启。外部客户自有 CRM 应另行采用 Server-based OAuth 流程，不要求客户交付 Refresh Token。
+首次授权由对应 CRM 授权人员在所在区域的 Zoho API Console 创建 Self Client，选择目标组织和生产环境，申请最小只读 scopes：`ZohoCRM.modules.accounts.READ`、`ZohoCRM.modules.contacts.READ`、`ZohoSearch.securesearch.READ`、`ZohoCRM.settings.fields.READ`、`ZohoCRM.settings.modules.READ`、`ZohoCRM.settings.related_lists.READ`。保持 SDK 的 findUser 关闭；用户匹配和组织核验另需 `ZohoCRM.users.READ`、`ZohoCRM.org.READ`，需重新授权，不能仅修改 scope 文本。仍不申请 `settings.ALL` 或写权限。Users API 返回字段较多，适配器仅投影用户 ID、邮箱、状态和确认标志，不保存其他字段或原始响应。生成短期授权码后，在有效期内用对应区域的 Accounts Token endpoint，以 POST 请求体交换 Refresh Token；凭证不放入 URL、终端命令历史、聊天或日志。仅把 Client ID、Client Secret、Refresh Token 放入服务端配置，授权码不作为运行配置。SDK 按需刷新 Access Token 并只在内存保存；授权被撤销或 Refresh Token 失效时，需由授权人员重新授权、更新环境并重启。外部客户自有 CRM 应另行采用 Server-based OAuth 流程，不要求客户交付 Refresh Token。
 
 锁定的 Zoho SDK 在 `npm ci` 的 `postinstall` 中应用经校验的最小补丁；使用 `--ignore-scripts` 安装后需显式执行 `npm run postinstall`。已配置连接在创建适配器前检查安装字节，校验失败仅禁用 Zoho，不中断网页来源。SDK 元数据写入系统临时目录中的独立连接目录，权限为 0700；不存 Token 或联系人数据，应用关闭时等待在途操作并清理。临时目录不可写会令 Zoho 查询返回不可用。首次 SDK 元数据初始化需要上述三个 settings 只读 scope。真实 CRM 字段权限、远程 CI 与 MCP 宿主大响应容量尚需获授权后验收。
 
@@ -142,4 +145,30 @@ npm run build
 
 ## 远程 Token 管理
 
-可通过独立管理 API 和本机单文件 CLI 创建、分页查看、按用户禁用 Token，无需进入容器。首次启用、权限、结果未知处理及回滚见 [操作说明](docs/operations/token-admin.md)。默认未配置管理员摘要时 API 关闭；原容器 CLI 仍可使用。
+可通过独立管理 API 和本机单文件 CLI 创建、更新身份、重发、启用、分页查看和禁用 Token，无需进入容器。首次启用、权限、结果未知处理及回滚见 [操作说明](docs/operations/token-admin.md)。默认未配置管理员摘要时 API 关闭；原容器 CLI 仍可使用。
+
+使用 Node 24，将命令指向当前版本的脚本（替换为你的实际绝对路径）：
+
+```bash
+alias salestools-admin='node /absolute/path/salestools/tools/salestools-admin.mjs'
+salestools-admin --help
+
+# 创建用户：指定唯一邮箱和所属 CRM 组织（qx 或 st）
+salestools-admin token create sales-a --email a@example.com --crm qx
+
+# 给已有用户补充或修改 CRM 身份，保留现有 Token
+salestools-admin token update-identity sales-a --email a@example.com --crm st
+
+# 重发 Token：旧 Token 立即失效，保留身份及启用状态
+salestools-admin token rotate sales-a
+
+# 启用、禁用和查看用户
+salestools-admin token enable sales-a
+salestools-admin token disable sales-a --all
+salestools-admin token list
+salestools-admin token list --limit 100 --offset 100
+```
+
+新命令需要配套服务端版本及 CRM 配置。已有管理员配置可继续使用，无需重新运行 `setup`；另存的旧脚本需手动更新。创建和重发只输出一次 Token 明文，请妥善保存；请求结果未知时先核对列表和审计，不要盲目重试。
+
+首次升级前使用 `tools/token-migration.mjs preflight` 检查重复用户；有重复时需停服、备份并明确选择保留记录，启动不会自动撤销旧 Token。具体步骤见 [Token 管理与迁移](docs/operations/token-admin.md)。

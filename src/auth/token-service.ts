@@ -1,22 +1,12 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import type { TokenMetadata, TokenRecord } from '../db/token-repository.js';
+import type { TokenMetadata, TokenRecord, TokenRepository } from '../db/token-repository.js';
+import { TokenIdentitySchema, UserIdSchema, type TokenIdentity } from './token-identity.js';
 
 export interface AuthenticatedUser {
   userId: string;
 }
 
-export interface TokenStore {
-  insert(input: {
-    userId: string;
-    tokenHash: string;
-    enabled: boolean;
-    createdAt: string;
-  }): void;
-  findByHash(tokenHash: string): TokenRecord | null;
-  disableByUserId(userId: string): number;
-  list(): TokenMetadata[];
-  listPage?(offset: number, limit: number): { items: TokenMetadata[]; nextOffset: number | null };
-}
+export type TokenStore = Pick<TokenRepository, 'insert' | 'findByHash' | 'findByUserId' | 'findByEmail' | 'setEnabled' | 'replaceHash' | 'updateIdentity' | 'list' | 'listPage'>;
 
 function hashToken(plaintext: string): string {
   return createHash('sha256').update(plaintext).digest('hex');
@@ -28,10 +18,13 @@ export class TokenService {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  create(userId: string): string {
+  create(userId: string, identity: TokenIdentity): string {
+    UserIdSchema.parse(userId);
+    const checked = TokenIdentitySchema.parse(identity);
     const plaintext = randomBytes(32).toString('base64url');
     this.repository.insert({
       userId,
+      identity: checked,
       tokenHash: hashToken(plaintext),
       enabled: true,
       createdAt: this.now().toISOString(),
@@ -60,7 +53,29 @@ export class TokenService {
   }
 
   disable(userId: string): boolean {
-    return this.repository.disableByUserId(userId) > 0;
+    return this.repository.setEnabled(userId, false, this.now().toISOString()) > 0;
+  }
+
+  enable(userId: string): boolean {
+    return this.repository.setEnabled(userId, true, this.now().toISOString()) > 0;
+  }
+
+  rotate(userId: string): string {
+    const plaintext = randomBytes(32).toString('base64url');
+    this.repository.replaceHash(userId, hashToken(plaintext), this.now().toISOString());
+    return plaintext;
+  }
+
+  get(userId: string): TokenMetadata | null {
+    const record = this.repository.findByUserId(userId);
+    if (!record) return null;
+    const { tokenHash: _hash, ...metadata } = record; return metadata;
+  }
+
+  record(userId: string): TokenRecord | null { return this.repository.findByUserId(userId); }
+  emailOwner(email: string): TokenRecord | null { return this.repository.findByEmail(email); }
+  updateIdentity(expected: TokenRecord, identity: TokenIdentity): void {
+    this.repository.updateIdentity(expected, TokenIdentitySchema.parse(identity), this.now().toISOString());
   }
 
   listPage(offset: number, limit: number): { items: TokenMetadata[]; nextOffset: number | null } {

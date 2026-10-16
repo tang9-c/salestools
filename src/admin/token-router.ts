@@ -2,23 +2,27 @@ import { randomUUID } from 'node:crypto';
 import express, { type ErrorRequestHandler, type RequestHandler, type Response } from 'express';
 import { z } from 'zod';
 import { verifyAdminKey } from '../auth/admin-auth.js';
-import type { TokenService } from '../auth/token-service.js';
+import type { TokenAdministration } from '../auth/token-administration.js';
+import type { TokenMetadata } from '../db/token-repository.js';
+import { UserIdSchema, EmailSchema, CrmCodeSchema } from '../auth/token-identity.js';
 
 export interface AdminAudit {
   requestId: string;
-  action: 'create' | 'list' | 'disable' | 'auth';
+  action: 'create' | 'list' | 'disable' | 'enable' | 'rotate' | 'updateIdentity' | 'auth';
+  before?: TokenMetadata | null;
+  after?: TokenMetadata | null;
   userId?: string;
   outcome: 'success' | 'failed';
   httpStatus: number;
   disabled?: boolean;
   attempts?: number;
 }
-const bodySchema = z.object({ userId: z.string().min(1).max(128)
-  .refine(value => value === value.trim() && !/\p{C}/u.test(value)) }).strict();
+const bodySchema = z.object({ userId: UserIdSchema }).strict();
+const identitySchema = bodySchema.extend({ email: EmailSchema, crm: CrmCodeSchema }).strict();
 
 export function createTokenAdminRouter(options: {
   keyHash: string; publicMcpHost: string;
-  service: Pick<TokenService, 'create' | 'disable' | 'listPage'>;
+  service: TokenAdministration;
   audit: (event: AdminAudit) => void; now?: () => number;
 }): express.Router {
   const router = express.Router();
@@ -85,19 +89,37 @@ export function createTokenAdminRouter(options: {
     next();
   };
   const json = express.json({limit:'2kb',inflate:false,strict:true});
-  for (const [path, action] of [['/v1/tokens','create'],['/v1/tokens/disable-user','disable']] as const) {
-    router.post(path,contentType,json,(request,response)=>{
-      const parsed=bodySchema.safeParse(request.body);
+  for (const [path, action] of [['/v1/tokens','create'],['/v1/tokens/disable-user','disable'],
+    ['/v1/tokens/enable-user','enable'],['/v1/tokens/rotate','rotate'],['/v1/tokens/update-identity','updateIdentity']] as const) {
+    router.post(path,contentType,json,async(request,response)=>{
+      const parsed=(action==='create' || action==='updateIdentity' ? identitySchema : bodySchema).safeParse(request.body);
       if (!parsed.success) { fail(response,400,'INVALID_ADMIN_REQUEST'); return; }
       const {userId}=parsed.data;
+      let before: TokenMetadata | null = null;
       try {
-        const result=action==='create' ? {token:options.service.create(userId)} : {disabled:options.service.disable(userId)};
+        before=options.service.get(userId);
+        const identity=identitySchema.safeParse(request.body);
+        let result: Record<string,unknown>;
+        if(action==='create' && identity.success) result={token:await options.service.create(userId,identity.data.email,identity.data.crm)};
+        else if(action==='updateIdentity' && identity.success) result={updated:await options.service.updateIdentity(userId,identity.data.email,identity.data.crm)};
+        else if(action==='rotate') result={token:options.service.rotate(userId)};
+        else if(action==='enable') result={enabled:options.service.enable(userId)};
+        else result={disabled:options.service.disable(userId)};
         const status=action==='create'?201:200;
-        audit({requestId:response.locals.requestId,action,userId,outcome:'success',httpStatus:status,...('disabled' in result?{disabled:result.disabled}:{})});
+        audit({requestId:response.locals.requestId,action,userId,outcome:'success',httpStatus:status,
+          before,after:options.service.get(userId)});
         response.status(status).json({userId,...result,requestId:response.locals.requestId});
-      } catch {
-        audit({requestId:response.locals.requestId,action,userId,outcome:'failed',httpStatus:500});
-        fail(response,500,'ADMIN_OPERATION_FAILED');
+      } catch(error) {
+        const code=error instanceof Error ? error.message : '';
+        const status=['TOKEN_IDENTITY_CONFLICT','TOKEN_IDENTITY_CHANGED'].includes(code)?409:
+          code==='TOKEN_USER_NOT_FOUND'?404:
+          ['CRM_USER_NOT_FOUND','CRM_EMAIL_AMBIGUOUS','CRM_USER_INACTIVE','CRM_ORG_MISMATCH'].includes(code)?422:
+          code==='CRM_ORG_NOT_CONFIGURED'?503:code.startsWith('ZOHO_')?502:500;
+        audit({requestId:response.locals.requestId,action,userId,outcome:'failed',httpStatus:status});
+        const safeCode = ['ZOHO_UNAVAILABLE','ZOHO_DEADLINE_EXCEEDED','ZOHO_PERMISSION_DENIED',
+          'ZOHO_AUTH_FAILED','ZOHO_TRANSIENT_ERROR','ZOHO_INVALID_RESPONSE','ZOHO_UPSTREAM_ERROR'].includes(code)
+          ? code : status===502?'ZOHO_UPSTREAM_ERROR':status===500?'ADMIN_OPERATION_FAILED':code;
+        fail(response,status,safeCode);
       }
     });
   }

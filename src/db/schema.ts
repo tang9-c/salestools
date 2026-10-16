@@ -1,9 +1,17 @@
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS tokens (
   token_hash TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
+  user_id TEXT NOT NULL UNIQUE,
   enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  email TEXT UNIQUE CHECK(email IS NULL OR (email = lower(trim(email)) AND length(email) > 0)),
+  crm_connection_id TEXT CHECK(crm_connection_id IS NULL OR crm_connection_id IN ('qx','st')),
+  crm_org_id TEXT,
+  crm_user_id TEXT,
+  updated_at TEXT,
+  CHECK ((crm_connection_id IS NULL AND crm_org_id IS NULL AND crm_user_id IS NULL)
+    OR (crm_connection_id IS NOT NULL AND crm_org_id IS NOT NULL AND crm_user_id IS NOT NULL AND email IS NOT NULL)),
+  UNIQUE(crm_org_id, crm_user_id)
 );
 
 CREATE TABLE IF NOT EXISTS company_profiles (

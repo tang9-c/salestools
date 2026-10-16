@@ -1,3 +1,4 @@
+import { createTestToken } from './helpers/token.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { DatabaseSync } from 'node:sqlite';
 import type { AddressInfo } from 'node:net';
@@ -220,8 +221,8 @@ describe('MCP HTTP simulated end-to-end', () => {
       }) },
       logSink: { write: () => undefined },
     });
-    const firstToken = runtime.tokenService.create('sales-a');
-    const secondToken = runtime.tokenService.create('sales-b');
+    const firstToken = createTestToken(runtime.tokenService, 'sales-a');
+    const secondToken = createTestToken(runtime.tokenService, 'sales-b');
     const listener = await runtime.listen(0, '127.0.0.1');
     const port = (listener.address() as AddressInfo).port;
     const endpoint = `http://127.0.0.1:${port}/mcp`;
@@ -337,7 +338,7 @@ describe('MCP HTTP simulated end-to-end', () => {
           coverage: { version: 2, total_pages: 1, total_chunks: 1, processed_chunks: 1, pending_pages: [], complete: true },
         }) },
       });
-      const token = runtime.tokenService.create('sales-a');
+      const token = createTestToken(runtime.tokenService, 'sales-a');
       const firstClient = await connect(
         `http://127.0.0.1:${((await runtime.listen(0, '127.0.0.1')).address() as AddressInfo).port}/mcp`,
         token,
@@ -433,7 +434,7 @@ describe('MCP HTTP simulated end-to-end', () => {
       },
       logSink: { write: () => undefined },
     });
-    const token = runtime.tokenService.create('sales');
+    const token = createTestToken(runtime.tokenService, 'sales');
     const listener = await runtime.listen(0, '127.0.0.1');
     const endpoint = `http://127.0.0.1:${(listener.address() as AddressInfo).port}/mcp`;
     const client = await connect(endpoint, token, 'follow-up-e2e');
@@ -492,7 +493,7 @@ describe('MCP HTTP simulated end-to-end', () => {
       questionTimeoutMs: 100,
       logSink: { write: () => undefined },
     });
-    const token = runtime.tokenService.create('sales');
+    const token = createTestToken(runtime.tokenService, 'sales');
     const listener = await runtime.listen(0, '127.0.0.1');
     const endpoint = `http://127.0.0.1:${(listener.address() as AddressInfo).port}/mcp`;
     const client = await connect(endpoint, token, 'profile-only-e2e');

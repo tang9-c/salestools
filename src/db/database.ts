@@ -36,9 +36,29 @@ export function migrateLegacyIndustryAudits(database: DatabaseSync): void {
 }
 
 export function initializeDatabase(database: DatabaseSync): DatabaseSync {
+  // Preflight before any schema change: never silently choose a user's surviving token.
+  const exists = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tokens'").get();
+  if (exists) {
+    const duplicates = database.prepare('SELECT user_id, count(*) AS count FROM tokens GROUP BY user_id HAVING count(*) > 1').all();
+    if (duplicates.length) throw new Error(`TOKEN_MIGRATION_DUPLICATE_USERS: ${JSON.stringify(duplicates)}`);
+  }
   database.exec('PRAGMA journal_mode=WAL');
   database.exec('PRAGMA busy_timeout=5000');
-  database.exec(SCHEMA_SQL);
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    if (exists) {
+      const columns = database.prepare('PRAGMA table_info(tokens)').all() as Array<{ name: string }>;
+      if (!columns.some(column => column.name === 'email')) {
+        database.exec('ALTER TABLE tokens RENAME TO tokens_legacy_identity');
+        database.exec(SCHEMA_SQL);
+        database.exec(`INSERT INTO tokens(token_hash,user_id,enabled,created_at,updated_at)
+          SELECT token_hash,user_id,enabled,created_at,created_at FROM tokens_legacy_identity`);
+        database.exec('DROP TABLE tokens_legacy_identity');
+      }
+    }
+    database.exec(SCHEMA_SQL);
+    database.exec('COMMIT');
+  } catch (error) { database.exec('ROLLBACK'); throw error; }
   const assessmentColumns = database.prepare('PRAGMA table_info(assessments)').all() as Array<{ name: string }>;
   if (!assessmentColumns.some(column => column.name === 'result_json')) {
     database.exec('ALTER TABLE assessments ADD COLUMN result_json TEXT');
@@ -51,5 +71,7 @@ export function initializeDatabase(database: DatabaseSync): DatabaseSync {
 }
 
 export function openDatabase(path: string): DatabaseSync {
-  return initializeDatabase(new DatabaseSync(path));
+  const database = new DatabaseSync(path);
+  try { return initializeDatabase(database); }
+  catch (error) { database.close(); throw error; }
 }

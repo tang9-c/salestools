@@ -1,3 +1,4 @@
+import { createTestToken } from './helpers/token.js';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -30,13 +31,13 @@ describe('TokenService', () => {
   });
 
   it('returns a one-time 32-byte base64url token and stores only its SHA-256 hash', () => {
-    const plaintext = service.create('user-1');
+    const plaintext = createTestToken(service, 'user-1');
     const tokenHash = createHash('sha256').update(plaintext).digest('hex');
 
     expect(plaintext).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(repository.findByHash(plaintext)).toBeNull();
     expect(repository.findByHash(tokenHash)).toMatchObject({ userId: 'user-1', enabled: true });
-    expect(service.list()).toEqual([
+    expect(service.list()).toMatchObject([
       { userId: 'user-1', enabled: true, createdAt: '2026-08-29T12:00:00.000Z' },
     ]);
     expect(JSON.stringify(service.list())).not.toContain(tokenHash);
@@ -44,7 +45,7 @@ describe('TokenService', () => {
   });
 
   it('verifies enabled tokens and rejects malformed, unknown, and disabled tokens', () => {
-    const plaintext = service.create('user-1');
+    const plaintext = createTestToken(service, 'user-1');
 
     expect(service.verify(plaintext)).toEqual({ userId: 'user-1' });
     expect(service.verify('not-a-token')).toBeNull();
@@ -56,24 +57,25 @@ describe('TokenService', () => {
 });
 
 describe('token CLI parser', () => {
-  it('accepts only the three documented command shapes and never lists secrets', () => {
+  it('accepts documented command shapes and never lists secrets', async () => {
     const writes: string[] = [];
     const fake = {
-      create: (userId: string) => `plaintext-for-${userId}`,
+      get: () => null, rotate: () => 'secret', enable: () => true, updateIdentity: async () => true,
+      create: async (userId: string) => `plaintext-for-${userId}`,
       disable: (userId: string) => userId === 'user-1',
-      list: () => [{ userId: 'user-1', enabled: true, createdAt: '2026-08-29T12:00:00.000Z' }],
+      list: () => serviceMetadata(),
     };
 
-    expect(runTokenCli(['tokens:create', '--user', 'user-1'], fake, value => writes.push(value))).toBe(0);
+    expect(await runTokenCli(['tokens:create', '--user', 'user-1', '--email', 'user-1@example.test', '--crm', 'qx'], fake, value => writes.push(value))).toBe(0);
     expect(writes).toEqual(['plaintext-for-user-1\n']);
 
     writes.length = 0;
-    expect(runTokenCli(['tokens:list'], fake, value => writes.push(value))).toBe(0);
+    expect(await runTokenCli(['tokens:list'], fake, value => writes.push(value))).toBe(0);
     expect(writes.join('')).toContain('user-1');
     expect(writes.join('')).not.toContain('plaintext');
 
     writes.length = 0;
-    expect(runTokenCli(['tokens:disable', '--user', 'user-1'], fake, value => writes.push(value))).toBe(0);
+    expect(await runTokenCli(['tokens:disable', '--user', 'user-1'], fake, value => writes.push(value))).toBe(0);
     expect(writes.join('')).not.toContain('plaintext');
   });
 
@@ -85,9 +87,9 @@ describe('token CLI parser', () => {
     { args: ['tokens:disable', '--other', 'user-1'] },
     { args: ['tokens:list', '--user', 'user-1'] },
     { args: ['tokens:unknown'] },
-  ])('returns non-zero for malformed arguments: $args', ({ args }) => {
-    const fake = { create: () => 'secret', disable: () => true, list: () => [] };
-    expect(runTokenCli(args, fake, () => undefined)).not.toBe(0);
+  ])('returns non-zero for malformed arguments: $args', async ({ args }) => {
+    const fake = { create: async () => 'secret', disable: () => true, list: () => [], get: () => null, rotate: () => 'secret', enable: () => true, updateIdentity: async () => true };
+    expect(await runTokenCli(args, fake, () => undefined)).not.toBe(0);
   });
 });
 
@@ -161,7 +163,12 @@ describe('configured token CLI entry', () => {
     const result = launch({ NODE_ENV: 'production' });
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain('Invalid configuration');
+    expect(result.stderr).toContain('TOKEN_OPERATION_FAILED');
     expect(existsSync(dotenvDatabase)).toBe(false);
   });
 });
+
+function serviceMetadata() {
+  return [{ userId:'user-1',enabled:true,createdAt:'2026-08-29T12:00:00.000Z',
+    email:null,crmConnectionId:null,crmOrgId:null,crmUserId:null,updatedAt:'2026-08-29T12:00:00.000Z' }];
+}

@@ -23,6 +23,8 @@ import { ContactService, type ContactExtractorDependency } from './contacts/cont
 import { ZohoContactService } from './contacts/zoho-contact-service.js';
 import { ZohoGraphSync } from './contacts/zoho-graph-sync.js';
 import { ZohoClient, verifyZohoSDKPatch } from './upstream/zoho/client.js';
+import { annotateZohoOwners } from './contacts/zoho-owner-identity.js';
+import { TokenAdministration } from './auth/token-administration.js';
 import { ContactGraphClient, type GraphClient } from './contacts/graph-client.js';
 import { ContactLibraryService } from './contacts/library-service.js';
 import { SnapshotSync } from './contacts/snapshot-sync.js';
@@ -70,7 +72,8 @@ export interface ApplicationOverrides {
   logSink?: LogSink;
   now?: () => Date;
   graphClient?: GraphClient;
-  zohoClient?: Pick<ZohoClient, 'searchAccountsPage' | 'getAccount' | 'getContactsPage' | 'close'>;
+  zohoClient?: Pick<ZohoClient, 'searchAccountsPage' | 'getAccount' | 'getContactsPage' | 'close'>
+    & Partial<Pick<ZohoClient, 'getOrganization' | 'getUsersPage'>>;
   verifyZohoPatch?: () => Promise<void>;
 }
 
@@ -136,6 +139,18 @@ export function createApplication(
       return { client, service };
     }).catch(() => null);
   const tokenService = new TokenService(new TokenRepository(database), overrides.now);
+  const tokenAdministration = new TokenAdministration(tokenService, {
+    getOrganization: async (id, context) => {
+      const ready = await zohoReady;
+      if (!ready?.client.getOrganization) throw new Error('ZOHO_UNAVAILABLE');
+      return ready.client.getOrganization(id, context);
+    },
+    getUsersPage: async (id, page, context) => {
+      const ready = await zohoReady;
+      if (!ready?.client.getUsersPage) throw new Error('ZOHO_UNAVAILABLE');
+      return ready.client.getUsersPage(id, page, context);
+    },
+  }, config.zohoConnections);
   const ephemeralUploads = config.sqlitePath === ':memory:';
   const uploadDirectory = ephemeralUploads
     ? mkdtempSync(join(tmpdir(), 'contact-uploads-'))
@@ -350,7 +365,21 @@ export function createApplication(
         if (!ready) throw new Error('ZOHO_UNAVAILABLE');
         const result = await ready.service.get(input);
         await zohoGraphSync?.sync(result, userId);
-        return result;
+        const binding = tokenService.get(userId);
+        let identity: { connectionId: string; userId: string } | null = null;
+        if (binding?.crmConnectionId && binding.crmOrgId && binding.crmUserId
+          && result.connections.some(connection => connection.connection_id === binding.crmConnectionId)) {
+          try {
+            const connection = config.zohoConnections.find(item => item.id === binding.crmConnectionId);
+            if (!connection?.orgId || connection.orgId !== binding.crmOrgId || !ready.client.getOrganization)
+              throw new Error('CRM_IDENTITY_UNVERIFIED');
+            const orgId = await ready.client.getOrganization(binding.crmConnectionId,
+              {deadlineAt:Date.now()+5000,signal:AbortSignal.timeout(5000)});
+            if(orgId !== binding.crmOrgId) throw new Error('CRM_IDENTITY_UNVERIFIED');
+            identity = { connectionId: binding.crmConnectionId, userId: binding.crmUserId };
+          } catch { result.warnings.push('CRM_IDENTITY_UNVERIFIED：无法核验当前用户的 CRM 组织，负责人是否本人未知。'); }
+        }
+        return annotateZohoOwners(result, identity);
       }),
     },
     contactUpload: contactImport ? { actor: userId, sessions: uploadSessions, sourceTokenHash: tokenService.hash(token),
@@ -375,7 +404,7 @@ export function createApplication(
     uploadsEnabled ? uploadStore : undefined,
     contactImport ? { sessions: uploadSessions, imports: contactImport, html: uploadHtml } : undefined,
     config.tokenAdminKeySha256 ? createTokenAdminRouter({keyHash: config.tokenAdminKeySha256,
-      publicMcpHost: config.publicMcpHost, service: tokenService,
+      publicMcpHost: config.publicMcpHost, service: tokenAdministration,
       audit: event => logger.logAdminTokenOperation(event)}) : undefined);
 
   let upstreamClosing: Promise<void> | null = null;

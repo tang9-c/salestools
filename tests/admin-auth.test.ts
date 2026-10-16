@@ -16,7 +16,7 @@ it('paginates token metadata without disclosing hashes', () => {
   const db = new DatabaseSync(':memory:'); db.exec(SCHEMA_SQL);
   try {
     const repo = new TokenRepository(db);
-    for (const hash of ['b', 'a', 'c']) repo.insert({userId:'sales',tokenHash:hash.repeat(64),enabled:true,createdAt:'2026-10-11T00:00:00.000Z'});
+    for (const hash of ['b', 'a', 'c']) repo.insert({userId:`sales-${hash}`,tokenHash:hash.repeat(64),enabled:true,createdAt:'2026-10-11T00:00:00.000Z'});
     expect(repo.listPage(0, 2)).toEqual({items:repo.list().slice(0,2),nextOffset:2});
     expect(repo.listPage(2, 2)).toEqual({items:repo.list().slice(2),nextOffset:null});
     expect(JSON.stringify(repo.listPage(0, 2))).not.toContain('tokenHash');

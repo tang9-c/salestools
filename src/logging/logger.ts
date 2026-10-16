@@ -62,7 +62,8 @@ export class JsonlLogger {
     this.sink.write(`${JSON.stringify({ event: 'admin_token_operation', timestamp: this.now().toISOString(),
       actor: 'token-admin', requestId: event.requestId, action: event.action, userId: event.userId,
       outcome: event.outcome, httpStatus: event.httpStatus, disabled: event.disabled,
-      attempts: event.attempts })}\n`);
+      attempts: event.attempts,
+      before: adminMetadata(event.before), after: adminMetadata(event.after) })}\n`);
   }
 
   logContactImport(event: ImportEvent): void {
@@ -167,4 +168,10 @@ export class JsonlLogger {
     };
     this.sink.write(`${JSON.stringify(line)}\n`);
   }
+}
+
+function adminMetadata(value: AdminAudit['before']) {
+  if (!value) return value;
+  return { userId:value.userId,enabled:value.enabled,email:value.email,crmConnectionId:value.crmConnectionId,
+    crmOrgId:value.crmOrgId,crmUserId:value.crmUserId,createdAt:value.createdAt,updatedAt:value.updatedAt };
 }

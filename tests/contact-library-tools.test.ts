@@ -1,3 +1,4 @@
+import { createTestToken } from './helpers/token.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
 import type { AddressInfo } from 'node:net';
@@ -85,7 +86,7 @@ describe('shared contact library tools', () => {
     try {
       const server = await runtime.listen(0, '127.0.0.1');
       for (const name of ['sales-a', 'sales-b']) {
-        const token = runtime.tokenService.create(name);
+        const token = createTestToken(runtime.tokenService, name);
         const client = new Client({ name, version: '1.0.0' });
         await client.connect(new StreamableHTTPClientTransport(
           new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`),

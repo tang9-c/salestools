@@ -7,11 +7,14 @@ export type ZohoAccount = ZohoAccountCandidate;
 export type ZohoCallContext = { deadlineAt: number; signal: AbortSignal };
 export type ZohoCursor = { page: number } | { pageToken: string };
 export type ZohoSDKPage = { records: unknown[]; moreRecords: boolean; nextPageToken: string | null };
+export type ZohoUser = { id: string; email: string | null; status: string; confirmed: boolean };
 export interface ZohoSDKBridge {
   initialize(connection: ZohoConnection, resourcePath: string, context: ZohoCallContext): Promise<void>;
   searchAccounts(criteria: string, page: number): Promise<ZohoSDKPage>;
   getAccount(accountId: string): Promise<ZohoSDKPage>;
   getContacts(accountId: string, cursor: ZohoCursor): Promise<ZohoSDKPage>;
+  getOrganization?(): Promise<ZohoSDKPage>;
+  getUsers?(page: number): Promise<ZohoSDKPage>;
 }
 
 // SDK state is process-global: even separate client instances share this chain.
@@ -115,6 +118,36 @@ export class ZohoClient {
     await tail;
     if (this.root) await rm(this.root, { recursive: true, force: true });
   }
+  async getOrganization(id: string, context: ZohoCallContext): Promise<string> {
+    return this.run(id, context, async () => {
+      const result = await this.sdk.getOrganization?.() ?? fail('ZOHO_UNAVAILABLE');
+      if (result.records.length !== 1) return fail('ZOHO_INVALID_RESPONSE');
+      const orgId = text(userValue(result.records[0], 'id', 'getId'));
+      return orgId && /^\d+$/u.test(orgId) ? orgId : fail('ZOHO_INVALID_RESPONSE');
+    });
+  }
+  async getUsersPage(id: string, page: number, context: ZohoCallContext): Promise<{ users: ZohoUser[]; moreRecords: boolean }> {
+    pageValid(page);
+    return this.run(id, context, async () => {
+      const result = await this.sdk.getUsers?.(page) ?? fail('ZOHO_UNAVAILABLE');
+      return { users: result.records.map(record => ({
+        id: numericUserId(record),
+        email: text(userValue(record, 'email', 'getEmail')),
+        status: text(userValue(record, 'status', 'getStatus')) ?? '',
+        confirmed: userValue(record, 'confirm', 'getConfirm') === true,
+      })), moreRecords: result.moreRecords };
+    });
+  }
+}
+
+function userValue(record: unknown, key: string, getter: string): unknown {
+  if (!record || typeof record !== 'object') return null;
+  const method = (record as Record<string, unknown>)[getter];
+  return typeof method === 'function' ? method.call(record) : value(record, key);
+}
+function numericUserId(record: unknown): string {
+  const id = text(userValue(record, 'id', 'getId'));
+  return id && /^\d+$/u.test(id) ? id : fail('ZOHO_INVALID_RESPONSE');
 }
 
 /** One store per connection; identity never falls back to client ID. */
@@ -182,7 +215,7 @@ export class OfficialZohoSDKBridge implements ZohoSDKBridge {
     for (const [key, v] of entries) await params.add(key, v);
     return params;
   }
-  private async response(request: () => Promise<any>): Promise<ZohoSDKPage> {
+  private async response(request: () => Promise<any>, collection: 'data' | 'users' | 'org' = 'data'): Promise<ZohoSDKPage> {
     remaining(this.context);
     try {
       const response = await request();
@@ -195,10 +228,11 @@ export class OfficialZohoSDKBridge implements ZohoSDKBridge {
       if (status === 404) return fail('ZOHO_RECORD_NOT_FOUND');
       if (status >= 400) return fail('ZOHO_UPSTREAM_ERROR');
       const parsed = response.getObject();
-      const records = parsed?.getData?.();
+      const records = collection === 'users' ? parsed?.getUsers?.() : collection === 'org' ? parsed?.getOrg?.() : parsed?.getData?.();
       if (!Array.isArray(records)) return fail('ZOHO_INVALID_RESPONSE');
       const raw = response.getResponseJSON();
       const info = typeof raw === 'string' ? JSON.parse(raw)?.info : raw?.info;
+      if (collection === 'users' && typeof info?.more_records !== 'boolean') return fail('ZOHO_INVALID_RESPONSE');
       return { records, moreRecords: info?.more_records === true, nextPageToken: text(info?.next_page_token) };
     } catch (error) { throw normalizeError(error); }
   }
@@ -206,6 +240,14 @@ export class OfficialZohoSDKBridge implements ZohoSDKBridge {
     const p = this.sdk.SearchRecordsParam;
     const params = await this.parameters([[p.CRITERIA, criteria], [p.PAGE, page], [p.PER_PAGE, 200], [p.FIELDS, 'id,Account_Name,Owner']]);
     return this.response(() => new this.sdk.RecordOperations('Accounts').searchRecords(params));
+  }
+  async getOrganization() {
+    return this.response(() => new this.sdk.Org.OrgOperations().getOrganization(), 'org');
+  }
+  async getUsers(page: number) {
+    const p = this.sdk.Users.GetUsersParam;
+    const params = await this.parameters([[p.TYPE, 'AllUsers'], [p.PAGE, page], [p.PER_PAGE, 200]]);
+    return this.response(() => new this.sdk.Users.UsersOperations().getUsers(params), 'users');
   }
   async getAccount(accountId: string) {
     const params = await this.parameters([[this.sdk.GetRecordParam.FIELDS, 'id,Account_Name,Owner']]);

@@ -158,7 +158,7 @@ Docling 负责读出 PDF／图片中的文字及块定位；LLM 负责跨块理�
 
 ## 8. 安全、部署与已知边界
 
-服务端使用每用户独立 Bearer Token，保存哈希、用户标识、启用状态和创建时间；管理员通过 CLI 创建、列出元数据和禁用 Token。任一有效 Token 知道报告 UUID 后可读取该报告，企业评估没有跨用户报告隔离或配额。联系人导入仍校验任务归属；上传尝试和新导入分别按认证用户每 60 秒最多 5 次，同用户多个 Token/页面会话共用额度。已创建任务的幂等重试不计数，限流不删除已上传原件；HTTP 返回 429/等待秒数，MCP 返回明确工具错误。计数仅单实例内存保存，重启清零。`/mcp` 校验 Host、配置允许的 HTTPS Origin 和 Token；无 Origin 的非浏览器客户端仍须带 Token。健康检查为 `/healthz`。
+服务端使用每用户独立 Bearer Token，每个 userId 只保存一枚 Token 的哈希，并保存唯一邮箱、CRM 组织代号（qx/st）、实际组织 ID 和 CRM 用户 ID、启用状态及时间；每人只属于一个 CRM 组织。管理员通过 CLI/API 创建、更新身份、重发、启用、列出元数据和禁用 Token。创建和更新按指定组织邮箱匹配有效且已确认的 CRM 用户，查询失败不写入；重发撤销旧 Token 并保留身份及启用状态。旧用户可暂时未绑定，重复 userId 会阻止升级迁移，需停服、备份并显式选择保留记录，见 Token 管理说明。任一有效 Token 知道报告 UUID 后可读取该报告，企业评估没有跨用户报告隔离或配额。联系人导入仍校验任务归属；上传尝试和新导入分别按认证用户每 60 秒最多 5 次，同用户多个页面会话共用额度。已创建任务的幂等重试不计数，限流不删除已上传原件；HTTP 返回 429/等待秒数，MCP 返回明确工具错误。计数仅单实例内存保存，重启清零。`/mcp` 校验 Host、配置允许的 HTTPS Origin 和 Token；无 Origin 的非浏览器客户端仍须带 Token。健康检查为 `/healthz`。
 
 部署为单副本 Node.js 24/TypeScript 服务，SQLite 文件放在持久化挂载目录，一个数据库文件由一个服务实例拥有。`CONTACT_GRAPH_ENABLED` 默认为 `false`，须配置独立的 `CONTACT_GRAPH_SQLITE_PATH` 与 `CONTACT_GRAPH_BIN`。语义／混合检索另需独立的 `ARK_EMBEDDING_API_URL`、`ARK_EMBEDDING_MODEL`、`ARK_EMBEDDING_CREDENTIAL`；不配置时关键词检索仍可用。生产凭据和上游地址通过环境变量注入，公网 HTTPS 由前置代理终止。报告仅持久化 Markdown、必要元数据、精简审计结果及可空的精简证据快照，不保存完整上游原始正文；`ask_company` 的补查和答案不持久化。
 

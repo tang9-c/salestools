@@ -8,10 +8,13 @@ import { pathToFileURL } from 'node:url';
 
 const help = `使用方法（Node 24，macOS/Linux）：
   salestools-admin setup --url https://你的服务域名
-  salestools-admin token create 用户ID
+  salestools-admin token create 用户ID --email 邮箱 --crm qx|st
+  salestools-admin token update-identity 用户ID --email 邮箱 --crm qx|st
+  salestools-admin token rotate 用户ID
+  salestools-admin token enable 用户ID
   salestools-admin token list [--limit 100 --offset 0]
   salestools-admin token disable 用户ID --all
-配置：~/.config/salestools/admin.json；禁用会撤销该用户全部 Token。
+配置：~/.config/salestools/admin.json；每个用户只有一个 Token；重发立即撤销旧 Token。
 `;
 const validUser = value => typeof value === 'string' && value.length >= 1 && value.length <= 128
   && value === value.trim() && !/\p{C}/u.test(value);
@@ -25,7 +28,17 @@ function origin(raw) {
 }
 function argsFor(args) {
   if (args.length===3 && args[0]==='setup' && args[1]==='--url') return {action:'setup',url:origin(args[2])};
-  if (args.length===3 && args[0]==='token' && args[1]==='create' && validUser(args[2])) return {action:'create',userId:args[2]};
+  if (args[0]==='token' && ['create','update-identity'].includes(args[1]) && validUser(args[2])) {
+    const values={};
+    for(let i=3;i<args.length;i+=2) {
+      const key=args[i];if(!['--email','--crm'].includes(key) || values[key]!==undefined || args[i+1]===undefined) throw new Error('args');
+      values[key]=args[i+1];
+    }
+    const email=values['--email']?.trim().toLowerCase(),crm=values['--crm'];
+    if(Object.keys(values).length!==2 || !email || email.length>254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !['qx','st'].includes(crm)) throw new Error('args');
+    return {action:args[1],userId:args[2],email,crm};
+  }
+  if(args.length===3 && args[0]==='token' && ['rotate','enable'].includes(args[1]) && validUser(args[2])) return {action:args[1],userId:args[2]};
   if (args.length===4 && args[0]==='token' && args[1]==='disable' && validUser(args[2]) && args[3]==='--all') return {action:'disable',userId:args[2]};
   if (args[0]==='token' && args[1]==='list') {
     const values={limit:100,offset:0};const seen=new Set();
@@ -98,22 +111,30 @@ function keys(data, expected) {
 }
 function validated(data, command) {
   if(!validId(data?.requestId)) throw new Error('response');
-  if(command.action==='create') {
+  if(['create','rotate'].includes(command.action)) {
     if(!keys(data,['userId','token','requestId']) || data.userId!==command.userId || !validKey(data.token)) throw new Error('response');
     return data.token+'\n';
   }
-  if(command.action==='disable') {
-    if(!keys(data,['userId','disabled','requestId']) || data.userId!==command.userId || typeof data.disabled!=='boolean') throw new Error('response');
-    return JSON.stringify({userId:data.userId,disabled:data.disabled,requestId:data.requestId})+'\n';
+  if(['disable','enable','update-identity'].includes(command.action)) {
+    const field=command.action==='disable'?'disabled':command.action==='enable'?'enabled':'updated';
+    if(!keys(data,['userId',field,'requestId']) || data.userId!==command.userId || typeof data[field]!=='boolean') throw new Error('response');
+    return JSON.stringify({userId:data.userId,[field]:data[field],requestId:data.requestId})+'\n';
   }
   if(!keys(data,['items','nextOffset','requestId']) || !Array.isArray(data.items) || data.items.length>command.limit
     || !(data.nextOffset===null || data.nextOffset===command.offset+command.limit)
     || (data.nextOffset!==null && data.items.length!==command.limit)) throw new Error('response');
   const items=data.items.map(item=> {
-    if(!keys(item,['userId','enabled','createdAt']) || !validUser(item.userId) || typeof item.enabled!=='boolean'
+    const extended=keys(item,['userId','enabled','createdAt','email','crmConnectionId','crmOrgId','crmUserId','updatedAt']);
+    if(!(extended || keys(item,['userId','enabled','createdAt'])) || !validUser(item.userId) || typeof item.enabled!=='boolean'
       || typeof item.createdAt!=='string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(item.createdAt)
       || !Number.isFinite(Date.parse(item.createdAt))) throw new Error('response');
-    return {userId:item.userId,enabled:item.enabled,createdAt:item.createdAt};
+    if(extended && (!(item.email===null || (typeof item.email==='string' && item.email.length<=254))
+      || !(item.crmConnectionId===null || ['qx','st'].includes(item.crmConnectionId))
+      || ![item.crmOrgId,item.crmUserId].every(v=>v===null || (typeof v==='string' && /^\d+$/.test(v)))
+      || typeof item.updatedAt!=='string' || !Number.isFinite(Date.parse(item.updatedAt)))) throw new Error('response');
+    return extended?{userId:item.userId,enabled:item.enabled,createdAt:item.createdAt,email:item.email,
+      crmConnectionId:item.crmConnectionId,crmOrgId:item.crmOrgId,crmUserId:item.crmUserId,updatedAt:item.updatedAt}:
+      {userId:item.userId,enabled:item.enabled,createdAt:item.createdAt};
   });
   return JSON.stringify({items,nextOffset:data.nextOffset,requestId:data.requestId})+'\n';
 }
@@ -134,12 +155,13 @@ export async function runAdminCli(args, io) {
   try {config=await readConfig(io.home);} catch {await stderr('配置不可用：先运行 setup；检查目录 0700、文件 0600、所有权与符号链接。\n');return 2;}
   const writing=command.action!=='list';let requestId;
   try {
-    const path=command.action==='disable'?'tokens/disable-user':'tokens';
+    const paths={create:'tokens',list:'tokens',disable:'tokens/disable-user',enable:'tokens/enable-user',rotate:'tokens/rotate','update-identity':'tokens/update-identity'};
+    const path=paths[command.action];
     const query=writing?'':`?limit=${command.limit}&offset=${command.offset}`;
     const response=await io.fetch(`${config.url}/admin/v1/${path}${query}`,{
       method:writing?'POST':'GET',redirect:'error',signal:AbortSignal.timeout(15000),
       headers:{Authorization:`Bearer ${config.adminKey}`,...(writing?{'Content-Type':'application/json'}:{})},
-      ...(writing?{body:JSON.stringify({userId:command.userId})}:{}),
+      ...(writing?{body:JSON.stringify({userId:command.userId,...(['create','update-identity'].includes(command.action)?{email:command.email,crm:command.crm}:{})})}:{}),
     });
     if(response.status>=400 && response.status<500) {
       const delay=response.headers.get('retry-after');
@@ -150,10 +172,10 @@ export async function runAdminCli(args, io) {
     const data=await readResponse(response);if(validId(data?.requestId)) requestId=data.requestId;
     const output=validated(data,command);
     await io.stdout(output);
-    if(command.action==='create') await stderr('业务 Token 已创建，请保存；明文不能再次查询。\n');
+    if(['create','rotate'].includes(command.action)) await stderr('业务 Token 已创建，请保存；明文不能再次查询。\n');
     return 0;
   } catch {
-    await stderr(writing?`结果未知：操作可能已完成，请勿盲目重复创建。请用 list 和审计日志核对。${requestId?` requestId=${requestId}`:''}\n`:'查询失败，请检查网络与服务状态后重试。\n');
+    await stderr(writing?`结果未知：操作可能已完成，请勿盲目重复写入或重发 Token。请用 list 和审计日志核对。${requestId?` requestId=${requestId}`:''}\n`:'查询失败，请检查网络与服务状态后重试。\n');
     return writing?3:1;
   }
 }

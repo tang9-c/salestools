@@ -1,3 +1,4 @@
+import { createTestToken } from './helpers/token.js';
 import { Client } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -160,7 +161,7 @@ it('uses the authenticated HTTP MCP path, waits for patch check, and closes the 
   let client: Client | undefined;
   try {
     const listener = await runtime.listen(0, '127.0.0.1');
-    const token = runtime.tokenService.create('sales');
+    const token = createTestToken(runtime.tokenService, 'sales');
     client = new Client({ name: 'zoho-http-test', version: '1' }, { versionNegotiation: { mode: 'auto' } });
     await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(listener.address() as AddressInfo).port}/mcp`),
       { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
@@ -180,7 +181,7 @@ it('uses the authenticated HTTP MCP path, waits for patch check, and closes the 
   let second: Client | undefined;
   try {
     const listener = await degraded.listen(0, '127.0.0.1');
-    const token = degraded.tokenService.create('sales');
+    const token = createTestToken(degraded.tokenService, 'sales');
     second = new Client({ name: 'zoho-degraded-test', version: '1' }, { versionNegotiation: { mode: 'auto' } });
     await second.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(listener.address() as AddressInfo).port}/mcp`),
       { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
@@ -191,4 +192,42 @@ it('uses the authenticated HTTP MCP path, waits for patch check, and closes the 
     expect(zohoResult.structuredContent).toMatchObject({ zoho: { status: 'failed', warnings: ['ZOHO_UNAVAILABLE'] } });
     expect(JSON.stringify(zohoResult)).not.toContain('private patch diagnostics');
   } finally { await second?.close(); await degraded.close(); }
+});
+
+it('creates a bound user through the real admin route and projects owner identity per authenticated MCP request',async()=>{
+  const {createHash}=await import('node:crypto');const key='A'.repeat(43);
+  const config=loadConfig({PUBLIC_MCP_HOST:'127.0.0.1',ALLOWED_ORIGINS:'https://example.com',SQLITE_PATH:':memory:',
+    TOKEN_ADMIN_KEY_SHA256:createHash('sha256').update(key).digest('hex'),
+    QCC_MCP_COMPANY_URL:'https://example.com/company',QCC_MCP_RISK_URL:'https://example.com/risk',
+    QCC_MCP_IPR_URL:'https://example.com/ipr',QCC_MCP_OPERATION_URL:'https://example.com/operation',QCC_API_KEY:'fake',
+    DOUBAO_SEARCH_API_URL:'https://example.com/search',DOUBAO_SEARCH_API_KEY:'fake',
+    ARK_API_URL:'https://example.com/ark',ARK_MODEL:'fake',ARK_CREDENTIAL:'fake',
+    ZOHO_CONNECTIONS:'qx',ZOHO_QX_NAME:'QX',ZOHO_QX_REGION:'CN',ZOHO_QX_ORG_ID:'100',
+    ZOHO_QX_CLIENT_ID:'fake',ZOHO_QX_CLIENT_SECRET:'fake',ZOHO_QX_REFRESH_TOKEN:'fake'});
+  let actualOrg='100';const logs:string[]=[];
+  const runtime=createApplication(config,{logSink:{write:line=>logs.push(line)},verifyZohoPatch:async()=>{},
+    searchClient:{search:async()=>[],searchWeb:async()=>[]},
+    zohoClient:{getOrganization:async()=>actualOrg,
+      getUsersPage:async()=>({users:[{id:'9',email:'sales@example.com',status:'active',confirmed:true}],moreRecords:false}),
+      searchAccountsPage:async()=>({accounts:[{account_id:'1',company_name:'CRM公司',account_owner:{id:'9',name:'甲'}}],moreRecords:false}),
+      getAccount:async()=>({account_id:'1',company_name:'CRM公司',account_owner:{id:'9',name:'甲'}}),
+      getContactsPage:async()=>({contacts:[{record_id:'2',name:'乙',title:null,modified_at:null,contact_owner:{id:'8',name:'乙'}}],moreRecords:false,nextPageToken:null}),
+      close:async()=>{}}});
+  let client:Client|undefined;
+  try {
+    const listener=await runtime.listen(0,'127.0.0.1'),base=`http://127.0.0.1:${(listener.address() as AddressInfo).port}`;
+    const response=await fetch(base+'/admin/v1/tokens',{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},
+      body:JSON.stringify({userId:'sales',email:'Sales@Example.com',crm:'qx'})});
+    expect(response.status).toBe(201);const {token}=await response.json();
+    client=new Client({name:'identity-integration',version:'1'},{versionNegotiation:{mode:'auto'}});
+    await client.connect(new StreamableHTTPClientTransport(new URL(base+'/mcp'),{requestInit:{headers:{Authorization:`Bearer ${token}`}}}));
+    const args={query:'CRM公司',source:'zoho'};
+    const first=await client.callTool({name:'discover_contacts',arguments:args});
+    expect(first.isError).not.toBe(true);
+    expect(first.structuredContent).toMatchObject({zoho:{companies:[{account_owner:{is_current_user:true},contacts:[{contact_owner:{is_current_user:false}}]}]}});
+    actualOrg='200';
+    const second=await client.callTool({name:'discover_contacts',arguments:args});
+    expect(second.structuredContent).toMatchObject({zoho:{complete:true,companies:[{account_owner:{is_current_user:null}}],warnings:expect.arrayContaining([expect.stringContaining('CRM_IDENTITY_UNVERIFIED')])}});
+    expect(logs.join('')).not.toContain(token);
+  } finally {await client?.close();await runtime.close();}
 });

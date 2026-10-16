@@ -189,3 +189,23 @@ test('real CRM transient error has exactly one business retry with cached access
   try { await expect(client.getAccount('a', '1', context())).rejects.toThrow('ZOHO_TRANSIENT_ERROR'); expect(attempts).toBe(2); expect(refreshes).toBe(1); }
   finally { await client.close(); await local.close(); }
 });
+
+test('real SDK reads organization and paginated users using their distinct wrappers without leaking extra fields', async () => {
+  const requests: URL[] = [];
+  const local = await serverFor((request, response) => {
+    const url = new URL(request.url!, 'http://local'); requests.push(url);
+    if(url.pathname === '/oauth/v2/token') send(response,{access_token:'fake-access',expires_in:3600});
+    else if(url.pathname === '/crm/v8/org') send(response,{org:[{id:'100',company_name:'Synthetic CRM',primary_email:'private@example.com'}]});
+    else if(url.pathname === '/crm/v8/users') send(response,{users:[{id:'9007199254740993123',email:'sales@example.com',status:'active',confirm:true,phone:'private-phone',zuid:'other-id'}],info:{more_records:url.searchParams.get('page')==='1'}});
+    else send(response,{code:'INVALID_URL_PATTERN',status:'error'},404);
+  });
+  const client = new ZohoClient(connections,new LocalBridge(local.base));
+  try {
+    expect(await client.getOrganization('a',context())).toBe('100');
+    expect(await client.getUsersPage('a',1,context())).toEqual({users:[{id:'9007199254740993123',email:'sales@example.com',status:'active',confirmed:true}],moreRecords:true});
+    expect((await client.getUsersPage('a',2,context())).moreRecords).toBe(false);
+    const query=requests.find(url=>url.pathname==='/crm/v8/users')!;
+    expect(query.searchParams.get('type')).toBe('AllUsers');
+    expect(query.searchParams.get('per_page')).toBe('200');
+  } finally {await client.close();await local.close();}
+});

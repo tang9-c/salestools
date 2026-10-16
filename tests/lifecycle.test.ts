@@ -1,3 +1,4 @@
+import { createTestToken } from './helpers/token.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { request as httpRequest } from 'node:http';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -227,7 +228,7 @@ describe('application shutdown lifecycle', () => {
       logSink: { write: () => undefined },
     });
     runtimes.push(runtime);
-    const client = await connect(runtime, runtime.tokenService.create('sales-a'));
+    const client = await connect(runtime, createTestToken(runtime.tokenService, 'sales-a'));
     clients.push(client);
     const profile = call(client, 'get_company_profile', { query: FIRST.legalName })
       .finally(() => { profileSettled = true; });
@@ -290,7 +291,7 @@ describe('application shutdown lifecycle', () => {
       logSink: { write: () => undefined },
     });
     runtimes.push(runtime);
-    const client = await connect(runtime, runtime.tokenService.create('sales-a'));
+    const client = await connect(runtime, createTestToken(runtime.tokenService, 'sales-a'));
     clients.push(client);
     const first = await call(client, 'submit_assessment', {
       legal_name: FIRST.legalName, credit_code: FIRST.creditCode,
@@ -344,7 +345,7 @@ describe('application shutdown lifecycle', () => {
       logSink: { write: () => undefined },
     });
     runtimes.push(runtime);
-    const token = runtime.tokenService.create('sales-a');
+    const token = createTestToken(runtime.tokenService, 'sales-a');
     const listener = await runtime.listen(0, '127.0.0.1');
     const port = (listener.address() as AddressInfo).port;
     const request = httpRequest({

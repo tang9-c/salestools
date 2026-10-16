@@ -1,8 +1,12 @@
-import type { ZohoContactsOutput } from '../contracts/zoho-contact.js';
+import type { ZohoContactsOutput, ZohoOwner } from '../contracts/zoho-contact.js';
 
 function safe(value: string | null | undefined): string {
   if (!value) return '未提供';
   return value.replace(/[\r\n\t]+/gu, ' ').replace(/[\\`*_{}\[\]()#+.!|<>~-]/gu, '\\$&').trim() || '未提供';
+}
+
+function ownerName(owner: ZohoOwner | null | undefined): string {
+  return safe(owner?.name) + (owner?.is_current_user === true ? '（本人）' : '');
 }
 
 function confirmationCode(connectionId: string, accountId: string): string {
@@ -26,20 +30,20 @@ export function renderZohoContacts(result: ZohoContactsOutput): string {
     if (state.candidates.length && (result.status === 'needs_confirmation' || state.status === 'needs_confirmation' || !state.search_complete)) {
       lines.push(`### ${safe(state.name)} 的客户候选`,
         '请确认后将对应确认参数放入 zoho_account_records：');
-      for (const item of state.candidates) lines.push(`- 客户：${safe(item.company_name)}；客户负责人：${safe(item.account_owner?.name)}`,
+      for (const item of state.candidates) lines.push(`- 客户：${safe(item.company_name)}；客户负责人：${ownerName(item.account_owner)}`,
         `  确认参数：${confirmationCode(state.connection_id, item.account_id)}`);
     }
   }
   if (!result.companies.length && result.status === 'completed') lines.push('未找到匹配客户或关联联系人。');
   for (const company of result.companies) {
     lines.push(`### ${safe(company.company_name)}（${safe(result.connections.find(state => state.connection_id === company.connection_id)?.name ?? company.connection_id)}）`,
-      `客户负责人：${safe(company.account_owner?.name)}`, `${result.complete ? '关联联系人' : '已获取联系人'}：${company.contacts.length} 人`);
+      `客户负责人：${ownerName(company.account_owner)}`, `${result.complete ? '关联联系人' : '已获取联系人'}：${company.contacts.length} 人`);
     if (!company.contacts.length) {
       lines.push(result.complete ? '该客户没有关联联系人。' : '本次未获取到联系人，不能确认该客户没有联系人。');
       continue;
     }
     lines.push('| 姓名 | 职位 | 联系人负责人 |', '| --- | --- | --- |');
-    for (const contact of company.contacts) lines.push(`| ${safe(contact.name)} | ${safe(contact.title)} | ${safe(contact.contact_owner?.name)} |`);
+    for (const contact of company.contacts) lines.push(`| ${safe(contact.name)} | ${safe(contact.title)} | ${ownerName(contact.contact_owner)} |`);
   }
   if (result.warnings.length) lines.push(`警告：${result.warnings.map(safe).join('、')}`);
   return lines.join('\n');

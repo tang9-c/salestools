@@ -54,6 +54,7 @@ COPY scripts/patch-zoho-sdk.mjs ./scripts/patch-zoho-sdk.mjs
 COPY patches/zoho-sdk-4.0.0.json ./patches/zoho-sdk-4.0.0.json
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=node-build /app/dist ./dist
+COPY tools/token-migration.mjs ./tools/token-migration.mjs
 COPY --from=node-build /app/web/dist ./web/dist
 COPY python/contact_worker ./python/contact_worker
 COPY --from=python-build /opt/contact-worker/.venv /opt/contact-worker/.venv

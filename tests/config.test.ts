@@ -284,3 +284,11 @@ it('defaults the admin API off and validates its independent key digest', () => 
   expect(loadConfig({...valid,TOKEN_ADMIN_KEY_SHA256:'a'.repeat(64)}).tokenAdminKeySha256).toBe('a'.repeat(64));
   expect(() => loadConfig({...valid,TOKEN_ADMIN_KEY_SHA256:'invalid'})).toThrow();
 });
+
+it('requires an expected numeric organization ID for qx/st without leaking credentials',()=>{
+  const crm={ZOHO_CONNECTIONS:'qx',ZOHO_QX_NAME:'QX',ZOHO_QX_REGION:'CN',ZOHO_QX_CLIENT_ID:'secret-client',
+    ZOHO_QX_CLIENT_SECRET:'secret-value',ZOHO_QX_REFRESH_TOKEN:'secret-refresh'};
+  expect(()=>loadConfig({...valid,...crm})).toThrow('ZOHO_QX_ORG_ID');
+  expect(()=>loadConfig({...valid,...crm,ZOHO_QX_ORG_ID:'not-an-id'})).toThrow('ZOHO_QX_ORG_ID');
+  expect(loadConfig({...valid,...crm,ZOHO_QX_ORG_ID:'100'}).zohoConnections[0]).toMatchObject({id:'qx',orgId:'100'});
+});
