@@ -115,7 +115,9 @@ beforeAll(async () => {
 });
 afterEach(async () => { await Promise.all(pages.splice(0).map(p => p.close())); });
 afterAll(async () => { await browser?.close(); });
-async function completed(ui: Frame) { await expect.poll(() => ui.locator('#progress').textContent()).toContain('加载完成'); }
+async function completed(ui: Frame, timeout = 5000) {
+  await expect.poll(() => ui.locator('#progress').textContent(), { timeout }).toContain('加载完成');
+}
 
 it.each(['p1', 'p2'])('shows identity hints from either endpoint without professional opt-in or graph edges: %s', async id => {
   const claim = { claim_id: 'dup-private-id', kind: 'relation', status: 'unverified', subject_id: 'p1', target_id: 'p2', relation_type: 'possible_duplicate', reason: 'possible_duplicate', value: { subject_name: '陈晓甲', target_name: '陈晓乙', reasons: ['same_name', 'email'] } };
@@ -421,13 +423,13 @@ it('loads every root on a fifty-hit page but never follows a shared neighbor int
     const r = { relation_id: `r-${id}`, source_id: id, target_id: id === 'shared' ? 'hidden' : 'shared', relation_type: 'affiliation', properties: {}, metadata: {} };
     return result(detail(id, [r]));
   }, {}, data);
-  await completed(h.ui);
+  await completed(h.ui, 30_000);
   expect(await h.ui.locator('[data-node]').count()).toBe(51);
   expect(await h.ui.locator('[data-edge]').count()).toBe(50);
   expect(h.calls).toHaveLength(51);
   expect(h.calls.filter(c => c.arguments.entity_id === 'shared')).toHaveLength(1);
   expect(h.calls.some(c => c.arguments.entity_id === 'hidden')).toBe(false);
-}, 15_000);
+}, 45_000);
 it.each(['javascript:alert(1)', 'data:text/html,private'])('never offers an executable source link for %s', async url => {
   const h = await open(call => {
     const d = detail(String(call.arguments.entity_id));

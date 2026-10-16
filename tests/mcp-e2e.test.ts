@@ -216,6 +216,7 @@ describe('MCP HTTP simulated end-to-end', () => {
       contactExtractor: { extract: async () => ({
         contacts: [fakeContact],
         selection: { totalPages: 2, includedPages: 2, textTruncated: false },
+        coverage: { version: 2, total_pages: 2, total_chunks: 2, processed_chunks: 2, pending_pages: [], complete: true },
       }) },
       logSink: { write: () => undefined },
     });
@@ -252,7 +253,7 @@ describe('MCP HTTP simulated end-to-end', () => {
       }],
       warnings: ['主体未完全确认，保留原文企业名称'],
       collected_at: expect.any(String),
-      web_coverage: null,
+      web_coverage: { version: 2, total_pages: 2, total_chunks: 2, processed_chunks: 2, pending_pages: [], complete: true },
       web_page: { snapshot_id: 1, offset: 0, limit: 50, total: 1, next_offset: null },
     });
     expect(JSON.stringify(contacts)).not.toMatch(/email|phone|邮箱|电话/iu);
@@ -333,6 +334,7 @@ describe('MCP HTTP simulated end-to-end', () => {
         contactExtractor: { extract: async () => ({
           contacts: [fakeContact],
           selection: { totalPages: 1, includedPages: 1, textTruncated: false },
+          coverage: { version: 2, total_pages: 1, total_chunks: 1, processed_chunks: 1, pending_pages: [], complete: true },
         }) },
       });
       const token = runtime.tokenService.create('sales-a');
@@ -374,10 +376,7 @@ describe('MCP HTTP simulated end-to-end', () => {
       const firstOutput = first as { companies: unknown; warnings: string[] };
       const secondOutput = second as { companies: unknown; warnings: string[] };
       expect(secondOutput.companies).toEqual(firstOutput.companies);
-      expect(secondOutput.warnings).toEqual([
-        ...firstOutput.warnings,
-        '旧发现规则的历史资料，尚未完成增强搜索',
-      ]);
+      expect(secondOutput.warnings).toEqual(firstOutput.warnings);
       expect(upstreamCalls).toBe(0);
     } finally {
       await Promise.allSettled(clients.splice(0).map(client => client.close()));
