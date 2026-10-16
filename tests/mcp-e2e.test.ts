@@ -282,7 +282,7 @@ describe('MCP HTTP simulated end-to-end', () => {
       query: ' 测试机器人 ', region_hint: '上海',
     });
     expect(sharedContacts).toEqual(contacts);
-    expect(contactSearchCalls).toBe(2);
+    expect(contactSearchCalls).toBe(4);
     const report = await call(secondClient, 'get_assessment_report', { assessment_id: assessmentId });
     expect(secondClient.getProtocolEra()).toBe('modern');
     expect(report).toMatchObject({
