@@ -1,3 +1,13 @@
+import { ResearchRepository, ResearchError } from './research/repository.js';
+import { CompanyResearchService } from './research/service.js';
+import { ResearchQueue } from './research/queue.js';
+import { ResearchRunner, type ResearchRunnerOptions } from './research/runner.js';
+import { createResearchSources, type ResearchSourcesDependencies } from './research/sources.js';
+import { ArkResearchModel } from './research/model.js';
+import { GraphEvidenceCollector } from './research/graph-evidence.js';
+import { buildResult } from './research/opportunity-adapter.js';
+import { ingestEvidence, sha256 } from './research/evidence.js';
+import type { ResearchEvidence } from './research/contracts.js';
 import { CompanyLinkRepository } from './db/company-link-repository.js';
 import { CompanyLinkService } from './companies/company-link.js';
 import { CompanyContextService } from './companies/company-context-service.js';
@@ -63,6 +73,10 @@ type SearchDependency = Pick<DoubaoSearchClient, 'search'>
 type ArkDependency = Pick<ArkEvidenceService, 'planBatches' | 'extractWithAudit'> & { close?: () => Promise<void> };
 
 export interface ApplicationOverrides {
+  research?: Partial<Pick<ResearchRunnerOptions, 'sources' | 'model' | 'clock'>> & {
+    sourceDependencies?: ResearchSourcesDependencies;
+    modelFetch?: typeof fetch;
+  };
   database?: DatabaseSync;
   qccGateway?: QccDependency;
   searchClient?: SearchDependency;
@@ -355,10 +369,197 @@ export function createApplication(
     now: overrides.now,
     signal: abortController.signal,
   });
+  const researchRepository = new ResearchRepository(database, {
+    maxQueued: config.companyResearchMaxQueued,
+    maxPerActor: config.companyResearchMaxPerUser,
+    maxRunning: 1,
+    now: overrides.now,
+  });
+  // Recovery changes only persisted state: no paid work is resumed after a process restart.
+  researchRepository.recover();
+  const confirmedProfile = (code: string, name: string) => {
+    const profile = profiles.findFreshByCreditCode(
+      code,
+      overrides.now?.() ?? new Date(),
+      config.profileCacheTtlDays,
+    );
+    return profile?.identity.creditCode === code &&
+      profile.identity.legalName === name
+      ? profile
+      : null;
+  };
+  const researchService = new CompanyResearchService(researchRepository, {
+    identityLookup: (code, name) => confirmedProfile(code, name) !== null,
+  });
+  const graphCollector = companyContext
+    ? new GraphEvidenceCollector({
+        organizations: companyContext,
+        now: overrides.now,
+      })
+    : undefined;
+  const researchRunner = new ResearchRunner({
+    repository: researchRepository,
+    limits: config.companyResearchLimits,
+    clock: overrides.research?.clock,
+    resultBuilder: buildResult,
+    context: (run, dossier) => {
+      const profile = confirmedProfile(dossier.credit_code, dossier.legal_name);
+      if (!profile) throw new ResearchError('RESEARCH_IDENTITY_REQUIRED');
+      const result: ResearchEvidence[] = [];
+      const {
+        collected_at: _collectedAt,
+        legal_representative: _representative,
+        ...businessProfile
+      } = profile.basicProfile;
+      const content = JSON.stringify(businessProfile);
+      const cached = ingestEvidence(
+        {
+          source_type: 'qcc',
+          tool: 'get_company_profile',
+          record_id: sha256(`${dossier.credit_code}:get_company_profile`),
+          url: null,
+          content,
+          collected_at: profile.collectedAt,
+          published_at: null,
+          company_scope: 'confirmed',
+        },
+        {
+          title: '已确认企业基础画像',
+          quote: content.slice(0, 2000),
+          product_keys: run.request.product_keys,
+          signal_kind: 'other',
+        },
+      );
+      if (cached) result.push(cached);
+      const latest = assessments.listCompleted(dossier.credit_code, 0, 1)
+        .items[0];
+      const assessment = latest ? assessments.get(latest.assessment_id) : null;
+      if (
+        assessment?.status === 'completed' &&
+        assessment.creditCode === dossier.credit_code &&
+        assessment.legalName === dossier.legal_name
+      ) {
+        const snapshot = assessment.evidenceSnapshot;
+        for (const item of snapshot?.items ?? []) {
+          if (
+            !item.excerpt ||
+            item.entityMatch !== 'confirmed' ||
+            item.entityScope !== 'legal_entity'
+          )
+            continue;
+          const facts = snapshot!.facts.filter((f) =>
+            f.evidenceIds.includes(item.evidenceId),
+          );
+          const tags = run.request.product_keys.filter((p) =>
+            facts.some((f) => f.productTags.includes(p)),
+          );
+          if (facts.some((f) => f.productTags.length > 0) && !tags.length)
+            continue;
+          // Generic business evidence still supplies the selected scope, never another product's rating.
+          const evidence = ingestEvidence(
+            {
+              source_type: 'assessment',
+              assessment_id: assessment.assessmentId,
+              evidence_id: item.evidenceId,
+              url: item.url,
+              content: item.excerpt,
+              collected_at: item.collectedAt,
+              published_at: item.publishedAt,
+              company_scope: item.entityMatch,
+              ...(item.url ? { original_source_key: `web:${item.url}` } : {}),
+            },
+            {
+              title: item.title.slice(0, 1000),
+              quote: item.excerpt,
+              product_keys: tags.length ? tags : run.request.product_keys,
+              signal_kind: facts.some((f) => f.kind === 'recruitment')
+                ? 'job_requirement'
+                : 'other',
+            },
+          );
+          if (evidence) result.push(evidence);
+        }
+      }
+      return result;
+    },
+    sources:
+      overrides.research?.sources ??
+      ((context) => {
+        const profile = confirmedProfile(
+          context.dossier.credit_code,
+          context.dossier.legal_name,
+        );
+        if (!profile) throw new ResearchError('RESEARCH_IDENTITY_REQUIRED');
+        return createResearchSources(
+          {
+            qcc: {
+              urls: {
+                company: config.qccMcpCompanyUrl,
+                risk: config.qccMcpRiskUrl,
+                ipr: config.qccMcpIprUrl,
+                operation: config.qccMcpOperationUrl,
+              },
+              apiKey: config.qccApiKey,
+            },
+            search: {
+              url: config.doubaoSearchApiUrl,
+              apiKey: config.doubaoSearchApiKey,
+            },
+          },
+          {
+            identity: profile.identity,
+            scope: context.scope,
+            policy: context.policy,
+            prior: context.prior,
+          },
+          {
+            ...overrides.research?.sourceDependencies,
+            ...(graphClient && graphCollector
+              ? {
+                  graph: {
+                    collector: graphCollector,
+                    request: <T,>(
+                      op: Parameters<GraphClient['request']>[0],
+                      payload: object,
+                      signal: AbortSignal,
+                    ) => graphClient.request<T>(op, payload, signal),
+                  },
+                }
+              : {}),
+          },
+        );
+      }),
+    model:
+      overrides.research?.model ??
+      ((context) =>
+        new ArkResearchModel(
+          {
+            url: config.arkApiUrl,
+            credential: config.arkCredential,
+            model: config.arkModel,
+            context: {
+              company_identity: {
+                credit_code: context.dossier.credit_code,
+                legal_name: context.dossier.legal_name,
+              },
+              effective_goal: context.run.request.effective_goal,
+              product_goals: context.run.request.product_goals,
+            },
+            requestMaxBytes: config.arkRequestMaxBytes,
+            fetchFn: overrides.research?.modelFetch,
+          },
+          context.policy,
+        )),
+  });
+  const researchQueue = new ResearchQueue(researchRepository, (id, signal) =>
+    activity.track(() => researchRunner.run(id, signal)),
+  );
   const companyLinks = graphClient && companyLinkRepository ? new CompanyLinkService({
     graph: graphClient, links: companyLinkRepository, profiles, now: overrides.now ?? (() => new Date()),
   }) : undefined;
   const servicesFor = (userId: string, token: string): McpServices => ({
+    companyResearch: config.companyResearchEnabled
+      ? { enabled: true, service: researchService, queue: researchQueue } : undefined,
     zohoContacts: zohoReady === undefined ? undefined : {
       connectionIds: config.zohoConnections.map(connection => connection.id),
       get: input => activity.track(async () => {
@@ -446,15 +647,20 @@ export function createApplication(
         server!.once('listening', resolve);
         server!.once('error', reject);
       });
+      if (config.companyResearchEnabled) researchQueue.start();
       return server;
     },
     close(timeoutMs = 30_000) {
       if (closing !== null) return closing;
       closing = (async () => {
         queue.stopAccepting();
+        researchQueue.stopAccepting();
         const listenerClosed = server === null ? Promise.resolve() : closeServer(server);
         void listenerClosed.catch(() => undefined);
-        const normalDrain = listenerClosed.then(() => activity.whenIdle());
+        const normalDrain = listenerClosed.then(async () => {
+          await researchQueue.waitForActive();
+          await activity.whenIdle();
+        });
         const completedNormally = await waitAtMost(normalDrain, timeoutMs);
         if (completedNormally) {
           await importJobs.recover();
@@ -462,7 +668,9 @@ export function createApplication(
           await closeUpstreams();
           await app.closeMcpHandler();
         } else {
+          researchQueue.abortActive();
           abortController.abort();
+          await researchQueue.waitForActive();
           await importJobs.recover();
           await closeUpstreams();
           void app.closeMcpHandler().catch(() => undefined);

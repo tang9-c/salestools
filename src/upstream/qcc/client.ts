@@ -87,17 +87,86 @@ export class QccGateway {
     config.signal?.addEventListener('abort', this.abort, { once: true });
   }
 
-  async call(server: QccServer, tool: string, input: Record<string, unknown>): Promise<unknown> {
+  async call(
+    server: QccServer,
+    tool: string,
+    input: Record<string, unknown>,
+    aroundBusinessCall?: (
+      prepare: () => Promise<() => Promise<unknown>>,
+    ) => Promise<unknown>,
+  ): Promise<unknown> {
     if (!isAllowedQccTool(server, tool)) {
-      throw new UpstreamError('qcc', 'TOOL_NOT_ALLOWED', `QCC tool is not allowed: ${server}/${tool}`);
+      throw new UpstreamError(
+        'qcc',
+        'TOOL_NOT_ALLOWED',
+        `QCC tool is not allowed: ${server}/${tool}`,
+      );
     }
     if (isAborted(this.config.signal)) {
       throw new UpstreamError('qcc', 'ABORTED', 'QCC request aborted');
     }
 
+    if (aroundBusinessCall) {
+      // A fresh preparation runs inside each policy attempt, before its business budget debit.
+      return aroundBusinessCall(async () => {
+        let pending = this.connections.get(server);
+        if (!pending) {
+          pending = this.factory.create(
+            server,
+            this.config.urls[server],
+            this.config.apiKey,
+            this.config.signal,
+          );
+          this.connections.set(server, pending);
+        }
+        let connection: QccConnection;
+        try {
+          connection = await pending;
+          if (isAborted(this.config.signal))
+            throw new UpstreamError('qcc', 'ABORTED', 'QCC request aborted');
+        } catch (error) {
+          if (this.connections.get(server) === pending)
+            this.connections.delete(server);
+          if (error instanceof UpstreamError) throw error;
+          throw new UpstreamError('qcc', 'TRANSPORT', 'QCC connection failed', {
+            cause: error,
+          });
+        }
+        // Debit and the actual callTool dispatch share one synchronous turn; never await preparation again.
+        return async () => {
+          try {
+            return await connection.callTool(tool, input);
+          } catch (error) {
+            if (isAborted(this.config.signal))
+              throw new UpstreamError('qcc', 'ABORTED', 'QCC request aborted', {
+                cause: error,
+              });
+            if (error instanceof UpstreamError && error.code !== 'TRANSPORT')
+              throw error;
+            if (this.connections.get(server) === pending) {
+              this.connections.delete(server);
+              await connection.close().catch(() => undefined);
+            }
+            if (error instanceof UpstreamError) throw error;
+            throw new UpstreamError(
+              'qcc',
+              'TRANSPORT',
+              'QCC transport failed',
+              { cause: error },
+            );
+          }
+        };
+      });
+    }
+
     let pending = this.connections.get(server);
     if (pending === undefined) {
-      pending = this.factory.create(server, this.config.urls[server], this.config.apiKey, this.config.signal);
+      pending = this.factory.create(
+        server,
+        this.config.urls[server],
+        this.config.apiKey,
+        this.config.signal,
+      );
       this.connections.set(server, pending);
     }
 
@@ -110,21 +179,27 @@ export class QccGateway {
       return await connection.callTool(tool, input);
     } catch (error) {
       if (isAborted(this.config.signal)) {
-        throw new UpstreamError('qcc', 'ABORTED', 'QCC request aborted', { cause: error });
+        throw new UpstreamError('qcc', 'ABORTED', 'QCC request aborted', {
+          cause: error,
+        });
       }
       if (connection === undefined) {
-        if (this.connections.get(server) === pending) this.connections.delete(server);
+        if (this.connections.get(server) === pending)
+          this.connections.delete(server);
         if (error instanceof UpstreamError) throw error;
-        const message = error instanceof Error ? error.message : 'QCC connection failed';
+        const message =
+          error instanceof Error ? error.message : 'QCC connection failed';
         throw new UpstreamError('qcc', 'TRANSPORT', message, { cause: error });
       }
-      if (error instanceof UpstreamError && error.code !== 'TRANSPORT') throw error;
+      if (error instanceof UpstreamError && error.code !== 'TRANSPORT')
+        throw error;
       if (this.connections.get(server) === pending) {
         this.connections.delete(server);
         await connection.close().catch(() => undefined);
       }
       if (error instanceof UpstreamError) throw error;
-      const message = error instanceof Error ? error.message : 'QCC transport failed';
+      const message =
+        error instanceof Error ? error.message : 'QCC transport failed';
       throw new UpstreamError('qcc', 'TRANSPORT', message, { cause: error });
     }
   }

@@ -1,3 +1,4 @@
+import type { GraphReadContext } from '../research/graph-evidence.js';
 import { ContactEntitySchema, parseStoredContactEvidence, ContactRelationSchema } from '../contracts/index.js';
 import type { ContactEvidence, ContactEntity } from '../contracts/index.js';
 import { supportedRelationEvidence } from '../contacts/relation-evidence.js';
@@ -58,12 +59,14 @@ export class CompanyContextService {
   }
 
   private async pages<T>(op: 'company_organizations' | 'company_relations' | 'company_recent_records',
-    filter: object, limit: number, signal: AbortSignal): Promise<{ items: T[]; complete: boolean }> {
+    filter: object, limit: number, signal: AbortSignal, readContext?: GraphReadContext): Promise<{ items: T[]; complete: boolean }> {
     const items: T[] = [];
     let offset = 0;
     for (let page = 0; page < MAX_PAGES; page++) {
       signal.throwIfAborted();
-      const result = await this.request<Page<T>>(op, { ...filter, offset, limit }, signal);
+      const result = readContext
+        ? await readContext.request<Page<T>>(op as 'company_organizations', { ...filter, offset, limit })
+        : await this.request<Page<T>>(op, { ...filter, offset, limit }, signal);
       items.push(...result.items);
       if (result.complete && result.next_offset === null) return { items, complete: true };
       if (result.next_offset === null || result.next_offset <= offset) return { items, complete: false };
@@ -169,11 +172,11 @@ export class CompanyContextService {
       profile, latest_report: latest, reports };
   }
 
-  private async confirmedOrganizations(code: string, signal: AbortSignal): Promise<{
+  private async confirmedOrganizations(code: string, signal: AbortSignal, readContext?: GraphReadContext): Promise<{
     ids: string[]; complete: boolean; available: boolean; warnings: string[] }> {
     const profile = this.deps.profiles.findByCreditCodes([code])[0];
     signal.throwIfAborted();
-    if (!profile || !this.deps.graph) return { ids: [], complete: false, available: false,
+    if (!profile || (!this.deps.graph && !readContext)) return { ids: [], complete: false, available: false,
       warnings: [!profile ? 'PROFILE_NOT_FOUND' : 'GRAPH_NOT_CONFIGURED'] };
     const names = [profile.identity.legalName, ...profile.identity.formerNames].map(normalize);
     const saved = this.deps.links.byCreditCode(code).map(link => link.organization_id);
@@ -184,7 +187,7 @@ export class CompanyContextService {
     const warnings: string[] = [];
     try {
       const candidates = await this.pages<OrganizationIdentity>('company_organizations',
-        { entity_ids: [], credit_codes: [code], normalized_names: names }, BATCH, signal);
+        { entity_ids: [], credit_codes: [code], normalized_names: names }, BATCH, signal, readContext);
       available = true;
       complete &&= candidates.complete;
       for (const item of candidates.items) found.set(item.entity_id, item);
@@ -193,7 +196,7 @@ export class CompanyContextService {
       signal.throwIfAborted();
       try {
         const read = await this.pages<OrganizationIdentity>('company_organizations',
-          { entity_ids: batch, credit_codes: [], normalized_names: [] }, BATCH, signal);
+          { entity_ids: batch, credit_codes: [], normalized_names: [] }, BATCH, signal, readContext);
         available = true;
         complete &&= read.complete;
         for (const item of read.items) found.set(item.entity_id, item);
@@ -204,6 +207,12 @@ export class CompanyContextService {
       .map(link => link.organization_id).sort();
     if (!complete) warnings.push('ORGANIZATIONS_INCOMPLETE');
     return { ids, complete, available, warnings };
+  }
+
+  /** Research reads share their caller's IPC budget; legacy readers retain their defaults. */
+  async confirmedOrganizationIds(code: string, readContext: GraphReadContext): Promise<{
+    ids: string[]; complete: boolean; available: boolean; warnings: string[] }> {
+    return this.confirmedOrganizations(code, this.active(readContext.signal), readContext);
   }
 
   async overview(code: string, signal?: AbortSignal): Promise<CompanyOverview> {

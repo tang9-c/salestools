@@ -88,4 +88,31 @@ CREATE TABLE IF NOT EXISTS company_link_operations (
   created_at TEXT NOT NULL,
   PRIMARY KEY(actor, operation_id)
 );
+
+CREATE TABLE IF NOT EXISTS company_research_dossiers (
+ dossier_id TEXT PRIMARY KEY, credit_code TEXT NOT NULL UNIQUE, legal_name TEXT NOT NULL,
+ created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS company_research_runs (
+ run_id TEXT PRIMARY KEY, dossier_id TEXT NOT NULL REFERENCES company_research_dossiers(dossier_id),
+ actor TEXT NOT NULL, operation_id TEXT NOT NULL, request_hash TEXT NOT NULL,
+ mode TEXT NOT NULL CHECK(mode IN ('initial','continue','refresh')), base_version_id TEXT,
+ request_json TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('queued','running','completed','partial','failed','cancelled')),
+ progress_json TEXT NOT NULL, budget_usage_json TEXT NOT NULL, source_status_json TEXT NOT NULL,
+ stop_reason TEXT, error_code TEXT, cancelled_by TEXT,
+ created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version_id TEXT,
+ UNIQUE(actor, operation_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_research_per_dossier
+ ON company_research_runs(dossier_id) WHERE status IN ('queued','running');
+CREATE INDEX IF NOT EXISTS company_research_queue ON company_research_runs(status,created_at,run_id);
+CREATE INDEX IF NOT EXISTS company_research_actor_active ON company_research_runs(actor,status);
+CREATE TABLE IF NOT EXISTS company_research_versions (
+ version_id TEXT PRIMARY KEY, dossier_id TEXT NOT NULL REFERENCES company_research_dossiers(dossier_id),
+ run_id TEXT NOT NULL UNIQUE REFERENCES company_research_runs(run_id), sequence INTEGER NOT NULL CHECK(sequence>0),
+ parent_version_id TEXT, scope_json TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('completed','partial')), snapshot_json TEXT NOT NULL,
+ created_at TEXT NOT NULL, UNIQUE(dossier_id,sequence)
+);
+CREATE INDEX IF NOT EXISTS company_research_versions_dossier ON company_research_versions(dossier_id,sequence DESC);
 `;

@@ -300,3 +300,33 @@ it('uses normalized NAME values for stable legacy connection IDs and rejects dup
   expect(loadConfig({...valid,...legacy}).zohoConnections).toMatchObject([{id:'crm_a',name:'Qx'},{id:'crm_b',name:'sT'}]);
   expect(()=>loadConfig({...valid,...legacy,ZOHO_CRM_B_NAME:' qX '})).toThrow('Invalid configuration');
 });
+
+it('research defaults off and validates its independent bounded budget without changing legacy total semantics', () => {
+  expect(loadConfig(valid)).toMatchObject({
+    companyResearchEnabled: false,
+    companyResearchLimits: {
+      timeoutMs: 600000,
+      qcc: 4,
+      search: 16,
+      ark: 8,
+      total: 28,
+    },
+  });
+  expect(
+    loadConfig({ ...valid, COMPANY_RESEARCH_MAX_TOTAL_CALLS: '10' })
+      .companyResearchLimits.total,
+  ).toBe(10);
+  for (const override of [
+    { COMPANY_RESEARCH_TIMEOUT_MS: '59999' },
+    { COMPANY_RESEARCH_MAX_ARK_CALLS: '1' },
+    { COMPANY_RESEARCH_MAX_TOTAL_CALLS: '29' },
+    { COMPANY_RESEARCH_MAX_TOTAL_CALLS: '2' },
+    { COMPANY_RESEARCH_MAX_QUEUED: '0' },
+  ])
+    expect(() => loadConfig({ ...valid, ...override })).toThrow(
+      'Invalid configuration: COMPANY_RESEARCH_',
+    );
+  expect(() =>
+    loadConfig({ ...valid, MAX_TOTAL_UPSTREAM_CALLS: '10' }),
+  ).toThrow('MAX_TOTAL_UPSTREAM_CALLS');
+});

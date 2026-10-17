@@ -1,10 +1,15 @@
 import { z } from 'zod';
+import type { ResearchLimits } from './research/policy.js';
 import { isAbsolute, resolve } from 'node:path';
 import { ZohoConnectionIdSchema, ZohoConnectionSchema, type ZohoConnection } from './contracts/zoho-contact.js';
 import { crmCodeForName } from './auth/token-identity.js';
 export type { ZohoConnection } from './contracts/zoho-contact.js';
 
 const CONFIG_KEYS = [
+  'COMPANY_RESEARCH_ENABLED', 'COMPANY_RESEARCH_TIMEOUT_MS',
+  'COMPANY_RESEARCH_MAX_QCC_CALLS', 'COMPANY_RESEARCH_MAX_SEARCH_CALLS',
+  'COMPANY_RESEARCH_MAX_ARK_CALLS', 'COMPANY_RESEARCH_MAX_TOTAL_CALLS',
+  'COMPANY_RESEARCH_MAX_QUEUED', 'COMPANY_RESEARCH_MAX_PER_USER',
   'TOKEN_ADMIN_KEY_SHA256', 'PORT', 'PUBLIC_MCP_HOST', 'ALLOWED_ORIGINS', 'SQLITE_PATH',
   'QCC_MCP_COMPANY_URL', 'QCC_MCP_RISK_URL', 'QCC_MCP_IPR_URL', 'QCC_MCP_OPERATION_URL', 'QCC_API_KEY',
   'DOUBAO_SEARCH_API_URL', 'DOUBAO_SEARCH_API_KEY', 'ARK_API_URL', 'ARK_MODEL', 'ARK_CREDENTIAL',
@@ -46,6 +51,14 @@ const origins = nonEmptyString.refine(
 );
 
 const configSchema = z.object({
+  COMPANY_RESEARCH_ENABLED: z.enum(['true', 'false']).default('false').transform(value => value === 'true'),
+  COMPANY_RESEARCH_TIMEOUT_MS: positiveInteger.min(60000).max(1800000).default(600000),
+  COMPANY_RESEARCH_MAX_QCC_CALLS: positiveInteger.default(4),
+  COMPANY_RESEARCH_MAX_SEARCH_CALLS: positiveInteger.default(16),
+  COMPANY_RESEARCH_MAX_ARK_CALLS: positiveInteger.min(2).default(8),
+  COMPANY_RESEARCH_MAX_TOTAL_CALLS: positiveInteger.min(3).default(28),
+  COMPANY_RESEARCH_MAX_QUEUED: positiveInteger.default(20),
+  COMPANY_RESEARCH_MAX_PER_USER: positiveInteger.default(3),
   TOKEN_ADMIN_KEY_SHA256: optionalTrimmed.refine(value => value === undefined || /^[a-f0-9]{64}$/.test(value)),
   PORT: positiveInteger.default(3000),
   PUBLIC_MCP_HOST: nonEmptyString,
@@ -88,6 +101,14 @@ const configSchema = z.object({
   CONTACT_PYTHON_BIN: nonEmptyString.optional(),
   CONTACT_WORKER_SOCKET: nonEmptyString.optional(),
 }).strict().superRefine((config, context) => {
+  const researchMaximum = config.COMPANY_RESEARCH_MAX_QCC_CALLS
+    + config.COMPANY_RESEARCH_MAX_SEARCH_CALLS + config.COMPANY_RESEARCH_MAX_ARK_CALLS;
+  if (config.COMPANY_RESEARCH_MAX_TOTAL_CALLS > researchMaximum) {
+    context.addIssue({
+      code: 'custom', path: ['COMPANY_RESEARCH_MAX_TOTAL_CALLS'],
+      message: 'research total must not exceed source budgets',
+    });
+  }
   const configuredMaximum = config.MAX_QCC_CALLS + config.MAX_SEARCH_CALLS + config.MAX_ARK_CALLS;
   if (config.MAX_TOTAL_UPSTREAM_CALLS < configuredMaximum) {
     context.addIssue({
@@ -116,6 +137,10 @@ const configSchema = z.object({
 type ParsedConfig = z.infer<typeof configSchema>;
 
 export type AppConfig = ParsedConfig & {
+  companyResearchEnabled: boolean;
+  companyResearchLimits: ResearchLimits;
+  companyResearchMaxQueued: number;
+  companyResearchMaxPerUser: number;
   zohoConnections: ZohoConnection[];
   tokenAdminKeySha256?: string;
   port: number;
@@ -176,6 +201,16 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   const originUrls = parsed.data.ALLOWED_ORIGINS.split(',').map(value => value.trim()).filter(Boolean);
   return {
     ...parsed.data,
+    companyResearchEnabled: parsed.data.COMPANY_RESEARCH_ENABLED,
+    companyResearchLimits: {
+      timeoutMs: parsed.data.COMPANY_RESEARCH_TIMEOUT_MS,
+      qcc: parsed.data.COMPANY_RESEARCH_MAX_QCC_CALLS,
+      search: parsed.data.COMPANY_RESEARCH_MAX_SEARCH_CALLS,
+      ark: parsed.data.COMPANY_RESEARCH_MAX_ARK_CALLS,
+      total: parsed.data.COMPANY_RESEARCH_MAX_TOTAL_CALLS,
+    },
+    companyResearchMaxQueued: parsed.data.COMPANY_RESEARCH_MAX_QUEUED,
+    companyResearchMaxPerUser: parsed.data.COMPANY_RESEARCH_MAX_PER_USER,
     zohoConnections: loadZohoConnections(env),
     tokenAdminKeySha256: parsed.data.TOKEN_ADMIN_KEY_SHA256,
     port: parsed.data.PORT,

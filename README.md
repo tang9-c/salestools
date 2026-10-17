@@ -174,3 +174,9 @@ salestools-admin token list --limit 100 --offset 100
 已有 `crm_a`／`crm_b` 连接应保留原 ID，直接使用 `ZOHO_CRM_A_NAME=QX`、`ZOHO_CRM_B_NAME=ST` 匹配组织；组织 ID 在首次绑定时自动读取并保存，具体配置见 [CRM 配置说明](docs/operations/token-admin.md#crm-连接与权限)。`503 CRM_ORG_NOT_CONFIGURED` 表示所选组织未配置，创建尚未写入；CLI 会显示错误码和 requestId。
 
 首次升级前使用 `tools/token-migration.mjs preflight` 检查重复用户；有重复时需停服、备份并明确选择保留记录，启动不会自动撤销旧 Token。具体步骤见 [Token 管理与迁移](docs/operations/token-admin.md)。
+
+### 持续企业研究（第一阶段，默认关闭）
+
+`COMPANY_RESEARCH_ENABLED=false` 为默认值。启用后提供首次研究、继续、刷新、状态、共享版本及分页证据读取，使用已确认企业画像和独立预算。失败／取消保留旧成果；重启不自动恢复付费调用。关闭功能保留研究数据。
+
+当前实现尚待远程完整 gate、授权企业样本和真实宿主验收；启用须在验收后另行授权。数据库备份、迁移、预算、状态、关闭步骤及真实 tested SHA 记录见[持续企业研究验收记录](docs/validation/2026-10-17-continuous-company-research.md)。不在本机执行 build/dev/native 或容器构建。

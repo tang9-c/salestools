@@ -1,3 +1,4 @@
+import { registerCompanyResearchTools, type CompanyResearchTools } from './company-research-tools.js';
 import type { CompanyContextService } from '../companies/company-context-service.js';
 import type { CompanyLinkService } from '../companies/company-link.js';
 import type { RelatedUpdates } from '../companies/company-context-types.js';
@@ -132,6 +133,7 @@ export type AssessmentReportServiceOutput = {
 };
 
 export interface McpServices {
+  companyResearch?: CompanyResearchTools;
   zohoContacts?: { get(input: ZohoQuery): Awaitable<ZohoContactsOutput>; connectionIds: readonly string[] };
   contactUpload?: {
     actor: string;
@@ -342,6 +344,7 @@ export function buildMcpServer(services: McpServices): McpServer {
   if (services.contactAnswer) registerContactAnswerTools(server, services.contactAnswer);
 
   if (services.companyLinks) registerCompanyLinkTools(server, services.companyLinks);
+  if (services.companyResearch) registerCompanyResearchTools(server, services.companyResearch);
 
   server.registerTool('get_company_profile', {
     description: 'Default tool for basic company-profile lookups and ambiguous requests; use it before any formal assessment.',
