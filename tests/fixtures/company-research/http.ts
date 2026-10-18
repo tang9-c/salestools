@@ -85,6 +85,7 @@ export async function fixture(
     research?: ApplicationOverrides['research'];
     config?: Record<string, string>;
     emptyProfile?: boolean;
+    logSink?: ApplicationOverrides['logSink'];
     setup?: (repo: ResearchRepository) => void;
   } = {},
 ) {
@@ -164,6 +165,7 @@ export async function fixture(
     database: db,
     now: clock.wall,
     research,
+    logSink: options.logSink,
   });
   const repo = new ResearchRepository(db, { now: clock.wall });
   const server = await app.listen(0, '127.0.0.1');

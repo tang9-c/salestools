@@ -54,6 +54,7 @@ export class ResearchPolicy {
   readonly upstreamUntil: number;
   private readonly budget: CallBudget;
   private graphUsed = 0;
+  private finalArkUsed = 0;
   private readonly collection = new AbortController();
   private readonly upstream = new AbortController();
   private readonly disposers: (() => void)[];
@@ -61,6 +62,7 @@ export class ResearchPolicy {
     input: Partial<ResearchLimits> = {},
     readonly clock = systemResearchClock,
     private readonly lifecycle?: AbortSignal,
+    private readonly finalArkLimit?: number,
   ) {
     this.limits = researchLimits(input);
     const start = clock.monotonic();
@@ -116,6 +118,12 @@ export class ResearchPolicy {
     const used = this.budget.usage();
     return (
       this.isOpen(stage) &&
+      !(
+        source === 'ark' &&
+        stage === 'final' &&
+        this.finalArkLimit !== undefined &&
+        this.finalArkUsed >= this.finalArkLimit
+      ) &&
       this.budget.canConsume(source) &&
       (stage === 'final' ||
         (used.total + 1 <= this.limits.total - 2 &&
@@ -142,6 +150,7 @@ export class ResearchPolicy {
       requestSignal?.throwIfAborted();
       if (!this.canStart(source, stage) || !this.budget.tryConsume(source))
         throw new Error('BUDGET_EXHAUSTED');
+      if (source === 'ark' && stage === 'final') this.finalArkUsed++;
       const signal = requestSignal
         ? AbortSignal.any([this.signal(stage), requestSignal])
         : this.signal(stage);

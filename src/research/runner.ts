@@ -1,4 +1,8 @@
 import {
+  validateScenarioPaths,
+  type SalesScenarioResult,
+} from './templates/product-sales-scenario.js';
+import {
   type ProductKey,
   type ResearchDossier,
   type ResearchRun,
@@ -56,6 +60,7 @@ export interface ResearchResultInput extends ResearchRunContext {
   round_search_counts: number[];
   pending_work: PendingResearchItem[];
   assessed_at: string;
+  template_result?: SalesScenarioResult;
 }
 export interface ResearchRunnerOptions {
   repository: ResearchRepository;
@@ -115,6 +120,7 @@ export class ResearchRunner {
       this.options.limits,
       clock,
       serviceSignal,
+      run.request.template.id === 'product_sales_scenario' ? 2 : undefined,
     );
     let sources: ResearchSources | undefined;
     let model: ResearchModel | undefined;
@@ -203,6 +209,57 @@ export class ResearchRunner {
           .flatMap((g) => g.evidence_ids),
       );
       let pending = planResearch(run, baselines, evidence, clock.wall());
+      const sales = run.request.template.id === 'product_sales_scenario';
+      let templateResult: SalesScenarioResult | undefined;
+      if (
+        sales &&
+        run.mode === 'continue' &&
+        !pending.length &&
+        !initial.omitted
+      ) {
+        const products: SalesScenarioResult['products'] = [];
+        for (const product of run.request.product_keys) {
+          const base = baselines[product];
+          if (
+            !base ||
+            base.template.id !== run.request.template.id ||
+            base.template.version !== run.request.template.version ||
+            base.method_version !== run.request.method_version ||
+            base.product_goals[product] !==
+              run.request.product_goals[product] ||
+            base.template_result.kind !== 'product_sales_scenario' ||
+            evidence.some(
+              (e) =>
+                e.product_keys.includes(product) &&
+                !base.evidence.some((old) => old.evidence_id === e.evidence_id),
+            )
+          )
+            break;
+          const result = base.template_result.products.find(
+            (p) => p.product === product,
+          );
+          if (!result) break;
+          products.push(structuredClone(result));
+        }
+        if (products.length === run.request.product_keys.length) {
+          try {
+            const checked = validateScenarioPaths(
+              { kind: 'product_sales_scenario', products },
+              {
+                claims,
+                evidence,
+                scope: run.request.product_keys,
+                companyKey: dossier.credit_code,
+                asOf: clock.wall(),
+              },
+            );
+            if (!checked.warnings.length) templateResult = checked.result;
+          } catch {
+            /* An incomplete projection needs final analysis, never fake source work. */
+          }
+        }
+      }
+      const hadCollectionWork = pending.length > 0;
       let completedRounds = 0;
       const roundCounts: number[] = [];
       let stopReason = pending.length ? 'RESEARCH_COMPLETE' : 'NO_PENDING_WORK';
@@ -272,27 +329,41 @@ export class ResearchRunner {
           context.scope,
           policy.signal(stage),
           stage,
+          claims,
         );
         if (model.omitted) warnings.add('MODEL_MATERIAL_OMITTED');
+        const { template_warnings: internalWarnings, ...analysisRaw } = raw;
         const result = parseAnalysis(
-          raw,
+          analysisRaw,
           evidence,
           gaps,
           context.scope,
           dossier.credit_code,
+          { template: run.request.template, stage, claims, asOf: clock.wall() },
         );
         policy.assertOpen(stage);
         if (!active()) throw new Error('RESEARCH_ABORTED');
-        claims = result.claims.filter((c) =>
+        const accepted = result.claims.filter((c) =>
           validateClaim(c, evidence, {
             conflict_evidence_ids: [...conflictIds],
           }),
         );
+        claims = sales
+          ? mergeEntityProjections([...claims, ...accepted], 'claim_id')
+          : accepted;
+        if (sales && stage === 'final') {
+          templateResult = result.template_result;
+          for (const warning of [
+            ...(internalWarnings ?? []),
+            ...(result.template_warnings ?? []),
+          ])
+            if (warning === 'TEMPLATE_OUTPUT_INVALID') warnings.add(warning);
+        }
         gaps = result.gaps;
         sourceStatus.set('model', { source: 'model', status: 'available' });
         return result;
       };
-      if (pending.length) {
+      if (hadCollectionWork) {
         sources = this.options.sources(context);
         const searched = new Set<string>();
         for (
@@ -374,24 +445,46 @@ export class ResearchRunner {
           stopReason = 'TIME_BUDGET_EXHAUSTED';
           warnings.add(stopReason);
         }
-        if (policy.canStart('ark', 'final')) {
+      }
+      if (hadCollectionWork || (sales && !templateResult)) {
+        if (sales) templateResult = undefined;
+        let finalSucceeded = false;
+        for (let attempt = 0; attempt < (sales ? 2 : 1); attempt++) {
+          if (!policy.canStart('ark', 'final')) break;
           update('finalizing');
           try {
             await analyzed('final');
-          } catch {
+            finalSucceeded = true;
+            break;
+          } catch (error) {
             if (!active()) return;
-            const failure = policy.isOpen('final')
-              ? 'FINAL_MODEL_FAILED'
-              : 'TIME_BUDGET_EXHAUSTED';
-            warnings.add(failure);
-            if (stopReason === 'RESEARCH_COMPLETE') stopReason = failure;
+            if (error instanceof Error && error.message === 'INPUT_TOO_LARGE')
+              break;
+            if (!sales) break;
           }
-        } else
-          warnings.add(
-            policy.isOpen('final')
-              ? 'BUDGET_EXHAUSTED'
-              : 'TIME_BUDGET_EXHAUSTED',
-          );
+        }
+        if (!finalSucceeded) {
+          const failure = !policy.isOpen('final')
+            ? 'TIME_BUDGET_EXHAUSTED'
+            : sales
+              ? policy.canStart('ark', 'final')
+                ? 'TEMPLATE_OUTPUT_INVALID'
+                : 'TEMPLATE_BUDGET_EXHAUSTED'
+              : policy.canStart('ark', 'final')
+                ? 'FINAL_MODEL_FAILED'
+                : 'BUDGET_EXHAUSTED';
+          warnings.add(failure);
+          sourceStatus.set('model', {
+            source: 'model',
+            status: 'failed',
+            error_code: failure,
+          });
+          if (
+            stopReason === 'RESEARCH_COMPLETE' ||
+            stopReason === 'NO_PENDING_WORK'
+          )
+            stopReason = failure;
+        }
       }
       if (!active()) return;
       if (clock.monotonic() >= policy.upstreamUntil) {
@@ -428,6 +521,7 @@ export class ResearchRunner {
         round_search_counts: roundCounts,
         pending_work: pending,
         assessed_at: clock.wall().toISOString(),
+        ...(templateResult ? { template_result: templateResult } : {}),
       };
       if (!evidence.length) {
         repository.fail(runId, 'NO_VALID_EVIDENCE', stopReason);

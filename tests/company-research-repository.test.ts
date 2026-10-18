@@ -217,11 +217,11 @@ it('rejects quota atomically without creating a dossier and does not alter faile
     service.start({ ...initial, operation_id: 'retry' }, 'u1').dossier_id,
   ).toBe(run.dossier_id);
 });
-it('rejects unavailable templates without writes and incompatible stored versions disable writes', () => {
+it('rejects missing sales products without writes and incompatible stored versions disable writes', () => {
   const { repo, service, db } = fixture();
   expect(() =>
-    service.start({ ...initial, template_id: 'product_sales_scenario' }, 'u1'),
-  ).toThrow('RESEARCH_TEMPLATE_UNAVAILABLE');
+    service.start({ ...initial, products: undefined, template_id: 'product_sales_scenario' }, 'u1'),
+  ).toThrow('RESEARCH_PRODUCTS_REQUIRED');
   expect(
     db.prepare('SELECT count(*) n FROM company_research_runs').get(),
   ).toMatchObject({ n: 0 });

@@ -1,3 +1,5 @@
+import { ArkResearchModel } from '../src/research/model.js';
+import { scenarioResult } from './fixtures/company-sales-scenario/core.js';
 // Remote CI only: this test starts the real Rust Store binary. Missing binary MUST fail.
 import { access, mkdtemp, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -199,6 +201,7 @@ it.each([
         },
         'synthetic',
       );
+      let scenarioDispatches = 0;
       const runner = new ResearchRunner({
         repository: repo,
         clock: new TestClock(),
@@ -234,12 +237,58 @@ it.each([
           },
           async close() {},
         }),
-        model: () => ({
-          async analyze() {
-            return { claims: [], gaps: [], queries: [] };
-          },
-          async close() {},
-        }),
+        model: (context) =>
+          context.run.request.template.id === 'product_sales_scenario'
+            ? new ArkResearchModel(
+                {
+                  url: 'https://synthetic.invalid/model',
+                  credential: 'synthetic',
+                  model: 'synthetic',
+                  template: context.run.request.template,
+                  context: {
+                    company_identity: { legal_name: name, credit_code: CODE },
+                    effective_goal: context.run.request.effective_goal,
+                    product_goals: context.run.request.product_goals,
+                  },
+                  fetchFn: async (_url, init) => {
+                    scenarioDispatches++;
+                    const user = JSON.parse(
+                      JSON.parse(String(init!.body)).messages[1].content,
+                    );
+                    const result = scenarioResult(user.product_scope);
+                    for (const product of result.products)
+                      product.scene_claim_ids = (user.claims ?? [])
+                        .filter((c: any) =>
+                          c.product_keys.includes(product.product),
+                        )
+                        .slice(0, 1)
+                        .map((c: any) => c.claim_id);
+                    return Response.json({
+                      choices: [
+                        {
+                          message: {
+                            content: JSON.stringify({
+                              claims: [],
+                              gaps: [],
+                              queries: [],
+                              ...(user.stage === 'final'
+                                ? { template_result: result }
+                                : {}),
+                            }),
+                          },
+                        },
+                      ],
+                    });
+                  },
+                },
+                context.policy,
+              )
+            : {
+                async analyze() {
+                  return { claims: [], gaps: [], queries: [] };
+                },
+                async close() {},
+              },
       });
       await runner.run(run.run_id, new AbortController().signal);
       const finished = repo.getRun(run.run_id)!;
@@ -269,6 +318,45 @@ it.each([
           (c) => c.temporal_scope === 'current_supported',
         ),
       ).toBe(false);
+      const scenarioRun = repo.begin(
+        {
+          mode: 'continue',
+          dossier_id: run.dossier_id,
+          base_version_id: version.version_id,
+          operation_id: 'scenario-' + kind,
+          template_id: 'product_sales_scenario',
+          products: ['creo'],
+        },
+        'synthetic',
+      );
+      await runner.run(scenarioRun.run_id, new AbortController().signal);
+      const scenarioDone = repo.getRun(scenarioRun.run_id)!;
+      expect(
+        scenarioDone.version_id,
+        JSON.stringify(scenarioDone),
+      ).toBeTruthy();
+      const scenarioSnapshot = service.read(scenarioDone.version_id!);
+      expect(scenarioDispatches).toBeGreaterThan(0);
+      expect(scenarioSnapshot.template_result.kind).toBe(
+        'product_sales_scenario',
+      );
+      if (scenarioSnapshot.template_result.kind === 'product_sales_scenario')
+        expect(
+          scenarioSnapshot.template_result.products[0]!.paths.every(
+            (p) => p.state === 'insufficient',
+          ),
+        ).toBe(true);
+      expect(scenarioSnapshot.evidence.every((e) => e.url === null)).toBe(true);
+      expect(scenarioSnapshot.product_assessments).toEqual(
+        version.snapshot.product_assessments,
+      );
+      expect(JSON.stringify(scenarioSnapshot)).not.toContain('家庭成员乙');
+      if (kind === 'skill' || kind === 'supplier')
+        expect(
+          scenarioSnapshot.claims.some(
+            (c) => c.kind === 'supported' && c.predicate === 'uses',
+          ),
+        ).toBe(false);
     } finally {
       await graph.close();
       db.close();

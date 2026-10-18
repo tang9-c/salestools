@@ -1,3 +1,4 @@
+import { SALES_SCENARIO_QUESTIONS } from './templates/product-sales-scenario.js';
 import type {
   ProductKey,
   ResearchEvidence,
@@ -51,6 +52,16 @@ export const RESEARCH_FOCUS_TERMS = [
   '仿真',
   '设计',
   '建模',
+  '装配',
+  '变型',
+  '追溯',
+  '协作',
+  '复杂产品',
+  '非线性',
+  '材料',
+  'EMC',
+  '工程图',
+  '机械',
 ] as const;
 export function focusForText(text: string): string[] {
   return RESEARCH_FOCUS_TERMS.filter((term) => text.includes(term)).slice(0, 4);
@@ -171,8 +182,45 @@ export function planResearch(
             [e.evidence_id],
           );
       }
+    if (
+      run.request.template?.id === 'product_sales_scenario' &&
+      (run.mode === 'initial' || !base || related.length === 0)
+    ) {
+      const question = SALES_SCENARIO_QUESTIONS[product];
+      if (
+        !related.some((e) =>
+          question.terms.some((term) => e.quote.includes(term)),
+        )
+      )
+        add(
+          question.topic,
+          [product],
+          'missing_background',
+          [],
+          [],
+          [...question.terms],
+        );
+    }
     const explicitGoal = run.request.client_request.goal;
-    if (explicitGoal)
+    const unchangedSalesGoal =
+      run.mode === 'continue' &&
+      run.request.template?.id === 'product_sales_scenario' &&
+      base?.template.id === run.request.template.id &&
+      base.template.version === run.request.template.version &&
+      base.product_goals[product] === explicitGoal;
+    const analysisOnlySalesGoal =
+      run.mode === 'continue' &&
+      run.request.template?.id === 'product_sales_scenario' &&
+      base !== undefined &&
+      related.length > 0 &&
+      base.gaps.length === 0 &&
+      explicitGoal !== undefined &&
+      /分析|整理|归纳|评估|探索|解读/u.test(explicitGoal) &&
+      !/补查|查询|搜索|更新|最新|近期|核实/u.test(explicitGoal) &&
+      focusForText(explicitGoal).every((term) =>
+        related.some((e) => e.quote.includes(term)),
+      );
+    if (explicitGoal && !unchangedSalesGoal && !analysisOnlySalesGoal)
       add(
         topicForText(explicitGoal),
         [product],

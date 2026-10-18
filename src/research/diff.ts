@@ -179,5 +179,60 @@ export function compare(
         g.product_keys,
         g.evidence_ids,
       );
+  for (const product of scope) {
+    const old =
+      base.template_result.kind === 'product_sales_scenario'
+        ? base.template_result.products.find((p) => p.product === product)
+        : undefined;
+    const current =
+      next.template_result.kind === 'product_sales_scenario'
+        ? next.template_result.products.find((p) => p.product === product)
+        : undefined;
+    for (const kind of ['new_purchase', 'replacement', 'complement'] as const) {
+      const before = old?.paths.find((p) => p.kind === kind),
+        after = current?.paths.find((p) => p.kind === kind);
+      if (JSON.stringify(before) === JSON.stringify(after)) continue;
+      const ids = new Set([
+        ...(after?.supporting_claim_ids ?? []),
+        ...(after?.contradicting_claim_ids ?? []),
+      ]);
+      const evidence = [
+        ...new Set(
+          next.claims
+            .filter((c) => ids.has(c.claim_id))
+            .flatMap((c) => c.evidence_ids),
+        ),
+      ];
+      add(
+        'analysis_changes',
+        after
+          ? before
+            ? 'sales_path_changed'
+            : 'sales_path_added'
+          : 'sales_path_removed',
+        `scenario:${product}:${kind}`,
+        '销售探索路径分析变化',
+        [product],
+        evidence,
+      );
+    }
+    const metadata = (p: typeof current) =>
+      p
+        ? JSON.stringify([
+            p.scene_claim_ids,
+            p.software_claim_ids,
+            p.known_blocker_claim_ids,
+            p.unknowns,
+          ])
+        : null;
+    if (metadata(old) !== metadata(current))
+      add(
+        'analysis_changes',
+        'sales_context_changed',
+        `scenario:${product}:context`,
+        '专题场景引用或未知项变化',
+        [product],
+      );
+  }
   return out;
 }

@@ -77,6 +77,7 @@ const outputSchemas: Record<string, z.ZodObject> = {
       schema_version: true,
       method_version: true,
       summary: true,
+      template_result: true,
       product_keys: true,
       claims: true,
       gaps: true,
@@ -230,6 +231,7 @@ export function registerCompanyResearchTools(
         schema_version: s.schema_version,
         method_version: s.method_version,
         summary: s.summary,
+        template_result: s.template_result,
         product_keys: s.product_keys,
         coverage: s.coverage.map((c) => ({
           ...c,

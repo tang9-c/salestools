@@ -1,3 +1,9 @@
+import { getResearchTemplate } from './templates/registry.js';
+import {
+  SALES_SCENARIO_QUESTIONS,
+  SalesScenarioResultSchema,
+  validateScenarioPaths,
+} from './templates/product-sales-scenario.js';
 import { z } from 'zod';
 import {
   CompanyResearchAnalysisSchema,
@@ -9,6 +15,8 @@ import {
   type ProductKey,
   type ResearchEvidence,
   type ResearchGap,
+  type ResearchClaim,
+  type ResearchTemplateRef,
 } from './contracts.js';
 import {
   evidenceDependencyGroup,
@@ -42,6 +50,7 @@ export interface ResearchModel {
     scope: ProductKey[],
     signal: AbortSignal,
     stage?: ResearchStage,
+    claims?: ResearchClaim[],
   ): Promise<ResearchAnalysis>;
   close(): Promise<void>;
 }
@@ -51,8 +60,29 @@ export function parseAnalysis(
   gaps: readonly ResearchGap[],
   scope: readonly ProductKey[],
   companyKey?: string,
+  options: {
+    template?: ResearchTemplateRef;
+    stage?: ResearchStage;
+    claims?: readonly ResearchClaim[];
+    asOf?: Date;
+  } = {},
 ): ResearchAnalysis {
-  const parsed = CompanyResearchAnalysisSchema.parse(raw);
+  const salesFinal =
+    options.template?.id === 'product_sales_scenario' &&
+    options.stage === 'final';
+  let parsed: ResearchAnalysis;
+  try {
+    parsed = salesFinal
+      ? CompanyResearchAnalysisSchema.extend({
+          template_result: SalesScenarioResultSchema,
+        }).parse(raw)
+      : CompanyResearchAnalysisSchema.parse(raw);
+  } catch (error) {
+    if (salesFinal) throw new Error('TEMPLATE_OUTPUT_INVALID');
+    throw error;
+  }
+  if (salesFinal && parsed.queries.length)
+    throw new Error('TEMPLATE_OUTPUT_INVALID');
   if (
     parsed.claims.some(
       (c) => c.subject_key !== null && c.subject_key !== companyKey,
@@ -96,6 +126,29 @@ export function parseAnalysis(
     )
   )
     throw new Error('INVALID_QUERY');
+  if (salesFinal) {
+    const old = new Map((options.claims ?? []).map((c) => [c.claim_id, c]));
+    if (
+      result.claims.some(
+        (c) =>
+          old.has(c.claim_id) &&
+          JSON.stringify(old.get(c.claim_id)) !== JSON.stringify(c),
+      )
+    )
+      throw new Error('TEMPLATE_OUTPUT_INVALID');
+    const checked = validateScenarioPaths(result.template_result!, {
+      claims: [...(options.claims ?? []), ...result.claims],
+      evidence: materials,
+      scope,
+      companyKey,
+      asOf: options.asOf,
+    });
+    return {
+      ...result,
+      template_result: checked.result,
+      template_warnings: checked.warnings,
+    };
+  }
   return result;
 }
 export function packModelRequest(
@@ -105,6 +158,12 @@ export function packModelRequest(
   scope: readonly ProductKey[],
   context: ResearchModelContext,
   maxBytes = ARK_REQUEST_MAX_BYTES,
+  options: {
+    template?: ResearchTemplateRef;
+    stage?: ResearchStage;
+    claims?: readonly ResearchClaim[];
+    asOf?: Date;
+  } = {},
 ) {
   const fixed = ResearchModelContextSchema.parse(context);
   if (
@@ -112,6 +171,21 @@ export function packModelRequest(
     scope.some((p) => !fixed.product_goals[p])
   )
     throw new Error('INVALID_MODEL_CONTEXT');
+  const sales = options.template?.id === 'product_sales_scenario';
+  const visibleClaims = (admitted: ResearchEvidence[]) => {
+    const ids = new Set(admitted.map((e) => e.evidence_id));
+    return (options.claims ?? [])
+      .filter(
+        (c) =>
+          c.product_keys.every((p) => scope.includes(p)) &&
+          (c.subject_key === null ||
+            c.subject_key === fixed.company_identity.credit_code) &&
+          c.evidence_ids.length > 0 &&
+          c.evidence_ids.every((id) => ids.has(id)) &&
+          validateClaim(c, admitted),
+      )
+      .slice(0, 60);
+  };
   const serialize = (admitted: ResearchEvidence[]) => {
     const ids = new Set(admitted.map((e) => e.evidence_id));
     return JSON.stringify({
@@ -119,13 +193,32 @@ export function packModelRequest(
       stream: false,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: COMPANY_RESEARCH_SYSTEM_PROMPT },
+        {
+          role: 'system',
+          content: sales
+            ? getResearchTemplate(options.template!).systemPrompt(
+                options.stage ?? 'collect',
+              )
+            : COMPANY_RESEARCH_SYSTEM_PROMPT,
+        },
         {
           role: 'user',
           content: JSON.stringify({
             ...fixed,
             subject_key: fixed.company_identity.credit_code,
             product_scope: scope,
+            ...(sales
+              ? {
+                  template: options.template,
+                  stage: options.stage ?? 'collect',
+                  assessed_at: (options.asOf ?? new Date()).toISOString(),
+                  claims: visibleClaims(admitted),
+                  questions: scope.map((product) => ({
+                    product,
+                    ...SALES_SCENARIO_QUESTIONS[product],
+                  })),
+                }
+              : {}),
             materials: admitted,
             gaps: gaps.map((g) => ({
               ...g,
@@ -155,8 +248,14 @@ export function packModelRequest(
   }
   return {
     body: serialize(admitted),
+    claims: sales ? visibleClaims(admitted) : [],
     materials: admitted,
-    omitted: materials.length - admitted.length,
+    omitted:
+      materials.length -
+      admitted.length +
+      (sales
+        ? (options.claims?.length ?? 0) - visibleClaims(admitted).length
+        : 0),
   };
 }
 export interface ArkResearchModelOptions {
@@ -164,6 +263,7 @@ export interface ArkResearchModelOptions {
   credential: string;
   model: string;
   context: ResearchModelContext;
+  template?: ResearchTemplateRef;
   requestMaxBytes?: number;
   fetchFn?: typeof fetch;
 }
@@ -180,6 +280,7 @@ export class ArkResearchModel implements ResearchModel {
     scope: ProductKey[],
     signal: AbortSignal,
     stage: ResearchStage = 'collect',
+    claims: ResearchClaim[] = [],
   ): Promise<ResearchAnalysis> {
     const packed = packModelRequest(
       this.options.model,
@@ -188,6 +289,12 @@ export class ArkResearchModel implements ResearchModel {
       scope,
       this.options.context,
       this.options.requestMaxBytes,
+      {
+        template: this.options.template,
+        stage,
+        claims,
+        asOf: this.policy.clock.wall(),
+      },
     );
     this.omitted += packed.omitted;
     const content = await this.policy.call(
@@ -209,6 +316,12 @@ export class ArkResearchModel implements ResearchModel {
       gaps,
       scope,
       this.options.context.company_identity.credit_code,
+      {
+        template: this.options.template,
+        stage,
+        claims: packed.claims,
+        asOf: this.policy.clock.wall(),
+      },
     );
     this.policy.assertOpen(stage);
     signal.throwIfAborted();

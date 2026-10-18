@@ -1,12 +1,11 @@
+import { getResearchTemplate } from './templates/registry.js';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { z } from 'zod';
 import { PRODUCT_RULES } from '../opportunity/product-rules.js';
 import {
   AcceptedResearchRequestSchema,
-  DEFAULT_RESEARCH_GOAL,
   ProductKeySchema,
-  RESEARCH_METHOD_VERSION,
   RESEARCH_TEMPLATE,
   ResearchDossierSchema,
   ResearchBudgetUsageSchema,
@@ -29,7 +28,10 @@ export interface ResearchRepositoryOptions {
   maxPerActor?: number;
   maxRunning?: number;
   now?: () => Date;
-  template?: { id: 'company_research'; version: number };
+  template?: {
+    id: 'company_research' | 'product_sales_scenario';
+    version: number;
+  };
 }
 export interface ResearchStartResult extends ResearchRun {
   replayed: boolean;
@@ -77,8 +79,7 @@ export class ResearchRepository {
     ...args: SQLInputValue[]
   ): Record<string, unknown> | undefined {
     return this.db.prepare(sql).get(...args) as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
   }
   private all(
     sql: string,
@@ -265,8 +266,6 @@ export class ResearchRepository {
     return this.tx(() => {
       const second = this.replay(input, actor);
       if (second) return second;
-      if (input.template_id === 'product_sales_scenario')
-        throw new ResearchError('RESEARCH_TEMPLATE_UNAVAILABLE');
       this.assertWritable();
       let dossier =
         input.mode === 'initial'
@@ -319,13 +318,28 @@ export class ResearchRepository {
         ) >= (this.options.maxPerActor ?? 3)
       )
         throw new ResearchError('RESEARCH_USER_LIMIT');
+      const selected = input.template_id
+        ? { id: input.template_id, version: 1 }
+        : input.mode === 'initial'
+          ? (this.options.template ?? RESEARCH_TEMPLATE)
+          : latest!.snapshot.template;
       const selectedTemplate =
-        AcceptedResearchRequestSchema.shape.template.safeParse(
-          this.options.template ?? RESEARCH_TEMPLATE,
-        );
+        AcceptedResearchRequestSchema.shape.template.safeParse(selected);
       if (!selectedTemplate.success)
         throw new ResearchError('RESEARCH_VERSION_UNSUPPORTED');
-      const template = selectedTemplate.data;
+      const definition = getResearchTemplate(selectedTemplate.data);
+      const template = definition.ref;
+      const switching =
+        latest !== null &&
+        (latest.snapshot.template.id !== template.id ||
+          latest.snapshot.template.version !== template.version);
+      if (
+        !input.products &&
+        (switching ||
+          (input.mode === 'initial' &&
+            template.id === 'product_sales_scenario'))
+      )
+        throw new ResearchError('RESEARCH_PRODUCTS_REQUIRED');
       const scope =
         input.products ??
         (input.mode === 'initial'
@@ -338,7 +352,12 @@ export class ResearchRepository {
         const v = input.mode === 'initial' ? null : previous[p];
         bases[p] = v?.version_id ?? null;
         goals[p] =
-          input.goal ?? v?.snapshot.product_goals[p] ?? DEFAULT_RESEARCH_GOAL;
+          input.goal ??
+          (v?.snapshot.template.id === template.id &&
+          v.snapshot.template.version === template.version
+            ? v.snapshot.product_goals[p]
+            : undefined) ??
+          definition.defaultGoal(p);
       }
       const effective =
         scope.length === 1
@@ -354,7 +373,7 @@ export class ResearchRepository {
         client_request: input,
         schema_version: 1,
         template,
-        method_version: RESEARCH_METHOD_VERSION,
+        method_version: definition.method_version,
         product_keys: scope,
         product_goals: goals,
         product_base_versions: bases,

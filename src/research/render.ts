@@ -6,6 +6,8 @@ import type {
 import { containsPrivateContact, evidenceDependencyGroup } from './evidence.js';
 /** First-screen budget; full excerpts remain in fixed-version evidence pagination. */
 export function renderSummary(s: ResearchSnapshot): string {
+  if (s.template_result.kind === 'product_sales_scenario')
+    return renderSalesScenario(s);
   const excerpt = (value: string, limit: number) => {
     const text = containsPrivateContact(value)
       ? '敏感内容已省略'
@@ -33,21 +35,23 @@ export function renderSummary(s: ResearchSnapshot): string {
     (g.priority === 'high' ? 0 : g.priority === 'medium' ? 1 : 2);
   const gaps = [...s.gaps].sort((a, b) => rank(a) - rank(b));
   sections.push(
-    ...gaps.slice(0, 3).map(
-      (g) => `${g.kind}：${excerpt(g.text, 140)}${refs(g.evidence_ids)}`,
-    ),
+    ...gaps
+      .slice(0, 3)
+      .map((g) => `${g.kind}：${excerpt(g.text, 140)}${refs(g.evidence_ids)}`),
   );
   if (gaps.length > 3)
     sections.push(`另有${gaps.length - 3}项缺口，见固定版本结构化结果。`);
   sections.push('软件判断与事实摘录');
   const details = [
-    ...s.claims.slice(0, 2).map(
-      (c) =>
-        `${c.kind}/${c.temporal_scope}：${excerpt(c.text, 140)}${refs(c.evidence_ids)}`,
-    ),
-    ...s.facts.slice(0, 2).map(
-      (f) => `${excerpt(f.text, 140)}${refs(f.evidence_ids)}`,
-    ),
+    ...s.claims
+      .slice(0, 2)
+      .map(
+        (c) =>
+          `${c.kind}/${c.temporal_scope}：${excerpt(c.text, 140)}${refs(c.evidence_ids)}`,
+      ),
+    ...s.facts
+      .slice(0, 2)
+      .map((f) => `${excerpt(f.text, 140)}${refs(f.evidence_ids)}`),
     ...Object.values(s.changes)
       .flat()
       .slice(0, 2)
@@ -60,6 +64,85 @@ export function renderSummary(s: ResearchSnapshot): string {
     result += `\n${line}`;
   }
   return `${result}\n${footer}`;
+}
+function renderSalesScenario(s: ResearchSnapshot): string {
+  if (s.template_result.kind !== 'product_sales_scenario')
+    throw new Error('TEMPLATE_OUTPUT_INVALID');
+  const result = s.template_result;
+  const labels = {
+    new_purchase: '新购',
+    replacement: '替换',
+    complement: '补充',
+  };
+  const states = {
+    worth_exploring: '值得验证',
+    insufficient: '依据不足',
+    contradicted: '已有反证',
+  };
+  const text = (value: string, n: number) => {
+    const safe = containsPrivateContact(value)
+      ? '敏感内容已省略'
+      : value.replace(/\s+/gu, ' ').trim();
+    return safe.length > n ? safe.slice(0, n - 1) + '…' : safe;
+  };
+  const build = (limit: number) => {
+    const lines = [
+      `产品销售场景：${text(s.legal_name, 100)}`,
+      '以下为探索路径，不代表采购阶段或成交概率。',
+    ];
+    for (const product of result.products) {
+      lines.push(
+        `${product.product}：${product.paths.map((p) => `${labels[p.kind]}${states[p.state]}`).join('；')}`,
+      );
+      const ids = [
+        ...product.paths.flatMap((p) => [
+          ...p.supporting_claim_ids,
+          ...p.contradicting_claim_ids,
+        ]),
+        ...product.scene_claim_ids,
+        ...product.software_claim_ids,
+      ];
+      const assessment = s.product_assessments.find(
+        (p) => p.product === product.product,
+      );
+      const ref = ids.length
+        ? `claim_id:${ids[0]}`
+        : assessment?.evidenceIds[0]
+          ? `证据:${assessment.evidenceIds[0]}`
+          : '';
+      if (ref) lines.push(`[${ref}]`);
+      lines.push(
+        `理由：${text(product.paths.map((p) => p.rationale).join('；'), limit)}`,
+      );
+      const question =
+        product.paths.flatMap((p) => p.questions)[0] ??
+        product.unknowns[0] ??
+        '客户场景及成立前提是否已核实？';
+      lines.push(`关键问题：${text(question, limit)}`);
+      if (assessment)
+        lines.push(
+          `评级：${assessment.level}；置信度${assessment.confidence}；${text(assessment.reasons.join('；'), limit)}`,
+        );
+      const coverage = s.coverage.find((p) => p.product === product.product);
+      lines.push(
+        `覆盖：${coverage?.scope_complete ? '处理范围已完成' : '处理范围未完成'}`,
+      );
+    }
+    const gaps = [...s.gaps].sort(
+      (a, b) => Number(a.kind === 'knowledge') - Number(b.kind === 'knowledge'),
+    );
+    lines.push(
+      ...gaps.slice(0, 3).map((g) => `${g.kind}：${text(g.text, limit)}`),
+    );
+    if (gaps.length > 3)
+      lines.push(`另有${gaps.length - 3}项缺口，见固定版本结构化结果。`);
+    lines.push(
+      '完整路径、问题和引用见结构化结果；使用version_id与claim_id分页读取原文。',
+    );
+    return lines.join('\n');
+  };
+  const summary = build(55);
+  return summary.length <= 4000 ? summary : build(20);
 }
 export interface EvidenceFilter {
   claim_id?: string;

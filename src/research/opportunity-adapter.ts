@@ -1,3 +1,7 @@
+import {
+  insufficientSalesScenario,
+  validateScenarioPaths,
+} from './templates/product-sales-scenario.js';
 import type { EvidenceBundle, EvidenceFact } from '../contracts/evidence.js';
 import { evaluateOpportunities } from '../opportunity/evaluate-all.js';
 import {
@@ -45,8 +49,7 @@ export function toOpportunityEvidence(
             e.published_at,
           ])
         : e.source_key;
-    const original =
-      originals.get(e.source_key) ?? originals.get(jobKey) ?? e;
+    const original = originals.get(e.source_key) ?? originals.get(jobKey) ?? e;
     originals.set(e.source_key, original);
     originals.set(jobKey, original);
     return {
@@ -59,7 +62,9 @@ export function toOpportunityEvidence(
           : original.source_key,
       originalDomain:
         original.source_type === 'web' ? new URL(original.url).hostname : null,
-      publishedAt: e.published_at ? new Date(e.published_at).toISOString() : null,
+      publishedAt: e.published_at
+        ? new Date(e.published_at).toISOString()
+        : null,
       collectedAt: new Date(e.collected_at).toISOString(),
       mentionedName: legalName,
       entityScope: 'legal_entity' as const,
@@ -383,8 +388,11 @@ export function buildResult(
     0,
     60,
   );
-  if (gaps.length > 99) {
-    gaps = gaps.slice(0, 98);
+  // Reserve bounded diagnostic slots for scenario fallback and later evidence trimming.
+  const gapLimit =
+    input.run.request.template.id === 'product_sales_scenario' ? 97 : 99;
+  if (gaps.length > gapLimit) {
+    gaps = gaps.slice(0, gapLimit - 1);
     addGap('technical', 'gaps_omitted', '部分缺口因容量限制省略');
   }
   const s: ResearchSnapshot = {
@@ -423,6 +431,30 @@ export function buildResult(
     ),
   };
   const derive = () => {
+    if (s.template.id === 'product_sales_scenario') {
+      try {
+        if (!input.template_result) throw new Error('TEMPLATE_OUTPUT_INVALID');
+        const checked = validateScenarioPaths(input.template_result, {
+          claims: s.claims,
+          evidence: s.evidence,
+          scope,
+          companyKey: s.credit_code,
+          asOf: new Date(input.assessed_at),
+        });
+        s.template_result = checked.result;
+        for (const warning of checked.warnings)
+          addGap('technical', warning, `专题结果校验降级：${warning}`);
+      } catch {
+        s.template_result = insufficientSalesScenario(scope);
+        const reason =
+          input.warnings.find((w) =>
+            ['TEMPLATE_BUDGET_EXHAUSTED', 'TIME_BUDGET_EXHAUSTED'].includes(w),
+          ) ?? 'TEMPLATE_OUTPUT_INVALID';
+        addGap('technical', reason, `专题分析未完成：${reason}`);
+      }
+      s.gaps = gaps;
+    }
+
     s.coverage = scope.map((product) => {
       const relevant = s.gaps.filter((g) => g.product_keys.includes(product));
       return {

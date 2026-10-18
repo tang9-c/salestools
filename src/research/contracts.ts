@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { ProductKeySchema, type ProductKey } from '../contracts/evidence.js';
+import {
+  SalesScenarioResultSchema,
+  hasPrivateScenarioText,
+} from './templates/sales-scenario-contracts.js';
 import { ProductOpportunitySchema } from '../contracts/opportunity.js';
 export { ProductKeySchema };
 export type { ProductKey };
@@ -26,9 +30,15 @@ const products = z
   .min(1)
   .max(7)
   .refine((p) => new Set(p).size === p.length, 'duplicate products');
-export const ResearchTemplateSchema = z
-  .object({ id: z.literal('company_research'), version: z.literal(1) })
-  .strict();
+export const ResearchTemplateSchema = z.discriminatedUnion('id', [
+  z
+    .object({ id: z.literal('company_research'), version: z.literal(1) })
+    .strict(),
+  z
+    .object({ id: z.literal('product_sales_scenario'), version: z.literal(1) })
+    .strict(),
+]);
+export type ResearchTemplateRef = z.infer<typeof ResearchTemplateSchema>;
 export const ResearchModeSchema = z.enum(['initial', 'continue', 'refresh']);
 export const RunStatusSchema = z.enum([
   'queued',
@@ -335,7 +345,10 @@ export const ResearchSnapshotSchema = z
     product_goals: productGoals,
     parent_version_id: id.nullable(),
     evidence_base_version_ids: z.array(id).max(7),
-    template_result: z.object({ kind: z.literal('company_research') }).strict(),
+    template_result: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('company_research') }).strict(),
+      SalesScenarioResultSchema,
+    ]),
     summary: text.max(12000),
     evidence: z.array(ResearchEvidenceSchema).max(80),
     facts: z.array(ResearchFactSchema).max(80),
@@ -351,6 +364,33 @@ export const ResearchSnapshotSchema = z
   .strict()
   .superRefine((s, c) => {
     const error = (message: string) => c.addIssue({ code: 'custom', message });
+    if (s.template.id !== s.template_result.kind)
+      error('template/result mismatch');
+    if (s.template_result.kind === 'product_sales_scenario') {
+      if (hasPrivateScenarioText(s.template_result))
+        error('TEMPLATE_OUTPUT_INVALID');
+      if (
+        !sameKeys(
+          s.template_result.products.map((p) => p.product),
+          s.product_keys,
+        )
+      )
+        error('scenario products must equal scope');
+      const claims = new Map(s.claims.map((c) => [c.claim_id, c]));
+      for (const p of s.template_result.products) {
+        const ids = [
+          ...p.scene_claim_ids,
+          ...p.software_claim_ids,
+          ...p.known_blocker_claim_ids,
+          ...p.paths.flatMap((path) => [
+            ...path.supporting_claim_ids,
+            ...path.contradicting_claim_ids,
+          ]),
+        ];
+        if (ids.some((id) => !claims.get(id)?.product_keys.includes(p.product)))
+          error('scenario claim reference invalid');
+      }
+    }
     const evidence = new Set(s.evidence.map((e) => e.evidence_id));
     const gaps = new Map(s.gaps.map((g) => [g.gap_id, g]));
     if (evidence.size !== s.evidence.length) error('duplicate evidence');
@@ -488,8 +528,9 @@ export function parseResearchSnapshot(value: unknown): ResearchSnapshot {
     !value ||
     typeof value !== 'object' ||
     (value as { schema_version?: unknown }).schema_version !== 1 ||
-    (value as { template?: { id?: unknown; version?: unknown } }).template
-      ?.id !== 'company_research' ||
+    !['company_research', 'product_sales_scenario'].includes(
+      String((value as { template?: { id?: unknown } }).template?.id),
+    ) ||
     (value as { template?: { version?: unknown } }).template?.version !== 1
   )
     throw new Error('RESEARCH_VERSION_UNSUPPORTED');

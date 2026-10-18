@@ -180,3 +180,9 @@ salestools-admin token list --limit 100 --offset 100
 `COMPANY_RESEARCH_ENABLED=false` 为默认值。启用后提供首次研究、继续、刷新、状态、共享版本及分页证据读取，使用已确认企业画像和独立预算。失败／取消保留旧成果；重启不自动恢复付费调用。关闭功能保留研究数据。
 
 当前实现尚待远程完整 gate、授权企业样本和真实宿主验收；启用须在验收后另行授权。数据库备份、迁移、预算、状态、关闭步骤及真实 tested SHA 记录见[持续企业研究验收记录](docs/validation/2026-10-17-continuous-company-research.md)。不在本机执行 build/dev/native 或容器构建。
+
+### 产品销售场景专题
+
+持续研究开启后，可用原 `start_company_research` 指定 `template_id=product_sales_scenario` 和 `products`，在共享档案中生成目标产品的新购／替换／补充探索路径。已有档案使用 `continue` 切换，没有档案可直接 `initial`；切换模板须显式选择产品。路径是有引用的待验证假设，依据不足会明确返回，不代表采购阶段、替换可行性或产品优劣。
+
+完整结构由 `get_company_research` 返回，沿原 `get_company_research_evidence` 的 version_id/claim_id 展开引用，读取零上游调用。仍受 `COMPANY_RESEARCH_ENABLED=false` 默认关闭控制，没有新工具、专题表或独立预算；专题 final 实际模型请求至多两次，失败保留有效事实并安全 partial 回退。schema1新增专题模板后回退第一阶段程序须考虑存储兼容性。[专题验证及回退记录](docs/validation/2026-10-17-product-sales-scenario.md)区分受控开发与尚未执行的远程、真实上游和宿主验收。

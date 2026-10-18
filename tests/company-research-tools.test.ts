@@ -144,8 +144,9 @@ it('用户额度与其它用户无关，未来模板拒绝且不写入', async (
       const future = await call(c, 'start_company_research', {
         ...input,
         template_id: 'product_sales_scenario',
+        products: undefined,
       });
-      expect(JSON.stringify(future)).toContain('RESEARCH_TEMPLATE_UNAVAILABLE');
+      expect(JSON.stringify(future)).toContain('RESEARCH_PRODUCTS_REQUIRED');
       expect(repo.active()).toHaveLength(0);
       await call(c, 'start_company_research', input);
       const rejected = await call(c, 'start_company_research', {

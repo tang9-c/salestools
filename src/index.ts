@@ -537,6 +537,7 @@ export function createApplication(
             url: config.arkApiUrl,
             credential: config.arkCredential,
             model: config.arkModel,
+            template: context.run.request.template,
             context: {
               company_identity: {
                 credit_code: context.dossier.credit_code,

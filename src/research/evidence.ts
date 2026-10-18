@@ -5,10 +5,8 @@ import { ResearchClaimSchema, ResearchEvidenceSchema, type ResearchClaim, type R
 export const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, canonical(v)])) : value;
-export function containsPrivateContact(text: string): boolean {
-  const withoutDates = text.replace(/\b\d{4}-\d{2}-\d{2}\b/gu, '').replace(/\b[0-9A-Z]{18}\b/gu, '');
-  return /(?:[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?:\+?\d[\d ()-]{8,}\d)|电话|手机|邮箱|婚姻|身份证|出生日期|家庭住址)/iu.test(withoutDates);
-}
+import { containsPrivateContact } from './privacy.js';
+export { containsPrivateContact } from './privacy.js';
 /** Shared conservative guard for all supported use verbs; preserve qualified text as a clue. */
 export function hasUseLimitation(text: string): boolean {
   return /(?:不|没有|未|未曾|不曾|并未|尚未)(?:实际|正式|直接|曾经)?\s*(?:使用|采用|运用|部署|安装|采购)|尚未|计划|拟|\b(?:not|never|planned?|proposed?|intend(?:s|ed)?|will|would)\b/iu.test(text);
